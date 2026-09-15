@@ -75,6 +75,14 @@ RUN_EVALS="$TEMPLATE_DIR/evals/run-evals.sh"
 [ -f "$CASES" ] || die "no case file at $CASES" \
   "check --repo points at the template checkout"
 
+# A dirty checkout is a refusal, not a thing to work around. This run commits
+# and switches branches in somebody else's repository, and the guard below
+# reverts what it wrote: neither is safe on top of half-finished work.
+if [ "$DRY_RUN" = "no" ] && [ -n "$(cd "$REPO" && git status --porcelain)" ]; then
+  die "$REPO has uncommitted changes" \
+      "commit or move them, then re-run; a failed unit is visible in systemctl --user status, a silent skip is not"
+fi
+
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-template-weekly"
 mkdir -p "$STATE_DIR"
 LOG="$STATE_DIR/log.jsonl"
@@ -100,7 +108,9 @@ guard_worktree() {
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     path_is_allowed "$path" || {
-      (cd "$REPO" && git checkout -- . )
+      # Only the two files this run writes are ever reverted. A guard that
+      # reverts what it did not write destroys somebody else's work.
+      (cd "$REPO" && git checkout -- "$CASES" "$PENDING" 2>/dev/null) || true
       die "the run tried to change $path, which is off limits" \
           "nothing was committed; read $LOG and fix the guard or the verdict"
     }
@@ -321,7 +331,7 @@ with open(sys.argv[1], "a", encoding="utf-8") as fh:
 
       if ! guard_cases_append_only "$BEFORE"; then
         cp "$BEFORE" "$CASES"; rm -f "$BEFORE"
-        (cd "$REPO" && git checkout -- .)
+        (cd "$REPO" && git checkout -- "$CASES" "$PENDING" 2>/dev/null) || true
         die "the case file would have been rewritten instead of appended to" \
             "nothing was committed; read $LOG"
       fi
@@ -329,7 +339,7 @@ with open(sys.argv[1], "a", encoding="utf-8") as fh:
       guard_worktree
 
       if ! bash "$RUN_EVALS" >/dev/null 2>&1; then
-        (cd "$REPO" && git checkout -- .)
+        (cd "$REPO" && git checkout -- "$CASES" "$PENDING" 2>/dev/null) || true
         log "rejecting $REF: its own case does not pass the evals"
         "$BOARD_CLI" comment add "$REF" --text "<p><strong>Not accepted: the case built from this ticket does not pass its own check.</strong></p><p>The corrected output has to satisfy the predicate it is filed under. Re-file with the exact text that would have been right.</p>" >/dev/null 2>&1 || true
         "$BOARD_CLI" task move "$REF" --section "Rejected" >/dev/null 2>&1 || true
@@ -381,7 +391,8 @@ BODY="$(mktemp)"
   printf '**Watch out for**\n\n'
   printf 'A check only proves the corrected text is right. Somebody still has to make the template produce it, which is what the pending list is for.\n\n'
   printf '## Cases added this week\n\n'
-  (cd "$REPO" && git log --format='- %s' "origin/main..$BRANCH" 2>/dev/null || git log --format='- %s' -n "$ACCEPTED" "$BRANCH")
+  (cd "$REPO" && git log --format='- %s' --grep '^template-feedback:' "origin/main..$BRANCH" 2>/dev/null \
+     || git log --format='- %s' --grep '^template-feedback:' -n "$ACCEPTED" "$BRANCH")
   printf '\n%s accepted, %s rejected.\n' "$ACCEPTED" "$REJECTED"
 } > "$BODY"
 
@@ -393,7 +404,7 @@ rm -f "$BODY"
 log "pull request $PR_URL ($ACCEPTED accepted, $REJECTED rejected); auto-merge stays off"
 
 # Tell every accepted ticket where its fix went.
-(cd "$REPO" && git log --format='%s' "origin/main..$BRANCH" 2>/dev/null) \
+(cd "$REPO" && git log --format='%s' --grep '^template-feedback:' "origin/main..$BRANCH" 2>/dev/null) \
   | sed -n 's/^template-feedback: \([A-Z0-9]*-[0-9]*\).*/\1/p' \
   | while IFS= read -r ref; do
       [ -n "$ref" ] || continue
