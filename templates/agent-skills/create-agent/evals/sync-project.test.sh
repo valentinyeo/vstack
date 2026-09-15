@@ -112,5 +112,35 @@ else
   bad sync-empty-repo-evals-pass "a skill-less repo fails its own eval: $empty_out"
 fi
 
+# --- 5. a check name the repo already uses -----------------------------------
+# The app repo declares its pr-title check inside another workflow file. Writing
+# a second file that declares the same job name would give one check name two
+# definitions, and branch protection would follow whichever GitHub reported
+# last. The sync has to leave that one alone.
+TAKEN="$TMP/taken"
+mkdir -p "$TAKEN/.github/workflows"
+cat > "$TAKEN/.github/workflows/pr-size.yml" <<'YAML'
+name: pr-size
+jobs:
+  pr-size:
+    runs-on: ubuntu-latest
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+YAML
+taken_out="$(bash "$SYNC" "$TAKEN" 2>&1)"
+if [ ! -f "$TAKEN/.github/workflows/pr-title.yml" ] \
+   && printf '%s' "$taken_out" | grep -q "already declares a 'pr-title' check"; then
+  ok sync-skips-taken-check-name "a check name the repo already uses is not redefined"
+else
+  bad sync-skips-taken-check-name "the sync wrote a second pr-title definition: $taken_out"
+fi
+# The workflow whose name is free is still written.
+if [ -f "$TAKEN/.github/workflows/skills-evals.yml" ]; then
+  ok sync-still-writes-free-workflow "the workflow with a free name is still laid down"
+else
+  bad sync-still-writes-free-workflow "skills-evals.yml was not written"
+fi
+
 printf '\n%d behavioural check(s) failed\n' "$fails"
 [ "$fails" -eq 0 ]
