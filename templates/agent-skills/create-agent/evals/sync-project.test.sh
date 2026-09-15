@@ -2,7 +2,7 @@
 # Behavioural checks on sync-project.sh, which lays the standard agent layout
 # into a project repo.
 #
-# The case file next door replays text corrections. These three cannot be
+# The case file next door replays text corrections. These cannot be
 # expressed that way: they are about what happens on disk when the sync runs
 # twice over a repo somebody has edited in between.
 #
@@ -97,6 +97,19 @@ if [ "$(cat "$PROJECT/.claude/skills/RULE-MAP.md")" = "project owns this" ]; the
   ok sync-keeps-unmarked "a file with no template marker is left alone"
 else
   bad sync-keeps-unmarked "the sync overwrote an unmarked project file"
+fi
+
+# --- 4. a repo with no skills at all -----------------------------------------
+# Most repos the daily sync reaches have no skills yet. What it lays down there
+# has to pass its own eval on the very PR that introduces it, or every one of
+# those repos gets a red workflow the moment it is synced.
+EMPTY="$TMP/empty"
+mkdir -p "$EMPTY"
+bash "$SYNC" "$EMPTY" >/dev/null 2>&1
+if empty_out="$(bash "$EMPTY/.claude/skills/evals/run-evals.sh" 2>&1)"; then
+  ok sync-empty-repo-evals-pass "the laid-down eval passes on a repo with no skills"
+else
+  bad sync-empty-repo-evals-pass "a skill-less repo fails its own eval: $empty_out"
 fi
 
 printf '\n%d behavioural check(s) failed\n' "$fails"

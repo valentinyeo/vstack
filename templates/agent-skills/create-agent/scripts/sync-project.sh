@@ -123,8 +123,9 @@ render_index() {
     rows="$rows| $name | describe when this skill fires | .claude/skills/$name/SKILL.md |
 "
   done
-  [ -n "$rows" ] || rows="| | | |
-"
+  # A repo with no skills yet gets a header-only table. An empty placeholder row
+  # would be a row naming no path, which the laid-down eval reads as a broken
+  # row rather than as an empty pack.
   # A literal placeholder line replaced by the rows; printf %s keeps the rows'
   # own newlines intact.
   awk -v rows="$rows" '{ if ($0 == "__SKILL_ROWS__") printf "%s", rows; else print }' \

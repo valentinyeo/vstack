@@ -74,7 +74,16 @@ while IFS= read -r line; do
     fi
   fi
 done < "$INDEX"
-if [ "$a_count" -eq 0 ]; then
+# A repo whose pack is still empty has nothing to index, and an empty table is
+# the honest answer. Zero rows is only wrong when skills exist on disk: that
+# means the table went missing or stopped being parsed.
+skills_on_disk=0
+for _d in "$SKILLS_DIR"/*/; do
+  [ -f "$_d/SKILL.md" ] || continue
+  skills_on_disk=1
+  break
+done
+if [ "$a_count" -eq 0 ] && [ "$skills_on_disk" -eq 1 ]; then
   echo "FAIL A: no rows found in INDEX.md's Name/Trigger/Path table"
   a_fail=1
 fi
@@ -161,6 +170,9 @@ else
               } | sed -E 's/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//' | sed '/^$/d')"
   while IFS= read -r section; do
     [ -z "$section" ] && continue
+    # A shell variable stands in for the column name at that call site; only the
+    # runtime value is a real section, and this check cannot see it.
+    case "$section" in *'$'*|*'{{'*) continue ;; esac
     d_count=$((d_count + 1))
     if ! printf '%s\n' "$columns" | grep -qF "$section"; then
       echo "FAIL D: skill names board section '$section', not a column in ${BOARD#"$REPO_ROOT"/}"

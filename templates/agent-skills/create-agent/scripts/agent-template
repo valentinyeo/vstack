@@ -237,13 +237,14 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
     echo "  WARNING: no sync-project.sh found; skipped" >&2
   else
     synced_any=no
+    synced_repos=""
     for conf in $(core_conf_dirs | while IFS= read -r d; do ls -1 "$d"/*.conf 2>/dev/null; done); do
       [ -f "$conf" ] || continue
       repo="$(sed -n 's/^AGENT_REPO="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$conf" | tail -n1)"
       [ -n "$repo" ] || continue
       [ -d "$repo" ] || continue
       case " $synced_repos " in *" $repo "*) continue ;; esac
-      synced_repos="${synced_repos:-} $repo"
+      synced_repos="$synced_repos $repo"
       synced_any=yes
       if [ "$DRY_RUN" = "yes" ]; then
         bash "$SYNC_SH" "$repo" --dry-run 2>&1 | sed 's/^/  /' || true
