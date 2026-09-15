@@ -31,3 +31,7 @@ Loading every skill for every task defeats the purpose: the agent is back to rea
 ## When there's no matching skill
 
 The agent should say so and stop, rather than guess. See `AGENT-PROMPT.md` for the exact mission text that makes this the default behavior.
+
+## The runnable version of this template
+
+`create-agent/` turns the idea above into a bot that actually polls a board, picks up work and runs a model against it. See `create-agent/SKILL.md` for how it works and its changelog, and `create-agent/MAINTAINER.md` for how to check on one that is already running.
