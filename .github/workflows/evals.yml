@@ -1,0 +1,24 @@
+name: evals
+
+# Every correction anyone has made to the agent template is a line in
+# evals/cases.jsonl. This replays all of them on every pull request, so a
+# mistake somebody already paid for cannot come back unnoticed.
+#
+# No secrets, no network: the checks are pure text predicates over the stored
+# cases, and the predicates are an allowlist inside run-evals.sh.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  run-evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replay every correction
+        run: bash templates/agent-skills/create-agent/evals/run-evals.sh
