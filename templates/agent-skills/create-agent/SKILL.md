@@ -271,6 +271,7 @@ it never deletes or rewrites an existing case.
 | `SKILLS_INDEX` | the indexes the agent reads first, comma separated, **company pack first, bot pack last** |
 | `MODEL_CLI` | command template, default `claude -p --model sonnet` |
 | `MAX_CONCURRENT_RUNS` | runs started per tick, default 1 |
+| `CHAT` | `on` to answer through the host chat daemon, default `on` for non-CLI board agents |
 | `CLAIM_UNASSIGNED` | `yes` to also take tickets nobody is assigned to, default `no` |
 | `EXCLUDE_LABELS` | labels that make a ticket off limits, comma separated |
 | `WORKDIR_MODE` | `repo` (default) runs in `AGENT_REPO`; `per-run` gives each ticket its own checkout |
