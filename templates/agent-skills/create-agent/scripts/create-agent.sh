@@ -129,6 +129,15 @@ if [ -z "$SKILLS_INDEX" ]; then
 fi
 core_require_abs "$SKILLS_INDEX" "--skills-index"
 [ -f "$SKILLS_INDEX" ] || warn "$SKILLS_INDEX does not exist yet: create it before the first run"
+if [ -f "$SKILLS_INDEX" ]; then
+  DOMAIN_WORDS="$(printf '%s' "$SLUG" | tr '-' '\n' | awk 'length($0) > 2 && $0 !~ /^(agent|assistant|bot|claude|cli|codex|cursor|dev|qa|worker)$/')"
+  if [ -n "$DOMAIN_WORDS" ]; then
+    DOMAIN_PATTERN="$(printf '%s\n' "$DOMAIN_WORDS" | paste -sd '|' -)"
+    if ! grep -Eiq "$DOMAIN_PATTERN" "$SKILLS_INDEX"; then
+      warn "$SKILLS_INDEX has no match for domain words: $(printf '%s' "$DOMAIN_WORDS" | paste -sd ',' -): create the domain skill before running the chat test"
+    fi
+  fi
+fi
 
 # ---------- wiring gate ----------
 if [ "$WIRING" = "fleet" ] && ! adapter_supports_fleet_wiring; then

@@ -220,6 +220,21 @@ one-line wrapper that reads the token file at call time.
 - fleet wiring only where the adapter confirmed a runtime; otherwise poll
 - `evals/run-evals.sh` passes, and the agent knows to run `agent-template feedback`
 
+## What Anthropic's agent guidance means here
+
+- Every domain bot should ship with a fixture test that its skill runs
+  first, before it touches anything real.
+- Its operating loop should be a numbered workflow with checkpoints, not
+  free-form work.
+- Its skill should have an explicit "ask the human only on these" list.
+- Chat replies should report concrete evidence (fixture output, source
+  links) instead of bare assertions.
+
+## Known issues
+
+- None tracked right now. A board layer's own known issues belong in that
+  adapter's part of this file, not here.
+
 ## Reference
 
 - `install.sh` in this folder : puts the skill and the runner on a machine
