@@ -76,7 +76,7 @@ run_poll() {
   local state="$1" capture="$2"; shift 2
   env HOME="$TMP/home" AGENT_CONFIG_DIR="$TMP/home/.config/agents" \
     XDG_STATE_HOME="$state" COMPANY_SKILLS_DIR="$TMP/company" \
-    MODEL_POLICY_CODEX_BIN=hax BOARD_JSON="$TMP/board.json" \
+    MODEL_POLICY_CODEX_BIN_OVERRIDE=hax BOARD_JSON="$TMP/board.json" \
     MODEL_CAPTURE="$capture" PATH="$TMP/bin:$PATH" \
     "$ROOT/scripts/agent-board-poll" "$@" test
 }

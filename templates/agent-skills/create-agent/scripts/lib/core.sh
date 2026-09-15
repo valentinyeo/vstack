@@ -161,6 +161,7 @@ MODEL_POLICY_FILE="${MODEL_POLICY_FILE:-$CORE_ROOT/core/model-policy.conf}"
   "install the complete create-agent template, including core/model-policy.conf"
 # shellcheck disable=SC1090
 . "$MODEL_POLICY_FILE"
+[ -z "${MODEL_POLICY_CODEX_BIN_OVERRIDE:-}" ] || MODEL_POLICY_CODEX_BIN="$MODEL_POLICY_CODEX_BIN_OVERRIDE"
 
 core_model_provider() {
   local argv=()
