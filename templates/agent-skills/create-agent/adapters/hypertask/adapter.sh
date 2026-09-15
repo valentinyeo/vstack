@@ -22,10 +22,15 @@ adapter_require_tools() {
   command -v python3 >/dev/null 2>&1 || die "python3 is not on PATH" "install python3"
 }
 
-# Fleet wiring means a long-lived worker runtime with its own systemd template
-# already exists on this machine. Most machines do not have it.
+# Fleet wiring means a long-lived worker runtime is actually running here, not
+# merely that a unit file was copied in at some point. A machine can have the
+# template and the worker script and still have no router, no webhook receiver
+# and nothing running, which is exactly the dead end this check exists to stop.
+# The proof is a live worker instance.
 adapter_supports_fleet_wiring() {
-  systemctl --user cat 'hypertask-agent-worker@.service' >/dev/null 2>&1
+  systemctl --user cat 'hypertask-agent-worker@.service' >/dev/null 2>&1 || return 1
+  [ -n "$(systemctl --user list-units 'hypertask-agent-worker@*.service' \
+            --state=active --no-legend --plain 2>/dev/null)" ]
 }
 
 # ---------- REST base ----------
