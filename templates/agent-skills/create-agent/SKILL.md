@@ -83,6 +83,20 @@ poll mode instead of dead-ending.
 A chat page is the one capability poll mode does not have, which is why the
 question defaults to no.
 
+## Where the agent runs
+
+Put this agent on a plain Linux host with systemd: a laptop, a VPS, a
+container. It needs a shell, a git checkout on disk, a model CLI it can spawn
+as a child process (claude, cursor-agent, codex), a token file at 0600, and a
+poll tick that runs for minutes.
+
+This agent probably should not live on Cloudflare Workers or Pages Functions:
+no shell, no subprocess, no disk, no git, CPU time capped per request, cron
+capped at minutes, and secrets in a dashboard instead of a file. We tried a
+docs agent as a Worker and retired it in September 2026. Cloudflare still
+suits the thin parts: a webhook relay to the host, a public intake endpoint, a
+status page. The agent itself stays on the host.
+
 ## Shape of the code
 
 ```
