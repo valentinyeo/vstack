@@ -226,10 +226,36 @@ board.yml
 # has to exist before it is rendered.
 mkdir -p "$TARGET/.claude/skills"
 
+# A workflow the template lays down declares a check by name. A repo that
+# already declares a check with that name, from a different file, would end up
+# with two checks answering to one name: branch protection and any automerge
+# gate then watch whichever one GitHub reported last. So before writing a
+# workflow, look for its job name in the workflows the repo already has, and
+# skip it if somebody got there first.
+check_name_taken() { # check_name_taken <job name> <this workflow's filename>
+  local job="$1" self="$2" f
+  for f in "$TARGET"/.github/workflows/*.yml "$TARGET"/.github/workflows/*.yaml; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$f")" = "$self" ] && continue
+    grep -qE "^[[:space:]]{2}$job:[[:space:]]*$" "$f" && return 0
+  done
+  return 1
+}
+
 for rel in $FILES; do
   [ -n "$rel" ] || continue
   [ -f "$TEMPLATE_DIR/$rel" ] || die "template is missing $rel" \
     "reinstall the create-agent template"
+  case "$rel" in
+    .github/workflows/*.yml)
+      job="$(basename "$rel" .yml)"
+      if [ ! -f "$TARGET/$rel" ] && check_name_taken "$job" "$(basename "$rel")"; then
+        kept=$((kept + 1)); report_kept="$report_kept
+    kept  $rel (this repo already declares a '$job' check elsewhere)"
+        continue
+      fi
+      ;;
+  esac
   sync_one "$rel"
 done
 
