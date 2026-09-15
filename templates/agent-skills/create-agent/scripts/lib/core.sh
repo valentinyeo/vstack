@@ -154,6 +154,104 @@ core_read_conf() {
   . "$path"
 }
 
+# ---------- model policy ----------
+# Cursor spend is reserved for Cursor's own model. Claude models run only
+# through the Claude Code subscription. Keep selection here so a conf, triage
+# route and per-ticket override all pass through the same allow-list.
+core_model_provider() {
+  local argv=()
+  read -r -a argv <<< "$1"
+  case "$(basename "${argv[0]:-}")" in
+    cursor-agent) printf 'cursor-agent' ;;
+    claude) printf 'claude' ;;
+    *) printf '' ;;
+  esac
+}
+
+core_model_from_cli() {
+  local argv=() i
+  read -r -a argv <<< "$1"
+  for i in "${!argv[@]}"; do
+    case "${argv[$i]}" in
+      --model) printf '%s' "${argv[$((i + 1))]:-}"; return 0 ;;
+      --model=*) printf '%s' "${argv[$i]#--model=}"; return 0 ;;
+    esac
+  done
+  printf ''
+}
+
+core_model_count() {
+  local argv=() i count=0
+  read -r -a argv <<< "$1"
+  for i in "${!argv[@]}"; do
+    case "${argv[$i]}" in --model|--model=*) count=$((count + 1)) ;; esac
+  done
+  printf '%s' "$count"
+}
+
+core_model_allowed() {
+  case "$1:$2" in
+    cursor-agent:cursor-grok-4.6-high-fast|claude:opus|claude:sonnet|claude:haiku) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+core_model_default() {
+  case "$1" in
+    cursor-agent) printf 'cursor-grok-4.6-high-fast' ;;
+    claude) printf 'sonnet' ;;
+    *) printf '' ;;
+  esac
+}
+
+core_model_cli() {
+  case "$1" in
+    cursor-agent)
+      printf 'cursor-agent -p --output-format text --model %s -f --trust' "$2"
+      ;;
+    claude)
+      printf 'claude -p --model %s --effort high' "$2"
+      ;;
+  esac
+}
+
+# core_model_resolve <conf-cli> <provider:model|bare-model|empty> <source>
+# Sets CORE_MODEL_{CLI,PROVIDER,MODEL,NOTICE}. An invalid selection never reaches
+# an executable: it leaves the run on the validated model from the conf.
+core_model_resolve() {
+  local conf_cli="$1" selection="$2" source="$3"
+  local conf_provider conf_model provider model fallback_model
+  CORE_MODEL_CLI="$conf_cli"
+  CORE_MODEL_PROVIDER="$(core_model_provider "$conf_cli")"
+  CORE_MODEL_MODEL="$(core_model_from_cli "$conf_cli")"
+  CORE_MODEL_NOTICE=""
+
+  conf_provider="$CORE_MODEL_PROVIDER"
+  conf_model="$CORE_MODEL_MODEL"
+  if [ -n "$conf_provider" ] && { [ "$(core_model_count "$conf_cli")" -ne 1 ] \
+       || ! core_model_allowed "$conf_provider" "$conf_model"; }; then
+    fallback_model="$(core_model_default "$conf_provider")"
+    CORE_MODEL_NOTICE="model policy rejected '$conf_provider:${conf_model:-<empty>}' from $source; Cursor spends only on Cursor models; Claude only via the Claude Code subscription. Falling back to '$conf_provider:$fallback_model'."
+    CORE_MODEL_CLI="$(core_model_cli "$conf_provider" "$fallback_model")"
+    CORE_MODEL_MODEL="$fallback_model"
+    conf_model="$fallback_model"
+  fi
+
+  [ -n "$selection" ] || return 0
+  case "$selection" in
+    *:*) provider="${selection%%:*}"; model="${selection#*:}" ;;
+    *) provider="$conf_provider"; model="$selection" ;;
+  esac
+  if [ -z "$provider" ] || ! core_model_allowed "$provider" "$model"; then
+    CORE_MODEL_NOTICE="model policy rejected '${provider:-unknown}:${model:-<empty>}' from $source; Cursor spends only on Cursor models; Claude only via the Claude Code subscription. Falling back to '${conf_provider:-the conf}:${conf_model:-default}'."
+    return 0
+  fi
+
+  CORE_MODEL_PROVIDER="$provider"
+  CORE_MODEL_MODEL="$model"
+  CORE_MODEL_CLI="$(core_model_cli "$provider" "$model")"
+}
+
 # ---------- secrets ----------
 # core_save_secret <path> <value-on-stdin>
 # Writes 0600, verifies it landed, never echoes the value.

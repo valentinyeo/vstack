@@ -33,6 +33,20 @@ Agent Chat now works for poll-wired agents on hosts with no public inbound port.
   error reply, and two agents on one host answer independently.
 
 ACTION: after the app polling endpoint is live, run `agent-template update` on each bot host, send a human chat message, and quote the timestamped reply from `~/.local/state/agent-chat/<slug>.log`.
+
+- Core now enforces a provider model allow-list before launch. `cursor-agent`
+  may use only `cursor-grok-4.6-high-fast`; `claude` may use only `opus`,
+  `sonnet`, or `haiku`. A disallowed conf, triage route, or ticket override is
+  rejected with one error and falls back without ever launching that pair.
+- Hard triage switches providers to `claude:opus` with high effort in the same
+  worktree and with the same prompt, including for agents whose default is
+  Cursor. Ticket override files now hold `provider:model`; a legacy bare model
+  remains supported and is validated against the agent's conf provider.
+- The eval suite now runs the poller against a local fake board to prove the
+  hard-ticket provider switch, unsafe conf fallback, and rejected override log.
+- ACTION: update any outside writer of model override files to emit
+  `provider:model`, normally `claude:opus` for stronger work.
+
 ## 3.12.1 - 2026-09-16
 
 - The AGENTS.md the sync lays into a project repo, and the README the

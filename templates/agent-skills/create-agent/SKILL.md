@@ -255,6 +255,18 @@ request with auto-merge off. It may only touch `evals/cases.jsonl` and
 `evals/PENDING-FIXES.md`: never `install.sh`, never an adapter's auth code, and
 it never deletes or rewrites an existing case.
 
+## Model policy
+
+Cursor usage is only ever spent on Cursor's own models. `cursor-agent` may run
+only `cursor-grok-4.6-high-fast`, never Composer, Auto, or a Claude model id.
+Claude models are used only through the Claude Code subscription: provider
+`claude`, model `opus`, `sonnet`, or `haiku`.
+
+Hard work changes provider to `claude:opus` with high effort in the same
+worktree and with the same prompt, even when the agent normally uses Cursor.
+Core validates the conf, triage route, and ticket override before launch. A
+disallowed pair prints one error and falls back instead of ever running it.
+
 ## The conf
 
 `<config dir>/<slug>.conf`, 0600. Core keys, no tracker prefixes:
@@ -281,7 +293,7 @@ it never deletes or rewrites an existing case.
 | `PROMPT_FILE` | a prompt of this agent's own, with `{{REF}}`, `{{URL}}`, `{{TITLE}}`, `{{DESCRIPTION}}`, `{{COMMENT}}`, `{{AGENT_NAME}}`, `{{BOARD_CLI}}`, `{{SKILLS_INDEX}}`, `{{BOARD}}` |
 | `PR_REPO` | **required.** the repository whose pull requests say whether a ticket is finished; `agent-board-poll` refuses to tick without it. Set it with `create-agent.sh --resume --pr-repo <org/name>` |
 | `TRIAGE` | `yes` to score a ticket before pickup; defaults to `yes` for `AGENT_KIND=dev` and `no` for everything else |
-| `TRIAGE_HARD_MODEL` | the model a `hard` ticket moves to; defaults to `claude-opus-5-thinking-high` for a `cursor-agent` CLI and `opus` for anything else |
+| `TRIAGE_HARD_OVERRIDE` | provider and model for a `hard` ticket; defaults to `claude:opus` and runs with high effort. The old `TRIAGE_HARD_MODEL` key is still read and validated as a bare model on the conf provider |
 | `TRIAGE_MODEL_CLI` | the cheap model that breaks a tie the rules could not, default `claude -p --model haiku` |
 | `ADVISOR_MAX` | `agent-advisor` calls allowed per run, default 2 |
 | `ADVISOR_CLI` | the model `agent-advisor` asks, default `claude -p --model opus` |
@@ -343,9 +355,9 @@ pack's `supervise-board/scripts/board_config.py`.
 `BOARD_ID` takes more than one board, comma separated. `WATCH_SECTIONS` takes
 `*` for every column, which is what an agent answering @mentions needs.
 
-Override `MODEL_CLI` to change model or vendor, for example `cursor-agent -p`.
-A headless model CLI usually needs its own permission flags; put them in this
-value, because the runner passes the template through untouched.
+Set `MODEL_CLI` to a complete allowed command, including the model and any
+headless permission flags. The runner preserves a valid conf command, but every
+provider/model selection still has to pass the model policy above.
 
 ## Tokens
 

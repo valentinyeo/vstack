@@ -72,6 +72,16 @@ done
 [ -n "${PR_REPO:-}" ] || die \
   "PR_REPO is not set: every agent needs a repo, run create-agent --repo" \
   "run create-agent.sh --resume --pr-repo <org/name> for this agent, or add PR_REPO= to $CONF by hand"
+# Validate the conf before any process can inherit it. A bad provider/model pair
+# is loud, but safe: this tick uses that provider's policy default instead.
+core_model_resolve "$MODEL_CLI" "" "conf $CONF"
+MODEL_CLI="$CORE_MODEL_CLI"
+CONF_MODEL_PROVIDER="$CORE_MODEL_PROVIDER"
+CONF_MODEL_MODEL="$CORE_MODEL_MODEL"
+MODEL_POLICY_CONF_NOTICE="$CORE_MODEL_NOTICE"
+if [ -n "$MODEL_POLICY_CONF_NOTICE" ]; then
+  printf 'ERROR: %s\n' "$MODEL_POLICY_CONF_NOTICE" >&2
+fi
 MAX_CONCURRENT_RUNS="${MAX_CONCURRENT_RUNS:-1}"
 # An agent may also take tickets nobody has claimed, which is how a board column
 # becomes a queue without anyone assigning by hand. Off unless the conf says so,
@@ -103,20 +113,36 @@ case "$AGENT_KIND" in
   *)   TRIAGE_DEFAULT="no" ;;
 esac
 TRIAGE="${TRIAGE:-$TRIAGE_DEFAULT}"
-# The model a hard ticket is moved to. cursor-agent and claude name the same
-# model differently, so the default follows whichever CLI this agent runs.
-if [ -z "${TRIAGE_HARD_MODEL:-}" ]; then
-  case "$MODEL_CLI" in
-    cursor-agent*) TRIAGE_HARD_MODEL="claude-opus-5-thinking-high" ;;
-    *)             TRIAGE_HARD_MODEL="opus" ;;
-  esac
+# Hard work switches provider, not just model: Opus runs through the Claude Code
+# subscription even when this agent normally spends Cursor usage. The old key
+# remains readable, but its bare value is checked against the conf provider.
+TRIAGE_HARD_OVERRIDE="${TRIAGE_HARD_OVERRIDE:-${TRIAGE_HARD_MODEL:-claude:opus}}"
+core_model_resolve "$MODEL_CLI" "$TRIAGE_HARD_OVERRIDE" "triage hard route"
+TRIAGE_HARD_CLI="$CORE_MODEL_CLI"
+TRIAGE_HARD_PROVIDER="$CORE_MODEL_PROVIDER"
+TRIAGE_HARD_MODEL="$CORE_MODEL_MODEL"
+MODEL_POLICY_TRIAGE_NOTICE="$CORE_MODEL_NOTICE"
+if [ -n "$MODEL_POLICY_TRIAGE_NOTICE" ]; then
+  printf 'ERROR: %s\n' "$MODEL_POLICY_TRIAGE_NOTICE" >&2
 fi
 # The cheap model that breaks a tie the rules could not. Never the good one:
 # this call decides a label, not a fix.
 TRIAGE_MODEL_CLI="${TRIAGE_MODEL_CLI:-claude -p --model haiku}"
+core_model_resolve "$TRIAGE_MODEL_CLI" "" "TRIAGE_MODEL_CLI in conf $CONF"
+TRIAGE_MODEL_CLI="$CORE_MODEL_CLI"
+MODEL_POLICY_SCORER_NOTICE="$CORE_MODEL_NOTICE"
+if [ -n "$MODEL_POLICY_SCORER_NOTICE" ]; then
+  printf 'ERROR: %s\n' "$MODEL_POLICY_SCORER_NOTICE" >&2
+fi
 # Two second opinions per run, through agent-advisor.
 ADVISOR_MAX="${ADVISOR_MAX:-2}"
 ADVISOR_CLI="${ADVISOR_CLI:-claude -p --model opus}"
+core_model_resolve "$ADVISOR_CLI" "" "ADVISOR_CLI in conf $CONF"
+ADVISOR_CLI="$CORE_MODEL_CLI"
+MODEL_POLICY_ADVISOR_NOTICE="$CORE_MODEL_NOTICE"
+if [ -n "$MODEL_POLICY_ADVISOR_NOTICE" ]; then
+  printf 'ERROR: %s\n' "$MODEL_POLICY_ADVISOR_NOTICE" >&2
+fi
 # ---------- which skills this run reads (3.11.0) ----------
 # Two of the three sources are found, not configured: the company pack (plugin,
 # or the clone) and the .claude/skills of the repo this agent works in.
@@ -191,10 +217,9 @@ ATTEMPTS="$STATE_DIR/$SLUG.attempts"
 # ticket, holding a fingerprint of the last failure written on it.
 LASTFAIL="$STATE_DIR/$SLUG.lastfail"
 # Per-ticket model overrides: one file per ticket, named for it, holding
-# "<cli> model <name>". Two things write one. The supervisor does, when a
-# ticket has failed three times. Triage does, when it scores a ticket hard
-# before anyone has started it. Triage never overwrites a file that is already
-# there: the supervisor has seen three real failures and this has seen a title.
+# "provider:model". A legacy bare model means the agent's conf provider. The
+# supervisor writes one after three failures; triage writes claude:opus when it
+# scores a ticket hard.
 MODEL_OVERRIDE_DIR="${MODEL_OVERRIDE_DIR:-$HOME/.local/state/agent-board-poll/model-override}"
 # Every score this runner has given, with the reason, one JSON object per line.
 # A triage rule nobody can audit is a rule nobody will trust the first time it
@@ -242,6 +267,12 @@ log() {
   printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG"
   if [ "$DRY_RUN" = "yes" ]; then printf '%s\n' "$*"; fi
 }
+for notice in "$MODEL_POLICY_CONF_NOTICE" "$MODEL_POLICY_TRIAGE_NOTICE" \
+              "$MODEL_POLICY_SCORER_NOTICE" "$MODEL_POLICY_ADVISOR_NOTICE"; do
+  if [ -n "$notice" ]; then
+    printf '%s ERROR: %s\n' "$(date -Is)" "$notice" >> "$LOG"
+  fi
+done
 
 # push_skill_commits <ref>
 # The mission text tells an agent to fix a skill in the same run that got
@@ -670,7 +701,8 @@ if [ "$DRY_RUN" = "yes" ]; then
       IFS='|' read -r triage_this triage_origin triage_reason <<< "$triage_verdict"
       echo "    triage: $triage_this ($triage_origin) - $triage_reason"
       if [ "$triage_this" = "hard" ]; then
-        echo "    would run on $TRIAGE_HARD_MODEL and be told to post a numbered plan first"
+        hard_effort=""; [ "$TRIAGE_HARD_PROVIDER" = "claude" ] && hard_effort=" (effort high)"
+        echo "    would run on provider $TRIAGE_HARD_PROVIDER, model $TRIAGE_HARD_MODEL${hard_effort} and be told to post a numbered plan first"
       else
         echo "    would run on the default model, no plan block"
       fi
@@ -789,13 +821,8 @@ be true for a different customer? Yes is a rule, no is a fact."
   # a human can disagree with before the code exists.
   if [ "$TRIAGE_THIS" = "hard" ]; then
     mkdir -p "$MODEL_OVERRIDE_DIR"
-    read -r -a TRIAGE_ARGV <<< "$MODEL_CLI"
-    if [ -f "$MODEL_OVERRIDE_DIR/$ref" ]; then
-      log "triage $ref: hard, but an override file is already there, leaving it alone"
-    else
-      printf '%s model %s\n' "${TRIAGE_ARGV[0]}" "$TRIAGE_HARD_MODEL" > "$MODEL_OVERRIDE_DIR/$ref"
-      log "triage $ref: hard, running on $TRIAGE_HARD_MODEL"
-    fi
+    printf '%s:%s\n' "$TRIAGE_HARD_PROVIDER" "$TRIAGE_HARD_MODEL" > "$MODEL_OVERRIDE_DIR/$ref"
+    log "triage $ref: hard, running on provider $TRIAGE_HARD_PROVIDER, model $TRIAGE_HARD_MODEL"
     PROMPT="This ticket is scored HARD. Before you change any code, post your
 plan as your first comment on $ref: a numbered list, exactly three points.
 
@@ -839,21 +866,26 @@ $PROMPT"
   # One short-lived process per ticket. Nothing survives it except the board,
   # the repo, and this log. The agent's token is never in the prompt or the
   # command line: the board CLI wrapper reads it from its own 0600 file.
-  read -r -a MODEL_ARGV <<< "$MODEL_CLI"
-  # A ticket that failed three times can ask for a stronger model than the
-  # agent's usual one. The supervisor writes "<cli> model <name>" to
-  # $MODEL_OVERRIDE_DIR/<ticket>; retrying the same ticket on the same model
-  # is how a ticket never gets finished.
+  # A provider-qualified override can move this ticket to another subscription.
+  # A legacy bare model stays on the conf provider and still passes its allow-list.
   override_file="$MODEL_OVERRIDE_DIR/$ref"
+  RUN_MODEL_CLI="$MODEL_CLI"
+  RUN_MODEL_PROVIDER="$CONF_MODEL_PROVIDER"
+  RUN_MODEL_MODEL="$CONF_MODEL_MODEL"
   if [ -f "$override_file" ]; then
-    read -r ov_cli _ ov_model < "$override_file" || true
-    if [ -n "${ov_model:-}" ] && [ "${MODEL_ARGV[0]}" = "${ov_cli:-}" ]; then
-      for i in "${!MODEL_ARGV[@]}"; do
-        [ "${MODEL_ARGV[$i]}" = "--model" ] && MODEL_ARGV[$((i + 1))]="$ov_model"
-      done
-      log "model override for $ref: $ov_model"
+    IFS= read -r model_override < "$override_file" || model_override=""
+    core_model_resolve "$MODEL_CLI" "$model_override" "override $override_file"
+    RUN_MODEL_CLI="$CORE_MODEL_CLI"
+    RUN_MODEL_PROVIDER="$CORE_MODEL_PROVIDER"
+    RUN_MODEL_MODEL="$CORE_MODEL_MODEL"
+    if [ -n "$CORE_MODEL_NOTICE" ]; then
+      printf 'ERROR: %s\n' "$CORE_MODEL_NOTICE" >&2
+      log "ERROR: $CORE_MODEL_NOTICE"
+    else
+      log "model override for $ref: provider $RUN_MODEL_PROVIDER, model $RUN_MODEL_MODEL"
     fi
   fi
+  read -r -a MODEL_ARGV <<< "$RUN_MODEL_CLI"
   # What agent-advisor needs to answer a question about this ticket, and the
   # counter that caps it at two. Written per run: the cap is a run's budget,
   # not a ticket's, so a ticket picked up again tomorrow starts fresh.

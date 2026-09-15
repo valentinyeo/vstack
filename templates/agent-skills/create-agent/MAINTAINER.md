@@ -32,6 +32,18 @@ until you do it.
 - **Weekly report** — `agent-template-weekly`, turns a week of corrections
   into checks; `agent-template report` prints this week's scorecard.
 
+## Model policy
+
+Cursor usage is only ever spent on Cursor's own models. On this template that
+means `cursor-agent` may run only `cursor-grok-4.6-high-fast`, never Composer,
+Auto, or a Claude model id. Claude models are used only through the Claude Code
+subscription: provider `claude`, model `opus`, `sonnet`, or `haiku`.
+
+Hard work changes provider to `claude:opus` with high effort in the same
+worktree and with the same prompt. A disallowed conf, triage route, or override
+prints one error, is logged, and falls back to the validated model in the
+agent's conf instead of launching the disallowed pair.
+
 ## Its own repo
 
 `PR_REPO` in the conf, required: every bot has one, no repo-less mode. The
@@ -101,9 +113,11 @@ Two packs, always in this order:
   the board refused the label, the score sits in
   `~/.local/state/agent-board-poll/triage/<REF>` and the log says so.
 - Per-ticket model overrides: `~/.local/state/agent-board-poll/model-override/<REF>`,
-  one line, `<cli> model <id>`. Written by triage for a hard ticket and by the
-  supervisor for a ticket that has failed three times. Delete the file to put
-  the ticket back on the agent's usual model.
+  one line, `provider:model` such as `claude:opus`. Written by triage for a hard
+  ticket and by the supervisor for a ticket that has failed three times. A
+  legacy bare model id stays on the agent's provider and is checked against
+  that provider's allow-list. Delete the file to put the ticket back on the
+  agent's usual model.
 
 ## Five daily checks
 

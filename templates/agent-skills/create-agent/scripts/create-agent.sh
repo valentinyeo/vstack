@@ -122,6 +122,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+core_model_resolve "$MODEL_CLI" "" "--model-cli"
+MODEL_CLI="$CORE_MODEL_CLI"
+if [ -n "$CORE_MODEL_NOTICE" ]; then
+  printf 'ERROR: %s\n' "$CORE_MODEL_NOTICE" >&2
+fi
+
 [ -n "$NAME" ] || die "--name is missing" "pass --name \"<Display Name>\""
 case "$KIND" in dev|qa|worker|cli) ;; *) die "--kind must be dev, qa, worker or cli, got '$KIND'" "pick one of those four" ;; esac
 case "$WIRING" in poll|fleet|none) ;; *) die "--wiring must be poll, fleet or none, got '$WIRING'" "use poll unless you know this machine runs a worker runtime" ;; esac
