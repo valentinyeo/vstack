@@ -97,6 +97,27 @@ docs agent as a Worker and retired it in September 2026. Cloudflare still
 suits the thin parts: a webhook relay to the host, a public intake endpoint, a
 status page. The agent itself stays on the host.
 
+## Every agent has a repo
+
+No repo-less mode: `PR_REPO` is required, and `agent-board-poll` refuses to
+tick without it. The repo is the agent's memory. Every output, report or
+script it produces is a pull request to it, never a hand edit and never a
+write to a chat log nobody else can read. Skills stay in the packs
+(`SKILLS_INDEX`); the repo is where the agent's own work accumulates.
+
+`create-agent.sh --pr-repo <org/name>` provisions it: creates a private
+GitHub repo from `repo-skeleton/` (README, `board.yml`, `scripts/`,
+`reports/`, `CHANGELOG.md`, a pr-title check) if it does not exist yet, and
+writes `PR_REPO` into the conf either way. Re-run with `--resume --pr-repo
+<org/name>` against an existing identity to add a repo it did not have
+before; nothing else about that identity changes.
+
+GitHub refuses `allow_auto_merge` on a private repo whose plan does not carry
+it, which is true for these repos. That refusal is expected, not an error:
+`create-agent.sh` logs "auto-merge unavailable on private repo, supervisor
+merges green PRs" and keeps going, and a run's own PR step does the same
+instead of failing over it.
+
 ## Shape of the code
 
 ```
@@ -116,6 +137,9 @@ adapters/
 evals/
   cases.jsonl                 one line per correction anyone has made
   run-evals.sh                replays them all; non-zero on any failure
+repo-skeleton/                 what create-agent.sh --pr-repo pushes to a new
+                               memory repo: README, board.yml, scripts/,
+                               reports/, CHANGELOG.md, a pr-title check
 ```
 
 Core names no tracker, no vendor and no machine. The runner sources
@@ -215,7 +239,7 @@ it never deletes or rewrites an existing case.
 | `RETRY_LIMIT` | goes a failing ticket gets per window, default 2 |
 | `RETRY_WINDOW_SECONDS` | length of that window, default 21600 (six hours) |
 | `PROMPT_FILE` | a prompt of this agent's own, with `{{REF}}`, `{{URL}}`, `{{TITLE}}`, `{{DESCRIPTION}}`, `{{COMMENT}}`, `{{AGENT_NAME}}`, `{{BOARD_CLI}}`, `{{SKILLS_INDEX}}`, `{{BOARD}}` |
-| `PR_REPO` | the repository whose pull requests say whether a ticket is finished |
+| `PR_REPO` | **required.** the repository whose pull requests say whether a ticket is finished; `agent-board-poll` refuses to tick without it. Set it with `create-agent.sh --resume --pr-repo <org/name>` |
 | `TRIAGE` | `yes` to score a ticket before pickup; defaults to `yes` for `AGENT_KIND=dev` and `no` for everything else |
 | `TRIAGE_HARD_MODEL` | the model a `hard` ticket moves to; defaults to `claude-opus-5-thinking-high` for a `cursor-agent` CLI and `opus` for anything else |
 | `TRIAGE_MODEL_CLI` | the cheap model that breaks a tie the rules could not, default `claude -p --model haiku` |

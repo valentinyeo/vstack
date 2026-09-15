@@ -669,12 +669,36 @@ if [ "$ADAPTER" != "hypertask" ] || [ -z "$BOARD_CLI" ] || [ ! -x "$BOARD_CLI" ]
   exit 0
 fi
 
+LABELS_USED="$LABELS"
 if OUT="$("$BOARD_CLI" task create \
       --project "$FEEDBACK_BOARD_ID" \
       --section "$FEEDBACK_BOARD_SECTION" \
       --title "$TITLE" \
       --description-file "$BODY_FILE" \
       --labels "$LABELS" 2>&1)"; then
+  STATUS=0
+else
+  STATUS=$?
+fi
+# A label this board's project does not carry (board 2462 had none of
+# $LABELS) used to fail the whole post, which fell through to the
+# print-and-paste fallback and looked like "feedback never posts". The
+# ticket itself matters more than the label: retry once with no label and
+# say so in one line, instead of losing the post over it.
+if [ "$STATUS" -ne 0 ] && printf '%s' "$OUT" | grep -qi "LabelNotFound"; then
+  echo "label(s) $LABELS_USED not on this board's project: filing without a label"
+  LABELS_USED=""
+  if OUT="$("$BOARD_CLI" task create \
+        --project "$FEEDBACK_BOARD_ID" \
+        --section "$FEEDBACK_BOARD_SECTION" \
+        --title "$TITLE" \
+        --description-file "$BODY_FILE" 2>&1)"; then
+    STATUS=0
+  else
+    STATUS=$?
+  fi
+fi
+if [ "$STATUS" -eq 0 ]; then
   FILED_LINE="$(printf '%s\n' "$OUT" | python3 -c '
 import json, re, sys
 raw = sys.stdin.read()

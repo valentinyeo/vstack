@@ -64,6 +64,14 @@ for key in AGENT_ID AGENT_NAME BOARD_ADAPTER BOARD_ID TOKEN_FILE WATCH_SECTIONS 
   [ -n "$value" ] || die "conf $CONF has no $key" \
     "add $key= to that file; see the key list in the create-agent skill"
 done
+# Every agent has a repo now: no repo-less mode. It is the agent's memory
+# (every output, report or script is a PR to it) and it is what lets
+# adapter_pick_rank ever call a ticket finished. A distinct message, not the
+# generic loop above, because a conf missing this key is not a template typo,
+# it is an agent nobody ran create-agent --repo for yet.
+[ -n "${PR_REPO:-}" ] || die \
+  "PR_REPO is not set: every agent needs a repo, run create-agent --repo" \
+  "run create-agent.sh --resume --pr-repo <org/name> for this agent, or add PR_REPO= to $CONF by hand"
 MAX_CONCURRENT_RUNS="${MAX_CONCURRENT_RUNS:-1}"
 # An agent may also take tickets nobody has claimed, which is how a board column
 # becomes a queue without anyone assigning by hand. Off unless the conf says so,

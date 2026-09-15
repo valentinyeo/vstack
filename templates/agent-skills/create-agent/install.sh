@@ -84,7 +84,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for item in SKILL.md MAINTAINER.md VERSION CHANGELOG.md scripts adapters evals; do
+for item in SKILL.md MAINTAINER.md VERSION CHANGELOG.md scripts adapters evals repo-skeleton; do
   [ -e "$SRC/$item" ] || fail "$SRC/$item is missing" \
     "run install.sh from inside the template folder in the repo"
 done
@@ -133,7 +133,7 @@ cp -a "$SRC/CHANGELOG.md" "$DEST/CHANGELOG.md"
 # far, not a real error. Stage the new tree next to DEST, then swap each
 # directory in with a rename: a path lookup during the swap either finds the
 # whole old directory or the whole new one, never a partially written file.
-for dir in scripts adapters evals; do
+for dir in scripts adapters evals repo-skeleton; do
   stage="$(mktemp -d "$DEST/.$dir.XXXXXX")"
   cp -a "$SRC/$dir/." "$stage/"
   if [ -d "$DEST/$dir" ]; then

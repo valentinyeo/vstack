@@ -5,6 +5,55 @@ cannot do for itself; `agent-template update` prints it and logs it once per
 version to `~/.local/state/agent-template/actions.log` for a maintainer
 session to read and act on.
 
+## 3.10.0 - 2026-09-15
+
+- Every agent needs a repo now: no repo-less mode. `PR_REPO` moves from
+  optional to required. `agent-board-poll` refuses to tick without it,
+  printing one line: `PR_REPO is not set: every agent needs a repo, run
+  create-agent --repo`. That line carries `ERROR:` (the `die` convention
+  every required-key check already uses), which is what the supervisor's
+  `runner-health` check greps for.
+- `adapter_pick_rank` dropped the "no PR_REPO configured for this agent"
+  branch added in 3.9.1: with `PR_REPO` required, that state can no longer
+  happen by the time this function runs, so it collapsed back to only
+  telling apart "gh answered" from "gh is missing or failed".
+- `create-agent.sh` gets `--pr-repo <org/name>`: creates that repo private
+  from the new `repo-skeleton/` (README, `board.yml`, `scripts/`, `reports/`,
+  `CHANGELOG.md`, a pr-title check) if it does not exist yet, and writes
+  `PR_REPO` into the conf either way. `--resume --pr-repo <org/name>` adds a
+  repo to an existing identity without touching anything else it has:
+  `core_write_missing_keys` only adds keys that are not already there, no
+  identity is recreated, and no token is rotated.
+- Enabling auto-merge on that new repo is best-effort, not fatal. GitHub
+  returns success on `gh repo edit --enable-auto-merge` even when it refuses
+  the setting (true for a private repo on a plan that does not carry
+  auto-merge), so `create-agent.sh` reads `allow_auto_merge` back from the
+  API instead of trusting that exit code, and logs "auto-merge unavailable
+  on private repo, supervisor merges green PRs" rather than failing the
+  provisioning run. The dev run prompt in the hypertask adapter carries the
+  same instruction: when `gh pr merge --auto` is refused, leave the PR open
+  and move the ticket to the review lane anyway; the supervisor's
+  pr-hygiene check merges a green PR that could not get auto-merge.
+- `agent-template feedback`: a label this board's project does not carry
+  (board 2462 had none of the ones this always sent) used to fail the whole
+  post and fall through to the print-and-paste fallback, which looked like
+  feedback never posts even though the board CLI and token were fine. It now
+  retries once with no label on a `LabelNotFound` error and says so in one
+  line, instead of losing the post over a label.
+- MAINTAINER.md and SKILL.md: "the repo is the bot's memory, every output,
+  report or script is a PR to it; skills stay in the packs", plus the
+  auto-merge caveat above.
+- No new eval cases: none of these changes reduce to the harness's text
+  predicates (`starts_with_block_tag`, `has_section`, `is_full_https_url`).
+  The `PR_REPO`-required and label-retry changes were verified by hand
+  (a throwaway private repo created end to end through `--pr-repo`, and a
+  fake board CLI that fails the first call with `LabelNotFound`).
+- ACTION: set `PR_REPO` for `product-bot`, `growth-bot`, `support-bot`,
+  `finance-bot` (`create-agent.sh --resume --pr-repo <org/name>`). Until then
+  those four will not tick after this version installs: `agent-board-poll`
+  now refuses outright instead of running with a misleading "gh is
+  unavailable" message.
+
 ## 3.9.1 - 2026-09-15
 
 - Fixed the misleading "gh is unavailable" message: a claimed, unfinished

@@ -32,6 +32,24 @@ until you do it.
 - **Weekly report** — `agent-template-weekly`, turns a week of corrections
   into checks; `agent-template report` prints this week's scorecard.
 
+## Its own repo
+
+`PR_REPO` in the conf, required: every bot has one, no repo-less mode. The
+repo is the bot's memory. Every output, report or script it produces is a
+pull request to it, never a hand edit and never a write to a chat log
+nobody else can read. Skills stay in the packs above; the repo is where this
+bot's own work accumulates. Created private with `create-agent.sh --pr-repo
+<org/name>` from `repo-skeleton/` in this template (README, `board.yml`,
+`scripts/`, `reports/`, `CHANGELOG.md`, a pr-title check). `agent-board-poll`
+refuses to tick without `PR_REPO`, one line: `PR_REPO is not set: every agent
+needs a repo, run create-agent --repo`.
+
+Auto-merge does not turn on for these repos: GitHub refuses
+`allow_auto_merge` on a private repo whose plan does not carry it. Expected,
+not broken. `create-agent.sh` logs it and moves on; a run leaves its PR open
+and moves the ticket to the review lane anyway, and the supervisor's
+pr-hygiene check merges a green PR that could not get auto-merge.
+
 ## What wakes it
 
 Assigned to it, @mentioned, or a human comment on a ticket it already owns
