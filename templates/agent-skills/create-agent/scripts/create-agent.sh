@@ -53,7 +53,7 @@ COMPANY_SKILLS_INDEX="${COMPANY_SKILLS_INDEX:-$HOME/projects/company-skills/INDE
 MISSION_FILE=""
 WIRING="poll"
 SECTIONS=""
-MODEL_CLI="claude -p --model sonnet"
+MODEL_CLI="cursor-agent -p --output-format text --model cursor-grok-4.6-high-fast -f --trust"
 MAX_CONCURRENT_RUNS="1"
 CHAT_PAGE="yes"
 ROLE="write"
@@ -83,7 +83,7 @@ Options:
   --mission-file PATH      plain-text mission, used verbatim
   --wiring poll|fleet|none how work reaches the agent               (default poll)
   --sections "A,B"         board columns the poll watches
-  --model-cli "CMD"        model command template  (default: claude -p --model sonnet)
+  --model-cli "CMD"        model command template  (default: cursor-agent with Grok 4.6 only)
   --max-concurrent N       runs started per tick                    (default 1)
   --chat-page yes|no       enable the host chat lane               (default yes)
   --role ROLE              identity role on the board               (default write)

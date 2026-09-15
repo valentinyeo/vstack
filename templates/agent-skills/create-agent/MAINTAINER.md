@@ -34,15 +34,21 @@ until you do it.
 
 ## Model policy
 
-Cursor usage is only ever spent on Cursor's own models. On this template that
-means `cursor-agent` may run only `cursor-grok-4.6-high-fast`, never Composer,
-Auto, or a Claude model id. Claude models are used only through the Claude Code
-subscription: provider `claude`, model `opus`, `sonnet`, or `haiku`.
+Cursor spends only on Grok. `cursor-agent` may run only
+`cursor-grok-4.6-high-fast`, never Claude ids, Auto, or Composer. Codex on the
+ChatGPT subscription is the first escalation. Claude is reserved for meta work
+and is the last machine rung.
 
-Hard work changes provider to `claude:opus` with high effort in the same
-worktree and with the same prompt. A disallowed conf, triage route, or override
-prints one error, is logged, and falls back to the validated model in the
-agent's conf instead of launching the disallowed pair.
+The shared ladder lives in `core/model-policy.conf`: the agent conf is the
+default; hard triage or three failed attempts uses
+`codex:gpt-5.6-sol:high`; research and `agent-advisor` use
+`codex:gpt-5.6-sol:xhigh`; two failed Codex attempts unlock
+`claude:opus:high`; after that the ticket returns to Valentin. The runner uses
+`hax` for Codex in the ticket worktree with the normal prompt and tools.
+
+Every provider has an allow-list. Invalid conf or override values print one
+error and fall back to the conf default. Research may write only `Retry with:
+codex:gpt-5.6-sol:high`, `Retry with: claude:opus:high`, or `Retry with: same`.
 
 ## Its own repo
 

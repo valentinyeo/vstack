@@ -257,15 +257,21 @@ it never deletes or rewrites an existing case.
 
 ## Model policy
 
-Cursor usage is only ever spent on Cursor's own models. `cursor-agent` may run
-only `cursor-grok-4.6-high-fast`, never Composer, Auto, or a Claude model id.
-Claude models are used only through the Claude Code subscription: provider
-`claude`, model `opus`, `sonnet`, or `haiku`.
+Cursor spends only on Grok. `cursor-agent` may run only
+`cursor-grok-4.6-high-fast`, never Claude ids, Auto, or Composer. Codex on the
+ChatGPT subscription is the first escalation. Claude is reserved for meta work
+and is the last machine rung.
 
-Hard work changes provider to `claude:opus` with high effort in the same
-worktree and with the same prompt, even when the agent normally uses Cursor.
-Core validates the conf, triage route, and ticket override before launch. A
-disallowed pair prints one error and falls back instead of ever running it.
+The shared ladder lives in `core/model-policy.conf`: the agent conf is the
+default; hard triage or three failed attempts uses
+`codex:gpt-5.6-sol:high`; research and `agent-advisor` use
+`codex:gpt-5.6-sol:xhigh`; two failed Codex attempts unlock
+`claude:opus:high`; after that the ticket returns to Valentin. The runner uses
+`hax` for Codex in the ticket worktree with the normal prompt and tools.
+
+Every provider has an allow-list. Invalid conf or override values print one
+error and fall back to the conf default. Research may write only `Retry with:
+codex:gpt-5.6-sol:high`, `Retry with: claude:opus:high`, or `Retry with: same`.
 
 ## The conf
 
@@ -293,10 +299,10 @@ disallowed pair prints one error and falls back instead of ever running it.
 | `PROMPT_FILE` | a prompt of this agent's own, with `{{REF}}`, `{{URL}}`, `{{TITLE}}`, `{{DESCRIPTION}}`, `{{COMMENT}}`, `{{AGENT_NAME}}`, `{{BOARD_CLI}}`, `{{SKILLS_INDEX}}`, `{{BOARD}}` |
 | `PR_REPO` | **required.** the repository whose pull requests say whether a ticket is finished; `agent-board-poll` refuses to tick without it. Set it with `create-agent.sh --resume --pr-repo <org/name>` |
 | `TRIAGE` | `yes` to score a ticket before pickup; defaults to `yes` for `AGENT_KIND=dev` and `no` for everything else |
-| `TRIAGE_HARD_OVERRIDE` | provider and model for a `hard` ticket; defaults to `claude:opus` and runs with high effort. The old `TRIAGE_HARD_MODEL` key is still read and validated as a bare model on the conf provider |
+| `TRIAGE_HARD_OVERRIDE` | hard-ticket route, default `codex:gpt-5.6-sol:high` from `core/model-policy.conf` |
 | `TRIAGE_MODEL_CLI` | the cheap model that breaks a tie the rules could not, default `claude -p --model haiku` |
 | `ADVISOR_MAX` | `agent-advisor` calls allowed per run, default 2 |
-| `ADVISOR_CLI` | the model `agent-advisor` asks, default `claude -p --model opus` |
+| `ADVISOR_OVERRIDE` | research route for `agent-advisor`, default `codex:gpt-5.6-sol:xhigh` from `core/model-policy.conf` |
 
 ## How hard is this ticket
 
