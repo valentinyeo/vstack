@@ -143,10 +143,11 @@ ATTEMPTS="$STATE_DIR/$SLUG.attempts"
 # The same failure posted on the same ticket twice is noise. One line per
 # ticket, holding a fingerprint of the last failure written on it.
 LASTFAIL="$STATE_DIR/$SLUG.lastfail"
-# Per-ticket model overrides, written by the supervisor when a ticket has
-# failed three times: one file per ticket, named for it, holding "<cli> model
-# <name>". Nothing here creates the directory; if it does not exist, no ticket
-# has one.
+# Per-ticket model overrides: one file per ticket, named for it, holding
+# "<cli> model <name>". Two things write one. The supervisor does, when a
+# ticket has failed three times. Triage does, when it scores a ticket hard
+# before anyone has started it. Triage never overwrites a file that is already
+# there: the supervisor has seen three real failures and this has seen a title.
 MODEL_OVERRIDE_DIR="${MODEL_OVERRIDE_DIR:-$HOME/.local/state/agent-board-poll/model-override}"
 # Every score this runner has given, with the reason, one JSON object per line.
 # A triage rule nobody can audit is a rule nobody will trust the first time it
@@ -282,9 +283,11 @@ sys.exit(1 if bad else 0)
 }
 
 # triage_score <ref> <task-id> <board> <title> <description> <labels-csv>
-# How hard this ticket is, printed as "<easy|hard> <reason>". A label already
-# on the ticket is the answer; a human who disagreed with a score fixes it by
-# changing the label, and nothing here argues with them.
+# How hard this ticket is, printed as "<easy|hard>|<known|new>|<reason>". The
+# middle field says whether the score already existed, so the caller never has
+# to read the wording of a reason to know whether to write it down. A label
+# already on the ticket is the answer: a human who disagreed with a score fixes
+# it by changing the label, and nothing here argues with them.
 #
 # Scoring only reads. The label write and the model override are separate, and
 # both are skipped during --dry-run, so the required dry-run check shows the
@@ -298,14 +301,14 @@ import os
 labels = {s.strip().casefold() for s in os.environ["LB"].split(",") if s.strip()}
 print("hard" if "hard" in labels else ("easy" if "easy" in labels else ""))')"
   if [ -n "$existing" ]; then
-    printf '%s %s\n' "$existing" "the ticket already carries the $existing label"
+    printf '%s|known|%s\n' "$existing" "the ticket already carries the $existing label"
     return 0
   fi
   # A score this runner wrote down when the board would not take the label.
   if [ -r "$TRIAGE_STATE_DIR/$ref" ]; then
     read -r existing < "$TRIAGE_STATE_DIR/$ref" || existing=""
     case "$existing" in
-      easy|hard) printf '%s %s\n' "$existing" "scored $existing earlier, held in $TRIAGE_STATE_DIR/$ref"; return 0 ;;
+      easy|hard) printf '%s|known|%s\n' "$existing" "scored earlier, held in $TRIAGE_STATE_DIR/$ref"; return 0 ;;
     esac
   fi
 
@@ -327,12 +330,12 @@ print(json.dumps({"ref": os.environ["REF"], "title": os.environ["TITLE"],
   verdict="$(printf '%s' "$input" | TRIAGE_MODEL_CLI="$TRIAGE_MODEL_CLI" \
                bash "$TRIAGE_SH" $rules_flag 2>>"$LOG")" || verdict=""
   if [ -z "$verdict" ]; then
-    printf 'easy the scorer did not answer, so this stays on the default model\n'
+    printf 'easy|new|the scorer did not answer, so this stays on the default model\n'
     return 0
   fi
   score="$(V="$verdict" python3 -c 'import json,os;print(json.loads(os.environ["V"])["score"])')"
   reason="$(V="$verdict" python3 -c 'import json,os;d=json.loads(os.environ["V"]);print("%s (%s)" % (d["reason"], d["by"]))')"
-  printf '%s %s\n' "$score" "$reason"
+  printf '%s|new|%s\n' "$score" "$reason"
 }
 
 # triage_record <ref> <task-id> <board> <score> <reason>
@@ -562,26 +565,35 @@ done <<< "$CANDIDATES"
 
 if [ "$DRY_RUN" = "yes" ]; then
   order="$(rank_order)"
+  shown=0
   for i in $order; do
     row="${E_ROW[$i]}"
     echo "would pick up $(row_field "$row" ref) (rank ${ELIGIBLE[$i]}): ${E_WHY[$i]}"
     echo "    $(row_field "$row" title)"
     echo "    $(row_field "$row" url)"
+    shown=$((shown + 1))
     # The score is shown here too, and only shown: no label is written, no
     # override file is dropped, and no model is called for it. A dry run that
     # quietly labelled the board would not be a dry run.
-    if [ "$TRIAGE" = "yes" ]; then
+    #
+    # Only for the tickets this tick would actually start. Scoring every
+    # candidate means a comments read and a gh query each, dozens of API calls
+    # for an answer about tickets this tick was never going to touch, and the
+    # board's host starts answering with a bot challenge.
+    if [ "$TRIAGE" = "yes" ] && [ "$shown" -le "$MAX_CONCURRENT_RUNS" ]; then
       row_board="$(row_field "$row" board)"; [ -n "$row_board" ] || row_board="${BOARD_ID%%,*}"
       triage_verdict="$(triage_score "$(row_field "$row" ref)" "$(row_field "$row" id)" \
         "$row_board" "$(row_field "$row" title)" "$(row_field "$row" description)" \
         "$(row_labels "$row")")"
-      triage_this="${triage_verdict%% *}"
-      echo "    triage: $triage_this, ${triage_verdict#* }"
+      IFS='|' read -r triage_this triage_origin triage_reason <<< "$triage_verdict"
+      echo "    triage: $triage_this ($triage_origin) - $triage_reason"
       if [ "$triage_this" = "hard" ]; then
         echo "    would run on $TRIAGE_HARD_MODEL and be told to post a numbered plan first"
       else
         echo "    would run on the default model, no plan block"
       fi
+    elif [ "$TRIAGE" = "yes" ]; then
+      echo "    not scored: this tick starts $MAX_CONCURRENT_RUNS ticket(s), and scoring costs a board read each"
     fi
   done
   echo "$picked ticket(s) would be picked up; nothing was started."
@@ -630,12 +642,10 @@ print(html.unescape(re.sub(r"<[^>]+>", " ", doc.get("html") or "")).strip()[:120
   if [ "$TRIAGE" = "yes" ]; then
     triage_verdict="$(triage_score "$ref" "$task_id" "$board" "$title" "$description" \
                         "$(row_labels "$row")")"
-    TRIAGE_THIS="${triage_verdict%% *}"
-    triage_reason="${triage_verdict#* }"
-    case "$triage_reason" in
-      "the ticket already carries"*|"scored "*) : ;;
-      *) triage_record "$ref" "$task_id" "$board" "$TRIAGE_THIS" "$triage_reason" ;;
-    esac
+    IFS='|' read -r TRIAGE_THIS triage_origin triage_reason <<< "$triage_verdict"
+    if [ "$triage_origin" = "new" ]; then
+      triage_record "$ref" "$task_id" "$board" "$TRIAGE_THIS" "$triage_reason"
+    fi
     log "triage $ref: $TRIAGE_THIS ($triage_reason)"
   fi
 
