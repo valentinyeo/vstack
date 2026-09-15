@@ -1,7 +1,7 @@
 ---
 name: create-agent
 description: Provision a skills-driven agent identity : a worker that reads a skills index before it does anything, optionally wired into a tracker board, or just pointed at a repo. Invoke via /create-agent. Dry-run by default; never creates or revokes a real identity without an explicit go-ahead.
-version: 3.0.0
+version: 3.1.0
 ---
 
 # /create-agent : provision an agent identity
@@ -86,14 +86,20 @@ question defaults to no.
 ## Shape of the code
 
 ```
+VERSION                       bumped on every pull request; reported by feedback
 core
   scripts/create-agent.sh     provisioning: identity, conf, wrapper, wiring
   scripts/agent-board-poll    one work tick: read, decide, spawn, log
+  scripts/agent-template      feedback: file a correction where it can be replayed
+  scripts/agent-template-weekly  turn a week of corrections into one pull request
   scripts/lib/core.sh         slug, conf files, secrets, adapter loading
 adapters/
   hypertask/adapter.sh        everything that talks to a Hypertask board
   linear/adapter.sh           stub: same function names, all refuse loudly
   none/adapter.sh             repo-only: reads return nothing, writes refuse
+evals/
+  cases.jsonl                 one line per correction anyone has made
+  run-evals.sh                replays them all; non-zero on any failure
 ```
 
 Core names no tracker, no vendor and no machine. The runner sources
@@ -128,6 +134,31 @@ concurrency guard is free and correct. A `Restart=always` loop would need its
 own sleep, its own crash handling and its own guard, and would hold a process
 open between ticks for no reason. The timer's schedule is also readable with
 `systemctl --user list-timers`, which a loop's internal sleep is not.
+
+## When a human corrects you
+
+When a human corrects your output, whether they edit your comment, fail your
+QA, reject your pull request or simply say that is wrong, stop and run
+`agent-template feedback --what "<one sentence>" --got <the bad output>
+--expected "<what should have happened>"` before you carry on with the work. A
+correction that lives only in a conversation is gone tomorrow; filed, it
+becomes a stored check that replays on every change to this template, so the
+next agent cannot make the same mistake. Set `FEEDBACK_OPT_OUT=yes` in the conf
+if an agent must never send one.
+
+## Evals
+
+`evals/cases.jsonl` holds one line per correction: the output that would have
+been right, and the name of the predicate that has to hold for it. `evals/run-evals.sh`
+replays every line and exits non-zero with the failing ids. The predicates are
+an allowlist inside that script, never shell from the case file, because the
+case file is appended to by an automated weekly run and executed in CI.
+
+`agent-template-weekly` reads the feedback board once a week, asks a model to
+judge each ticket, appends a case per accepted one, and opens a single pull
+request with auto-merge off. It may only touch `evals/cases.jsonl` and
+`evals/PENDING-FIXES.md`: never `install.sh`, never an adapter's auth code, and
+it never deletes or rewrites an existing case.
 
 ## The conf
 
@@ -187,9 +218,11 @@ one-line wrapper that reads the token file at call time.
   quote it
 - the timer is active, and the log shows a finished tick
 - fleet wiring only where the adapter confirmed a runtime; otherwise poll
+- `evals/run-evals.sh` passes, and the agent knows to run `agent-template feedback`
 
 ## Reference
 
 - `install.sh` in this folder : puts the skill and the runner on a machine
 - `scripts/create-agent.sh --help`, `agent-board-poll --help` : every flag
 - `scripts/lib/core.sh` : the adapter contract, as a function list
+- `agent-template feedback --help`, `evals/run-evals.sh --help` : the correction loop

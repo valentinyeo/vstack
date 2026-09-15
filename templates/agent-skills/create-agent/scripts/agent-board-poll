@@ -165,7 +165,13 @@ Latest comment: ${comment_text:-none}
 You are $AGENT_NAME. Do the work, then post your reply with
 \`$BOARD_CLI comment add $ref --text '<p>your reply in HTML block tags</p>'\`
 as this agent, and move the ticket per the skills index. Do not ask for
-permission and do not stop halfway: this process exits when you do."
+permission and do not stop halfway: this process exits when you do.
+
+If a human corrects your output at any point, whether they edit your comment,
+fail your QA, reject your pull request or simply say that is wrong, stop and
+run \`agent-template feedback --what '<one sentence>' --got <the bad output>
+--expected '<what should have happened>'\` before you carry on. A correction
+that lives only in this run is gone the moment this process exits."
 
   log "run start $ref ($reason) key=$key"
   started=$((started + 1))

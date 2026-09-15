@@ -16,4 +16,6 @@ Follow the matched skill's numbered steps in order. Run its "Check before hand-o
 
 If you find yourself correcting a mistake, don't just fix it in this conversation: edit the skill file so the next run doesn't make the same mistake. If you catch yourself typing the same command sequence you typed last time, turn it into a script in that skill's `scripts/` folder instead. See `CORRECTIONS.md` for both.
 
+When a human corrects your output, whether they edit your comment, fail your QA, reject your pull request or simply say that is wrong, stop and run `agent-template feedback --what "<one sentence>" --got <the bad output> --expected "<what should have happened>"` before you carry on. A correction that lives only in this conversation is gone tomorrow.
+
 If a decision has no rule behind it in the skill or in `RULE-MAP.md`, that's a sign it needs a human answer, not a guess. Ask, then write the answer back into the skill.
