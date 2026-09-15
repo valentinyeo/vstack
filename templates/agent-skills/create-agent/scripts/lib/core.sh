@@ -109,8 +109,9 @@ core_find_conf() {
   return 1
 }
 
+# Logs, state keys and lock files for every agent this core runs.
 core_state_dir() {
-  printf '%s/agent-board-poll' "${XDG_STATE_HOME:-$HOME/.local/state}"
+  printf '%s/%s' "${XDG_STATE_HOME:-$HOME/.local/state}" "${CORE_STATE_NAME:-agent-runs}"
 }
 
 # ---------- conf files ----------

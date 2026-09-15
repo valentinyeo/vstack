@@ -10,8 +10,9 @@
 # Usage:
 #   agent-board-poll [--once] [--dry-run] [-h|--help] <slug>
 #
-# One invocation is one tick. Repetition is the timer's job, not this script's.
-# --once is accepted so a hand-run reads the same as the unit that calls it.
+# One invocation is always one tick, with or without --once. There is no loop
+# mode: repetition is the timer's job. --once is accepted only so a hand-run
+# reads the same as the unit that calls it.
 #
 # Examples:
 #   agent-board-poll --once --dry-run fp-cro-bot   # what would it pick up?
@@ -31,12 +32,11 @@ usage() {
   sed -n '2,25p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
-ONCE="no"
 DRY_RUN="no"
 SLUG=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --once) ONCE="yes"; shift ;;
+    --once) shift ;;   # accepted for readability; every run is one tick
     --dry-run) DRY_RUN="yes"; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) die "unknown option $1" "run agent-board-poll --help for the accepted flags" ;;
@@ -70,6 +70,7 @@ core_require_abs "$TOKEN_FILE" "TOKEN_FILE"
 core_load_adapter "$BOARD_ADAPTER"
 adapter_require_tools
 
+CORE_STATE_NAME="agent-board-poll"
 STATE_DIR="$(core_state_dir)"
 mkdir -p "$STATE_DIR"
 LOG="$STATE_DIR/$SLUG.log"
