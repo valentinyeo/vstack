@@ -5,6 +5,65 @@ cannot do for itself; `agent-template update` prints it and logs it once per
 version to `~/.local/state/agent-template/actions.log` for a maintainer
 session to read and act on.
 
+## 3.11.0 - 2026-09-15
+
+Skills live where they are used, and the template keeps every project's layout
+the same.
+
+- **The company pack installs as a Claude Code plugin.** `install.sh` runs
+  `claude plugin marketplace add hypertask-ai/company-skills` and
+  `claude plugin install company-skills@company-skills`, falling back to
+  cloning the pack to `~/projects/company-skills` on a host where the plugin
+  cannot be installed. Which one this host resolved, and at what version, is
+  written to `~/.config/hypertask-agents/company-pack.version`, and
+  `agent-template update` prints it.
+- **The runner finds its skills instead of being told them.** It reads, in
+  order: the company pack, `.claude/skills/INDEX.md` inside the checkout the
+  run works in, and then anything extra the conf names. `SKILLS_INDEX` is now
+  optional and means "extra packs on top of those two"; a conf that still
+  lists the two found packs keeps working and simply names them twice.
+  `COMPANY_SKILLS_DIR` is exported, so a skill can name the pack root without
+  hard-coding a path that differs between a plugin host and a clone host.
+- **Both versions are logged at the start of every run**, on one line:
+  `skills: company company-skills <v> at <dir>; repo <v> at <dir>`. A bot
+  behaving oddly is usually a bot reading an old pack, and this is the line
+  that shows it.
+- **`create-agent.sh --sync-project <path-or-repo>`** lays the standard layout
+  into any project repo that is missing it: `.claude/skills/` (`INDEX.md`
+  seeded from the skills already there, `RULE-MAP.md`, `VERSION`,
+  `evals/run-evals.sh`), `AGENTS.md` with the shared conventions, `board.yml`,
+  the `pr-title` check, the `skills-evals` workflow, and a copy of
+  `.claude/hooks/board-write-guard.sh`. `--repo` runs it automatically. Given
+  `org/name` rather than a path it clones, syncs, and opens a pull request.
+- **It is idempotent and it never overwrites a project's edit.** Every file it
+  writes carries a header naming the template version and the sha256 of its own
+  body. A matching hash means template-owned and untouched, so it is rewritten.
+  A hash that no longer matches means the project edited it, so it is left
+  alone and named in the diff summary. No header at all means the project wrote
+  the file, so it is left alone too. `.claude/skills/VERSION` carries no header
+  and is written once, because the runner reads it with `head -n1` and the
+  version of a repo's own pack is the repo's to bump.
+- **`agent-template update` runs the sync on every checkout a conf names**, so
+  a repo that gained an agent, or a repo whose layout drifted, comes back into
+  line without anyone remembering. It writes files and reports what changed; it
+  does not commit or push, because a daily timer pushing to every repo it knows
+  about, unattended, is worse than leaving a clean diff behind.
+- `evals/sync-project.test.sh` adds seven behavioural checks the case file
+  cannot express: the first sync writes the layout, the index is seeded from
+  the skills already present, a script keeps its shebang on line 1, the
+  laid-down eval suite passes on the laid-down pack, the second sync rewrites
+  nothing, an edited file survives, and an unmarked file survives.
+- `MAINTAINER.md` and the create-agent skill both gain a "Where skills live"
+  section: project skills in `.claude/skills/` of the repo they serve, shared
+  skills as the company plugin, personal skills in `~/.claude/skills`.
+
+ACTION: run `agent-template update` on every bot host. It installs the company
+pack as a plugin and syncs the layout into each repo a conf names.
+
+ACTION: `SKILLS_INDEX` is now optional for dev-1, dev-2 and qa-1. Product
+skills are read from the checkout instead. Leave the key in place if you like;
+it is harmless, and it only names the same packs twice.
+
 ## 3.10.0 - 2026-09-15
 
 - Every agent needs a repo now: no repo-less mode. `PR_REPO` moves from

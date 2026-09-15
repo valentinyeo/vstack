@@ -43,6 +43,9 @@ SKILLS_REPO=""
 # private from the skeleton in ../repo-skeleton when it does not exist yet,
 # and always writes PR_REPO into the conf.
 PR_REPO=""
+# Checkouts to lay the standard agent layout into. --repo's checkout is added
+# to this list below, so an agent's own repo is always synced.
+SYNC_PROJECTS=""
 SKILLS_INDEX=""
 # The shared pack, cloned by install.sh. Override for a company that keeps
 # its own somewhere else, or point it at nothing to provision a single-pack bot.
@@ -71,6 +74,10 @@ Options:
   --repo PATH              absolute repo path the agent works in
   --pr-repo ORG/NAME       the agent's own memory repo on GitHub; created
                            private from the skeleton if it does not exist
+  --sync-project PATH      lay the standard agent layout into an existing
+                           checkout (.claude/skills/, AGENTS.md, board.yml,
+                           the evals and the pr-title check). Repeatable.
+                           Run automatically for --repo's checkout.
   --skills-repo PATH       folder holding INDEX.md
   --skills-index PATH      the index file itself, if it is not <skills-repo>/INDEX.md
   --mission-file PATH      plain-text mission, used verbatim
@@ -95,6 +102,7 @@ while [ $# -gt 0 ]; do
     --project|--board-id) BOARD_ID="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     --pr-repo) PR_REPO="$2"; shift 2 ;;
+    --sync-project) SYNC_PROJECTS="$SYNC_PROJECTS${SYNC_PROJECTS:+ }$2"; shift 2 ;;
     --skills-repo) SKILLS_REPO="$2"; shift 2 ;;
     # Repeatable, or one comma-separated list. Order matters: the shared
     # company pack first, this bot's own pack last.
@@ -356,6 +364,28 @@ PYEOF
     echo "    + create $PR_REPO (private, from repo-skeleton/) if it does not already exist"
     echo "    + gh repo edit $PR_REPO --enable-auto-merge (best effort, may be refused on a private repo)"
   fi
+fi
+
+# ---------- 2c. the standard layout in every project this agent touches ------
+# An agent reads .claude/skills/INDEX.md out of the checkout it is working in,
+# so a repo with no such file gives it nothing to follow. Lay the layout down
+# here rather than waiting for somebody to remember. Idempotent, and a file the
+# project has edited is never overwritten.
+[ -n "$REPO" ] && SYNC_PROJECTS="$SYNC_PROJECTS${SYNC_PROJECTS:+ }$REPO"
+if [ -n "$SYNC_PROJECTS" ]; then
+  step 2c "the standard agent layout in: $SYNC_PROJECTS"
+  SYNC_SH="$CORE_ROOT/scripts/sync-project.sh"
+  [ -x "$SYNC_SH" ] || die "no sync-project.sh at $SYNC_SH" \
+    "the create-agent template is missing scripts/sync-project.sh; reinstall the template"
+  for project in $SYNC_PROJECTS; do
+    if [ "$DRY_RUN" = "yes" ]; then
+      AGENT_SLUG="$SLUG" BOARD_ADAPTER="$BOARD" BOARD_ID="$BOARD_ID" \
+        bash "$SYNC_SH" "$project" --dry-run 2>&1 | sed 's/^/    /' || true
+    else
+      AGENT_SLUG="$SLUG" BOARD_ADAPTER="$BOARD" BOARD_ID="$BOARD_ID" \
+        bash "$SYNC_SH" "$project" 2>&1 | sed 's/^/    /'
+    fi
+  done
 fi
 
 # ---------- 3. conf ----------

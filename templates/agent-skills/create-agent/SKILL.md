@@ -387,3 +387,41 @@ move together.
 - **3.3.0** — an excluded label is a hard stop; multiple boards; a prompt per agent.
 - **3.2.0** — a working directory per run, unclaimed tickets, failures written on the board.
 - **3.1.0** — poll wiring mode and safe token capture.
+
+## Where skills live
+
+Three places, and which one a skill belongs in is decided by who it serves.
+
+| Kind | Where | Who owns it |
+|---|---|---|
+| Project skills | `.claude/skills/` in the repo they serve | whoever owns that repo |
+| Shared skills | the `company-skills` Claude Code plugin | the company pack |
+| Personal skills | `~/.claude/skills` | the person at the keyboard |
+
+A skill about building one product lives in that product's repo, so a run
+cannot read rules for code it is not editing, and a corrected rule ships in the
+same pull request as the code change it came from. A skill about how anyone
+here works a ticket is shared, and ships as a plugin:
+
+```
+claude plugin marketplace add hypertask-ai/company-skills
+claude plugin install company-skills@company-skills
+```
+
+`install.sh` runs those two commands for you and falls back to cloning the pack
+to `~/projects/company-skills` on a host where the plugin cannot be installed.
+It writes which one this host resolved, and at what version, to
+`~/.config/hypertask-agents/company-pack.version`.
+
+A run reads them in order: the company pack, then `.claude/skills/INDEX.md` in
+the checkout it is working in, then any extra pack the conf names in
+`SKILLS_INDEX`. The first two are found without being told, so `SKILLS_INDEX`
+is optional as of 3.11.0. The runner logs both versions at the start of every
+run, because a bot behaving oddly is usually a bot reading an old pack.
+
+The template keeps this layout in every project it knows about.
+`create-agent.sh --sync-project <path-or-repo>` lays it down (and `--repo` runs
+it for you), `agent-template update` re-runs it daily on every checkout a conf
+names. It is idempotent, and it never overwrites a file a project has edited:
+each file it writes carries a header naming the template version and a hash of
+its own body, so an edit is visible as a hash that no longer matches.
