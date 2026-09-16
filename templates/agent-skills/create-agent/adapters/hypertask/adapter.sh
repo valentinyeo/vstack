@@ -414,7 +414,7 @@ print(json.dumps({
 _ht_owned_row() {
   local token_file="$1" task_id="$2" row="$3" board_id="$4" agent_id="$5" comments
   comments="$(_ht_get "$token_file" "/mcp/comments?task_id=${task_id}&project_id=${board_id}" 2>/dev/null)" || return 0
-  if ! printf '%s\n%s' "$row" "$comments" | AID="$agent_id" ANAME="${AGENT_NAME:-}" python3 -c '
+  if ! printf '%s\n%s' "$row" "$comments" | AID="$agent_id" ANAME="${AGENT_NAME:-}" OWNED_REPLY_ADDRESSED="${OWNED_REPLY_ADDRESSED:-}" python3 -c '
 import json, os, sys
 row = json.loads(sys.stdin.readline())
 doc = json.load(sys.stdin)
