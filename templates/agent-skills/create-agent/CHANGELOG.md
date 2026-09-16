@@ -31,7 +31,7 @@ session to read and act on.
   failure comment and leave a triggering mention eligible for the next tick.
 - `agent-kick.service` can receive signed mention webhooks and start the matching
   poll unit immediately. Hosts without `WEBHOOK_URL` keep the minute poll fallback.
-- Fifty-four offline behavioral checks cover the channel, promotion, gate,
+- Fifty-five offline behavioral checks cover the channel, promotion, gate,
   patch, failure, and kick paths as well as the existing runner contracts.
 - ACTION: Other hosts are now on `stable`; run `agent-template update` once to install the channel config, then leave `CHANNEL=stable` unless this is the maintainer host.
 
