@@ -22,7 +22,11 @@ def main() -> None:
 
     token_file = Path(token_name).expanduser().resolve()
     board_cli = Path(board_name).expanduser().resolve()
-    if not token_file.is_file() or token_file.stat().st_size == 0:
+    try:
+        has_token = bool(token_file.read_text(encoding="utf-8").strip())
+    except OSError:
+        has_token = False
+    if not has_token:
         fail(f"no agent token for {slug}")
     if not os.access(board_cli, os.X_OK):
         fail(f"agent board wrapper is not executable for {slug}: {board_cli}")
@@ -42,7 +46,7 @@ def main() -> None:
     script = """#!/usr/bin/env bash
 set -euo pipefail
 TOKEN_FILE={token_file}
-[ -s "$TOKEN_FILE" ] || {{ echo {error} >&2; exit 1; }}
+[ -r "$TOKEN_FILE" ] && grep -q '[^[:space:]]' "$TOKEN_FILE" || {{ echo {error} >&2; exit 1; }}
 export PATH={original_path}
 exec {board_cli} "$@"
 """.format(

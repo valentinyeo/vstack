@@ -167,8 +167,8 @@ core_enable_agent_identity() {
   shim_dir="$("$CORE_ROOT/scripts/agent-identity-shim" "$slug" "$token_file" "$board_cli")" || return 1
   AGENT_SLUG="$slug"
   HYPERTASK_TOKEN_FILE="$token_file"
-  PATH="$shim_dir:$AGENT_ORIGINAL_PATH"
-  export AGENT_SLUG HYPERTASK_TOKEN_FILE PATH
+  AGENT_IDENTITY_PATH="$shim_dir:$AGENT_ORIGINAL_PATH"
+  export AGENT_SLUG HYPERTASK_TOKEN_FILE AGENT_IDENTITY_PATH
 }
 
 # ---------- command ladder ----------

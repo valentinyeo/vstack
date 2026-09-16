@@ -428,8 +428,8 @@ print(json.dumps({"ref": os.environ["REF"], "title": os.environ["TITLE"],
   # not to be billed for it.
   local rules_flag=""
   [ "$DRY_RUN" = "yes" ] && rules_flag="--rules-only"
-  verdict="$(printf '%s' "$input" | TRIAGE_MODEL_CLI="$TRIAGE_MODEL_CLI" \
-               bash "$TRIAGE_SH" $rules_flag 2>>"$LOG")" || verdict=""
+  verdict="$(printf '%s' "$input" | PATH="${AGENT_IDENTITY_PATH:-$PATH}" \
+               TRIAGE_MODEL_CLI="$TRIAGE_MODEL_CLI" bash "$TRIAGE_SH" $rules_flag 2>>"$LOG")" || verdict=""
   if [ -z "$verdict" ]; then
     printf 'easy|new|the scorer did not answer, so this stays on the default model\n'
     return 0
@@ -1053,6 +1053,7 @@ print(json.dumps({"ref": os.environ["REF"], "url": os.environ["URL"],
     # The run happens where the agent's work lives, so the model CLI sees the
     # repo it is meant to change and nothing else.
     if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then cd "$RUN_DIR"; fi
+    PATH="${AGENT_IDENTITY_PATH:-$PATH}" \
     AGENT_NAME="$AGENT_NAME" AGENT_ID="$AGENT_ID" AGENT_BOARD_CLI="$BOARD_CLI" \
     AGENT_ADVISOR_CONTEXT="$ADVISOR_CONTEXT" AGENT_ADVISOR_COUNTER="$ADVISOR_COUNTER" \
     AGENT_ADVISOR_MAX="$ADVISOR_MAX" AGENT_ADVISOR_CLI="$ADVISOR_CLI" \
