@@ -269,8 +269,9 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
     git -C "$REPO" checkout --detach stable \
       || die "could not check out the stable tag" "clean or save local checkout changes, then re-run"
   else
-    git -C "$REPO" checkout --detach origin/main \
-      || die "could not check out origin/main" "clean or save local checkout changes, then re-run"
+    git -C "$REPO" checkout main \
+      && git -C "$REPO" merge --ff-only origin/main \
+      || die "could not fast-forward main to origin/main" "clean or save local checkout changes, then re-run"
   fi
   TEMPLATE_DIR="$REPO/templates/agent-skills/create-agent"
   [ -x "$TEMPLATE_DIR/install.sh" ] || die "no install.sh at $TEMPLATE_DIR" \
@@ -282,8 +283,47 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
   echo "== 1b. local changes to the installed release =="
   LOCAL_PATCHES=""
   MANIFEST="$INSTALLED_TEMPLATE/.manifest.sha256"
+  BASELINE_MANIFEST=""
+  INSTALLED_VERSION="$(cat "$INSTALLED_TEMPLATE/VERSION" 2>/dev/null || echo unknown)"
+  if [ ! -f "$MANIFEST" ] && [ "$INSTALLED_VERSION" != "unknown" ]; then
+    VERSION_PATH="templates/agent-skills/create-agent/VERSION"
+    RELEASE_COMMIT="$(git -C "$REPO" log --all -S"$INSTALLED_VERSION" --format=%H -- "$VERSION_PATH" 2>/dev/null \
+      | while IFS= read -r candidate; do
+          [ "$(git -C "$REPO" show "$candidate:$VERSION_PATH" 2>/dev/null || true)" = "$INSTALLED_VERSION" ] || continue
+          echo "$candidate"
+          break
+        done)"
+    if [ -n "$RELEASE_COMMIT" ]; then
+      BASELINE_MANIFEST="$(mktemp "${TMPDIR:-/tmp}/agent-template-manifest.XXXXXX")"
+      python3 - "$REPO" "$RELEASE_COMMIT" "$BASELINE_MANIFEST" <<'PYEOF'
+import hashlib
+from pathlib import Path
+import subprocess
+import sys
+
+repo, commit, output = sys.argv[1:]
+prefix = "templates/agent-skills/create-agent/"
+tops = {"SKILL.md", "MAINTAINER.md", "CONF.md", "VERSION", "CHANGELOG.md"}
+dirs = ("scripts/", "adapters/", "evals/", "repo-skeleton/", "project-template/")
+listed = subprocess.check_output(
+    ["git", "-C", repo, "ls-tree", "-r", "--name-only", commit, prefix], text=True
+)
+lines = []
+for tracked in listed.splitlines():
+    relative = tracked.removeprefix(prefix)
+    if relative not in tops and not relative.startswith(dirs):
+        continue
+    content = subprocess.check_output(["git", "-C", repo, "show", f"{commit}:{tracked}"])
+    lines.append(f"{hashlib.sha256(content).hexdigest()}  {relative}")
+Path(output).write_text("\n".join(lines) + "\n", encoding="utf-8")
+PYEOF
+      MANIFEST="$BASELINE_MANIFEST"
+      echo "built the initial manifest from installed release $INSTALLED_VERSION ($RELEASE_COMMIT)"
+    else
+      echo "WARNING: no manifest and release $INSTALLED_VERSION was not found; this update cannot identify older local edits" >&2
+    fi
+  fi
   if [ -f "$MANIFEST" ]; then
-    INSTALLED_VERSION="$(cat "$INSTALLED_TEMPLATE/VERSION" 2>/dev/null || echo unknown)"
     LOCAL_PATCHES="$(python3 - "$INSTALLED_TEMPLATE" "$MANIFEST" "$INSTALLED_VERSION" <<'PYEOF'
 import hashlib
 import os
@@ -314,6 +354,7 @@ for line in manifest.read_text(encoding="utf-8").splitlines():
 PYEOF
 )"
   fi
+  [ -z "$BASELINE_MANIFEST" ] || rm -f "$BASELINE_MANIFEST"
   if [ -n "$LOCAL_PATCHES" ]; then
     echo "local patches archived under $INSTALLED_TEMPLATE/local-patches/${INSTALLED_VERSION:-unknown}:"
     printf '%s\n' "$LOCAL_PATCHES" | sed 's/^/  /'
