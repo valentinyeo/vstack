@@ -330,8 +330,7 @@ EOF
   if ! gh pr merge --repo valentinyeo/vstack --auto --squash "$PR_URL" 2>/dev/null; then
     # No branch protection on the repo: auto-merge is refused. Wait for the
     # checks (10 min cap) and merge green ourselves; otherwise leave it open.
-    if gh pr checks --repo valentinyeo/vstack --watch --interval 30 "$PR_URL" >/dev/null 2>&1 \
-       && timeout 600 true; then
+    if timeout 600 gh pr checks --repo valentinyeo/vstack --watch --interval 30 "$PR_URL" >/dev/null 2>&1; then
       gh pr merge --repo valentinyeo/vstack --squash "$PR_URL" || log "merge failed for $PR_URL, left open"
     else
       log "checks red or timed out for $PR_URL, left open"
