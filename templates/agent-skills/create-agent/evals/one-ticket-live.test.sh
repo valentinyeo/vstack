@@ -22,6 +22,7 @@ cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 scenario="${PR_TEST_SCENARIO:-pending}"
+[ -z "${GH_CALL_LOG:-}" ] || printf '%s\n' "$*" >> "$GH_CALL_LOG"
 if [ "$1 $2" = "pr list" ]; then
   if printf ' %s ' "$*" | grep -q ' --search '; then
     printf '[]\n'
@@ -92,8 +93,10 @@ cat > "$TMP/bin/curl" <<'EOF'
 set -euo pipefail
 url="${*: -1}"
 if [[ "$url" == *'/mcp/tasks?'* ]]; then
+  emergency_labels='[{"name":"emergency"}]'
+  [ "${BOARD_TEST_SCENARIO:-}" != "no-emergency" ] || emergency_labels='[]'
   cat <<JSON
-{"tasks":[{"id":"task-1","ticketNumber":"HTPR-1","section":"Bugs","title":"PR ticket","description":"fix it","assignees":[{"agent":{"id":"agent-1"}}],"labels":[],"commentCount":0},{"id":"task-2","ticketNumber":"HTPR-2","section":"Bugs","title":"Emergency","description":"urgent fix","assignees":[{"agent":{"id":"agent-1"}}],"labels":[{"name":"emergency"}],"commentCount":0},{"id":"task-3","ticketNumber":"HTPR-3","section":"Bugs","title":"Claimed in a comment","description":"fix it","assignees":[],"labels":[],"commentCount":1}]}
+{"tasks":[{"id":"task-1","ticketNumber":"HTPR-1","section":"Bugs","title":"PR ticket","description":"fix it","assignees":[{"agent":{"id":"agent-1"}}],"labels":[],"commentCount":0},{"id":"task-2","ticketNumber":"HTPR-2","section":"Bugs","title":"Emergency","description":"urgent fix","assignees":[{"agent":{"id":"agent-1"}}],"labels":$emergency_labels,"commentCount":0},{"id":"task-3","ticketNumber":"HTPR-3","section":"Bugs","title":"Claimed in a comment","description":"fix it","assignees":[],"labels":[],"commentCount":1}]}
 JSON
 elif [[ "$url" == *'task_id=task-3'* ]]; then
   printf '{"comments":[{"agent":{"id":"agent-1","displayName":"Dev One"},"text":"<p>Claimed.</p>"}]}\n'
@@ -141,6 +144,14 @@ fallback_state="$(PR_TEST_SCENARIO=fallback _ht_pr_live_state example/repo 1 "$T
 [[ "$fallback_state" == *'fallback: merged and base contains merge commit (no deployment records)'* ]]
 echo 'PASS repository without deployment records uses the documented fallback'
 
+: > "$TMP/gh-calls"
+cache_dir="$TMP/cache-proof"
+GH_CALL_LOG="$TMP/gh-calls" PR_TEST_SCENARIO=deployed _ht_pr_live_state example/repo 1 "$cache_dir" >/dev/null
+first_calls="$(wc -l < "$TMP/gh-calls")"
+GH_CALL_LOG="$TMP/gh-calls" PR_TEST_SCENARIO=deployed _ht_pr_live_state example/repo 1 "$cache_dir" >/dev/null
+[[ "$(wc -l < "$TMP/gh-calls")" = "$first_calls" ]]
+echo 'PASS LIVE answer is cached per PR for 60 seconds'
+
 claimed="$(run_gate claimed-body)"
 [[ "$claimed" == *'"number": 3'* ]]
 echo 'PASS PR body ticket link attributes a comment-claimed ticket'
@@ -170,14 +181,26 @@ pending_run="$(PR_TEST_SCENARIO=pending HOME="$TMP/home" PATH="$TMP/bin:$PATH" C
 [[ "$pending_run" != *'would pick up HTPR-1'* ]]
 echo 'PASS emergency ticket is the only pickup that bypasses an owed PR'
 
+rm -rf "$TMP/home/.local/state/agent-board-poll/pr-live-cache"
+undeployed_run="$(PR_TEST_SCENARIO=undeployed BOARD_TEST_SCENARIO=no-emergency HOME="$TMP/home" PATH="$TMP/bin:$PATH" COMPANY_SKILLS_DIR="$TMP/company" "$ROOT/scripts/agent-board-poll" --dry-run dev-1)"
+[[ "$undeployed_run" == *'waiting on PR #1: merged-undeployed; nothing was claimed.'* ]]
+[[ "$undeployed_run" != *'would pick up'* ]]
+echo 'PASS merged but undeployed PR claims no new ticket'
+
+rm -rf "$TMP/home/.local/state/agent-board-poll/pr-live-cache"
+deployed_run="$(PR_TEST_SCENARIO=deployed BOARD_TEST_SCENARIO=no-emergency HOME="$TMP/home" PATH="$TMP/bin:$PATH" COMPANY_SKILLS_DIR="$TMP/company" "$ROOT/scripts/agent-board-poll" --dry-run dev-1)"
+[[ "$deployed_run" == *'would pick up HTPR-1'* ]]
+echo 'PASS deployed PR releases the next ticket'
+
 # Six recent failures for the synthetic PR key do not stop the PR-fix path.
 state="$TMP/home/.local/state/agent-board-poll"
 mkdir -p "$state"
 : > "$state/dev-1.attempts"
 for _ in 1 2 3 4 5 6; do printf 'pr-1 %s cursor-agent failed\n' "$(date +%s)" >> "$state/dev-1.attempts"; done
+rm -rf "$state/pr-live-cache"
 red_run="$(PR_TEST_SCENARIO=red HOME="$TMP/home" PATH="$TMP/bin:$PATH" COMPANY_SKILLS_DIR="$TMP/company" "$ROOT/scripts/agent-board-poll" --dry-run dev-1)"
 [[ "$red_run" == *'would pick up HTPR-1'* ]]
 [[ "$red_run" == *'no ticket attempts, cooldown, triage, or escalation'* ]]
 echo 'PASS red PR still runs after many attempts with no cooldown or escalation'
 
-echo '10 one-ticket-until-live checks passed'
+echo '12 one-ticket-until-live checks passed'
