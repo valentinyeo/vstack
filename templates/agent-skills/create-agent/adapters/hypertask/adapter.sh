@@ -792,7 +792,7 @@ PYEOF
 # _ht_pr_live_state <repo> <number> <cache-dir>: one JSON answer, cached 60s.
 _ht_pr_live_state() {
   local repo="$1" number="$2" cache_dir="$3" cache
-  local now mtime view state base merge merged_at compare deployments deployment dep_id dep_sha dep_at statuses dep_state deploy_contains
+  local now mtime view state base merge merged_at compare deployments deployment dep_id dep_sha dep_at statuses dep_state deploy_contains base_contains_deploy
   mkdir -p "$cache_dir"
   cache="$cache_dir/$number.json"
   now="$(date +%s)"
@@ -837,18 +837,23 @@ print(json.dumps(rows[0]) if rows else "")
   statuses="$(gh api "repos/$repo/deployments/$dep_id/statuses?per_page=1" 2>/dev/null)" || return 1
   dep_state="$(printf '%s' "$statuses" | python3 -c 'import json,sys;d=json.load(sys.stdin);print((d[0] if d else {}).get("state") or "")')"
   deploy_contains="no"
+  base_contains_deploy="no"
   if [ -n "$dep_sha" ]; then
     compare="$(gh api "repos/$repo/compare/$merge...$dep_sha" 2>/dev/null)" || return 1
     if printf '%s' "$compare" | python3 -c 'import json,sys;d=json.load(sys.stdin);sys.exit(0 if d.get("status") in ("ahead","identical") else 1)'; then
       deploy_contains="yes"
     fi
+    compare="$(gh api "repos/$repo/compare/$dep_sha...$base" 2>/dev/null)" || return 1
+    if printf '%s' "$compare" | python3 -c 'import json,sys;d=json.load(sys.stdin);sys.exit(0 if d.get("status") in ("ahead","identical") else 1)'; then
+      base_contains_deploy="yes"
+    fi
   fi
-  if MERGED_AT="$merged_at" DEP_AT="$dep_at" DEP_STATE="$dep_state" CONTAINS="$deploy_contains" python3 -c '
+  if MERGED_AT="$merged_at" DEP_AT="$dep_at" DEP_STATE="$dep_state" CONTAINS="$deploy_contains" ON_BASE="$base_contains_deploy" python3 -c '
 import datetime, os, sys
 def stamp(value): return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-sys.exit(0 if os.environ["DEP_STATE"] == "success" and os.environ["CONTAINS"] == "yes" and stamp(os.environ["DEP_AT"]) > stamp(os.environ["MERGED_AT"]) else 1)
+sys.exit(0 if os.environ["DEP_STATE"] == "success" and os.environ["CONTAINS"] == "yes" and os.environ["ON_BASE"] == "yes" and stamp(os.environ["DEP_AT"]) > stamp(os.environ["MERGED_AT"]) else 1)
 '; then
-    printf '{"live":true,"state":"live","definition":"merged, base contains merge commit, newest Production deployment after merge succeeded and contains merge commit"}\n' | tee "$cache"
+    printf '{"live":true,"state":"live","definition":"merged, base contains merge commit, newest Production deployment on that base after merge succeeded and contains merge commit"}\n' | tee "$cache"
   else
     printf '{"live":false,"state":"merged-undeployed","definition":"GitHub Production deployments"}\n' | tee "$cache"
   fi
