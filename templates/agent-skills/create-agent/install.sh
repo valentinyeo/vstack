@@ -178,7 +178,7 @@ fi
 mkdir -p "$DEST" "$BIN"
 if [ ! -f "$HOST_CONFIG" ]; then
   mkdir -p "$(dirname "$HOST_CONFIG")"
-  printf 'CHANNEL=stable\nMAINTAINER=no\n' > "$HOST_CONFIG"
+  printf 'CHANNEL=stable\nAUTO_UPDATE=on\nMAINTAINER=no\n' > "$HOST_CONFIG"
   chmod 600 "$HOST_CONFIG"
   echo "host config: $HOST_CONFIG (CHANNEL=stable)"
 else
@@ -233,6 +233,27 @@ ln -sfn "$DEST/scripts/agent-chat" "$BIN/agent-chat"
 ln -sfn "$DEST/scripts/agent-template" "$BIN/agent-template"
 ln -sfn "$DEST/scripts/agent-template-feedback" "$BIN/agent-template-feedback"
 ln -sfn "$DEST/scripts/agent-template-weekly" "$BIN/agent-template-weekly"
+
+# This is the release baseline for the next update. local-patches is omitted on
+# purpose: it belongs to the host and survives every directory swap.
+DEST="$DEST" python3 <<'PYEOF'
+import hashlib
+import os
+from pathlib import Path
+
+root = Path(os.environ["DEST"])
+paths = [root / name for name in ("SKILL.md", "MAINTAINER.md", "CONF.md", "VERSION", "CHANGELOG.md")]
+for name in ("scripts", "adapters", "evals", "repo-skeleton", "project-template"):
+    paths.extend(path for path in (root / name).rglob("*") if path.is_file())
+lines = []
+for path in sorted(paths):
+    relative = path.relative_to(root)
+    lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {relative}")
+temporary = root / ".manifest.sha256.new"
+temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+temporary.replace(root / ".manifest.sha256")
+PYEOF
+
 # agent-advisor is on PATH because a run calls it by name from inside a model
 # CLI, where nothing knows where the template is installed.
 ln -sfn "$DEST/scripts/agent-advisor" "$BIN/agent-advisor"
@@ -313,7 +334,7 @@ Description=Bring this host's agent confs and units up to date with the template
 Type=oneshot
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=$BIN/agent-template update
+ExecStart=$BIN/agent-template update --timer
 ExecStart=$BIN/agent-template promote
 EOF
   cat > "$SYSTEMD_USER_DIR/agent-template-update.timer" <<EOF

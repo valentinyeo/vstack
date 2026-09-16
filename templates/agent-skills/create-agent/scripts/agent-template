@@ -229,11 +229,15 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
   DRY_RUN="no"
   NO_HOST_NOTES="no"
   FORCE="no"
+  KEEP_LOCAL_PATCHES="no"
+  TIMER_RUN="no"
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) DRY_RUN="yes"; shift ;;
       --no-host-notes) NO_HOST_NOTES="yes"; shift ;;
       --force) FORCE="yes"; shift ;;
+      --keep-local-patches) KEEP_LOCAL_PATCHES="yes"; shift ;;
+      --timer) TIMER_RUN="yes"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown option $1" "run agent-template update --help" ;;
     esac
@@ -242,7 +246,15 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
   REPO="${AGENT_TEMPLATE_REPO:-$HOME/projects/vstack}"
   CONFIG_DIR="${AGENT_TEMPLATE_CONFIG_DIR:-$HOME/.config/hypertask-agents}"
   SYSTEMD_USER_DIR="${AGENT_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
+  INSTALLED_TEMPLATE="${AGENT_TEMPLATE_INSTALL_DIR:-$CORE_ROOT}"
   CHANNEL="$(host_config_value CHANNEL stable)"
+  AUTO_UPDATE="$(host_config_value AUTO_UPDATE on)"
+  if [ "$TIMER_RUN" = "yes" ] && [ "$AUTO_UPDATE" = "off" ]; then
+    current="$(cat "$INSTALLED_TEMPLATE/VERSION" 2>/dev/null || echo unknown)"
+    stable="$(git -C "$REPO" show stable:templates/agent-skills/create-agent/VERSION 2>/dev/null || echo unknown)"
+    echo "auto-update off, current $current, stable $stable"
+    exit 0
+  fi
   case "$CHANNEL" in stable|latest) ;; *) die "CHANNEL must be stable or latest, got '$CHANNEL'" "fix $HOST_CONFIG" ;; esac
 
   git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "no git checkout at $REPO" \
@@ -266,6 +278,54 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
   TARGET_VERSION="$(cat "$TEMPLATE_DIR/VERSION")"
   TARGET_COMMIT="$(git -C "$REPO" rev-parse HEAD)"
   echo "channel $CHANNEL selected: $TARGET_VERSION ($(git -C "$REPO" rev-parse --short HEAD))"
+
+  echo "== 1b. local changes to the installed release =="
+  LOCAL_PATCHES=""
+  MANIFEST="$INSTALLED_TEMPLATE/.manifest.sha256"
+  if [ -f "$MANIFEST" ]; then
+    INSTALLED_VERSION="$(cat "$INSTALLED_TEMPLATE/VERSION" 2>/dev/null || echo unknown)"
+    LOCAL_PATCHES="$(python3 - "$INSTALLED_TEMPLATE" "$MANIFEST" "$INSTALLED_VERSION" <<'PYEOF'
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import sys
+
+root, manifest, version = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+archive = root / "local-patches" / version
+for line in manifest.read_text(encoding="utf-8").splitlines():
+    digest, marker, relative = line.partition("  ")
+    if not marker or not relative:
+        continue
+    rel = Path(relative)
+    if rel.is_absolute() or ".." in rel.parts:
+        continue
+    source = root / rel
+    if not source.is_file():
+        print(f"deleted: {relative}")
+        continue
+    current = hashlib.sha256(source.read_bytes()).hexdigest()
+    if current == digest:
+        continue
+    target = archive / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    print(relative)
+PYEOF
+)"
+  fi
+  if [ -n "$LOCAL_PATCHES" ]; then
+    echo "local patches archived under $INSTALLED_TEMPLATE/local-patches/${INSTALLED_VERSION:-unknown}:"
+    printf '%s\n' "$LOCAL_PATCHES" | sed 's/^/  /'
+    if [ "$KEEP_LOCAL_PATCHES" != "yes" ]; then
+      echo "update refused: local changes would be replaced"
+      echo "file each patch with agent-template feedback, then re-run with --keep-local-patches"
+      exit 0
+    fi
+    echo "continuing because --keep-local-patches was set"
+  else
+    echo "no local patches found"
+  fi
 
   echo "== 2. stage and evaluate $TARGET_VERSION =="
   STAGED_TEMPLATE="$(mktemp -d "${TMPDIR:-/tmp}/agent-template-stage.XXXXXX")"
