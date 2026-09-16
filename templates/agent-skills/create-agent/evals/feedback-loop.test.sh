@@ -47,5 +47,21 @@ else
   bad managed-block-preserves-content 'unrelated CLAUDE.md content changed'
 fi
 
+cat > "$TMP/CHANGELOG.md" <<'EOF'
+# changelog
+
+## 3.16.0 - 2026-09-16
+
+- AGTE-3 fixed the missing release callback.
+- Follow-up verification for AGTE-3.
+EOF
+ship="$(XDG_STATE_HOME="$TMP/state" bash "$ROOT/scripts/agent-template-feedback" --dry-run --changelog "$TMP/CHANGELOG.md")"
+if [ "$(printf '%s\n' "$ship" | grep -c 'Shipped in')" -eq 1 ] \
+  && printf '%s' "$ship" | grep -qF 'AGTE-3: Shipped in 3.16.0'; then
+  ok shipped-action-once 'one changelog ticket produces one dry-run shipped action'
+else
+  bad shipped-action-once "expected one AGTE-3 shipped action, got: $ship"
+fi
+
 printf '\n%d feedback-loop behavioural check(s) failed\n' "$fails"
 [ "$fails" -eq 0 ]

@@ -29,9 +29,9 @@ session to read and act on.
 
 ## 3.16.0 - 2026-09-16
 
-- The agent conf is now the only provider and harness policy. `MODEL_CLI` is
-  normal work; optional `LADDER`, `RESEARCH_CLI`, `TRIAGE_HARD_CLI`, and
-  `CHAT_CLI` choose every alternative command.
+- AGTE-3 shipped in this release: the agent conf is now the only provider and
+  harness policy. `MODEL_CLI` is normal work; optional `LADDER`, `RESEARCH_CLI`,
+  `TRIAGE_HARD_CLI`, and `CHAT_CLI` choose every alternative command.
 - Core no longer has provider allow-lists, model rewriting, or a built-in
   ladder. Ticket override files now contain one complete command.
 - `create-agent.sh --provider pi` writes a GLM 5.3 Flash pi command, while

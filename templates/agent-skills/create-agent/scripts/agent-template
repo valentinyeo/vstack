@@ -493,6 +493,44 @@ PYEOF
     done
   fi
 
+  echo "== feedback filed from this host =="
+  if [ -f "$FEEDBACK_LOG" ]; then
+    while IFS=$'\t' read -r ref cli; do
+      [ -n "$ref" ] && [ -x "$cli" ] || continue
+      task_json="$("$cli" task get "$ref" --json 2>/dev/null || true)"
+      status="$(printf '%s' "$task_json" | python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    print(""); raise SystemExit
+task = doc.get("task", doc) if isinstance(doc, dict) else {}
+section = task.get("sectionName") or task.get("section") or ""
+if isinstance(section, dict): section = section.get("name", "")
+print(str(section).casefold())
+')"
+      case "$status" in done|rejected|declined) ;;
+        "") ;;
+        *) echo "feedback waiting: $ref" ;;
+      esac
+    done < <(python3 - "$FEEDBACK_LOG" <<'PYEOF'
+import json, sys
+seen = set()
+rows = []
+for raw in open(sys.argv[1], encoding="utf-8"):
+    try: row = json.loads(raw)
+    except ValueError: continue
+    ref, cli = row.get("ticket", ""), row.get("board_cli", "")
+    if ref and cli and ref not in seen:
+        seen.add(ref); rows.append((ref, cli))
+for ref, cli in rows:
+    print("%s\t%s" % (ref, cli))
+PYEOF
+)
+  else
+    echo "  no feedback filed from this host"
+  fi
+
   echo "== summary =="
   echo "$CONVERTED conf(s) converted, $SKIPPED skipped, $CHAT_ENABLED chat lane(s) enabled, $DROPINS_REMOVED redundant path.conf drop-in(s) removed"
   [ "$DRY_RUN" = "yes" ] && echo "(dry run: nothing was written, nothing was restarted)"
@@ -703,9 +741,10 @@ print_and_paste() {
 # agent-template report reads this; it is not a board write and needs no
 # credentials.
 log_feedback() {
+  local ticket="${1:-}" board_cli="${2:-}"
   mkdir -p "$FEEDBACK_LOG_DIR"
   WHAT="$WHAT" KIND="$KIND" ADAPTER="$ADAPTER" AGENT_NAME="$AGENT_NAME" \
-  REPEATED="$REPEATED" CASE_IT="$CASE_IT" python3 -c '
+  REPEATED="$REPEATED" CASE_IT="$CASE_IT" TICKET="$ticket" LOG_BOARD_CLI="$board_cli" python3 -c '
 import datetime, json, os
 print(json.dumps({
     "date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -715,6 +754,8 @@ print(json.dumps({
     "agent": os.environ["AGENT_NAME"],
     "repeated": os.environ["REPEATED"] == "true",
     "case": os.environ["CASE_IT"] == "yes",
+    "ticket": os.environ["TICKET"],
+    "board_cli": os.environ["LOG_BOARD_CLI"],
 }))' >> "$FEEDBACK_LOG"
 }
 
@@ -836,7 +877,8 @@ else:
 ')"
   echo "$FILED_LINE"
   FILED_URL="$(printf '%s\n' "$FILED_LINE" | grep -oE 'https://\S+' | head -1)" || FILED_URL=""
-  log_feedback
+  FILED_REF="$(printf '%s\n' "$FILED_LINE" | sed -n 's/^filed \([A-Z0-9]*-[0-9]*\) .*/\1/p')"
+  log_feedback "$FILED_REF" "$BOARD_CLI"
   append_proposed_case "${FILED_URL:-$FEEDBACK_BOARD_URL}"
 else
   echo "the board refused the ticket, so here it is to paste by hand:" >&2
