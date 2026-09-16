@@ -6,7 +6,7 @@
 # run this again. Re-running is safe and overwrites the installed copy.
 #
 # Usage:
-#   ./install.sh [--dest DIR] [--bin DIR] [--unit-dir DIR] [--dry-run] [-h|--help]
+#   ./install.sh [--dest DIR] [--bin DIR] [--unit-dir DIR] [--dry-run] [--no-host-notes] [-h|--help]
 #
 # Examples:
 #   ./install.sh --dry-run          # show what would be copied where
@@ -40,6 +40,7 @@ SYSTEMD_USER_DIR="${AGENT_SYSTEMD_DIR:-}"
 UNIT_DIR_EXPLICIT="no"
 [ -n "$SYSTEMD_USER_DIR" ] && UNIT_DIR_EXPLICIT="yes"
 DRY_RUN="no"
+NO_HOST_NOTES="no"
 
 fail() { printf 'ERROR: %s. Do this next: %s\n' "$1" "$2" >&2; exit 1; }
 
@@ -119,6 +120,7 @@ while [ $# -gt 0 ]; do
     --bin) BIN="$2"; shift 2 ;;
     --unit-dir) SYSTEMD_USER_DIR="$2"; UNIT_DIR_EXPLICIT="yes"; shift 2 ;;
     --dry-run) DRY_RUN="yes"; shift ;;
+    --no-host-notes) NO_HOST_NOTES="yes"; shift ;;
     -h|--help) sed -n '2,16p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) fail "unknown argument $1" "run ./install.sh --help" ;;
   esac
@@ -128,6 +130,9 @@ for item in SKILL.md MAINTAINER.md CONF.md VERSION CHANGELOG.md scripts adapters
   [ -e "$SRC/$item" ] || fail "$SRC/$item is missing" \
     "run install.sh from inside the template folder in the repo"
 done
+
+# shellcheck disable=SC1091
+. "$SRC/scripts/lib/feedback.sh"
 
 # Decide, once, whether this run is allowed to touch the live systemd unit
 # dir. Real install (default --dest and --bin) or an explicit --unit-dir:
@@ -155,6 +160,7 @@ echo "version: $(cat "$SRC/VERSION")"
 if [ "$DRY_RUN" = "yes" ]; then
   echo "company pack: would sync $COMPANY_SKILLS_REPO -> $COMPANY_SKILLS_DIR"
   echo "(dry run: nothing copied)"
+  feedback_print_discovery
   exit 0
 fi
 
@@ -313,6 +319,7 @@ else
 fi
 
 sync_company_skills
+feedback_update_host_notes "$(cat "$SRC/VERSION")" "$NO_HOST_NOTES"
 
 echo "installed. Next: run create-agent.sh --help, or agent-board-poll --once --dry-run <slug>"
-echo "corrections: agent-template feedback --what ... --got ... --expected ..."
+feedback_print_discovery
