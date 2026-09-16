@@ -66,9 +66,8 @@
 #               turns sending off for every run)
 #   --case      also propose this as a replayable eval case, appended to
 #               evals/proposed.jsonl in the AGENT_TEMPLATE_REPO checkout
-#               (default ~/projects/vstack); the Monday timer
-#               (agent-template-weekly) promotes it into evals/cases.jsonl
-#               once it passes its own check. Needs --check.
+#               (default ~/projects/vstack) for the accepted fix to use.
+#               Needs --check.
 #   --check     a predicate name from the allowlist in evals/run-evals.sh
 #               (starts_with_block_tag, has_section "<title>",
 #               is_full_https_url), with its argument if it takes one.

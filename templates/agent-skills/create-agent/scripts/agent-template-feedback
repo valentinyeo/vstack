@@ -64,24 +64,37 @@ shipped_rows() {
 import pathlib, re, sys
 version = ""
 seen = set()
-for raw in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+block = []
+
+def emit(lines, release):
+    summary = re.sub(r"^\s*[-*]\s*", "", " ".join(lines)).strip()
+    summary = re.sub(r"\s+", " ", summary)
+    for found in re.findall(r"\bAGTE-[0-9]+\b", summary, re.I):
+        ref = found.upper()
+        if ref in seen:
+            continue
+        seen.add(ref)
+        print("%s\t%s\t%s" % (ref, release, summary[:240]))
+
+for raw in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines() + [""]:
     heading = re.match(r"^##\s+([0-9]+\.[0-9]+\.[0-9]+)\b", raw)
     if heading:
+        if block and version:
+            emit(block, version)
+        block = []
         version = heading.group(1)
         continue
     if not version:
         continue
-    refs = re.findall(r"\bAGTE-[0-9]+\b", raw, re.I)
-    if not refs:
-        continue
-    summary = re.sub(r"^\s*[-*]\s*", "", raw).strip()
-    summary = re.sub(r"\s+", " ", summary)
-    for ref in refs:
-        ref = ref.upper()
-        if ref in seen:
-            continue
-        seen.add(ref)
-        print("%s\t%s\t%s" % (ref, version, summary[:240]))
+    if re.match(r"^\s*[-*]\s+", raw):
+        if block:
+            emit(block, version)
+        block = [raw]
+    elif block and raw.strip():
+        block.append(raw)
+    elif block:
+        emit(block, version)
+        block = []
 PYEOF
 }
 

@@ -21,7 +21,7 @@
 #   added    YYYY-MM-DD
 #
 # Predicates are an allowlist, not shell. A case file is appended to by an
-# automated weekly run, and a file that CI executes must never be able to
+# automated feedback run, and a file that CI executes must never be able to
 # carry arbitrary commands. Adding a predicate is a deliberate edit here.
 #
 #   starts_with_block_tag   the text opens with an HTML block tag
