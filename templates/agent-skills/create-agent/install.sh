@@ -167,6 +167,14 @@ if [ "$DRY_RUN" = "yes" ]; then
   exit 0
 fi
 
+# Gate the source before the first installed file changes. agent-template update
+# already evaluated its private staged copy and sets SKIP_TEMPLATE_EVALS=yes.
+if [ "${SKIP_TEMPLATE_EVALS:-no}" != "yes" ]; then
+  bash "$SRC/evals/run-evals.sh" \
+    || fail "the staged eval cases do not pass" \
+            "run $SRC/evals/run-evals.sh and read the failing case ids"
+fi
+
 mkdir -p "$DEST" "$BIN"
 if [ ! -f "$HOST_CONFIG" ]; then
   mkdir -p "$(dirname "$HOST_CONFIG")"
@@ -251,9 +259,6 @@ printf '{"title":"x","description":"y","comments":[]}' \
   | bash "$DEST/scripts/triage.sh" --rules-only >/dev/null \
   || fail "the installed triage scorer does not run" \
           "run $DEST/scripts/triage.sh --help and check python3 is present"
-bash "$DEST/evals/run-evals.sh" >/dev/null \
-  || fail "the installed eval cases do not pass" \
-          "run $DEST/evals/run-evals.sh and read the failing case ids"
 
 # The shared agent-board-poll@ unit pair is refreshed on every install, not
 # only when a new agent is provisioned, so a fix to the unit (like the
@@ -398,7 +403,7 @@ feedback_update_host_notes "$(cat "$SRC/VERSION")" "$NO_HOST_NOTES"
 # the same commit does not restart its 24-hour observation window.
 mkdir -p "$(dirname "$INSTALL_STATE")"
 installed_version="$(cat "$SRC/VERSION")"
-installed_commit="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
+installed_commit="${AGENT_TEMPLATE_INSTALL_COMMIT:-$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)}"
 prior_version="$(sed -n 's/^version=//p' "$INSTALL_STATE" 2>/dev/null | tail -n1 || true)"
 prior_commit="$(sed -n 's/^commit=//p' "$INSTALL_STATE" 2>/dev/null | tail -n1 || true)"
 prior_time="$(sed -n 's/^installed_at=//p' "$INSTALL_STATE" 2>/dev/null | tail -n1 || true)"

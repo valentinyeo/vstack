@@ -228,10 +228,12 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
 
   DRY_RUN="no"
   NO_HOST_NOTES="no"
+  FORCE="no"
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) DRY_RUN="yes"; shift ;;
       --no-host-notes) NO_HOST_NOTES="yes"; shift ;;
+      --force) FORCE="yes"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown option $1" "run agent-template update --help" ;;
     esac
@@ -261,20 +263,42 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
   TEMPLATE_DIR="$REPO/templates/agent-skills/create-agent"
   [ -x "$TEMPLATE_DIR/install.sh" ] || die "no install.sh at $TEMPLATE_DIR" \
     "check AGENT_TEMPLATE_REPO points at the vstack checkout"
-  echo "channel $CHANNEL selected: $(cat "$TEMPLATE_DIR/VERSION") ($(git -C "$REPO" rev-parse --short HEAD))"
+  TARGET_VERSION="$(cat "$TEMPLATE_DIR/VERSION")"
+  TARGET_COMMIT="$(git -C "$REPO" rev-parse HEAD)"
+  echo "channel $CHANNEL selected: $TARGET_VERSION ($(git -C "$REPO" rev-parse --short HEAD))"
 
-  echo "== 2. install.sh (also runs the eval suite) =="
-  # Always runs for real, dry-run or not: install.sh only ever copies the
-  # template and refreshes the shared systemd units, both idempotent and
-  # both worth doing whether or not this run also converts a conf. The
-  # conf conversion and the timer restarts below are the parts --dry-run
-  # actually gates. install.sh calls fail() and exits non-zero on its own
-  # if the copy or the eval suite breaks; die here never runs, and nothing
-  # past this point does either, so nothing is converted and nothing is
-  # restarted.
+  echo "== 2. stage and evaluate $TARGET_VERSION =="
+  STAGED_TEMPLATE="$(mktemp -d "${TMPDIR:-/tmp}/agent-template-stage.XXXXXX")"
+  EVAL_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/agent-template-evals.XXXXXX")"
+  trap 'rm -f "$AGENT_TEMPLATE_UPDATE_REEXEC" "${EVAL_OUTPUT:-}"; rm -rf "${STAGED_TEMPLATE:-}"' EXIT
+  cp -a "$TEMPLATE_DIR/." "$STAGED_TEMPLATE/"
+  if [ "$FORCE" = "yes" ]; then
+    echo "eval gate skipped (--force)"
+  else
+    set +e
+    bash "$STAGED_TEMPLATE/evals/run-evals.sh" >"$EVAL_OUTPUT" 2>&1
+    EVAL_STATUS=$?
+    set -e
+    cat "$EVAL_OUTPUT"
+    if [ "$EVAL_STATUS" -ne 0 ]; then
+      RED_COUNT="$(grep -c '^FAIL ' "$EVAL_OUTPUT" || true)"
+      [ "$RED_COUNT" -gt 0 ] || RED_COUNT=1
+      REFUSAL="update to $TARGET_VERSION refused: $RED_COUNT evals red"
+      echo "$REFUSAL"
+      mkdir -p "$FEEDBACK_LOG_DIR"
+      printf '%s\n' "$REFUSAL" >> "$FEEDBACK_LOG_DIR/update.log"
+      exit 0
+    fi
+  fi
+
+  echo "== 2b. install staged $TARGET_VERSION =="
+  # The staged suite above is the swap gate. install.sh is told not to repeat
+  # it after files begin moving, so a red release can never partly replace the
+  # installed copy.
   INSTALL_ARGS=()
   [ "$NO_HOST_NOTES" = "yes" ] && INSTALL_ARGS+=(--no-host-notes)
-  bash "$TEMPLATE_DIR/install.sh" "${INSTALL_ARGS[@]}" \
+  SKIP_TEMPLATE_EVALS=yes AGENT_TEMPLATE_INSTALL_COMMIT="$TARGET_COMMIT" \
+    bash "$STAGED_TEMPLATE/install.sh" "${INSTALL_ARGS[@]}" \
     || die "install.sh failed (see its output above)" \
         "fix the failing step and re-run agent-template update; no conf was touched and no timer was restarted"
 

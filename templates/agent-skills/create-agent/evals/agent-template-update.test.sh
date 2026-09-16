@@ -10,7 +10,8 @@ HOME_DIR="$TMP/home"
 CONF_DIR="$HOME_DIR/.config/hypertask-agents"
 FAKE_REPO="$TMP/repo"
 mkdir -p "$CONF_DIR" "$FAKE_REPO/.git" "$FAKE_REPO/templates/agent-skills/create-agent/scripts" \
-  "$TMP/bin" "$TMP/units" "$TMP/state"
+  "$FAKE_REPO/templates/agent-skills/create-agent/evals" "$TMP/bin" "$TMP/units" "$TMP/state"
+printf 'test-version\n' > "$FAKE_REPO/templates/agent-skills/create-agent/VERSION"
 
 cat > "$FAKE_REPO/templates/agent-skills/create-agent/install.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -23,8 +24,16 @@ EOF
 cat > "$FAKE_REPO/templates/agent-skills/create-agent/scripts/migrate-provider-policy.py" <<'EOF'
 #!/usr/bin/env python3
 EOF
+cat > "$FAKE_REPO/templates/agent-skills/create-agent/evals/run-evals.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
 cat > "$TMP/bin/git" <<'EOF'
 #!/usr/bin/env bash
+case "$*" in
+  *"rev-parse --short HEAD"*) echo deadbee ;;
+  *"rev-parse HEAD"*) echo deadbeefdeadbeefdeadbeefdeadbeefdeadbeef ;;
+esac
 exit 0
 EOF
 cat > "$TMP/bin/systemctl" <<'EOF'
@@ -33,6 +42,7 @@ exit 1
 EOF
 chmod +x "$FAKE_REPO/templates/agent-skills/create-agent/install.sh" \
   "$FAKE_REPO/templates/agent-skills/create-agent/scripts/sync-project.sh" \
+  "$FAKE_REPO/templates/agent-skills/create-agent/evals/run-evals.sh" \
   "$TMP/bin/git" "$TMP/bin/systemctl"
 
 cat > "$CONF_DIR/old-worker.conf" <<'EOF'
