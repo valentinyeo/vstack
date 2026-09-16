@@ -1039,13 +1039,14 @@ print(json.dumps({"ticket": os.environ["REF"], "title": os.environ["TITLE"],
   ADVISOR_CONTEXT="$ADVISOR_DIR/$SLUG-$ref.json"
   ADVISOR_COUNTER="$ADVISOR_DIR/$SLUG-$ref.count"
   REF="$ref" URL="$url" TITLE="$title" DESCRIPTION="$description" TASK_ID="$task_id" \
-  BOARD="$board" TOKEN_FILE="$TOKEN_FILE" ADAPTER="$BOARD_ADAPTER" python3 -c '
+  BOARD="$board" TOKEN_FILE="$TOKEN_FILE" BOARD_CLI="$BOARD_CLI" SLUG="$SLUG" \
+  ADAPTER="$BOARD_ADAPTER" python3 -c '
 import json, os
 print(json.dumps({"ref": os.environ["REF"], "url": os.environ["URL"],
                   "title": os.environ["TITLE"], "description": os.environ["DESCRIPTION"],
                   "task_id": os.environ["TASK_ID"], "board": os.environ["BOARD"],
-                  "token_file": os.environ["TOKEN_FILE"],
-                  "adapter": os.environ["ADAPTER"]}))' > "$ADVISOR_CONTEXT"
+                  "token_file": os.environ["TOKEN_FILE"], "board_cli": os.environ["BOARD_CLI"],
+                  "slug": os.environ["SLUG"], "adapter": os.environ["ADAPTER"]}))' > "$ADVISOR_CONTEXT"
   printf '0\n' > "$ADVISOR_COUNTER"
 
   (
