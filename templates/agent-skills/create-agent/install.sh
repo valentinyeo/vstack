@@ -174,7 +174,7 @@ cp -a "$SRC/CHANGELOG.md" "$DEST/CHANGELOG.md"
 # far, not a real error. Stage the new tree next to DEST, then swap each
 # directory in with a rename: a path lookup during the swap either finds the
 # whole old directory or the whole new one, never a partially written file.
-for dir in scripts adapters core evals repo-skeleton project-template; do
+for dir in scripts adapters evals repo-skeleton project-template; do
   stage="$(mktemp -d "$DEST/.$dir.XXXXXX")"
   cp -a "$SRC/$dir/." "$stage/"
   if [ -d "$DEST/$dir" ]; then
@@ -187,11 +187,14 @@ for dir in scripts adapters core evals repo-skeleton project-template; do
     mv -T "$stage" "$DEST/$dir"
   fi
 done
+# 3.16 moved command policy into each agent conf. Remove the obsolete shared
+# policy directory from upgrades as well as omitting it from fresh installs.
+rm -rf "$DEST/core"
 chmod 755 "$DEST/scripts/create-agent.sh" "$DEST/scripts/agent-board-poll" \
           "$DEST/scripts/agent-chat" \
           "$DEST/scripts/agent-template" "$DEST/scripts/agent-template-weekly" \
           "$DEST/scripts/agent-advisor" "$DEST/scripts/triage.sh" \
-          "$DEST/scripts/sync-project.sh" \
+          "$DEST/scripts/sync-project.sh" "$DEST/scripts/migrate-provider-policy.py" \
           "$DEST/evals/run-evals.sh" \
           "$DEST/project-template/.claude/skills/evals/run-evals.sh" \
           "$DEST/project-template/.claude/hooks/board-write-guard.sh"

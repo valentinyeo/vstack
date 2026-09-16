@@ -395,7 +395,18 @@ PYEOF
     echo "  no config dir at $CONFIG_DIR, nothing to scan"
   fi
 
-  echo "== 3b. chat lane for template-wired agents =="
+  echo "== 3b. explicit command policy for 3.14 confs =="
+  MIGRATE_POLICY="$TEMPLATE_DIR/scripts/migrate-provider-policy.py"
+  mapfile -t CONF_DIRS < <(core_conf_dirs)
+  if [ "${#CONF_DIRS[@]}" -eq 0 ]; then
+    echo "  no agent config directories on this host"
+  else
+    MIGRATE_ARGS=(--version "$TEMPLATE_VERSION")
+    [ "$DRY_RUN" = "yes" ] && MIGRATE_ARGS+=(--dry-run)
+    python3 "$MIGRATE_POLICY" "${MIGRATE_ARGS[@]}" "${CONF_DIRS[@]}"
+  fi
+
+  echo "== 3c. chat lane for template-wired agents =="
   CHAT_ENABLED=0
   if [ -d "$CONFIG_DIR" ]; then
     for f in "$CONFIG_DIR"/*.conf; do
