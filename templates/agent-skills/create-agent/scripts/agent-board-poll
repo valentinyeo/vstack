@@ -927,7 +927,9 @@ Current failing feedback follows. Check names and reviewer text are exact; use t
 
 $comment_text
 
-When you are stuck after two approaches, run \`agent-advisor \"<one precise question>\"\`. Keep fixing this PR until it merges and is live."
+$AGENT_ADVISOR_GUIDANCE
+
+Keep fixing this PR until it merges and is live."
   fi
 
   # A hard ticket gets two things the default path does not: a stronger model,
