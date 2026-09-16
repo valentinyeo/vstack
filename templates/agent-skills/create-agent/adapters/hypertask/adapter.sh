@@ -676,11 +676,24 @@ adapter_pr_gate() (
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
 
-  if ! gh pr list --repo "$repo" --state all --limit 100 \
-      --json number,state,url,title,body,headRefName,createdAt > "$tmp/prs.json"; then
+  if ! gh pr list --repo "$repo" --state open --limit 1000 \
+      --json number,state,url,title,body,headRefName,createdAt > "$tmp/open.json" \
+     || ! gh pr list --repo "$repo" --state merged --limit 100 \
+      --json number,state,url,title,body,headRefName,createdAt > "$tmp/merged.json"; then
     printf 'ERROR: cannot list pull requests in %s for the one-ticket-until-live gate\n' "$repo" >&2
     return 1
   fi
+  python3 - "$tmp/open.json" "$tmp/merged.json" <<'PYEOF' > "$tmp/prs.json"
+import json, sys
+seen, rows = set(), []
+for path in sys.argv[1:]:
+    for row in json.load(open(path)):
+        if row.get("number") in seen:
+            continue
+        seen.add(row.get("number"))
+        rows.append(row)
+print(json.dumps(rows))
+PYEOF
 
   : > "$tmp/tasks.jsonl"
   for one in $(printf '%s' "$board_ids" | tr ',' ' '); do
