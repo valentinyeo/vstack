@@ -154,6 +154,7 @@ echo "skill:  $DEST"
 echo "docs:   $DEST/MAINTAINER.md + $DEST/CONF.md"
 echo "bin:    $BIN/agent-board-poll -> $DEST/scripts/agent-board-poll"
 echo "bin:    $BIN/agent-chat -> $DEST/scripts/agent-chat"
+echo "bin:    $BIN/agent-kick -> $DEST/scripts/agent-kick"
 echo "bin:    $BIN/agent-template -> $DEST/scripts/agent-template"
 echo "bin:    $BIN/agent-template-feedback -> $DEST/scripts/agent-template-feedback"
 echo "bin:    $BIN/agent-template-weekly -> compatibility alias"
@@ -217,7 +218,7 @@ done
 # policy directory from upgrades as well as omitting it from fresh installs.
 rm -rf "$DEST/core"
 chmod 755 "$DEST/scripts/create-agent.sh" "$DEST/scripts/agent-board-poll" \
-          "$DEST/scripts/agent-chat" \
+          "$DEST/scripts/agent-chat" "$DEST/scripts/agent-kick" \
           "$DEST/scripts/agent-template" "$DEST/scripts/agent-template-feedback" \
           "$DEST/scripts/agent-template-weekly" \
           "$DEST/scripts/agent-advisor" "$DEST/scripts/triage.sh" \
@@ -230,6 +231,7 @@ chmod 755 "$DEST/scripts/create-agent.sh" "$DEST/scripts/agent-board-poll" \
 # apart, and so the runner still finds its adapters through readlink -f.
 ln -sfn "$DEST/scripts/agent-board-poll" "$BIN/agent-board-poll"
 ln -sfn "$DEST/scripts/agent-chat" "$BIN/agent-chat"
+ln -sfn "$DEST/scripts/agent-kick" "$BIN/agent-kick"
 ln -sfn "$DEST/scripts/agent-template" "$BIN/agent-template"
 ln -sfn "$DEST/scripts/agent-template-feedback" "$BIN/agent-template-feedback"
 ln -sfn "$DEST/scripts/agent-template-weekly" "$BIN/agent-template-weekly"
@@ -266,6 +268,9 @@ bash "$DEST/scripts/create-agent.sh" --help >/dev/null \
           "check that $BIN is on PATH and the symlink resolves"
 "$BIN/agent-chat" --help >/dev/null \
   || fail "the installed agent-chat does not run" \
+          "check python3 is present and the symlink resolves"
+"$BIN/agent-kick" --help >/dev/null \
+  || fail "the installed agent-kick does not run" \
           "check python3 is present and the symlink resolves"
 "$BIN/agent-template" --help >/dev/null \
   || fail "the installed agent-template does not run" \
@@ -312,6 +317,22 @@ ExecStart=$BIN/agent-chat
 Restart=always
 RestartSec=2
 TimeoutStopSec=100
+
+[Install]
+WantedBy=default.target
+EOF
+  cat > "$SYSTEMD_USER_DIR/agent-kick.service" <<EOF
+[Unit]
+Description=Start poll agents immediately when Hypertask mentions them
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=$BIN/agent-kick serve
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=default.target
@@ -403,6 +424,8 @@ EOF
   systemctl --user daemon-reload
   systemctl --user enable agent-chat.service
   systemctl --user restart agent-chat.service
+  systemctl --user enable agent-kick.service
+  systemctl --user restart agent-kick.service
   systemctl --user enable --now agent-template-update.timer
   if [ "$FEEDBACK_MAINTAINER" = yes ]; then
     systemctl --user enable --now agent-template-feedback.timer
@@ -412,10 +435,13 @@ EOF
   fi
   echo "poll units: $SYSTEMD_USER_DIR/agent-board-poll@.service + .timer (refreshed, daemon-reload done)"
   echo "chat service: agent-chat.service (enabled and restarted)"
+  echo "kick service: agent-kick.service (enabled and restarted)"
   echo "update timer: agent-template-update.timer, daily 06:30 local ($(systemctl --user list-timers agent-template-update.timer --no-pager 2>/dev/null | sed -n '2p'))"
 else
   echo "WARNING: no systemd --user session here: skipped refreshing agent-board-poll@.service/.timer and agent-template-update.timer" >&2
 fi
+
+"$BIN/agent-kick" register || echo "WARNING: mention webhook registration failed; mentions still wait for the poll" >&2
 
 sync_company_skills
 feedback_update_host_notes "$(cat "$SRC/VERSION")" "$NO_HOST_NOTES"
