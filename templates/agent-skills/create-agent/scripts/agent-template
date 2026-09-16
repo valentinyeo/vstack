@@ -13,6 +13,8 @@
 #
 #   agent-template update [--dry-run] [--no-host-notes]
 #
+#   agent-template promote
+#
 # update is how a bot host stays current without a human explaining the fix
 # to it: pull the template repo, reinstall, and bring every conf that is
 # still on the old HT_* fleet schema forward onto the current one, so a bot
@@ -140,8 +142,48 @@ case "$1" in
   feedback) shift ;;
   report) shift; SUBCOMMAND="report" ;;
   update) shift; SUBCOMMAND="update" ;;
+  promote) shift; SUBCOMMAND="promote" ;;
   *) die "unknown subcommand $1" "run agent-template --help" ;;
 esac
+
+HOST_CONFIG="${AGENT_TEMPLATE_HOST_CONFIG:-$HOME/.config/agent-template/config}"
+host_config_value() {
+  local key="$1" fallback="$2" value
+  value="$(sed -n "s/^${key}=//p" "$HOST_CONFIG" 2>/dev/null | tail -n1 | tr -d '\"' || true)"
+  printf '%s\n' "${value:-$fallback}"
+}
+
+if [ "${SUBCOMMAND:-feedback}" = "promote" ]; then
+  [ $# -eq 0 ] || die "promote takes no options" "run agent-template promote"
+  [ "$(host_config_value MAINTAINER no)" = "yes" ] || {
+    echo "promote skipped: this is not a maintainer host"
+    exit 0
+  }
+  REPO="${AGENT_TEMPLATE_REPO:-$HOME/projects/vstack}"
+  INSTALL_STATE="${AGENT_TEMPLATE_INSTALL_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-template/install-state}"
+  git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "no git checkout at $REPO" "set AGENT_TEMPLATE_REPO to the maintainer checkout"
+  [ -f "$INSTALL_STATE" ] || die "no install state at $INSTALL_STATE" "run agent-template update and wait 24 hours"
+  INSTALLED_VERSION="$(sed -n 's/^version=//p' "$INSTALL_STATE" | tail -n1)"
+  INSTALLED_COMMIT="$(sed -n 's/^commit=//p' "$INSTALL_STATE" | tail -n1)"
+  INSTALLED_AT="$(sed -n 's/^installed_at=//p' "$INSTALL_STATE" | tail -n1)"
+  case "$INSTALLED_AT" in ''|*[!0-9]*) die "invalid install time in $INSTALL_STATE" "run agent-template update again" ;; esac
+  age=$(( $(date +%s) - INSTALLED_AT ))
+  if [ "$age" -lt 86400 ]; then
+    echo "promote refused: installed $INSTALLED_VERSION has run for ${age}s, less than 24h"
+    exit 0
+  fi
+  [ -n "$INSTALLED_COMMIT" ] && git -C "$REPO" cat-file -e "$INSTALLED_COMMIT^{commit}" 2>/dev/null \
+    || die "installed commit is unavailable in $REPO" "fetch it, then re-run agent-template promote"
+  echo "promote: running evals for installed $INSTALLED_VERSION"
+  if ! bash "$CORE_ROOT/evals/run-evals.sh"; then
+    echo "promote refused: evals are red for installed $INSTALLED_VERSION"
+    exit 0
+  fi
+  git -C "$REPO" tag -f stable "$INSTALLED_COMMIT"
+  git -C "$REPO" push --force origin refs/tags/stable
+  echo "promoted stable to $INSTALLED_VERSION ($INSTALLED_COMMIT)"
+  exit 0
+fi
 
 if [ "${SUBCOMMAND:-feedback}" = "report" ]; then
   DAYS=7
@@ -198,16 +240,28 @@ if [ "${SUBCOMMAND:-feedback}" = "update" ]; then
   REPO="${AGENT_TEMPLATE_REPO:-$HOME/projects/vstack}"
   CONFIG_DIR="${AGENT_TEMPLATE_CONFIG_DIR:-$HOME/.config/hypertask-agents}"
   SYSTEMD_USER_DIR="${AGENT_SYSTEMD_DIR:-$HOME/.config/systemd/user}"
+  CHANNEL="$(host_config_value CHANNEL stable)"
+  case "$CHANNEL" in stable|latest) ;; *) die "CHANNEL must be stable or latest, got '$CHANNEL'" "fix $HOST_CONFIG" ;; esac
 
-  [ -d "$REPO/.git" ] || die "no git checkout at $REPO" \
+  git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "no git checkout at $REPO" \
     "set AGENT_TEMPLATE_REPO to the vstack clone, or clone it there"
+
+  echo "== 1. select $CHANNEL release in $REPO =="
+  git -C "$REPO" fetch origin --tags || die "git fetch failed in $REPO" \
+    "restore GitHub access, then re-run"
+  if [ "$CHANNEL" = "stable" ]; then
+    git -C "$REPO" rev-parse -q --verify 'refs/tags/stable^{commit}' >/dev/null \
+      || die "the stable tag is missing" "fetch tags from origin, then re-run"
+    git -C "$REPO" checkout --detach stable \
+      || die "could not check out the stable tag" "clean or save local checkout changes, then re-run"
+  else
+    git -C "$REPO" checkout --detach origin/main \
+      || die "could not check out origin/main" "clean or save local checkout changes, then re-run"
+  fi
   TEMPLATE_DIR="$REPO/templates/agent-skills/create-agent"
   [ -x "$TEMPLATE_DIR/install.sh" ] || die "no install.sh at $TEMPLATE_DIR" \
     "check AGENT_TEMPLATE_REPO points at the vstack checkout"
-
-  echo "== 1. git pull --ff-only in $REPO =="
-  git -C "$REPO" pull --ff-only || die "git pull --ff-only failed in $REPO" \
-    "resolve it by hand (a local change or diverged history), then re-run"
+  echo "channel $CHANNEL selected: $(cat "$TEMPLATE_DIR/VERSION") ($(git -C "$REPO" rev-parse --short HEAD))"
 
   echo "== 2. install.sh (also runs the eval suite) =="
   # Always runs for real, dry-run or not: install.sh only ever copies the
