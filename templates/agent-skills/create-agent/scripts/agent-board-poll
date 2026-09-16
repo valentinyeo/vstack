@@ -179,6 +179,10 @@ CORE_STATE_NAME="agent-board-poll"
 STATE_DIR="$(core_state_dir)"
 mkdir -p "$STATE_DIR"
 LOG="$STATE_DIR/$SLUG.log"
+if [ "$BOARD_ADAPTER" = "hypertask" ]; then
+  core_enable_agent_identity "$SLUG" "$TOKEN_FILE" "$BOARD_CLI" \
+    2> >(tee -a "$LOG" >&2) || exit 1
+fi
 SEEN="$STATE_DIR/$SLUG.seen"
 # Comment ids this agent posted this run, one "<ref> <id>" line per comment,
 # written by the board CLI wrapper (adapter_install_board_cli) and read back
@@ -1051,7 +1055,6 @@ print(json.dumps({"ref": os.environ["REF"], "url": os.environ["URL"],
     AGENT_NAME="$AGENT_NAME" AGENT_ID="$AGENT_ID" AGENT_BOARD_CLI="$BOARD_CLI" \
     AGENT_ADVISOR_CONTEXT="$ADVISOR_CONTEXT" AGENT_ADVISOR_COUNTER="$ADVISOR_COUNTER" \
     AGENT_ADVISOR_MAX="$ADVISOR_MAX" AGENT_ADVISOR_CLI="$ADVISOR_CLI" \
-    PATH="$(dirname "$BOARD_CLI"):$PATH" \
       "${MODEL_ARGV[@]}" "$PROMPT"
   ) >> "$LOG" 2>"$ERRFILE"
   rc=$?
