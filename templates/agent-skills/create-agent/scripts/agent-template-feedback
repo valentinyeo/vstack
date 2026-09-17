@@ -17,10 +17,27 @@
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+CORE_ROOT="$(dirname "$(dirname "$SELF")")"
+PLAIN_LANGUAGE_DIR="$CORE_ROOT/adapters/hypertask/plain-language"
+# shellcheck disable=SC1091
+. "$CORE_ROOT/scripts/lib/feedback.sh"
 
 die() { printf 'ERROR: %s. Do this next: %s\n' "$1" "$2" >&2; exit 1; }
 usage() { sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; }
 html_escape() { python3 -c 'import html,sys; print(html.escape(sys.stdin.read().strip(), quote=False))'; }
+
+# Need-info questions and decline decisions are judgment calls a human reads;
+# they must clear the same pospeak/unslop/i-have-adhd shape as any other
+# Question or Decision comment. Handoff/Done-style status comments below
+# (Accepted, retry) keep their existing short one-line shape (AGTE-12).
+post_human_comment() {
+  local ref="$1" draft="$2" text
+  if text="$(feedback_gate_human_comment "$PLAIN_LANGUAGE_DIR" "$MODEL_CLI" "$draft" 2>>"$LOG")"; then
+    "$BOARD_CLI" comment add "$ref" --text "$text" >/dev/null
+  else
+    log "plain-language held comment on $ref, see log for draft and reasons"
+  fi
+}
 
 DRY_RUN=no
 ONLY_TICKET=""
@@ -247,12 +264,12 @@ PYEOF
   rm -f "$VERDICT"
 
   if [ "$DECISION" = need_info ]; then
-    "$BOARD_CLI" comment add "$REF" --text "<p><strong>Need info: $(printf '%s' "$REASON" | html_escape)</strong></p><p>$(printf '%s' "$QUESTION" | html_escape)</p>" >/dev/null
+    post_human_comment "$REF" "<p><strong>Need info: $(printf '%s' "$REASON" | html_escape)</strong></p><p>$(printf '%s' "$QUESTION" | html_escape)</p>"
     log "need info on $REF: $QUESTION"
     continue
   fi
   if [ "$DECISION" = decline ]; then
-    "$BOARD_CLI" comment add "$REF" --text "<p><strong>Declined: $(printf '%s' "$REASON" | html_escape)</strong></p>" >/dev/null
+    post_human_comment "$REF" "<p><strong>Declined: $(printf '%s' "$REASON" | html_escape)</strong></p><p>Next: no action needed, this ticket stays closed.</p>"
     [ -z "$DECLINED" ] || "$BOARD_CLI" task move "$REF" --section "$DECLINED" >/dev/null
     log "declined $REF: $REASON"
     continue

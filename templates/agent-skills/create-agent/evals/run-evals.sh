@@ -293,3 +293,8 @@ if [ -z "$ONLY" ] && [ -x "$HERE/feedback-loop.test.sh" ]; then
   echo "-- feedback loop behavioural checks --"
   bash "$HERE/feedback-loop.test.sh"
 fi
+if [ -z "$ONLY" ] && [ -x "$HERE/human-comment-gate.test.sh" ]; then
+  echo ""
+  echo "-- human comment gate behavioural checks --"
+  bash "$HERE/human-comment-gate.test.sh"
+fi

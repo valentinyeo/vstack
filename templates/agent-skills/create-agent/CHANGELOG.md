@@ -1,3 +1,16 @@
+## 3.33.0 - 2026-09-17
+
+- AGTE-12 routes the feedback loop's need-info questions and decline decisions
+  through the same pospeak/unslop/i-have-adhd mechanical check as other
+  Question and Decision comments before they reach Valentin.
+- A draft that fails gets one rewrite pass with the configured model; a second
+  failure holds the comment and logs the draft and reasons instead of posting.
+- Accepted-branch status updates keep their existing short one-line shape.
+- Focused coverage verifies pass-through, the no-CLI hold, a successful
+  rewrite, and a still-failing rewrite hold.
+- ACTION: run `agent-template update --keep-timers` so the feedback loop job
+  picks up the plain-language gate without changing timer state.
+
 ## 3.32.0 - 2026-09-17
 
 - AGTE-25 turns queued advisor instructions into visible toolkit board tickets
