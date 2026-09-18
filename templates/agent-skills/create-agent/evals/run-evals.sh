@@ -312,6 +312,11 @@ if [ -z "$ONLY" ] && [ -x "$HERE/agent-template-update.test.sh" ]; then
   echo "-- agent-template update behavioural checks --"
   bash "$HERE/agent-template-update.test.sh"
 fi
+if [ -z "$ONLY" ] && [ -x "$HERE/release-policy.test.sh" ]; then
+  echo ""
+  echo "-- merge-time release policy checks --"
+  bash "$HERE/release-policy.test.sh"
+fi
 if [ -z "$ONLY" ] && [ -x "$HERE/qa-sections.test.sh" ]; then
   echo ""
   echo "-- QA section behavioural checks --"
@@ -347,6 +352,11 @@ if [ -z "$ONLY" ] && [ -x "$HERE/instruction-tickets.test.sh" ]; then
   echo "-- instruction ticket behavioural checks --"
   bash "$HERE/instruction-tickets.test.sh"
 fi
+if [ -z "$ONLY" ] && [ -x "$HERE/task-writer.test.sh" ]; then
+  echo ""
+  echo "-- Task Writer behavioural checks --"
+  bash "$HERE/task-writer.test.sh"
+fi
 if [ -z "$ONLY" ] && [ -x "$HERE/reply-contract.test.sh" ]; then
   echo ""
   echo "-- reply contract behavioural checks --"
@@ -356,11 +366,6 @@ if [ -z "$ONLY" ] && [ -x "$HERE/board-health.test.sh" ]; then
   echo ""
   echo "-- board health behavioural checks --"
   bash "$HERE/board-health.test.sh"
-fi
-if [ -z "$ONLY" ] && [ -x "$HERE/task-writer.test.sh" ]; then
-  echo ""
-  echo "-- Task Writer behavioural checks --"
-  bash "$HERE/task-writer.test.sh"
 fi
 if [ -z "$ONLY" ] && [ -x "$HERE/feedback-loop.test.sh" ]; then
   echo ""
