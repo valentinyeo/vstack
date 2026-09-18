@@ -242,6 +242,10 @@ echo "version: $(cat "$SRC/VERSION")"
 if [ "$DRY_RUN" = "yes" ]; then
   echo "company pack: would sync $COMPANY_SKILLS_REPO -> $COMPANY_SKILLS_DIR"
   echo "(dry run: nothing copied)"
+  CORE_ROOT="$SRC"
+  # shellcheck disable=SC1091
+  . "$SRC/scripts/lib/core.sh"
+  core_guard_token_wrappers "$BIN" yes
   feedback_print_discovery
   exit 0
 fi
@@ -305,8 +309,9 @@ done
 # policy directory from upgrades as well as omitting it from fresh installs.
 rm -rf "$DEST/core"
 chmod 755 "$DEST/scripts/create-agent.sh" "$DEST/scripts/agent-board-poll" \
-          "$DEST/scripts/agent-progress" "$DEST/scripts/agent-reply-contract" \
-          "$DEST/scripts/agent-board-health" "$DEST/scripts/agent-chat" "$DEST/scripts/agent-kick" \
+          "$DEST/scripts/agent-board-poll-tick" "$DEST/scripts/agent-progress" \
+          "$DEST/scripts/agent-reply-contract" "$DEST/scripts/agent-board-health" \
+          "$DEST/scripts/agent-chat" "$DEST/scripts/agent-kick" \
           "$DEST/scripts/agent-template" "$DEST/scripts/agent-template-feedback" \
           "$DEST/scripts/agent-template-weekly" \
           "$DEST/scripts/agent-advisor" "$DEST/scripts/agent-rules" "$DEST/scripts/triage.sh" \
@@ -318,6 +323,7 @@ chmod 755 "$DEST/scripts/create-agent.sh" "$DEST/scripts/agent-board-poll" \
 # A symlink, so the installed runner and the installed skill can never drift
 # apart, and so the runner still finds its adapters through readlink -f.
 ln -sfn "$DEST/scripts/agent-board-poll" "$BIN/agent-board-poll"
+ln -sfn "$DEST/scripts/agent-board-poll-tick" "$BIN/agent-board-poll-tick"
 ln -sfn "$DEST/scripts/agent-chat" "$BIN/agent-chat"
 ln -sfn "$DEST/scripts/agent-kick" "$BIN/agent-kick"
 ln -sfn "$DEST/scripts/agent-template" "$BIN/agent-template"
@@ -381,6 +387,15 @@ printf '{"title":"x","description":"y","comments":[]}' \
           "run $DEST/scripts/triage.sh --help and check python3 is present"
 
 migrate_queued_instructions
+
+# AGTE-13: a hand-made board wrapper that calls hypertask directly (like the
+# old ~/.local/bin/htbot) sits right next to the real per-agent board CLIs in
+# $BIN. Scan for one on every install, not only when a new agent is
+# provisioned, so a fix reaches every host on its next agent-template update.
+CORE_ROOT="$DEST"
+# shellcheck disable=SC1091
+. "$DEST/scripts/lib/core.sh"
+core_guard_token_wrappers "$BIN" no
 
 # The shared agent-board-poll@ unit pair is refreshed on every install, not
 # only when a new agent is provisioned, so a fix to the unit (like the

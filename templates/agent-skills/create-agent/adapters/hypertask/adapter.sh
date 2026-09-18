@@ -13,6 +13,7 @@ _ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLAIN_LANGUAGE_DIR="${PLAIN_LANGUAGE_DIR:-$_ADAPTER_DIR/plain-language}"
 PLAIN_LANGUAGE_CHECK="${PLAIN_LANGUAGE_CHECK:-$PLAIN_LANGUAGE_DIR/check-comment.py}"
 POSPEAK_SKILL="${POSPEAK_SKILL:-$PLAIN_LANGUAGE_DIR/pospeak.md}"
+TICKET_FORMAT_RULE="${TICKET_FORMAT_RULE:-$PLAIN_LANGUAGE_DIR/ticket-format.md}"
 UNSLOP_SKILL="${UNSLOP_SKILL:-$PLAIN_LANGUAGE_DIR/unslop.md}"
 ADHD_SKILL="${ADHD_SKILL:-$PLAIN_LANGUAGE_DIR/i-have-adhd.md}"
 TICKET_LINK_FORMATTER="${TICKET_LINK_FORMATTER:-$_ADAPTER_DIR/../../scripts/ticket_links.py}"
@@ -308,11 +309,13 @@ QUIET="$quiet"
 VERBATIM="\${AGENT_COMMENT_VERBATIM:-no}"
 RUN_LOG="\${XDG_STATE_HOME:-\$HOME/.local/state}/agent-board-poll/$slug.log"
 POSTED="\${XDG_STATE_HOME:-\$HOME/.local/state}/agent-board-poll/$slug.posted-comments"
+MOVED="\${XDG_STATE_HOME:-\$HOME/.local/state}/agent-board-poll/$slug.moved-tickets"
 OWNER_MENTIONS="\${XDG_STATE_HOME:-\$HOME/.local/state}/agent-board-poll/$slug.owner-mentions"
 PLAIN_LANGUAGE_DIR="$plain_language_dir"
 PLAIN_LANGUAGE_CHECK="\$PLAIN_LANGUAGE_DIR/check-comment.py"
 OUTBOUND_TEXT_GATE="\$PLAIN_LANGUAGE_DIR/outbound-text-gate.sh"
 POSPEAK_SKILL="\${AGENT_POSPEAK_SKILL:-\$PLAIN_LANGUAGE_DIR/pospeak.md}"
+TICKET_FORMAT_RULE="\${AGENT_TICKET_FORMAT_RULE:-\$PLAIN_LANGUAGE_DIR/ticket-format.md}"
 UNSLOP_SKILL="\${AGENT_UNSLOP_SKILL:-\$PLAIN_LANGUAGE_DIR/unslop.md}"
 ADHD_SKILL="\${AGENT_ADHD_SKILL:-\$PLAIN_LANGUAGE_DIR/i-have-adhd.md}"
 TICKET_LINK_FORMATTER="$plain_language_dir/../../../scripts/ticket_links.py"
@@ -403,6 +406,123 @@ print(pattern.sub(replace, text), end="")
 '
 }
 
+# QA moves are fail-closed around the two tickets the product owner reserves:
+# a valentin label or a direct board-owner assignment. Agent-linked assignee
+# rows carry their creator at the top level, so only a row without an agent
+# counts as a direct human assignment.
+if [ "\${AGENT_QA_MOVE:-no}" = "yes" ] && [ "\${1:-}" = "task" ] \
+   && [ "\${2:-}" = "move" ] && [ -n "\${3:-}" ]; then
+  REF="\$3"
+  TASK="\$(hypertask --token "\$TOKEN" --json task get "\$REF" 2>/dev/null || true)"
+  PROJECT_ID="\$(TASK="\$TASK" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ["TASK"])
+    task = (doc.get("tasks") or [doc.get("task") or doc])[0]
+    print(task.get("projectId") or task.get("boardId") or "")
+except (IndexError, json.JSONDecodeError, TypeError):
+    pass
+')"
+  PROJECT=""
+  [ -z "\$PROJECT_ID" ] || PROJECT="\$(hypertask --token "\$TOKEN" --json project show "\$PROJECT_ID" 2>/dev/null || true)"
+  PROTECTION="\$(TASK="\$TASK" PROJECT="\$PROJECT" python3 -c '
+import json, os
+try:
+    doc = json.loads(os.environ["TASK"])
+    task = (doc.get("tasks") or [doc.get("task") or doc])[0]
+    project_doc = json.loads(os.environ["PROJECT"])
+    project = project_doc.get("project") if isinstance(project_doc.get("project"), dict) else project_doc
+except (IndexError, json.JSONDecodeError, TypeError):
+    print("unverified")
+    raise SystemExit
+owner = str(project.get("ownerId") or (project.get("owner") or {}).get("id") or "")
+if not owner:
+    print("unverified")
+    raise SystemExit
+labels = set()
+for label in task.get("labels") or []:
+    name = (label.get("name") or label.get("title") or label.get("label") or "") if isinstance(label, dict) else str(label)
+    if name:
+        labels.add(str(name).strip().casefold())
+if "valentin" in labels:
+    print("label valentin")
+    raise SystemExit
+for who in task.get("assignees") or []:
+    if not isinstance(who, dict) or isinstance(who.get("agent"), dict):
+        continue
+    if str(who.get("id") or who.get("userId") or "") == owner:
+        print("board owner assignment")
+        raise SystemExit
+print("ok")
+')"
+  if [ "\$PROTECTION" != "ok" ]; then
+    _comment_cap_note "QA move skipped on \$REF: \$PROTECTION"
+    exit 0
+  fi
+  if OUT="\$(hypertask --token "\$TOKEN" "\$@")"; then RC=0; else RC=\$?; fi
+  printf '%s\n' "\$OUT"
+  if [ "\$RC" -eq 0 ]; then
+    SECTION=""
+    args=("\$@")
+    for ((i = 0; i < \${#args[@]}; i++)); do
+      [ "\${args[\$i]}" = "--section" ] && SECTION="\${args[\$((i + 1))]:-}"
+    done
+    mkdir -p "\$(dirname "\$MOVED")" 2>/dev/null || true
+    printf '%s\t%s\n' "\$REF" "\$SECTION" >> "\$MOVED" 2>/dev/null || true
+  fi
+  exit "\$RC"
+fi
+_write_comment_with_ai() {
+  local original="\$1" ref="\$2" plain marker prompt output rewritten
+  plain="\$(_plain_comment "\$original")"
+  [ "\${#plain}" -ge 120 ] || { TEXT="\$original"; return 0; }
+  case "\$plain" in
+    Answer:*|Question:*|Decision:*|Handoff:*|Done:*) marker="\${plain%%:*}:" ;;
+    *)
+      if [ "\${AGENT_REPLY_ONLY:-no}" != "yes" ]; then TEXT="\$original"; return 0; fi
+      marker="" ;;
+  esac
+  prompt="Rewrite this ticket comment for a product owner in plain language. Keep the leading marker exactly when one is present. Keep every @mention and HTML mention span exactly. Keep every link and the original meaning. Return one concise HTML comment only.
+
+Original comment:
+\$original"
+  if [ -n "\${AGENT_AI_WRITER_FIXTURE:-}" ]; then
+    output="\$(cat "\$AGENT_AI_WRITER_FIXTURE" 2>/dev/null)" || output=""
+  else
+    output="\$(hypertask --token "\$TOKEN" --json ai write "\$prompt" --task "\$ref" --mode write-with-ai 2>/dev/null)" || output=""
+  fi
+  rewritten="\$(OUTPUT="\$output" python3 -c '
+import json, os
+raw = os.environ["OUTPUT"]
+start, end = raw.find("{"), raw.rfind("}")
+try:
+    doc = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+except json.JSONDecodeError:
+    doc = {}
+if doc.get("success") is not False:
+    print(str(doc.get("html") or "").strip(), end="")
+' 2>/dev/null || true)"
+  if [ -n "\$rewritten" ] && ORIGINAL="\$original" REWRITTEN="\$rewritten" MARKER="\$marker" python3 -c '
+import html, os, re, sys
+original = os.environ["ORIGINAL"]
+rewritten = os.environ["REWRITTEN"]
+marker = os.environ["MARKER"]
+def plain(value):
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", value)).split())
+if not plain(rewritten).casefold().startswith(marker.casefold()):
+    raise SystemExit(1)
+spans = re.findall(r"<span\\b(?=[^>]*data-label\\s*=\\s*[\"\x27]?name-[A-Za-z0-9_-]+)[^>]*>.*?</span>", original, re.I | re.S)
+mentions = re.findall(r"(?<![A-Za-z0-9_])@[A-Za-z0-9_.-]+", plain(original))
+if any(value not in rewritten for value in spans) or any(value not in plain(rewritten) for value in mentions):
+    raise SystemExit(1)
+'; then
+    TEXT="\$rewritten"
+  else
+    TEXT="\$original"
+    _comment_cap_note "Write with AI failed on \$ref; posting the original comment"
+  fi
+}
+
 # An update has no ticket reference, so it cannot safely spend a per-ticket
 # allowance. Owner mentions must be added in a new comment where the wrapper
 # can identify the ticket and enforce its 24-hour ledger.
@@ -467,6 +587,7 @@ if [ "\${1:-}" = "comment" ] && [ "\${2:-}" = "add" ] && [ -n "\${3:-}" ]; then
         _comment_cap_note "quiet mode: stripped board-owner mention from comment on \$REF"
       fi
     fi
+    _write_comment_with_ai "\$TEXT" "\$REF"
     _outbound_text_gate "\$TEXT" "\$VERBATIM" || exit 0
     mkdir -p "\$(dirname "\$OWNER_MENTIONS")" 2>/dev/null || true
     touch "\$OWNER_MENTIONS"
@@ -572,6 +693,8 @@ else:
         UPDATE_ID="\${VERDICT#UPDATE:}"
         if OUT="\$(hypertask --token "\$TOKEN" comment update "\$UPDATE_ID" --text "\$TEXT")"; then
           _comment_cap_note "comment dedupe on \$REF: updated near-identical comment \$UPDATE_ID instead of posting a new one"
+          mkdir -p "\$(dirname "\$POSTED")" 2>/dev/null || true
+          printf '%s %s\n' "\$REF" "\$UPDATE_ID" >> "\$POSTED" 2>/dev/null || true
           printf '%s\n' "\$OUT"
           exit 0
         else
@@ -684,11 +807,16 @@ for task in doc.get("tasks") or []:
     if wanted and section.casefold() not in wanted:
         continue
     agent_ids = []
+    human_assignee_ids = []
     assignees = task.get("assignees") or []
     for who in assignees:
         agent = who.get("agent") if isinstance(who, dict) else None
         if isinstance(agent, dict) and agent.get("id"):
             agent_ids.append(str(agent["id"]))
+        elif isinstance(who, dict):
+            human_id = who.get("id") or who.get("userId")
+            if human_id is not None:
+                human_assignee_ids.append(str(human_id))
     # Labels decide whether a ticket is open season. A board carries them under
     # several shapes depending on how the task was created, so take the name
     # off whichever one is present and lowercase it once, here.
@@ -714,6 +842,7 @@ for task in doc.get("tasks") or []:
         "priority": str(priority),
         "dueDate": task.get("dueDate") or "",
         "agent_ids": agent_ids,
+        "human_assignee_ids": human_assignee_ids,
         # Anyone at all on the ticket, human or agent: a ticket with a name on
         # it belongs to whoever put it there, and is not free to pick up.
         "assignee_count": len(assignees),
@@ -816,6 +945,84 @@ comments = json.loads(os.environ["COMMENTS"])
 if comments:
     print(json.dumps(max(comments, key=lambda c: (c.get("createdAt") or "", c.get("id") or 0))))
 '
+}
+
+# adapter_qa_board_config <board-cli> <board-ids> <fail-override> <blocked-override>
+# One JSON object per board with the protected owner and resolved QA columns.
+adapter_qa_board_config() {
+  local board_cli="$1" board_ids="$2" fail_override="$3" blocked_override="$4"
+  local board project
+  for board in $(printf '%s' "$board_ids" | tr ',' ' '); do
+    [ -n "$board" ] || continue
+    project="$($board_cli --json project show "$board" 2>/dev/null)" || return 1
+    printf '%s' "$project" | BOARD="$board" FAIL="$fail_override" BLOCKED="$blocked_override" python3 -c '
+import json, os, sys
+raw = sys.stdin.read()
+start, end = raw.find("{"), raw.rfind("}")
+if start < 0 or end <= start:
+    raise SystemExit(1)
+doc = json.loads(raw[start:end + 1])
+project = doc.get("project") if isinstance(doc.get("project"), dict) else doc
+sections = project.get("sections") or []
+def name(item):
+    if isinstance(item, dict):
+        return str(item.get("section_title") or item.get("title") or item.get("name") or item.get("id") or "")
+    return str(item or "")
+names = [name(item) for item in sections if name(item)]
+def canonical(value):
+    value = str(value or "").strip()
+    return next((item for item in names if item.casefold() == value.casefold()), value)
+fail = os.environ["FAIL"].strip()
+if fail:
+    fail = canonical(fail)
+else:
+    for key in ("intakeSection", "intake_section", "defaultSection", "default_section"):
+        fail = name(project.get(key))
+        if fail:
+            break
+    if not fail:
+        defaults = project.get("defaultSections") or project.get("default_sections") or []
+        fail = name(defaults[0]) if defaults else ""
+    if not fail:
+        intake = [name(item) for item in sections if isinstance(item, dict) and (
+            item.get("isIntake") or str(item.get("type") or item.get("role") or "").casefold() == "intake")]
+        fail = intake[0] if intake else (names[0] if names else "")
+blocked = os.environ["BLOCKED"].strip()
+if blocked:
+    blocked = canonical(blocked)
+else:
+    blocked = next((item for item in names if item.casefold() == "ht manager review"), "")
+owner = project.get("ownerId") or (project.get("owner") or {}).get("id") or ""
+print(json.dumps({"board": os.environ["BOARD"], "owner_id": str(owner),
+                  "fail_section": fail, "blocked_section": blocked}))
+'
+  done
+}
+
+# adapter_clear_assignees <board-cli> <ref>
+adapter_clear_assignees() {
+  local board_cli="$1" ref="$2" task assignees assignee
+  task="$($board_cli --json task get "$ref" 2>/dev/null)" || return 1
+  assignees="$(printf '%s' "$task" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+start, end = raw.find("{"), raw.rfind("}")
+if start < 0 or end <= start:
+    raise SystemExit(1)
+doc = json.loads(raw[start:end + 1])
+task = (doc.get("tasks") or [doc.get("task") or doc])[0]
+for who in task.get("assignees") or []:
+    if not isinstance(who, dict):
+        continue
+    agent = who.get("agent") if isinstance(who.get("agent"), dict) else {}
+    value = agent.get("id") or who.get("id") or who.get("userId")
+    if value is not None:
+        print(value)
+')" || return 1
+  while IFS= read -r assignee; do
+    [ -n "$assignee" ] || continue
+    "$board_cli" task unassign "$ref" --assignee "$assignee" >/dev/null 2>&1 || return 1
+  done <<< "$assignees"
 }
 
 # _ht_owned_row <token-file> <task-id> <row-json> <board-id> <agent-id>
@@ -1562,9 +1769,15 @@ view, inline = json.loads(os.environ["VIEW"]), json.loads(os.environ["INLINE"])
 failed, pending, review = [], [], []
 for check in view.get("statusCheckRollup") or []:
     name = check.get("name") or check.get("context") or "unnamed check"
+    ctx_state = str(check.get("state") or "").upper()
     status = str(check.get("status") or "").upper()
     conclusion = str(check.get("conclusion") or "").upper()
-    if status != "COMPLETED" or not conclusion:
+    if ctx_state:
+        if ctx_state == "PENDING":
+            pending.append(name)
+        elif ctx_state != "SUCCESS":
+            failed.append({"name": name, "conclusion": ctx_state, "url": check.get("targetUrl") or ""})
+    elif status != "COMPLETED" or not conclusion:
         pending.append(name)
     elif conclusion not in ("SUCCESS", "NEUTRAL", "SKIPPED"):
         failed.append({"name": name, "conclusion": conclusion, "url": check.get("detailsUrl") or ""})
@@ -1847,6 +2060,22 @@ adapter_run_prompt() {
   local primary="${SKILLS_INDEX_PRIMARY:-$skills_index}"
   local route_sh="$(dirname "$primary")/ticket-lifecycle/scripts/route.sh"
   local claim_sh="$(dirname "$primary")/ticket-lifecycle/scripts/claim-ticket.sh"
+  if [ "${AGENT_KIND:-dev}" = "qa" ]; then
+    cat <<EOF
+You are $agent_name. Verify one ticket, $ref, and do not change its implementation.
+
+Ticket $url: $title
+
+$description
+
+Latest comment: ${latest:-none}
+
+Read $skills_index first, in order. Inspect the shipped behavior and run the
+smallest test that proves each acceptance step. Finish with exactly one verdict
+comment and the matching board move. Never stop after posting the verdict.
+EOF
+    return 0
+  fi
   cat <<EOF
 You are $agent_name. You have one ticket, $ref, and this process ends when you do.
 

@@ -95,7 +95,8 @@ if [ "$created" = 'instruction filed: AGTE-1 https://app.hypertask.ai/detail/pro
    && [ "$(cat "$BOARD_FIXTURE/assigned")" = AGTE-1 ] \
    && [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ticket_id"])' "$marker")" = task-1 ] \
    && [ "$due_default_ok" = yes ] \
-   && grep -q '^<p><strong>Instruction</strong></p><p>Review &lt;the setup&gt; now\.</p><p>Then report the pull request\.</p><p><strong>Source ticket</strong>:' "$BOARD_FIXTURE/description"; then
+   && [ "$(cat "$BOARD_FIXTURE/title")" = 'Review <the setup> now.' ] \
+   && grep -q '^<p><strong>Instruction</strong></p><p>Then report the pull request\.</p><p><strong>Source ticket</strong>:' "$BOARD_FIXTURE/description"; then
   ok instruct-creates-ticket 'ticket is HTML, assigned to Product Bot, due in four hours, and queue transport is removed'
 else
   bad instruct-creates-ticket "output=$created queued=${queued:-none} calls=$(cat "$BOARD_FIXTURE/calls")"

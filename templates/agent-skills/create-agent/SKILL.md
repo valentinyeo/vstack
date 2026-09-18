@@ -123,16 +123,27 @@ ticket per day unless a human writes in between. With `QUIET="on"`, the wrapper
 strips and logs board-owner mentions; moving the ticket to review requests
 attention.
 
-All five comment kinds are for a product owner reading on a phone. Every runner
+All five comment kinds are for a product owner reading on a phone. The agent
+drafting any kind must run the draft through the real pospeak, unslop, and
+i-have-adhd skills before posting, not only satisfy a mechanical shape check.
+A comment can be a bold first sentence, under 80 words, and still be noise to
+him: passing the shape check is not the same as being readable. Every runner
 prompt includes the pospeak, unslop, and i-have-adhd rules verbatim. It reads
 the canonical `skills/talk-to-valentin/` company-pack copy when present and
-uses the template's bundled copy when a reference is absent. Before any kind
-posts, the board wrapper requires a bold first sentence in a first `<p>`, at
-most 80 words, no code-shaped detail or em dash, linked ticket and PR
-references, and a final question or `Next:` block. The final gate validates
-that shape only. It never rewrites words, links, markers, or punctuation. If a
-check fails, the wrapper keeps the unchanged draft and reasons in the run log,
-posts a held activity, and posts no comment.
+uses the template's bundled copy when a reference is absent. Owner-facing text
+bans skill names, `ROUTE:` lists, file paths, PR numbers without a full URL,
+and branch names, on top of the mechanical checks. Before any kind posts, the
+board wrapper requires a bold first sentence in a first `<p>`, at most 80
+words, no code-shaped detail or em dash, linked ticket and PR references, and
+a final question or `Next:` block. A failure gets one 60-second rewrite through
+`CHAT_CLI`, falling back to `RESEARCH_CLI`. If the rewrite still fails, the
+wrapper keeps the draft and reasons in the run log, posts `Question held: did
+not pass the plain-language check` as activity, and posts no comment.
+
+When the owner writes "I don't understand" or asks for a guide, the answering
+agent posts exactly one `Decision:` comment shaped as a numbered guide and
+nothing else: (1) what is live, (2) what he must do, naming the page URL and
+the button, (3) what needs rights he may lack, and (4) what the bots do next.
 
 A human question or direct mention uses a separate reply-only route. The prompt
 contains the complete ticket description and thread, a deduplicated shared
@@ -204,6 +215,20 @@ An optional signed receiver can run on localhost by setting
 `AGENT_CHAT_WEBHOOK_PORT`; an agent using it also needs
 `CHAT_WEBHOOK_SECRET_FILE` in its conf. Expose and register that receiver only
 on a host with a real public HTTPS route. Both modes call the same handler.
+
+A third loop, the ticket-ack lane, runs every 60 seconds (`AGENT_ACK_SECONDS`)
+for every `CHAT="on"` agent that also has a `BOARD_ID`. It reads
+`agent-board-poll`'s own `<slug>.lock` for the ticket the agent is currently
+running and, if a human posted a comment on that ticket the agent has not
+answered yet, posts one acknowledgement naming how many tasks are ahead
+(`agent-progress`'s `eligible_work.count`) and an estimate built from the
+agent's own recent `run start`/`run done` durations, the current run's
+elapsed time, and that queue length. Once the ticket frees up, the
+next tick asks `CHAT_CLI` (falling back to `MODEL_CLI`) for a real answer from
+the ticket and the run log alone and edits the acknowledgement in place with
+`comment update`, never a second comment. State lives in
+`~/.local/state/agent-chat/ack-state.json`, keyed by ticket and question
+comment id.
 
 Provisioning prints `https://app.hypertask.ai/agents/chat?agent=<slug>`. Send a
 message there with a human account, then quote the timestamped reply from the
@@ -523,6 +548,8 @@ See `CONF.md` for the complete schema.
 | `TOKEN_FILE` | absolute path to the 0600 token file |
 | `BOARD_CLI` | the wrapper that runs board writes as this agent |
 | `WATCH_SECTIONS` | comma-separated columns to watch |
+| `QA_FAIL_SECTION` | optional failed-QA destination; defaults to the board's first intake column |
+| `QA_BLOCKED_SECTION` | optional cannot-test destination; defaults to `HT Manager Review` when present |
 | `SKILLS_INDEX` | the indexes the agent reads first, comma separated, **company pack first, bot pack last** |
 | `MODEL_CLI` | required full command for normal ticket work |
 | `LADDER` | optional `\|`-separated escalation commands, one per failure after three |
@@ -605,18 +632,23 @@ agent-template update --keep-timers
 agent-template instruct <slug> <text|-> [--ticket <url>]
 ```
 
-`repos.allow` beside the conf supplies `key,path,github slug,base branch` CSV
-rows. A first install discovers the slug and default branch from each checkout's
-`origin`; a build outside the file or whose checkout origin differs is refused.
-An accepted build writes the standard worktree, pull request, check,
-squash-merge, deployment, cleanup, and reporting
-guardrails into a prompt, starts a memory-capped systemd user job, and records
-its paths and status in `<slug>-builds.json`. Status prints the exit marker and
-twelve output lines; list is the source for answering what the agent did.
+`repos.allow` beside the conf supplies `key,path,github slug,base branch,memory
+cap` CSV rows, with the memory cap optional. Its default is 12 GB on hosts with
+more than 32 GB of RAM and half of RAM otherwise. A first install discovers the
+slug and default branch from each checkout's `origin`; a build outside the
+file or whose checkout origin differs is refused. An accepted build writes the
+standard worktree, pull request, check, squash-merge, deployment, cleanup, and
+reporting guardrails into a prompt, starts the capped systemd user job, and
+records its paths and status in `<slug>-builds.json`. Status prints the exit
+marker and twelve output lines; list is the source for answering what the
+agent did.
 
-The runner checks build records every tick. It posts exactly one `Done:` line
-with the pull request URL on success or one checked `Decision: build failed:`
-comment on failure, then closes the record. Ticket URLs are resolved through the
+Before each runner tick, the service reconciles completed systemd build units.
+It records any non-success result as failed, including jobs killed before they
+could write an exit marker. An OOM kill posts `Decision: build failed: out of
+memory` in that tick. The runner posts exactly one `Done:` line with the pull
+request URL on success or one checked `Decision: build failed:` comment on other
+failures, then closes the record. Ticket URLs are resolved through the
 board adapter before posting. Comment failures stop after two attempts and log
 the command, exit code, and stderr. `merge` accepts only an allowlisted,
 non-draft pull request whose checks are all green and always uses squash merge.
@@ -655,6 +687,21 @@ overrule it by changing it. A `hard` ticket runs on `TRIAGE_HARD_CLI` when
 configured, otherwise `MODEL_CLI`, and has to post a numbered plan (root cause, files, how it will verify) as its first
 comment, which counts toward its three. An `easy` ticket changes nothing. QA
 agents are never scored: they verify somebody else's work.
+
+## QA completion
+
+A QA run has one terminal verdict and one matching board transition. Pass posts
+one `Done:` comment and moves to Done. Fail posts one `Handoff:` comment whose
+single line names the failing step, clears every assignee, and moves to
+`QA_FAIL_SECTION`, or the board's first intake column when that key is empty. Cannot test posts one
+`Question:` and moves to `QA_BLOCKED_SECTION`, or `HT Manager Review` when it
+exists; with neither column configured it stays in QA.
+
+The runner enforces this contract after the model exits. It parses `Done:`,
+`Handoff:`, or `Question:` from the verdict comment and supplies a missing move.
+On every tick it also backfills QA tickets whose newest comment is that agent's
+verdict and is at least ten minutes old. A ticket labelled `valentin` or
+directly assigned to the board owner is skipped and never moved.
 
 When `RESEARCH_CLI` exists, an agent stuck mid-run can use `agent-advisor
 "<one precise question>"`. It receives the ticket, last ten comments and current

@@ -51,6 +51,8 @@ A file at `~/.local/state/agent-board-poll/model-override/<REF>` may contain one
 | `TOKEN_FILE` | Absolute path to the 0600 token file. |
 | `BOARD_CLI` | Agent-authenticated board wrapper. |
 | `WATCH_SECTIONS` | Comma-separated watched columns. QA agents include `QA` by default and on template update. |
+| `QA_FAIL_SECTION` | QA failure destination. Defaults to the board's first intake column. Failed QA also clears every assignee. |
+| `QA_BLOCKED_SECTION` | Cannot-test destination. Defaults to `HT Manager Review` when that column exists; otherwise the ticket stays in QA. |
 | `SKILLS_INDEX` | Optional comma-separated extra indexes. |
 | `MAX_CONCURRENT_RUNS` | Runs started per tick, default 1. |
 | `RETRY_LIMIT` | Total failed attempts allowed per window. By default this is three plus the number of `LADDER` commands. |
@@ -59,7 +61,7 @@ A file at `~/.local/state/agent-board-poll/model-override/<REF>` may contain one
 | `TRIAGE` | Whether to score difficulty before pickup. |
 | `TRIAGE_MODEL_CLI` | Optional tie-break scoring command, default `MODEL_CLI`. |
 | `ADVISOR_MAX` | Research calls per run, default 2 when `RESEARCH_CLI` exists. |
-| `CHAT` | `on` enables the host chat lane, including each configured board's agent room. |
+| `CHAT` | `on` enables the host chat lane, including each configured board's agent room. With `BOARD_ID` also set, it enables the ticket-ack lane: an acknowledgement within one 60-second tick while the runner is busy on that ticket, later edited in place with the full answer. |
 | `ROOM_DAILY_TURN_BUDGET` | Maximum agent-room replies per board and UTC day across this host; default `20`, and `0` disables room replies. |
 | `QUIET` | `on` redirects unmarked comments to run activity and strips board-owner mentions; default `on`. |
 | `ANSWERER_FALLBACK` | Slug of the agent that answers owner questions when there is no mention, agent assignee, or prior `Done:` or `Decision:` author; default empty. |
@@ -74,4 +76,4 @@ A file at `~/.local/state/agent-board-poll/model-override/<REF>` may contain one
 
 On this maintainer host, set `ANSWERER_FALLBACK="product-bot"` in the agent confs so Product Bot handles owner questions only when the first three answerer ranks do not apply. This is host configuration, not a runner default.
 
-A maintainer reads `repos.allow` beside its conf. Each CSV row is `key,path,github slug,base branch`; first install discovers the slug and default branch from each checkout's `origin`. Paths and pull requests outside that file, and checkouts whose origin no longer matches, are refused. Build history is stored at `~/.local/state/agent-board-poll/<slug>-builds.json`. Advisor instructions use `<slug>-instructions/` only as transport to an assigned board 5500 ticket, with created ticket ids under `~/.local/state/agent-template/instruction-tickets/` for idempotent install migration.
+A maintainer reads `repos.allow` beside its conf. Each CSV row is `key,path,github slug,base branch,memory cap`, with the last field optional; the cap defaults to 12 GB on hosts with more than 32 GB of RAM and half of RAM otherwise. First install discovers the slug and default branch from each checkout's `origin`. Paths and pull requests outside that file, and checkouts whose origin no longer matches, are refused. Build history is stored at `~/.local/state/agent-board-poll/<slug>-builds.json`. Advisor instructions use `<slug>-instructions/` only as transport to an assigned board 5500 ticket, with created ticket ids under `~/.local/state/agent-template/instruction-tickets/` for idempotent install migration.
