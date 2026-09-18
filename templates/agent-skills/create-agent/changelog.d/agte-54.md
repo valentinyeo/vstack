@@ -1,1 +1,0 @@
-- Product Bot now triages every board's Bugs and Triage columns every four hours, preserves owner urgency and due dates, merges duplicates, asks for missing bug details, and posts one daily top-five summary without touching owner-protected tickets.

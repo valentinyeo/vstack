@@ -1,3 +1,7 @@
+## 3.56.0 - 2026-09-18
+
+- Product Bot now triages every board's Bugs and Triage columns every four hours, preserves owner urgency and due dates, merges duplicates, asks for missing bug details, and posts one daily top-five summary without touching owner-protected tickets.
+
 ## 3.55.0 - 2026-09-18
 
 - AGTE-38 makes ordinary poll ticks page task lists, rank only tickets changed since the prior tick, cap ranking at 60 seconds, and run no more than one full safety scan per hour.
