@@ -1781,11 +1781,7 @@ repeated: $REPEATED"
     TITLE="$(cat "$BODY_FILE.title")"
   else
     WRITER_RC=$?
-    if [ "$WRITER_RC" -eq 1 ]; then
-      printf 'Task Writer unavailable; using the original feedback ticket format.\n' >&2
-    else
-      exit "$WRITER_RC"
-    fi
+    [ "$WRITER_RC" -eq 1 ] || exit "$WRITER_RC"
   fi
 fi
 

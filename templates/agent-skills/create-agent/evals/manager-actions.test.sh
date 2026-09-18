@@ -362,7 +362,7 @@ fi
 
 feedback_retry="$(BOARD_LABEL_WARNING=yes AGENT_SLUG= run_template feedback \
   --board-cli "$TMP/bin/board" --kind idea --what 'Clear retry result' \
-  --got 'labels unavailable' --expected 'show only the filed ticket')"
+  --got 'labels unavailable' --expected 'show only the filed ticket' 2>&1)"
 if [ "$feedback_retry" = 'Feedback filed: idea: Clear retry result. Ticket: AGTE-99 https://app.hypertask.ai/detail/project-5500/99' ]; then
   ok feedback-label-retry-quiet "successful retry hides the internal label warning"
 else
