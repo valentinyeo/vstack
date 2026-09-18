@@ -402,7 +402,7 @@ else
   bad oom-unit-fails-and-comments "state=$oom_state comments=$oom_comments board=$(cat "$TMP/board-native.log")"
 fi
 
-printf 'default,%s,example/default,main\n' "$REPO" >> "$CONF_DIR/repos.allow"
+printf 'default,%s,example/allowed,main\n' "$REPO" >> "$CONF_DIR/repos.allow"
 mem_kb="$(sed -n 's/^MemTotal:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*kB$/\1/p' /proc/meminfo | head -n1)"
 if [ "$mem_kb" -gt 33554432 ]; then default_cap=12G; else default_cap="$((mem_kb / 2))K"; fi
 AGENT_SLUG=maintainer run_template build --repo default \
