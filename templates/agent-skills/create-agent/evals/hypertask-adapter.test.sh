@@ -14,6 +14,24 @@ CORE_ROOT="$ROOT"
 # shellcheck disable=SC1090
 . "$ROOT/scripts/lib/core.sh"
 core_load_adapter hypertask
+
+maintainer_prompt="$(MAINTAINER=on adapter_run_prompt "/company/INDEX.md" "Product Bot" "/bin/board" \
+  "AGTE-68" "https://app.hypertask.ai/detail/project-5500/68" "Merge PR 7" \
+  "Merge the green allowlisted pull request." "" "assigned instruction")"
+regular_prompt="$(MAINTAINER=off adapter_run_prompt "/company/INDEX.md" "Developer" "/bin/board" \
+  "TEST-1" "https://app.hypertask.ai/detail/project-1/1" "Fix the bug" \
+  "Change the implementation." "" "new work")"
+if printf '%s' "$maintainer_prompt" | grep -qF 'FINISH IT AS THE SETUP MAINTAINER' \
+   && printf '%s' "$maintainer_prompt" | grep -qF 'agent-template merge <pr-url>' \
+   && printf '%s' "$maintainer_prompt" | grep -qF 'Do not create an implementation branch for a direct operation, delegate it, hand it to a developer' \
+   && printf '%s' "$maintainer_prompt" | grep -qF 'post a `Done:` comment that names the result and links the pull request' \
+   && ! printf '%s' "$maintainer_prompt" | grep -qF 'branch off the production branch' \
+   && printf '%s' "$regular_prompt" | grep -qF 'branch off the production branch'; then
+  ok maintainer-direct-action-prompt 'merge instructions execute in the maintainer run instead of entering developer PR workflow'
+else
+  bad maintainer-direct-action-prompt "maintainer=$maintainer_prompt regular=$regular_prompt"
+fi
+
 COMMENTS="$TMP/comments.json"
 _ht_get() { cat "$COMMENTS"; }
 
@@ -88,11 +106,14 @@ printf 'token\n' > "$TMP/token"
 RUN_OPEN_PAYLOAD="$TMP/run-open-payload"
 _ht_run_post() { printf '%s' "$3" > "$RUN_OPEN_PAYLOAD"; printf '404\n{}'; }
 run_id="$(adapter_run_open "$TMP/token" task-1 "$TMP/run.log" on)"
-adapter_run_activity "$TMP/token" "$run_id" "$TMP/run.log" action 'started TEST-1'
+AGENT_RUN_AGENT=dev-1 AGENT_RUN_MODEL=gpt-test AGENT_RUN_STARTED_AT=2026-01-01T00:00:00Z \
+AGENT_RUN_STARTED_EPOCH="$(date +%s)" AGENT_RUN_OUTCOME=running \
+AGENT_RUN_LOG_LINK=file:///tmp/run.log \
+  adapter_run_activity "$TMP/token" "$run_id" "$TMP/run.log" action 'started TEST-1'
 adapter_run_stop "$TMP/token" "$run_id" "$TMP/run.log" completed
 if [ "$run_id" = local ] \
    && grep -qF 'opened local-only run for task task-1 graft=on' "$TMP/run.log" \
-   && grep -qF 'action started TEST-1' "$TMP/run.log" \
+   && grep -q 'action started TEST-1 agent=dev-1 model=gpt-test started=2026-01-01T00:00:00Z duration=[0-9]\+s outcome=running log=file:///tmp/run.log' "$TMP/run.log" \
    && grep -qF 'closed run local with status completed' "$TMP/run.log" \
    && RUN_OPEN_PAYLOAD="$RUN_OPEN_PAYLOAD" python3 -c 'import json,os; assert json.load(open(os.environ["RUN_OPEN_PAYLOAD"])) == {"taskId":"task-1","source":"runtime","graft":"on"}'; then
   ok run-api-404-local-only 'a missing runs route keeps graft, open, activity, and close in the local record'
@@ -116,6 +137,9 @@ _ht_run_post() {
   printf '201\n{}'
 }
 technical='<p>Question: Should runThing() in src/app.ts ship?</p>'
+AGENT_RUN_AGENT=dev-1 AGENT_RUN_MODEL=gpt-test AGENT_RUN_STARTED_AT=2026-01-01T00:00:00Z \
+AGENT_RUN_STARTED_EPOCH="$(date +%s)" AGENT_RUN_OUTCOME=running \
+AGENT_RUN_LOG_LINK=https://app.hypertask.ai/agents/runs/run-1 \
 QUIET=on COMMENT_REWRITE_CLI="$TMP/rewrite-model" \
   adapter_run_activity "$TMP/token" run-1 "$TMP/response.log" response "$technical"
 if [ ! -s "$REWRITE_CALLS" ] \
@@ -125,12 +149,38 @@ if [ ! -s "$REWRITE_CALLS" ] \
 import json, os
 with open(os.environ["PAYLOAD"], encoding="utf-8") as handle:
     payload = json.load(handle)
-assert payload == {"type": "action", "text": "Question held: did not pass the plain-language shape check"}
+assert payload["type"] == "action"
+assert payload["text"] == "Question held: did not pass the plain-language shape check"
+assert payload["agent"] == "dev-1" and payload["model"] == "gpt-test"
+assert payload["startedAt"] == "2026-01-01T00:00:00Z"
+assert payload["durationSeconds"] >= 0 and payload["outcome"] == "running"
+assert payload["logUrl"] == "https://app.hypertask.ai/agents/runs/run-1"
 PYEOF
 then
   ok response-uses-comment-gate 'an invalid quiet response is held unchanged without a rewrite call'
 else
   bad response-uses-comment-gate "calls=$(cat "$REWRITE_CALLS") payload=$(cat "$RUN_PAYLOAD") log=$(cat "$TMP/response.log")"
+fi
+
+STOP_PAYLOAD="$TMP/stop-payload"
+RUN_PAYLOAD="$STOP_PAYLOAD"
+AGENT_RUN_AGENT=dev-1 AGENT_RUN_MODEL=gpt-test AGENT_RUN_STARTED_AT=2026-01-01T00:00:00Z \
+AGENT_RUN_STARTED_EPOCH="$(date +%s)" AGENT_RUN_OUTCOME=failed \
+AGENT_RUN_LOG_LINK=https://app.hypertask.ai/agents/runs/run-1 \
+  adapter_run_stop "$TMP/token" run-1 "$TMP/stop.log" failed
+if STOP_PAYLOAD="$STOP_PAYLOAD" python3 - <<'PYEOF'
+import json, os
+payload = json.load(open(os.environ["STOP_PAYLOAD"]))
+assert payload["status"] == payload["outcome"] == "failed"
+assert payload["agent"] == "dev-1" and payload["model"] == "gpt-test"
+assert payload["startedAt"] == "2026-01-01T00:00:00Z"
+assert payload["durationSeconds"] >= 0
+assert payload["logUrl"].endswith("/run-1")
+PYEOF
+then
+  ok run-stop-context 'run close carries agent, model, timing, outcome, and log link'
+else
+  bad run-stop-context "payload=$(cat "$STOP_PAYLOAD")"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
