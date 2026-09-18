@@ -1,3 +1,44 @@
+## 3.50.0 - 2026-09-18
+
+- AGTE-18 adds a ticket-ack lane to `agent-chat.service` so a busy agent
+  acknowledges an owner question within one 60-second tick instead of leaving
+  it unanswered until the ticket work slot frees.
+- The acknowledgement names how many tasks are ahead of the current run and
+  an estimate from the agent's own recent run durations, then a later tick
+  edits that same comment in place with the full answer once the ticket frees
+  up. No second comment is posted.
+- ACTION: run `agent-template update --keep-timers` so the chat lane ships the
+  new ack loop without changing timer state.
+
+## 3.49.0 - 2026-09-18
+
+- AGTE-16 states in SKILL.md and MAINTAINER.md that owner-facing `Question:`
+  and `Decision:` comments must actually be rewritten through the real
+  pospeak, unslop, and i-have-adhd skills, not only pass the mechanical shape
+  check: a comment can be a bold first sentence under 80 words and still be
+  noise, mixing in skill names, `ROUTE:` lists, file paths, unlinked PR
+  numbers, and branch names.
+- Adds the ticket-level rule for "I don't understand": one `Decision:` guide,
+  numbered, covering what is live, what he must do (page URL and button),
+  what needs rights he may lack, and what the bots do next, and nothing else.
+- New `bans_owner_jargon` eval predicate catches the exact failure mode: a
+  `plain-language-check`-passing comment still readable as internal jargon.
+- ACTION: none. This release documents the contract; `check-comment.py` and
+  `agent-board-poll` still need a follow-up change to enforce it mechanically.
+
+## 3.48.0 - 2026-09-18
+
+- AGTE-13 fixes quiet mode getting bypassed by a second wrapper outside the
+  identity shim: install.sh now scans the bin dir for any executable that
+  embeds a managed agent's token file but is not that agent's own BOARD_CLI,
+  and rewrites it to exec the BOARD_CLI (backup kept alongside), or warns
+  loudly when it cannot be rewritten.
+- `--dry-run` reports the same finding without changing anything.
+- Focused coverage rewrites a stray wrapper with a backup, leaves the real
+  BOARD_CLI untouched, and checks the dry-run and refuse-to-rewrite paths.
+- ACTION: run `agent-template update` on every bot host so a stray board
+  wrapper on `PATH` gets rewritten to defer to the identity shim's BOARD_CLI.
+
 ## 3.47.0 - 2026-09-18
 
 - AGTE-10 adds learned rules: a correction to a provisioned repo becomes a
