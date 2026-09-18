@@ -132,7 +132,7 @@ else
 fi
 
 cat > "$TMP/product-comments.json" <<'EOF'
-{"comments":[{"id":6,"createdAt":"2026-01-01T00:01:00Z","agent":{"id":"agent-builder","displayName":"Builder Bot"},"text":"<p>Done: The quiet-mode fixes shipped.</p>"}]}
+{"comments":[{"id":6,"createdAt":"2026-01-01T00:01:00Z","agent":{"id":"agent-builder","displayName":"Builder Bot"},"text":"<p>Done: The quiet-mode fixes shipped. Did it work?</p>"}]}
 EOF
 output="$(run_product_dry)"
 if printf '%s\n' "$output" | grep -qF "newest comment 6 is another bot's status marker and does not address this agent" \

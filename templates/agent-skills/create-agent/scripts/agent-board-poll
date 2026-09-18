@@ -1263,6 +1263,7 @@ print("yes" if json.loads(os.environ["ROW"]).get("assignee_count", 1) == 0 else 
   comment_is_own="no"
   comment_is_human="no"
   comment_is_other_bot_marker="no"
+  comment_has_addressed_question="no"
   mentioned="no"
   comments_json=""
   comments_available="no"
@@ -1313,6 +1314,13 @@ sys.exit(0 if own else 1)'; then
         case "$comment_text" in
           Done:*|Decision:*|Handoff:*) comment_is_other_bot_marker="yes" ;;
         esac
+        if TEXT="$comment_text" NAME="$AGENT_NAME" python3 -c '
+import os, sys
+text = os.environ["TEXT"].casefold()
+name = os.environ["NAME"].strip().casefold()
+sys.exit(0 if "?" in text and name and name in text else 1)'; then
+          comment_has_addressed_question="yes"
+        fi
       fi
       if CJ="$comment_json" M="$MENTION" python3 -c '
 import json, os, sys
@@ -1442,7 +1450,7 @@ print(json.dumps({"owner_id": owner.get("id") or "", "owner_slug": owner.get("sl
   # work for every assigned agent. A direct mention or question still wakes the
   # addressed agent.
   if [ "$comment_is_other_bot_marker" = "yes" ] \
-     && [ "$mentioned" = "no" ] && [[ "$comment_text" != *\?* ]]; then
+     && [ "$mentioned" = "no" ] && [ "$comment_has_addressed_question" = "no" ]; then
     explain "skip  $ref: newest comment $comment_id is another bot's status marker and does not address this agent"
     continue
   fi
