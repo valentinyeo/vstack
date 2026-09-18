@@ -306,6 +306,16 @@ if [ -z "$ONLY" ] && [ -x "$HERE/instruction-tickets.test.sh" ]; then
   echo "-- instruction ticket behavioural checks --"
   bash "$HERE/instruction-tickets.test.sh"
 fi
+if [ -z "$ONLY" ] && [ -x "$HERE/reply-contract.test.sh" ]; then
+  echo ""
+  echo "-- reply contract behavioural checks --"
+  bash "$HERE/reply-contract.test.sh"
+fi
+if [ -z "$ONLY" ] && [ -x "$HERE/board-health.test.sh" ]; then
+  echo ""
+  echo "-- board health behavioural checks --"
+  bash "$HERE/board-health.test.sh"
+fi
 if [ -z "$ONLY" ] && [ -x "$HERE/feedback-loop.test.sh" ]; then
   echo ""
   echo "-- feedback loop behavioural checks --"

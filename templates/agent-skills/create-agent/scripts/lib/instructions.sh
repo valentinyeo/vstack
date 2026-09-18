@@ -38,7 +38,8 @@ PYEOF
 instruction_publish_file() { # instruction_publish_file <queue-json> <agent-conf>
   local queue_file="$1" conf="$2" adapter board_cli agent_id agent_name slug
   local work instruction_id marker_dir marker marker_fields ticket_ref ticket_url
-  local project_out section create_out create_rc assign_out assign_rc
+  local project_out section create_out create_rc assign_out assign_rc due priority
+  local -a create_args
 
   [ -f "$queue_file" ] || {
     printf 'ERROR: queued instruction %s is missing. Do this next: recreate the instruction\n' "$queue_file" >&2
@@ -68,13 +69,14 @@ instruction_publish_file() { # instruction_publish_file <queue-json> <agent-conf
   }
 
   work="$(mktemp -d "${TMPDIR:-/tmp}/agent-instruction.XXXXXX")"
-  if ! python3 - "$queue_file" "$work/title" "$work/body" > "$work/id" <<'PYEOF'
+  if ! python3 - "$queue_file" "$work/title" "$work/body" "$work/due" "$work/priority" > "$work/id" <<'PYEOF'
+import datetime
 import html
 import json
 import re
 import sys
 
-source, title_path, body_path = sys.argv[1:]
+source, title_path, body_path, due_path, priority_path = sys.argv[1:]
 row = json.load(open(source, encoding="utf-8"))
 instruction_id = str(row.get("id") or "")
 instruction = str(row.get("instruction") or "")
@@ -94,8 +96,19 @@ if ticket:
     escaped_ticket = html.escape(ticket, quote=True)
     parts.append('<p><strong>Source ticket</strong>: <a href="%s">%s</a></p>' %
                  (escaped_ticket, html.escape(ticket, quote=False)))
+urgent = bool(re.search(r"\burgent\b", instruction, re.I))
+due = str(row.get("due") or "")
+if not due:
+    try:
+        created = datetime.datetime.fromisoformat(str(row.get("created") or "").replace("Z", "+00:00"))
+    except ValueError:
+        created = datetime.datetime.now(datetime.timezone.utc)
+    due = (created + datetime.timedelta(hours=1 if urgent else 4)).isoformat()
+priority = str(row.get("priority") or ("urgent" if urgent else ""))
 open(title_path, "w", encoding="utf-8").write(summary)
 open(body_path, "w", encoding="utf-8").write("".join(parts))
+open(due_path, "w", encoding="utf-8").write(due)
+open(priority_path, "w", encoding="utf-8").write(priority)
 print(instruction_id)
 PYEOF
   then
@@ -183,11 +196,13 @@ raise SystemExit(1)
       return 1
     fi
 
-    if create_out="$("$board_cli" task create \
-      --project "$INSTRUCTION_BOARD_ID" \
-      --section "$section" \
-      --title "$(cat "$work/title")" \
-      --description "$(cat "$work/body")" --json 2>&1)"; then
+    due="$(cat "$work/due")"
+    priority="$(cat "$work/priority")"
+    create_args=(task create --project "$INSTRUCTION_BOARD_ID" --section "$section"
+      --title "$(cat "$work/title")" --description "$(cat "$work/body")" --due "$due")
+    [ -z "$priority" ] || create_args+=(--priority "$priority")
+    create_args+=(--json)
+    if create_out="$("$board_cli" "${create_args[@]}" 2>&1)"; then
       create_rc=0
     else
       create_rc=$?
