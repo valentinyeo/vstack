@@ -236,11 +236,16 @@ echo "bin:    $BIN/agent-template -> $DEST/scripts/agent-template"
 echo "bin:    $BIN/agent-template-feedback -> $DEST/scripts/agent-template-feedback"
 echo "bin:    $BIN/agent-template-weekly -> compatibility alias"
 echo "bin:    $BIN/agent-advisor -> $DEST/scripts/agent-advisor"
+echo "bin:    $BIN/agent-rules -> $DEST/scripts/agent-rules"
 echo "version: $(cat "$SRC/VERSION")"
 
 if [ "$DRY_RUN" = "yes" ]; then
   echo "company pack: would sync $COMPANY_SKILLS_REPO -> $COMPANY_SKILLS_DIR"
   echo "(dry run: nothing copied)"
+  CORE_ROOT="$SRC"
+  # shellcheck disable=SC1091
+  . "$SRC/scripts/lib/core.sh"
+  core_guard_token_wrappers "$BIN" yes
   feedback_print_discovery
   exit 0
 fi
@@ -307,7 +312,7 @@ chmod 755 "$DEST/scripts/create-agent.sh" "$DEST/scripts/agent-board-poll" \
           "$DEST/scripts/agent-progress" "$DEST/scripts/agent-chat" "$DEST/scripts/agent-kick" \
           "$DEST/scripts/agent-template" "$DEST/scripts/agent-template-feedback" \
           "$DEST/scripts/agent-template-weekly" \
-          "$DEST/scripts/agent-advisor" "$DEST/scripts/triage.sh" \
+          "$DEST/scripts/agent-advisor" "$DEST/scripts/agent-rules" "$DEST/scripts/triage.sh" \
           "$DEST/scripts/sync-project.sh" "$DEST/scripts/migrate-provider-policy.py" \
           "$DEST/evals/run-evals.sh" \
           "$DEST/project-template/.claude/skills/evals/run-evals.sh" \
@@ -345,6 +350,9 @@ PYEOF
 # agent-advisor is on PATH because a run calls it by name from inside a model
 # CLI, where nothing knows where the template is installed.
 ln -sfn "$DEST/scripts/agent-advisor" "$BIN/agent-advisor"
+# Same reason for agent-rules: the learned-rules skill calls it by name from
+# inside a run, in whatever repo that run's checkout is.
+ln -sfn "$DEST/scripts/agent-rules" "$BIN/agent-rules"
 
 bash "$DEST/scripts/create-agent.sh" --help >/dev/null \
   || fail "the installed create-agent.sh does not run" \
@@ -367,12 +375,24 @@ bash "$DEST/scripts/create-agent.sh" --help >/dev/null \
 "$BIN/agent-advisor" --help >/dev/null \
   || fail "the installed agent-advisor does not run" \
           "check that $BIN is on PATH and the symlink resolves"
+"$BIN/agent-rules" --help >/dev/null \
+  || fail "the installed agent-rules does not run" \
+          "check that $BIN is on PATH and the symlink resolves"
 printf '{"title":"x","description":"y","comments":[]}' \
   | bash "$DEST/scripts/triage.sh" --rules-only >/dev/null \
   || fail "the installed triage scorer does not run" \
           "run $DEST/scripts/triage.sh --help and check python3 is present"
 
 migrate_queued_instructions
+
+# AGTE-13: a hand-made board wrapper that calls hypertask directly (like the
+# old ~/.local/bin/htbot) sits right next to the real per-agent board CLIs in
+# $BIN. Scan for one on every install, not only when a new agent is
+# provisioned, so a fix reaches every host on its next agent-template update.
+CORE_ROOT="$DEST"
+# shellcheck disable=SC1091
+. "$DEST/scripts/lib/core.sh"
+core_guard_token_wrappers "$BIN" no
 
 # The shared agent-board-poll@ unit pair is refreshed on every install, not
 # only when a new agent is provisioned, so a fix to the unit (like the

@@ -13,6 +13,7 @@ _ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLAIN_LANGUAGE_DIR="${PLAIN_LANGUAGE_DIR:-$_ADAPTER_DIR/plain-language}"
 PLAIN_LANGUAGE_CHECK="${PLAIN_LANGUAGE_CHECK:-$PLAIN_LANGUAGE_DIR/check-comment.py}"
 POSPEAK_SKILL="${POSPEAK_SKILL:-$PLAIN_LANGUAGE_DIR/pospeak.md}"
+TICKET_FORMAT_RULE="${TICKET_FORMAT_RULE:-$PLAIN_LANGUAGE_DIR/ticket-format.md}"
 UNSLOP_SKILL="${UNSLOP_SKILL:-$PLAIN_LANGUAGE_DIR/unslop.md}"
 ADHD_SKILL="${ADHD_SKILL:-$PLAIN_LANGUAGE_DIR/i-have-adhd.md}"
 TICKET_LINK_FORMATTER="${TICKET_LINK_FORMATTER:-$_ADAPTER_DIR/../../scripts/ticket_links.py}"
@@ -279,6 +280,7 @@ PLAIN_LANGUAGE_DIR="$plain_language_dir"
 PLAIN_LANGUAGE_CHECK="\$PLAIN_LANGUAGE_DIR/check-comment.py"
 OUTBOUND_TEXT_GATE="\$PLAIN_LANGUAGE_DIR/outbound-text-gate.sh"
 POSPEAK_SKILL="\${AGENT_POSPEAK_SKILL:-\$PLAIN_LANGUAGE_DIR/pospeak.md}"
+TICKET_FORMAT_RULE="\${AGENT_TICKET_FORMAT_RULE:-\$PLAIN_LANGUAGE_DIR/ticket-format.md}"
 UNSLOP_SKILL="\${AGENT_UNSLOP_SKILL:-\$PLAIN_LANGUAGE_DIR/unslop.md}"
 ADHD_SKILL="\${AGENT_ADHD_SKILL:-\$PLAIN_LANGUAGE_DIR/i-have-adhd.md}"
 TICKET_LINK_FORMATTER="$plain_language_dir/../../../scripts/ticket_links.py"
@@ -415,6 +417,56 @@ print("ok")
   fi
   exit "\$RC"
 fi
+_write_comment_with_ai() {
+  local original="\$1" ref="\$2" plain marker prompt output rewritten
+  plain="\$(_plain_comment "\$original")"
+  [ "\${#plain}" -ge 120 ] || { TEXT="\$original"; return 0; }
+  case "\$plain" in
+    Answer:*|Question:*|Decision:*|Handoff:*|Done:*) marker="\${plain%%:*}:" ;;
+    *)
+      if [ "\${AGENT_REPLY_ONLY:-no}" != "yes" ]; then TEXT="\$original"; return 0; fi
+      marker="" ;;
+  esac
+  prompt="Rewrite this ticket comment for a product owner in plain language. Keep the leading marker exactly when one is present. Keep every @mention and HTML mention span exactly. Keep every link and the original meaning. Return one concise HTML comment only.
+
+Original comment:
+\$original"
+  if [ -n "\${AGENT_AI_WRITER_FIXTURE:-}" ]; then
+    output="\$(cat "\$AGENT_AI_WRITER_FIXTURE" 2>/dev/null)" || output=""
+  else
+    output="\$(hypertask --token "\$TOKEN" --json ai write "\$prompt" --task "\$ref" --mode write-with-ai 2>/dev/null)" || output=""
+  fi
+  rewritten="\$(OUTPUT="\$output" python3 -c '
+import json, os
+raw = os.environ["OUTPUT"]
+start, end = raw.find("{"), raw.rfind("}")
+try:
+    doc = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+except json.JSONDecodeError:
+    doc = {}
+if doc.get("success") is not False:
+    print(str(doc.get("html") or "").strip(), end="")
+' 2>/dev/null || true)"
+  if [ -n "\$rewritten" ] && ORIGINAL="\$original" REWRITTEN="\$rewritten" MARKER="\$marker" python3 -c '
+import html, os, re, sys
+original = os.environ["ORIGINAL"]
+rewritten = os.environ["REWRITTEN"]
+marker = os.environ["MARKER"]
+def plain(value):
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", value)).split())
+if not plain(rewritten).casefold().startswith(marker.casefold()):
+    raise SystemExit(1)
+spans = re.findall(r"<span\\b(?=[^>]*data-label\\s*=\\s*[\"\x27]?name-[A-Za-z0-9_-]+)[^>]*>.*?</span>", original, re.I | re.S)
+mentions = re.findall(r"(?<![A-Za-z0-9_])@[A-Za-z0-9_.-]+", plain(original))
+if any(value not in rewritten for value in spans) or any(value not in plain(rewritten) for value in mentions):
+    raise SystemExit(1)
+'; then
+    TEXT="\$rewritten"
+  else
+    TEXT="\$original"
+    _comment_cap_note "Write with AI failed on \$ref; posting the original comment"
+  fi
+}
 
 # An update has no ticket reference, so it cannot safely spend a per-ticket
 # allowance. Owner mentions must be added in a new comment where the wrapper
@@ -480,6 +532,7 @@ if [ "\${1:-}" = "comment" ] && [ "\${2:-}" = "add" ] && [ -n "\${3:-}" ]; then
         _comment_cap_note "quiet mode: stripped board-owner mention from comment on \$REF"
       fi
     fi
+    _write_comment_with_ai "\$TEXT" "\$REF"
     _outbound_text_gate "\$TEXT" "\$VERBATIM" || exit 0
     mkdir -p "\$(dirname "\$OWNER_MENTIONS")" 2>/dev/null || true
     touch "\$OWNER_MENTIONS"
@@ -1561,7 +1614,7 @@ PYEOF
 # _ht_pr_live_state <repo> <number> <cache-dir>: one JSON answer, cached 60s.
 _ht_pr_live_state() {
   local repo="$1" number="$2" cache_dir="$3" cache
-  local now mtime view state base merge merged_at compare deployments deployment dep_id dep_sha dep_at statuses dep_state deploy_contains base_contains_deploy
+  local now mtime view state base merge merged_at compare deployments deployment dep_id dep_sha dep_at statuses dep_state deploy_contains base_contains_deploy marker
   mkdir -p "$cache_dir"
   cache="$cache_dir/$number.json"
   now="$(date +%s)"
@@ -1581,7 +1634,16 @@ _ht_pr_live_state() {
   [ -n "$base" ] && [ -n "$merge" ] && [ -n "$merged_at" ] || return 1
   compare="$(gh api "repos/$repo/compare/$merge...$base" 2>/dev/null)" || return 1
   if ! printf '%s' "$compare" | python3 -c 'import json,sys;d=json.load(sys.stdin);sys.exit(0 if d.get("status") in ("ahead","identical") else 1)'; then
-    printf '{"live":false,"state":"merged-base-missing","definition":"GitHub Production deployments"}\n' | tee "$cache"
+    # The merge commit can never become an ancestor of base again once base's
+    # history has been rewritten (force-push/reset past the merge), so nothing
+    # the agent does can clear this by waiting. Treat it as done rather than a
+    # permanent gate, and log once a day so the rewrite stays visible.
+    marker="$cache_dir/base-rewritten-${repo//\//-}-$number-$(date -u +%F)"
+    if mkdir "$marker" 2>/dev/null; then
+      printf 'PR #%s merge commit %s is not contained in base %s (base history was rewritten); treating as superseded so it never blocks pickup\n' \
+        "$number" "$merge" "$base" >&2
+    fi
+    printf '{"live":true,"state":"superseded","definition":"merge commit not contained in base (base history rewritten); can never become live, so treated as non-blocking"}\n' | tee "$cache"
     return 0
   fi
 

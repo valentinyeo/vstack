@@ -1,1 +1,1 @@
-Add one Markdown file per unreleased change; release tooling folds these notes into the changelog.
+Add one Markdown fragment per pull request; release tooling folds these entries into the changelog at merge.

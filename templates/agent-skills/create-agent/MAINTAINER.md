@@ -225,15 +225,21 @@ and strips board-owner mentions from comments, logging the change. The review
 column provides attention instead. The existing one-reminder and
 three-comments-per-day limits still apply.
 
-The runner appends the pospeak, unslop, and i-have-adhd texts verbatim for all
-five comment kinds and says the product owner reads them on a phone. Paths under
-the company pack's `skills/talk-to-valentin/` directory are canonical; bundled
-files under `adapters/hypertask/plain-language/` fill any missing reference. The
-generated board wrapper checks the first `<p>` and bold sentence, the 80-word
-cap, code-shaped tokens, commit hashes, em dashes, linked ticket and PR
-references, and the last block. This is a shape-only gate: it never changes the
-draft. Failure logs the unchanged draft and reasons, emits a held activity, and
-sends no comment.
+The drafting agent must run all five comment kinds through the real pospeak,
+unslop, and i-have-adhd skills before posting, not only satisfy the mechanical
+shape check below: a comment can pass that check and still be noise the owner
+cannot act on. Owner-facing text bans skill names, `ROUTE:` lists, file paths,
+PR numbers without a full URL, and branch names. The runner appends the
+pospeak, unslop, and i-have-adhd texts verbatim for all five comment kinds and
+says the product owner reads them on a phone. Paths under the company pack's
+`skills/talk-to-valentin/` directory are canonical; bundled files under
+`adapters/hypertask/plain-language/` fill any missing reference. The generated
+board wrapper checks the first `<p>` and bold sentence, the 80-word cap,
+code-shaped tokens, commit hashes, em dashes, linked ticket and PR references,
+and the last block. It tries one 60-second rewrite with `CHAT_CLI` or
+`RESEARCH_CLI`, then checks again. A second failure logs the draft and
+reasons, emits the `Question held: did not pass the plain-language check`
+activity, and sends no raw comment.
 
 Direct human questions use the fixed high-effort Codex Sol reply route instead
 of the conf provider. Its five-minute bubblewrap sandbox gets the full thread,
@@ -248,6 +254,11 @@ and the answer names superseded older comments. The runner validates and posts
 the returned HTML after the sandbox exits. These reply-only runs default to
 `Answer:`, with a final `Decision needed:` question only when the owner
 genuinely needs to choose.
+
+When the owner writes "I don't understand" or asks for a guide, the answering
+agent posts exactly one `Decision:` comment shaped as a numbered guide and
+nothing else: what is live, what he must do (page URL and button name), what
+needs rights he may lack, and what the bots do next.
 
 At ticket-run start the adapter posts `{taskId, source: "runtime"}` to
 `/api/mcp/agents/runs`. Claimed, started, PR opened, red check, fix pushed,
@@ -387,6 +398,28 @@ Check `systemctl --user is-active agent-chat.service`, then read
 `~/.local/state/agent-chat/<slug>.log`. Test through
 `https://app.hypertask.ai/agents/chat?agent=<slug>` with a human account and
 quote the timestamped reply. Do not test with the owner's CLI token.
+
+### Ticket-ack lane
+
+A third loop in the same daemon (`AGENT_ACK_SECONDS`, default 60) closes the
+gap AGTE-17 leaves: while a runner is busy, an owner question on the ticket it
+is running got no reply until the slot freed. Each tick, for every `CHAT="on"`
+conf with a `BOARD_ID`, it reads `<slug>.lock` for the ticket the runner is on
+and checks for a human comment it has not acknowledged. The first tick it sees
+one, it runs `BOARD_CLI comment add` with one line: how many tasks are ahead
+(`<slug>.progress.json`'s `eligible_work.count`, written by `agent-progress`)
+and an estimate built from the runner's own recent `run start`/`run done`
+pairs in `<slug>.log`, how much of the current run's average has already
+elapsed, and that queue length. It records the ticket, the question's comment id, and
+the new comment's id (read back from `<slug>.posted-comments`) in
+`~/.local/state/agent-chat/ack-state.json` so it never posts a second
+acknowledgement for the same question.
+
+Once `<slug>.lock` no longer names that ticket, the next tick asks `CHAT_CLI`
+(falling back to `MODEL_CLI`) to answer from the ticket and the run log alone,
+then runs `BOARD_CLI comment update` on the acknowledgement's own id, never a
+new comment. A provider or board-write failure is logged and retried on the
+next tick; the acknowledgement stays visible either way.
 
 ## Agent page
 

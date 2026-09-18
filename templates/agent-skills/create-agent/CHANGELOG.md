@@ -1,3 +1,75 @@
+## 3.50.0 - 2026-09-18
+
+- AGTE-18 adds a ticket-ack lane to `agent-chat.service` so a busy agent
+  acknowledges an owner question within one 60-second tick instead of leaving
+  it unanswered until the ticket work slot frees.
+- The acknowledgement names how many tasks are ahead of the current run and
+  an estimate from the agent's own recent run durations, then a later tick
+  edits that same comment in place with the full answer once the ticket frees
+  up. No second comment is posted.
+- ACTION: run `agent-template update --keep-timers` so the chat lane ships the
+  new ack loop without changing timer state.
+
+## 3.49.0 - 2026-09-18
+
+- AGTE-16 states in SKILL.md and MAINTAINER.md that owner-facing `Question:`
+  and `Decision:` comments must actually be rewritten through the real
+  pospeak, unslop, and i-have-adhd skills, not only pass the mechanical shape
+  check: a comment can be a bold first sentence under 80 words and still be
+  noise, mixing in skill names, `ROUTE:` lists, file paths, unlinked PR
+  numbers, and branch names.
+- Adds the ticket-level rule for "I don't understand": one `Decision:` guide,
+  numbered, covering what is live, what he must do (page URL and button),
+  what needs rights he may lack, and what the bots do next, and nothing else.
+- New `bans_owner_jargon` eval predicate catches the exact failure mode: a
+  `plain-language-check`-passing comment still readable as internal jargon.
+- ACTION: none. This release documents the contract; `check-comment.py` and
+  `agent-board-poll` still need a follow-up change to enforce it mechanically.
+
+## 3.48.0 - 2026-09-18
+
+- AGTE-13 fixes quiet mode getting bypassed by a second wrapper outside the
+  identity shim: install.sh now scans the bin dir for any executable that
+  embeds a managed agent's token file but is not that agent's own BOARD_CLI,
+  and rewrites it to exec the BOARD_CLI (backup kept alongside), or warns
+  loudly when it cannot be rewritten.
+- `--dry-run` reports the same finding without changing anything.
+- Focused coverage rewrites a stray wrapper with a backup, leaves the real
+  BOARD_CLI untouched, and checks the dry-run and refuse-to-rewrite paths.
+- ACTION: run `agent-template update` on every bot host so a stray board
+  wrapper on `PATH` gets rewritten to defer to the identity shim's BOARD_CLI.
+
+## 3.47.0 - 2026-09-18
+
+- AGTE-10 adds learned rules: a correction to a provisioned repo becomes a
+  scored rule in that repo's `.claude/skills/learned-rules/RULES.jsonl`,
+  proposed via `agent-rules add`, held at `proposed` until a human merges the
+  pull request that promotes it, then loaded by every later run in that repo.
+- `agent-rules confirm` raises a rule's confidence when a run follows it and
+  its pull request passes first time, and revives an archived rule that earns
+  a confirmation again; `agent-rules decay` lowers confidence after 30 days
+  unused and archives anything that falls below the floor. Archived rules are
+  never deleted.
+- `sync-project.sh` lays the `learned-rules` skill and an empty `RULES.jsonl`
+  into every synced repo, and never rewrites `RULES.jsonl` once a first rule
+  has been added.
+- ACTION: run `agent-template update --keep-timers`, which re-syncs every
+  known `PR_REPO`, so existing repos get `.claude/skills/learned-rules/`
+  without a timer restart.
+
+## 3.46.0 - 2026-09-18
+
+- AGTE-7: a merged pull request whose base branch history was rewritten (so its
+  merge commit can never become an ancestor of base again) no longer blocks the
+  one-ticket-until-live gate forever; it now reports live and is logged once a
+  day so the rewrite stays visible.
+- Focused coverage verifies the rewritten-base PR unblocks pickup at both the
+  adapter and the runner (the poll loop no longer refuses every ticket),
+  reports live/superseded, and logs once per day even as the 60s live-state
+  cache expires.
+- ACTION: run `agent-template update` on bot hosts so agents whose repo history
+  was rewritten stop deadlocking on old merged PRs.
+
 ## 3.45.0 - 2026-09-18
 
 - AGTE-27 generates the default repository allowlist from each checkout's origin and default branch at install time.
