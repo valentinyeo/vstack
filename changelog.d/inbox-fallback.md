@@ -1,0 +1,1 @@
+AGTE-83 updates feedback intake and triage for the Backlog, In Progress, and Done lifecycle, falls back to the board's first section when a configured intake column is missing, and preserves the original instruction when two Task Writer shape checks refuse its rewrite.
