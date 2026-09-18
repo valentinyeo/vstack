@@ -42,6 +42,13 @@ cat > "$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '[]\n'
 EOF
+# The dry run checks `command -v hypertask` before doing anything else,
+# regardless of BOARD_CLI, so a fake CLI must be on PATH here or this eval
+# only passes on a host that happens to have the real one installed.
+cat > "$TMP/bin/hypertask" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
 chmod +x "$TMP/bin/"*
 
 set +e
