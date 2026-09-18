@@ -1,0 +1,2 @@
+- The PR gate now classifies GitHub StatusContext checks by their SUCCESS, FAILURE, ERROR, or PENDING state instead of leaving failed commit statuses pending forever.
+- Feedback confirmations now name the feedback summary and full ticket link while hiding non-actionable label retry details from CLI and chat output.
