@@ -1,0 +1,2 @@
+- Maintainer ticket runs now execute allowlisted merge, release, update, and build instructions instead of sending them through the developer pull request workflow.
+- Successful direct merges must post a `Done:` result with the linked pull request, while background builds keep their existing completion reporting.
