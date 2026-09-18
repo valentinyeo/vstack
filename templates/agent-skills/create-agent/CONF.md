@@ -58,7 +58,8 @@ A file at `~/.local/state/agent-board-poll/model-override/<REF>` may contain one
 | `RETRY_LIMIT` | Total failed attempts allowed per window. By default this is three plus the number of `LADDER` commands. |
 | `RETRY_WINDOW_SECONDS` | Failure window, default 21600. |
 | `RUN_COOLDOWN_SECONDS` | Minimum seconds between runs of one ticket without a new external comment, default 1800. |
-| `TRIAGE` | Whether to score difficulty before pickup. |
+| `TRIAGE` | `yes` scores difficulty before pickup, `no` disables it, and `on` also runs board-wide bug triage every four hours. `MAINTAINER=on` also enables board-wide bug triage. |
+| `BUG_TRIAGE_INTERVAL_SECONDS` | Board-wide bug triage cadence, default 14400 (four hours). |
 | `TRIAGE_MODEL_CLI` | Optional tie-break scoring command, default `MODEL_CLI`. |
 | `ADVISOR_MAX` | Research calls per run, default 2 when `RESEARCH_CLI` exists. |
 | `CHAT` | `on` enables the host chat lane, including each configured board's agent room. With `BOARD_ID` also set, it enables the ticket-ack lane: an acknowledgement within one 60-second tick while the runner is busy on that ticket, later edited in place with the full answer. |

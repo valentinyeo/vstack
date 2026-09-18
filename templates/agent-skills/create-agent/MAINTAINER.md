@@ -27,6 +27,10 @@ until you do it.
   ticket that carries neither `easy` nor `hard`. Rules first; one cheap model
   call only when no rule fires. A `hard` ticket uses `TRIAGE_HARD_CLI` when
   configured and must post a numbered plan first. QA agents are not scored.
+- **Bug triage** — every four hours for `MAINTAINER=on` or `TRIAGE=on`, scores
+  Bugs and Triage, updates priority, merges newer duplicates, asks one
+  clarification on unclear bugs, and posts one daily summary to `Bug triage`.
+  It never writes to owner-assigned tickets or tickets labelled `valentin`.
 - **Advisor** — when `RESEARCH_CLI` is configured, `agent-advisor "<question>"`
   gives a stuck agent two read-only research calls per run. Without it, there
   is no research step.

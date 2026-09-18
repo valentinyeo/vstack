@@ -581,7 +581,8 @@ See `CONF.md` for the complete schema.
 | `PROMPT_FILE` | a prompt of this agent's own, with `{{REF}}`, `{{URL}}`, `{{TITLE}}`, `{{DESCRIPTION}}`, `{{COMMENT}}`, `{{AGENT_NAME}}`, `{{BOARD_CLI}}`, `{{SKILLS_INDEX}}`, `{{BOARD}}` |
 | `PR_REPO` | **required.** the repository whose pull requests say whether a ticket is finished; `agent-board-poll` refuses to tick without it. Set it with `create-agent.sh --resume --pr-repo <org/name>` |
 | `PR_BRANCH_PREFIX` | branch prefix that proves this agent owns a PR, default `agent/<slug>-` |
-| `TRIAGE` | `yes` to score a ticket before pickup; defaults to `yes` for `AGENT_KIND=dev` and `no` for everything else |
+| `TRIAGE` | `yes` scores difficulty before pickup; `on` also triages every board's Bugs and Triage columns every four hours; defaults to `yes` for dev and `no` otherwise |
+| `BUG_TRIAGE_INTERVAL_SECONDS` | board-wide bug triage cadence, default 14400 (four hours) |
 | `TRIAGE_MODEL_CLI` | optional command that breaks a tie the rules could not; default `MODEL_CLI` |
 | `ADVISOR_MAX` | `agent-advisor` calls allowed per run, default 2 |
 
@@ -679,6 +680,22 @@ install retries queued files without duplicating a ticket. A ticket created by
 hand on board 5500 and assigned to Product Bot follows the same normal ticket run,
 build, and `Done:` comment path. A spec has four parts: Ticket, What, Done when,
 and Guardrails.
+
+## Product bug triage
+
+`MAINTAINER="on"` or `TRIAGE="on"` makes the runner score every open ticket in
+Bugs and Triage every four hours. It weighs affected users, a broken core flow,
+workaround availability, and age. An owner's existing Urgent priority and every
+due date stay above computed priority. The result is written to the priority
+field as Urgent, High, Medium, or Low, and writes follow that queue order.
+
+Each board opts in with one standing ticket titled `Bug triage`. Once per UTC
+day that ticket receives the top five, priority movements with their reasons,
+and no more than one owner question. An unclear bug gets one clarifying
+`Question:`. Exact-title duplicates are linked to the oldest ticket, receive a
+linking `Decision:`, and the newer ticket is archived. Tickets labelled
+`valentin` or assigned to the board owner are excluded before scoring,
+questions, and duplicate detection, so triage never writes to them.
 
 ## How hard is this ticket
 
