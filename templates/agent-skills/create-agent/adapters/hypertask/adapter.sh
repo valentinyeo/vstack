@@ -1175,6 +1175,130 @@ for who in task.get("assignees") or []:
   done <<< "$assignees"
 }
 
+# adapter_bug_triage <token-file> <board-ids> <agent-id> <board-cli> <state-dir> <dry-run>
+# Reads every open Bugs and Triage ticket, then lets the deterministic scorer
+# perform agent-attributed writes. A board without its standing "Bug triage"
+# ticket is not opted in, which also keeps older maintainer boards untouched.
+adapter_bug_triage() {
+  local token_file="$1" board_ids="$2" agent_id="$3" board_cli="$4"
+  local state_dir="$5" dry_run="$6" one state now last_run project tasks tmp ids id comments
+  local page count total offset query
+  local triage_script="$_ADAPTER_DIR/../../scripts/bug-triage.py"
+  local interval="${BUG_TRIAGE_INTERVAL_SECONDS:-14400}"
+
+  now="$(date +%s)"
+  for one in $(printf '%s' "$board_ids" | tr ',' ' '); do
+    [ -n "$one" ] || continue
+    state="$state_dir/${SLUG:-agent}-bug-triage-$one.json"
+    if [ "$dry_run" != "yes" ] && [ -r "$state" ]; then
+      last_run="$(python3 - "$state" <<'PYEOF'
+import datetime as dt, json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8")).get("last_run") or ""
+    parsed = dt.datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    print(int(parsed.timestamp()))
+except (OSError, ValueError, json.JSONDecodeError):
+    print(0)
+PYEOF
+)"
+      [ $((now - last_run)) -ge "$interval" ] || continue
+    fi
+
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/agent-bug-triage.XXXXXX")"
+    if ! project="$("$board_cli" --json project show "$one" 2>/dev/null)"; then
+      rm -rf "$tmp"
+      warn "bug triage skipped board $one: project metadata is unavailable"
+      continue
+    fi
+    mkdir -p "$tmp/pages"
+    offset=0
+    while :; do
+      query="/mcp/tasks?project_id=${one}&limit=100"
+      [ "$offset" = 0 ] || query="${query}&offset=${offset}"
+      if ! page="$(_ht_get "$token_file" "$query")"; then
+        rm -rf "$tmp"
+        warn "bug triage skipped board $one: tasks are unavailable"
+        continue 2
+      fi
+      printf '%s' "$page" > "$tmp/pages/$offset.json"
+      read -r count total < <(python3 - "$tmp/pages/$offset.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+print(len(doc.get("tasks") or []), int(doc.get("total") or 0))
+PYEOF
+)
+      [ "$count" -eq 100 ] || break
+      offset=$((offset + count))
+      [ "$total" -eq 0 ] || [ "$offset" -lt "$total" ] || break
+    done
+    printf '%s' "$project" > "$tmp/project.json"
+    python3 - "$tmp/pages" "$tmp/tasks.json" <<'PYEOF'
+import json, pathlib, sys
+rows = []
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.json"), key=lambda value: int(value.stem)):
+    rows.extend(json.load(open(path, encoding="utf-8")).get("tasks") or [])
+json.dump({"tasks": rows}, open(sys.argv[2], "w", encoding="utf-8"))
+PYEOF
+    if ! python3 - "$tmp/tasks.json" <<'PYEOF' >/dev/null
+import json, sys
+rows = json.load(open(sys.argv[1], encoding="utf-8")).get("tasks") or []
+raise SystemExit(0 if any(str(row.get("title") or "").strip().casefold() == "bug triage" for row in rows) else 1)
+PYEOF
+    then
+      if [ "$dry_run" != "yes" ]; then
+        STATE="$state" python3 <<'PYEOF'
+import datetime as dt, json, os, pathlib
+path = pathlib.Path(os.environ["STATE"])
+try:
+    state = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    state = {}
+state["last_run"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+path.parent.mkdir(parents=True, exist_ok=True)
+temporary = path.with_name(path.name + ".new")
+temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+temporary.replace(path)
+PYEOF
+      fi
+      rm -rf "$tmp"
+      continue
+    fi
+    mkdir -p "$tmp/comments"
+    ids="$(python3 - "$tmp/tasks.json" <<'PYEOF'
+import json, sys
+for row in json.load(open(sys.argv[1], encoding="utf-8")).get("tasks") or []:
+    if str(row.get("status") or "Normal").casefold() in {"normal", "open"} and str(row.get("section") or "").casefold() in {"bugs", "triage"}:
+        value = row.get("id")
+        if value is not None:
+            print(value)
+PYEOF
+)"
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      comments="$(_ht_get "$token_file" "/mcp/comments?task_id=${id}&project_id=${one}")" || comments='{"comments":[]}'
+      printf '%s' "$comments" > "$tmp/comments/$id.json"
+    done <<< "$ids"
+    python3 - "$tmp/project.json" "$tmp/tasks.json" "$tmp/comments" "$tmp/board.json" <<'PYEOF'
+import json, pathlib, sys
+project_path, tasks_path, comments_dir, output = sys.argv[1:]
+project_doc = json.load(open(project_path, encoding="utf-8"))
+tasks_doc = json.load(open(tasks_path, encoding="utf-8"))
+comments = {}
+for path in pathlib.Path(comments_dir).glob("*.json"):
+    comments[path.stem] = (json.load(open(path, encoding="utf-8")).get("comments") or [])
+json.dump({"project": project_doc, "tasks": tasks_doc.get("tasks") or [], "comments": comments}, open(output, "w", encoding="utf-8"))
+PYEOF
+    args=(--board "$one" --input "$tmp/board.json" --state "$state" --board-cli "$board_cli"
+          --agent-id "$agent_id" --interval-seconds "$interval")
+    [ "$dry_run" != "yes" ] || args+=(--dry-run)
+    if ! python3 "$triage_script" "${args[@]}"; then
+      rm -rf "$tmp"
+      return 1
+    fi
+    rm -rf "$tmp"
+  done
+}
+
 # _ht_owned_row <token-file> <task-id> <row-json> <board-id> <agent-id>
 # Given a candidate row (already known to be assigned to this agent, or to
 # have at least one comment) and its task id, prints the same row with

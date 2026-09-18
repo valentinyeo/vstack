@@ -315,7 +315,8 @@ chmod 755 "$DEST/scripts/create-agent.sh" "$DEST/scripts/agent-board-poll" \
           "$DEST/scripts/agent-template" "$DEST/scripts/agent-template-feedback" \
           "$DEST/scripts/agent-template-weekly" \
           "$DEST/scripts/agent-advisor" "$DEST/scripts/agent-rules" "$DEST/scripts/triage.sh" \
-          "$DEST/scripts/sync-project.sh" "$DEST/scripts/migrate-provider-policy.py" \
+          "$DEST/scripts/bug-triage.py" "$DEST/scripts/sync-project.sh" \
+          "$DEST/scripts/migrate-provider-policy.py" \
           "$DEST/evals/run-evals.sh" \
           "$DEST/project-template/.claude/skills/evals/run-evals.sh" \
           "$DEST/project-template/.claude/hooks/board-write-guard.sh"

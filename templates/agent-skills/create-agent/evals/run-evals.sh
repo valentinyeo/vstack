@@ -280,6 +280,11 @@ if [ -z "$ONLY" ] && [ -x "$HERE/fast-tick.test.sh" ]; then
   echo "-- fast tick API budget checks --"
   bash "$HERE/fast-tick.test.sh"
 fi
+if [ -z "$ONLY" ] && [ -x "$HERE/bug-triage.test.sh" ]; then
+  echo ""
+  echo "-- product bug triage behavioural checks --"
+  bash "$HERE/bug-triage.test.sh"
+fi
 if [ -z "$ONLY" ] && [ -x "$HERE/owned-reply-trigger.test.sh" ]; then
   echo ""
   echo "-- owned reply trigger behavioural checks --"

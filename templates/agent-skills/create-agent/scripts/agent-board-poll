@@ -150,6 +150,17 @@ case "$AGENT_KIND" in
   *)   TRIAGE_DEFAULT="no" ;;
 esac
 TRIAGE="${TRIAGE:-$TRIAGE_DEFAULT}"
+case "$TRIAGE" in
+  yes|no|on) : ;;
+  *) die "TRIAGE must be yes, no, or on, got '$TRIAGE'" \
+       "use yes for ticket difficulty only, or on for difficulty plus four-hour bug triage" ;;
+esac
+TICKET_TRIAGE="$TRIAGE"
+[ "$TICKET_TRIAGE" != "on" ] || TICKET_TRIAGE="yes"
+BUG_TRIAGE_ENABLED="off"
+if [ "$MAINTAINER" = "on" ] || [ "$TRIAGE" = "on" ]; then
+  BUG_TRIAGE_ENABLED="on"
+fi
 # Optional policy commands. Missing values deliberately fall back to the
 # agent's own command, except research: missing means no advisor call exists.
 TRIAGE_HARD_CLI="${TRIAGE_HARD_CLI:-$MODEL_CLI}"
@@ -1332,6 +1343,14 @@ if run_advisor_instruction; then
 fi
 check_maintainer_builds
 
+if [ "$BUG_TRIAGE_ENABLED" = "on" ] && declare -F adapter_bug_triage >/dev/null 2>&1; then
+  if [ "$DRY_RUN" = "yes" ]; then
+    adapter_bug_triage "$TOKEN_FILE" "$BOARD_ID" "$AGENT_ID" "$BOARD_CLI" "$STATE_DIR" yes
+  elif ! adapter_bug_triage "$TOKEN_FILE" "$BOARD_ID" "$AGENT_ID" "$BOARD_CLI" "$STATE_DIR" no >>"$LOG" 2>&1; then
+    warn "bug triage failed for $SLUG; ticket pickup continues and the next tick will retry"
+  fi
+fi
+
 # Pull-request debt is a hard pickup gate, not a ranking hint. The adapter
 # proves LIVE and returns every owned debt oldest first. Core works only the
 # first one, while recording and explaining the full queue.
@@ -1919,7 +1938,7 @@ if [ "$DRY_RUN" = "yes" ]; then
       echo "    reply-only: answer the human; no code, claim, pull request, or column move"
     elif [ "${E_PR_FIX[$i]}" = "yes" ]; then
       echo "    pull-request fix: no ticket attempts, triage, or escalation; ticket cooldown still applies"
-    elif [ "$TRIAGE" = "yes" ] && [ "$shown" -le "$MAX_CONCURRENT_RUNS" ]; then
+    elif [ "$TICKET_TRIAGE" = "yes" ] && [ "$shown" -le "$MAX_CONCURRENT_RUNS" ]; then
       row_board="$(row_field "$row" board)"; [ -n "$row_board" ] || row_board="${BOARD_ID%%,*}"
       triage_verdict="$(triage_score "$(row_field "$row" ref)" "$(row_field "$row" id)" \
         "$row_board" "$(row_field "$row" title)" "$(row_field "$row" description)" \
@@ -1935,7 +1954,7 @@ if [ "$DRY_RUN" = "yes" ]; then
       else
         echo "    would run MODEL_CLI, no plan block"
       fi
-    elif [ "$TRIAGE" = "yes" ]; then
+    elif [ "$TICKET_TRIAGE" = "yes" ]; then
       echo "    not scored: this tick starts $MAX_CONCURRENT_RUNS ticket(s), and scoring costs a board read each"
     fi
   done
@@ -1988,7 +2007,7 @@ print(html.unescape(re.sub(r"<[^>]+>", " ", doc.get("html") or "")).strip()[:120
   # model, and whether the agent has to plan first) have to be settled before
   # the first token is spent.
   TRIAGE_THIS="easy"
-  if [ "$TRIAGE" = "yes" ] && [ "$is_pr_fix" = "no" ] && [ "$is_reply_only" = "no" ]; then
+  if [ "$TICKET_TRIAGE" = "yes" ] && [ "$is_pr_fix" = "no" ] && [ "$is_reply_only" = "no" ]; then
     triage_verdict="$(triage_score "$ref" "$task_id" "$board" "$title" "$description" \
                         "$(row_labels "$row")")"
     IFS='|' read -r TRIAGE_THIS triage_origin triage_reason <<< "$triage_verdict"
