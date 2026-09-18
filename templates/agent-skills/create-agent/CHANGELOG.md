@@ -1,3 +1,15 @@
+## 3.34.0 - 2026-09-18
+
+- AGTE-15 pins the reported incident (three agents answering one owner
+  question on a Done ticket within minutes) as regression coverage: a Done
+  column ticket, an unmentioned owner question, and the configured
+  `ANSWERER_FALLBACK` deciding the single reply, plus `feedback --as
+  product-bot` resolving `~/.config/hypertask-agents` without
+  `AGENT_CONFIG_DIR` set by hand.
+- No behavior changed: single-answerer selection shipped in 3.28.0 and
+  adapter-default conf resolution already covered this path; this release
+  only adds the named check so both stay pinned.
+
 ## 3.33.0 - 2026-09-17
 
 - AGTE-25 keeps the installed core path private to the update re-exec so staged

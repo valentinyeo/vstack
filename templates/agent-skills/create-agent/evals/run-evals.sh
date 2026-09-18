@@ -248,6 +248,11 @@ if [ -z "$ONLY" ] && [ -x "$HERE/conf-dir-resolution.test.sh" ]; then
   echo "-- config directory resolution checks --"
   bash "$HERE/conf-dir-resolution.test.sh"
 fi
+if [ -z "$ONLY" ] && [ -x "$HERE/agte-15-owner-question-single-reply.test.sh" ]; then
+  echo ""
+  echo "-- AGTE-15 owner question single reply checks --"
+  bash "$HERE/agte-15-owner-question-single-reply.test.sh"
+fi
 if [ -z "$ONLY" ] && [ -x "$HERE/comment-cursor.test.sh" ]; then
   echo ""
   echo "-- comment cursor behavioural checks --"
