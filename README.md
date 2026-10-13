@@ -1,12 +1,13 @@
 # vstack
 
-Three writing skills for Claude Code and other AI agents. Each one is a single `SKILL.md`.
+Four writing skills for Claude Code and other AI agents. Each one is a single `SKILL.md`.
 
 | Skill | What it does |
 |---|---|
 | [unjargon](skills/unjargon/SKILL.md) | Turns technical and AI-sounding writing into plain English a non-coder can act on, without hiding risk or detail. |
 | [web-writing](skills/web-writing/SKILL.md) | Makes web text scannable: conclusion first, half the words, no hype. Based on Jakob Nielsen's NN/g study "How Users Read on the Web". |
 | [schneider-deutsch-stil](skills/schneider-deutsch-stil/SKILL.md) | Writes and edits German in Wolf Schneider's style: short sentences, strong verbs, no Nominalstil. |
+| [zinsser-english-style](skills/zinsser-english-style/SKILL.md) | The English counterpart: writes and edits English in the plain style of William Zinsser ("On Writing Well") and George Orwell's six rules. |
 
 ## Install
 
