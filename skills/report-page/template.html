@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PAGE TITLE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fafafa;--card:#fff;--text:#171717;--muted:#666;--line:#e5e5e5;--accent:#e5572f;--good:#16a34a;--warn:#b45309;--warnbg:#fffbeb}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0a0a0a;--card:#161616;--text:#ededed;--muted:#a1a1a1;--line:#2a2a2a;--accent:#ff7a50;--good:#4ade80;--warn:#fbbf24;--warnbg:#1f1a0e}}
+:root[data-theme="dark"]{--bg:#0a0a0a;--card:#161616;--text:#ededed;--muted:#a1a1a1;--line:#2a2a2a;--accent:#ff7a50;--good:#4ade80;--warn:#fbbf24;--warnbg:#1f1a0e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Geist,system-ui,sans-serif;font-size:17px;line-height:1.55}
+main{max-width:860px;margin:0 auto;padding:40px 16px 80px}
+h1{font-size:32px;line-height:1.2;margin:0 0 6px}
+.date{color:var(--muted);font-size:14px;margin:0 0 28px}
+.verdict{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:18px 20px;margin-bottom:36px}
+.verdict p{margin:0 0 8px}.verdict p:last-child{margin:0}
+h2{font-size:22px;margin:44px 0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:22px}
+.card h3{font-size:21px;margin:0 0 4px}
+.proof{color:var(--muted);font-size:15px;margin:0 0 14px}
+.proof b{color:var(--good)}
+.images{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 14px}
+.images figure{margin:0}.images img{width:100%;border-radius:8px;border:1px solid var(--line);display:block}
+.images figcaption{font-size:13px;color:var(--muted);margin-top:4px}
+ul{margin:0 0 12px;padding-left:20px}li{margin:3px 0}
+.label{font-weight:600}
+a{color:var(--accent)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:15px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:13px}
+tr:last-child td{border-bottom:none}
+.note{background:var(--warnbg);border:1px solid var(--line);border-radius:10px;padding:14px 18px}
+.note b{color:var(--warn)}
+.small{color:var(--muted);font-size:14px}
+@media (max-width:600px){h1{font-size:26px}.images{grid-template-columns:1fr}.hide-mobile{display:none}}
+</style>
+</head>
+<body>
+<main>
+<h1>PAGE TITLE</h1>
+<p class="date">AUTHOR, DATE</p>
+
+<!-- 1. Verdict box: the answer in one bold sentence, then at most one more sentence or the one next step. -->
+<div class="verdict">
+<p><b>THE ANSWER IN ONE SENTENCE.</b> ONE SENTENCE OF WHY.</p>
+<p><b>Next:</b> THE ONE THING TO DO.</p>
+</div>
+
+<!-- 2. Top items as cards: the 1 to 3 things that matter most. Delete the images block if there are none. -->
+<h2>SECTION HEADING THAT SAYS WHAT IS IN IT</h2>
+<div class="card">
+<h3>1. ITEM TITLE</h3>
+<p class="proof">Proof: FACT WITH A NUMBER, <b>KEY NUMBER</b>. <a href="SOURCE URL">See it</a></p>
+<div class="images">
+<figure><img src="data:image/jpeg;base64,..." alt="WHAT THE IMAGE SHOWS"><figcaption>Version A</figcaption></figure>
+<figure><img src="data:image/jpeg;base64,..." alt="WHAT THE IMAGE SHOWS"><figcaption>Version B</figcaption></figure>
+</div>
+<ul>
+<li><b>LEAD-IN.</b> ONE SHORT SENTENCE.</li>
+<li><b>LEAD-IN.</b> ONE SHORT SENTENCE.</li>
+</ul>
+</div>
+
+<!-- 3. Warnings or open problems, only if there are any. -->
+<div class="note"><p><b>WHAT TO WATCH.</b> ONE OR TWO SENTENCES.</p></div>
+
+<!-- 4. The rest as a short table. Columns the reader can skip get class="hide-mobile". -->
+<h2>N MORE ITEMS</h2>
+<table>
+<tr><th>Item</th><th>Proof</th><th class="hide-mobile">Detail</th></tr>
+<tr><td>ITEM</td><td><a href="SOURCE URL">NUMBER</a></td><td class="hide-mobile">SHORT DETAIL</td></tr>
+</table>
+
+<!-- 5. Method last, in two or three sentences. -->
+<h2>How we found this</h2>
+<p>TWO OR THREE SENTENCES ON METHOD AND SOURCES.</p>
+</main>
+</body>
+</html>
