@@ -10,6 +10,7 @@ Writing skills for Claude Code and other AI agents. Each one is a single `SKILL.
 | [schneider-deutsch-stil](skills/schneider-deutsch-stil/SKILL.md) | Writes and edits German in Wolf Schneider's style: short sentences, strong verbs, no Nominalstil. |
 | [deeper](skills/deeper/SKILL.md) | Turns a task into a deeper version, not a bigger one: what a top professional would add, the rawest sources, the exact methods and tools, and outside proof, then rewrites the prompt. Prompt by [Felix Rieseberg](https://x.com/felixrieseberg). |
 | [zinsser-english-style](skills/zinsser-english-style/SKILL.md) | The English counterpart: writes and edits English in the plain style of William Zinsser ("On Writing Well") and George Orwell's six rules. |
+| [ptacek-copyedit](skills/ptacek-copyedit/SKILL.md) | Copyedits a draft you wrote yourself without touching your voice: flags problems pass by pass, never suggests words, never praises. Method by Thomas and Erin Ptacek, ["How To Write With An LLM"](https://sockpuppet.org/blog/2026/09/17/how-to-write-with-an-llm/). |
 
 ## Install
 
