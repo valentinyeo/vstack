@@ -7,7 +7,7 @@ description: "/deep-work [task]: hand a big task to this session and walk away f
 
 The task is the text after `/deep-work`. With none, use the latest task in this conversation.
 
-Shape, after Cal Newport's deep work: the owner spends ten focused minutes up front, then gets ninety minutes of silence, then reads one short report. All talk happens at the start and at the end.
+Shape, after Cal Newport's book [Deep Work](https://calnewport.com/deep-work-rules-for-focused-success-in-a-distracted-world/): the owner spends ten focused minutes up front, then gets ninety minutes of silence, then reads one short report. All talk happens at the start and at the end.
 
 The one thing the agent must confirm up front: it can test and QA its own output. Verification is a big part of everything.
 
