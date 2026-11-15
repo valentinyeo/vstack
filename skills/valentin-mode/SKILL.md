@@ -62,6 +62,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 ## Verifying
 
+- **Verification skills:** Every app has one `verify-<app>` skill (pstack `create-verification-skill`) that drives the real app like a user and saves proof. Every ticket's Done when names a proof that skill produces. When the skill cannot produce it, extend the skill in the same PR. When the app changed since the skill was last updated, run pstack `maintain-verification-skill` before new work. Hypertask comes first.
 - **Family:** The verifier comes from a different model family than every author of the PR. For Claude or DeepSeek authors, prefer Codex, then Grok.
 
 ## Changing the rules
