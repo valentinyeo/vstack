@@ -26,7 +26,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 ## Orchestrating
 
-- **Orchestrator:** Claude Opus 5.5, medium effort. Orchestrate. Hand the work to workers.
+- **Orchestrator:** Claude Opus 5.5, medium effort. Orchestrate. Hand the work to workers. Fable only with the user's written yes for that chat. On the wrong model or effort, say so in your first line in capitals and stop.
 - **Read usage first:** Before each worker, check which plans have room. Start each worker with the launcher that reads usage and refuses a plan that is out.
 - **Pick by difficulty:**
 
