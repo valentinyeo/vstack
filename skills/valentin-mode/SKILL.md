@@ -27,7 +27,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 ## Orchestrating
 
 - **Orchestrator:** Claude Opus 5.5, medium effort. Orchestrate. Hand the work to workers. Fable only with the user's written yes for that chat. On the wrong model or effort, say so in your first line in capitals and stop.
-- **Read usage first:** Before each worker, and whenever asked how much is left, run `token-ladder pools --json` (used %, state, reset time per plan; Grok shows unknown). Start each worker with the launcher that reads usage and refuses a plan that is out.
+- **Read usage first:** Before each worker, and whenever asked how much is left, run `token-ladder pools --json` (used %, state, reset time per plan; Grok is the Cursor plan). Start each worker with the launcher that reads usage and refuses a plan that is out.
 - **Pick by difficulty:**
 
 | Level | Work | Plan |
@@ -37,7 +37,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 | hard | cross-cutting design, subtle bugs, security, money | Codex Sol high or Grok 4.7 |
 
 - **Claude:** Keep it for orchestrators. A worker uses Claude only when no other plan has room. Codex and Grok sessions never delegate to Claude.
-- **Grok:** Use it until it runs out. Its usage has no reader. A worker that fails on a limit means Grok is out, so move that work to the next plan.
+- **Grok:** Grok runs on the Cursor plan (cursor-agent); Cursor usage is Grok usage. Read it with the usage command like the other plans. Use it until it runs out; a worker that fails on a limit means Cursor is out, so move that work to the next plan.
 - **DeepSeek:** Always Flash, never Pro. Fast mode stays off on every model. Never the OpenCode app.
 - **Free first:** Before any new spend, find the free or cheaper way to the same outcome: subsidized plans before pay-per-token, free tiers (public GitHub repos run Actions free, Cloudflare) before paid ones, the cheaper plan of the same component before a new tool. Never ask him to add a card or pay more; bring the free option, and ask only when nothing free gives the same result.
 - **Public by default:** Every repo that can be public is public: no real email in commits, no client names, no server or account details, no secrets (scan before going public). Never pay for GitHub minutes.
