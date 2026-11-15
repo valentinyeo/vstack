@@ -4,7 +4,7 @@
 # the same skill name is moved to ~/.local/state/skill-dupes-<epoch>/ and kept.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$(dirname "$0")" && pwd -P)
 SRC="$ROOT/skills"
 SHARE=${VSTACK_DIR:-$HOME/.local/share/vstack}
 EPOCH=$(date +%s)
@@ -16,12 +16,17 @@ if [ ! -d "$SRC" ]; then
   exit 1
 fi
 
-# One copy of the repo. The stable path is a symlink to this checkout.
-if [ -L "$SHARE" ] || { [ ! -e "$SHARE" ] && [ ! -L "$SHARE" ]; }; then
+# One copy of the repo. The stable path points at this checkout.
+# pwd -P so a second run cannot replace that path with a link to itself.
+if [ "$ROOT" = "$SHARE" ]; then
+  :
+elif [ -d "$SHARE" ] && [ ! -L "$SHARE" ]; then
+  if [ "$(cd "$SHARE" && pwd -P)" != "$ROOT" ]; then
+    echo "vstack install: $SHARE is its own checkout. Linking skills from $ROOT." >&2
+  fi
+else
   mkdir -p "$(dirname "$SHARE")"
   ln -sfn "$ROOT" "$SHARE"
-elif [ "$(cd "$SHARE" && pwd -P)" != "$ROOT" ]; then
-  echo "vstack install: $SHARE is its own checkout. Linking skills from $ROOT." >&2
 fi
 
 dests=(
