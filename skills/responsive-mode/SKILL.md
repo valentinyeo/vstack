@@ -17,11 +17,11 @@ Same idea as Grok Build: work runs out of the way, the chat stays free.
 
 For the rest of this session:
 
-1. Budget per turn, not per step. A reply reaches him within about 60 seconds of his message. More work than that goes to a background task or subagent. Many short foreground steps in a chain count as one long step.
-2. Any single step that may take over 30 seconds runs in the background: tests, builds, installs, CI watches, probes, big searches, subagents. Claude: `run_in_background`. Codex and hax: a background job. Never block the chat on it.
+1. Budget per turn, not per step. A reply reaches him within about 60 seconds of his message. More work than that goes to a background task or a worker. Many short foreground steps in a chain count as one long step.
+2. Any single step that may take over 30 seconds runs in the background: tests, builds, installs, CI watches, probes, big searches, workers. Claude: `run_in_background`. Codex and hax: a background job. Never block the chat on it.
 3. A new message arrives mid-turn? Stop the chain at the next tool result. Reply to that message on its own. Then continue the work in the background. Do not kill running work.
 4. One message, one reply. Never merge answers to several messages into one reply.
-5. Investigations and multi-step fixes go to a background subagent by default. The chat thread only reads results and reports.
+5. Investigations and multi-step fixes go to a background worker by default. Start it with `spawn-worker` (Grok, DeepSeek Flash or Codex). Never a Claude subagent: Claude is kept for orchestrators. The chat thread only reads results and reports.
 6. After starting background work, end the turn with one line: what runs, and what you do when it finishes.
 7. Background work finishes? Pick it up, check the result, continue.
 8. Foreground only when the next step cannot start without the result AND the whole turn stays under 60 seconds.

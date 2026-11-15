@@ -22,7 +22,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act on it. On a status line it only means seen.
 - **Questions:** Put the question on the ticket, and in chat as the first line, in plain text, never `AskUserQuestion`. Ask once, with your pick, and only for new spend, a new key source, making an existing repo public, deleting live data or product direction. Using his keys and plans in his own repos and review workers, and rotating keys you made or leaked, are granted: do them and report. Decide everything else and report it.
 - **Ticket, not chat:** Every piece of work gets a ticket before you start. Lists, findings, evidence and status go on the ticket; a decision goes there as one Question comment he can thumbs up. Chat carries only a short pointer: what changed, the ticket link, and what waits on him.
-- **Pace:** Follow `/responsive-mode`. Answer each message within a minute. Long work runs in the background.
+- **Pace:** Follow `/responsive-mode`. Answer each message within a minute. Long work runs in the background, on a `spawn-worker` worker (Grok, DeepSeek Flash or Codex), never a Claude subagent.
 
 ## Orchestrating
 
