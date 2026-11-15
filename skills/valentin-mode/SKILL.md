@@ -36,7 +36,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 | normal | most code | Grok 4.7, Codex Sol medium or Sonnet: the one with the most room |
 | hard | cross-cutting design, subtle bugs, security, money | Codex Sol high or Grok 4.7 |
 
-- **Claude:** Keep it for orchestrators. A worker uses Claude only when no other plan has room. Codex and Grok sessions never delegate to Claude.
+- **Claude:** Spend it on code, not chat (Valentin, 2026-11-15: "use Claude as little as possible for chatting and maximize it for coding"). Main chats run on the cheapest model that keeps up. Hard coding goes to Claude when its week has room. Codex and Grok sessions never delegate to Claude.
 - **Grok:** Grok runs on the Cursor plan (cursor-agent); Cursor usage is Grok usage. Read it with the usage command like the other plans. Use it until it runs out; a worker that fails on a limit means Cursor is out, so move that work to the next plan.
 - **DeepSeek:** Always Flash, never Pro. Fast mode stays off on every model. Never the OpenCode app.
 - **Free first:** Before any new spend, find the free or cheaper way to the same outcome: subsidized plans before pay-per-token, free tiers (public GitHub repos run Actions free, Cloudflare) before paid ones, the cheaper plan of the same component before a new tool. Never ask him to add a card or pay more; bring the free option, and ask only when nothing free gives the same result.
