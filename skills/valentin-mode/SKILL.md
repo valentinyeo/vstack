@@ -10,6 +10,8 @@ Run `/pstack:poteto-mode` for the task. Follow `/house-rules` when that skill is
 
 Machine-specific setup: see your private reference if present.
 
+One way for every repo. This skill holds how agents work with Hypertask, Multibot, pstack and Rat Stack everywhere. A repo's own AGENTS.md holds only facts about that repo, never a second version of these rules.
+
 ## Talking to the user
 
 - **Audience:** The user is a product owner, not a developer. Write short, plain words. Never ask for code, commands, merges or QA.
@@ -41,6 +43,10 @@ Machine-specific setup: see your private reference if present.
 - **Launch:** Run the worker command itself as a background job, never inside `( ... ) &` or a subshell, which dies with your shell. Put the time limit in the command. Record the worker and its result file on the ticket. The worker opens its PR early.
 - **Briefs:** Put each brief in a file and pass the file. Open each brief with the user's goal.
 - **Own the result:** Read each worker's diff and run its focused check yourself before you report it. The full suite runs on GitHub.
+
+## Building
+
+- **Stack:** New web and Cloudflare apps start from Rat Stack (github.com/joelhooks/rat-stack), as close to it as possible. Existing apps move to it through `/ratstack-transition`.
 
 ## Designing
 
