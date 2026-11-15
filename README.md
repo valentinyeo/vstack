@@ -13,19 +13,23 @@ Writing and design skills for Claude Code and other AI agents. Each one is a sin
 | [ptacek-copyedit](skills/ptacek-copyedit/SKILL.md) | Copyedits a draft you wrote yourself without touching your voice: flags problems pass by pass, never suggests words, never praises. Method by Thomas and Erin Ptacek, ["How To Write With An LLM"](https://sockpuppet.org/blog/2026/09/17/how-to-write-with-an-llm/). |
 | [do](skills/do/SKILL.md) | Gets a task done, guaranteed, where the owner can watch: plans with pstack's poteto-mode, locks the plan into [unlazy](https://github.com/Leonxlnx/unlazy) gates, files one ticket per step and moves each to Done with proof. Needs [pstack](https://github.com/cursor/plugins/tree/main/pstack) and unlazy. |
 | [deep-work](skills/deep-work/SKILL.md) | Hand a big task to an agent and walk away for 60 to 90 minutes: it first proves it can check its own work, asks every question in one go, runs alone through [do](skills/do/SKILL.md), and ends with a two minute report. Shaped after [Cal Newport](https://calnewport.com)'s book [Deep Work](https://calnewport.com/deep-work-rules-for-focused-success-in-a-distracted-world/). |
-| [responsive-mode](skills/responsive-mode/SKILL.md) | Keeps the chat free while the agent works: long steps run in the background, and new messages get an answer at once. |
+| [responsive-mode](skills/responsive-mode/SKILL.md) | Keeps the chat free while the agent works: long steps run in the background, a new message gets its own reply at once, and answers are not merged. |
+| [valentin-mode](skills/valentin-mode/SKILL.md) | Valentin's working style on top of pstack: how to talk to him, which model does which job, and how a result gets checked. The same rules in every harness. |
 | [design-lead-setup](skills/design-lead-setup/SKILL.md) | Sets an agent up as design lead for an existing app: real screenshots and code tokens in Figma, a rule-cited audit (top 5, deletions first), one problem ticket per case, and fixes shown as edits on the real screen. Nothing ships until the owner says yes. Built on Hypertask; sources include Emil Kowalski, Vercel's guidelines, pstack, Peng Zheng's "first 5%" and the Figma MCP skills. |
 
 ## Install
 
-Claude Code:
+One command links every skill into Claude Code, Codex, Cursor and pi:
 
 ```bash
 git clone https://github.com/valentinyeo/vstack.git
-cp -r vstack/skills/* ~/.claude/skills/
+cd vstack
+./install
 ```
 
-Then call a skill by name, for example `/web-writing`.
+Safe to run again. Each harness entry is a symlink to this checkout, so there is one copy of each skill. A stale symlink is replaced. A real folder with the same skill name is moved to `~/.local/state/skill-dupes-<epoch>/` and kept.
+
+Then call a skill by name, for example `/web-writing` or `/valentin-mode`.
 
 Any other model: paste the body of a `SKILL.md` (below the frontmatter) as the system prompt, followed by your text.
 
