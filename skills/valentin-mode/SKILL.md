@@ -41,6 +41,13 @@ Machine-specific setup: see your private reference if present.
 - **Briefs:** Put each brief in a file and pass the file. Open each brief with the user's goal.
 - **Own the result:** Read each worker's diff and run its focused check yourself before you report it. The full suite runs on GitHub.
 
+## Designing
+
+- **When:** A ticket needs a design step when he asks for one, or when it leaves a look or interaction open (pstack Prototype step 1: "No decision means no prototype"). A change the design system already settles needs none.
+- **Where:** Figma, not an HTML sketch. Each repo with a UI names two Figma files in its AGENTS.md: the design system file and the work file. Create them if missing.
+- **How:** Run the Prototype playbook in the work file, one page per case named `<TICKET-ID> - <title>`, built from the design system file. Two or three variants, your pick marked, frames and screenshots on the ticket. Show him before building.
+- **Keep current:** Any approved style change updates the design system file in the same turn.
+
 ## Verifying
 
 - **Family:** The verifier comes from a different model family than every author of the PR. For Claude or DeepSeek authors, prefer Codex, then Grok.
