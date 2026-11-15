@@ -68,6 +68,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 ## Changing the rules
 
+- **pstack first (Valentin, 2026-11-15: "my primary mode would be to use something that is already in P stack so that I don't need to maintain it"):** Before you add or change a rule, skill or check, search the installed pstack skills for it. If pstack covers it, point to the pstack skill and add nothing. If pstack covers part, cite that part and add only the gap. Say which pstack skill you checked in the commit message.
 - **Where a correction lands:** `/pstack:correct` changes the repo the session runs in. A correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in the private home repo.
 
 - **Reflect:** Apply the Accepted edits without waiting for approval, then report them. This replaces reflect step 5's wait.
