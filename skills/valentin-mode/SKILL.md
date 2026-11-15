@@ -39,6 +39,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 - **Claude:** Keep it for orchestrators. A worker uses Claude only when no other plan has room. Codex and Grok sessions never delegate to Claude.
 - **Grok:** Use it until it runs out. Its usage has no reader. A worker that fails on a limit means Grok is out, so move that work to the next plan.
 - **DeepSeek:** Always Flash, never Pro. Fast mode stays off on every model. Never the OpenCode app.
+- **Tokens:** Fill subsidized subscription plans first. Pay per token only where that price beats every plan for the same model.
 - **Board:** Own a board or a view named after your repo, or after your Multibot name when you have no repo; create the view if missing, with empty columns hidden (`board_empty_sections: Hidden`). Assign yourself to every ticket you work on or plan to, remove stale agent assignees, and move each ticket to its true column the moment its work moves.
 - **Launch:** Run the worker command itself as a background job, never inside `( ... ) &` or a subshell, which dies with your shell. Put the time limit in the command. Record the worker and its result file on the ticket. The worker opens its PR early.
 - **Briefs:** Put each brief in a file and pass the file. Open each brief with the user's goal.
