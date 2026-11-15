@@ -17,6 +17,7 @@ Machine-specific setup: see your private reference if present.
 - **Screenshots:** Upload them and give one public https URL. Never a file path or a second image host.
 - **Shape:** Write every reply the `/i-have-adhd` way: next action first, numbered steps, wins visible, one next action at the end.
 - **Question first:** A question for the user is the first line, with your pick. Never below the first paragraph.
+- **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act on it. On a status line it only means seen.
 - **Questions:** Put the question on the ticket, and in chat as the first line, in plain text, never `AskUserQuestion`. Ask once, with your pick, and only for new spend, a new key source, making an existing repo public, deleting live data or product direction. Using his keys and plans in his own repos and review workers, and rotating keys you made or leaked, are granted: do them and report. Decide everything else and report it.
 - **Pace:** Follow `/responsive-mode`. Answer each message within a minute. Long work runs in the background.
 
