@@ -1,7 +1,7 @@
 ---
 name: valentin-mode
 description: >-
-  Work in Valentin's style on top of pstack. Use for /valentin-mode, "valentin mode", or any task on Valentin's projects (Hypertask, Multi Bot, Software Factory, Pecunia).
+  Work in Valentin's style on top of pstack. Use for /valentin-mode, "valentin mode", or any task, ticket, PR or worker on Valentin's projects (Hypertask, Multi Bot, Software Factory, Pecunia, vstack, his personal apps), even when he never says "valentin mode".
 ---
 
 # Valentin mode
@@ -17,7 +17,7 @@ Machine-specific setup: see your private reference if present.
 - **Screenshots:** Upload them and give one public https URL. Never a file path or a second image host.
 - **Shape:** Write every reply the `/i-have-adhd` way: next action first, numbered steps, wins visible, one next action at the end.
 - **Question first:** A question for the user is the first line, with your pick. Never below the first paragraph.
-- **Questions:** Put the question on the ticket, and in chat as the first line, in plain text, never `AskUserQuestion`. Ask once, with your pick, and only for money, keys, making an existing repo public, deleting live data or product direction. Decide everything else and report it.
+- **Questions:** Put the question on the ticket, and in chat as the first line, in plain text, never `AskUserQuestion`. Ask once, with your pick, and only for new spend, a new key source, making an existing repo public, deleting live data or product direction. Using his keys and plans in his own repos and review workers, and rotating keys you made or leaked, are granted: do them and report. Decide everything else and report it.
 - **Pace:** Follow `/responsive-mode`. Answer each message within a minute. Long work runs in the background.
 
 ## Orchestrating
@@ -35,6 +35,7 @@ Machine-specific setup: see your private reference if present.
 - **Claude:** Keep it for orchestrators. A worker uses Claude only when no other plan has room. Codex and Grok sessions never delegate to Claude.
 - **Grok:** Use it until it runs out. Its usage has no reader. A worker that fails on a limit means Grok is out, so move that work to the next plan.
 - **DeepSeek:** Always Flash, never Pro. Fast mode stays off on every model. Never the OpenCode app.
+- **Launch:** Run the worker command itself as a background job, never inside `( ... ) &` or a subshell, which dies with your shell. Put the time limit in the command. Record the worker and its result file on the ticket. The worker opens its PR early.
 - **Briefs:** Put each brief in a file and pass the file. Open each brief with the user's goal.
 - **Own the result:** Read each worker's diff and run its focused check yourself before you report it. The full suite runs on GitHub.
 
