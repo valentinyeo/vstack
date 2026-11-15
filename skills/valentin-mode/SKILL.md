@@ -63,4 +63,5 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 - **Where a correction lands:** `/pstack:correct` changes the repo the session runs in. A correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in the private home repo.
 
+- **Reflect:** Apply the Accepted edits without waiting for approval, then report them. This replaces reflect step 5's wait.
 - **This skill:** Refresh it with `/pstack:automate-me` when habits change.
