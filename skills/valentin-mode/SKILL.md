@@ -54,4 +54,6 @@ Machine-specific setup: see your private reference if present.
 
 ## Changing the rules
 
+- **Where a correction lands:** `/pstack:correct` changes the repo the session runs in. A correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in the private home repo.
+
 - **This skill:** Refresh it with `/pstack:automate-me` when habits change.
