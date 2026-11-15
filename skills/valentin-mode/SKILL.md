@@ -43,10 +43,9 @@ Machine-specific setup: see your private reference if present.
 
 ## Designing
 
-- **When:** A ticket needs a design step when he asks for one, or when it leaves a look or interaction open (pstack Prototype step 1: "No decision means no prototype"). A change the design system already settles needs none. Label the ticket `needs-design`.
-- **Where:** Figma, not an HTML sketch. Each repo with a UI names two Figma files in its AGENTS.md: the design system file and the work file. Create them if missing.
-- **How:** Run the Prototype playbook in the work file, one page per case named `<TICKET-ID> - <title>`, built from the design system file. Two or three variants, your pick marked, frames and screenshots on the ticket. Show him before building.
-- **Keep current:** Any approved style change updates the design system file in the same turn.
+- **When:** A ticket needs a design step when he asks for one, or when it leaves a look or interaction open (pstack Prototype step 1: "No decision means no prototype"). Label it `needs-design`.
+- **How:** pstack's Prototype playbook as it ships: 2-3 throwaway HTML variants behind one switcher, built from the app's real styles, your pick marked. Screenshot each and put them on the ticket with one public link. Show him before the build starts.
+- **Figma:** only when he asks for it on that ticket. Then use the app's design system file and its work file, one page per case named `<TICKET-ID> - <title>`.
 
 ## Verifying
 
