@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# install: point Claude Code, Codex, Cursor, pi and shared agents at these skills.
+# Safe to run twice. A stale symlink is replaced. A real file or directory with
+# the same skill name is moved to ~/.local/state/skill-dupes-<epoch>/ and kept.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")" && pwd -P)
+SRC="$ROOT/skills"
+SHARE=${VSTACK_DIR:-$HOME/.local/share/vstack}
+EPOCH=$(date +%s)
+DUPES="$HOME/.local/state/skill-dupes-$EPOCH"
+moved=0
+
+if [ ! -d "$SRC" ]; then
+  echo "vstack install: no skills dir at $SRC" >&2
+  exit 1
+fi
+
+# One copy of the repo. The stable path points at this checkout.
+# pwd -P so a second run cannot replace that path with a link to itself.
+if [ "$ROOT" = "$SHARE" ]; then
+  :
+elif [ -d "$SHARE" ] && [ ! -L "$SHARE" ]; then
+  if [ "$(cd "$SHARE" && pwd -P)" != "$ROOT" ]; then
+    echo "vstack install: $SHARE is its own checkout. Linking skills from $ROOT." >&2
+  fi
+else
+  mkdir -p "$(dirname "$SHARE")"
+  ln -sfn "$ROOT" "$SHARE"
+fi
+
+dests=(
+  "$HOME/.claude/skills"
+  "$HOME/.codex/skills"
+  "$HOME/.cursor/skills"
+  "$HOME/.pi/agent/skills"
+  "$HOME/.agents/skills"
+)
+
+link_one() {
+  local name=$1 target=$2 dest=$3 t bucket
+  t="$dest/$name"
+  mkdir -p "$dest"
+  if [ -L "$t" ] || [ ! -e "$t" ]; then
+    ln -sfn "$target" "$t"
+    return
+  fi
+  bucket="$DUPES${dest#"$HOME"}"
+  mkdir -p "$bucket"
+  mv "$t" "$bucket/$name"
+  moved=1
+  ln -sfn "$target" "$t"
+  echo "vstack install: moved $t to $bucket/$name" >&2
+}
+
+shopt -s nullglob
+for s in "$SRC"/*/; do
+  [ -f "$s/SKILL.md" ] || continue
+  name=$(basename "$s")
+  target=$(cd "$s" && pwd -P)
+  for dest in "${dests[@]}"; do
+    link_one "$name" "$target" "$dest"
+  done
+done
+
+if [ "$moved" -eq 0 ]; then
+  echo "vstack install: linked skills from $ROOT"
+else
+  echo "vstack install: linked skills from $ROOT; plain copies in $DUPES"
+fi
