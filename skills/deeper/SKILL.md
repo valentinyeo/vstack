@@ -1,6 +1,8 @@
 ---
 name: deeper
-description: Turn a task into a deeper version, not a bigger one. Says what a top professional would do that was not asked for, the rawest source material, the exact methods and tools, and what outside proof would show the result is right, then rewrites the prompt to ask for exactly that. Prompt by Felix Rieseberg. Use for /deeper, optionally followed by the task, or "make this deeper", "how would a pro do this".
+description: "make this deeper;how would a pro do this. /deeper [task]: deepen, not widen. Name unasked expert work, rawest sources, exact methods/tools, external proof; rewrite prompt. Felix Rieseberg. Use for /deeper, \"make this deeper\" or \"how would a pro do this\"."
+model: opus
+effort: medium
 ---
 
 # /deeper
@@ -15,6 +17,7 @@ I want a deeper version of this task, not a bigger one. Before rewriting it:
 2. Name the rawest material they would start from instead of what has already been digested for me.
 3. Name the specific methods and tools they would use.
 4. Say what, other than you or me, would show the result is right.
+5. Technical, app-building or coding task only: say what Lauren Tan (@poteto, https://x.com/poteto, author of pstack) would do here and how she would approach it. Skip this point for other fields.
 
 Then rewrite my prompt to ask for exactly that.
 
@@ -26,5 +29,5 @@ Then rewrite my prompt to ask for exactly that.
 - Methods and tools are named and specific: the actual tool, command, test or technique.
 - Proof must come from outside this conversation: a scanner, a test, a provider's own record, a live measurement, a third party. Never "I checked" or "you confirm".
 - Before writing, look at the real context for the task (files, tickets, systems) so the answer fits this case, not a generic one.
-- Answer in four short parts, then the rewritten prompt in one code block that can be pasted.
+- Answer in four short parts (five for technical tasks), then the rewritten prompt in one code block that can be pasted.
 - Do not start the deeper task. End by asking whether to run the rewritten prompt.
