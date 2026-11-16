@@ -45,7 +45,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 - **Hypertask gaps:** When Hypertask cannot do something you need, file it the same minute with `hypertask feedback --kind missing|bug|friction --tool "<command>" "<one line>"` (or the MCP report-feedback tool), then tell the user the ticket link. Never just report "the tool has no switch".
 - **Drain:** An orchestrator runs pstack's Autonomous run with one exit condition: its board or view has no open ticket it can move. Start it with `/loop` and that condition. Wake on worker results and PR or CI events, with a 30-minute heartbeat as fallback. Stop only when the condition holds or only the user can unblock what is left.
 - **Drain check (Valentin, 2026-11-16: "verify their own drain loop against a template"):** Run it when the loop starts, after every `/clear`, and on each heartbeat. Fix every miss yourself in the same turn; never only report it.
-  1. One loop is alive in this chat (`CronList` or the `/loop` status shows it), with the exit condition above.
+  1. Exactly one loop is alive in this chat (`CronList` or the `/loop` status shows it), with the exit condition above. A loop survives `/clear`: create one only when none is alive, and delete duplicates.
   2. Its heartbeat is 30 minutes or less.
   3. At most 10 subagents and workers in flight (pstack Orchestrate: "about ten workers in flight per coordinator"). Start the next one as one finishes.
   4. Every unit in flight has a ticket in its true column, assigned to you, with its worker and result file on it.
