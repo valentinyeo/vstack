@@ -53,6 +53,9 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 ## Building
 
 - **Stack:** New web and Cloudflare apps start from Rat Stack (github.com/joelhooks/rat-stack), as close to it as possible. Existing apps move to it through `/ratstack-transition`.
+- **Bans live in lint (Lauren Tan, "All Code Is Slop (Except Mine)", 2026-11):** Rat Stack's fence already bans comments and cross-layer and browser-server imports. An app not yet on Rat Stack gets one ticket that adds the same bans as lint rules, plus nuanced patterns its workers keep misusing (for example `useEffect` or `setTimeout` used as a quick fix in product code). A ban written only in markdown is not a ban.
+- **Before review:** Every worker brief names pstack `no-comments` as its last step before the verifier (poteto-mode, Before review).
+- **Second time, a check:** When a verifier or the user flags the same mistake a second time in one repo, run pstack `correct` there, in the same change, in its own order.
 
 ## Designing
 
@@ -65,6 +68,16 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 - **Verification skills:** Every app has one `verify-<app>` skill (pstack `create-verification-skill`) that drives the real app like a user and saves proof. Every ticket's Done when names a proof that skill produces. When the skill cannot produce it, extend the skill in the same PR. When the app changed since the skill was last updated, run pstack `maintain-verification-skill` before new work. Hypertask comes first.
 - **Family:** The verifier comes from a different model family than every author of the PR. For Claude or DeepSeek authors, prefer Codex, then Grok.
+- **Proof fits the change:** Each PR that changes app behavior carries proof from `verify-<app>` that fits it: screenshots or a video for UI, a transcript for a CLI, a response body for an API. A change to a multi-step flow (sign-up, sync, payment, ticket moves) also carries a pstack `statechart`. A behavior PR with no proof gets FAIL.
+- **Formal where bugs cost most:** The first PR that touches money math, sync across devices, retries or a queue gets a ticket for pstack `create-formal-verification-skill` on that area. The next PR in that area runs the formal check before merge.
+
+| Rule | Enforced by |
+| --- | --- |
+| Bans live in lint | per repo lint; older apps: nothing yet, one ticket each |
+| no-comments before review | nothing yet |
+| Second time, a check | nothing yet |
+| Proof fits the change | the verifier's FAIL |
+| Formal where bugs cost most | nothing yet |
 
 ## Changing the rules
 
