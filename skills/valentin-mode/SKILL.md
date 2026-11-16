@@ -47,10 +47,10 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 - **Drain check (Valentin, 2026-11-16: "verify their own drain loop against a template"):** Run it when the loop starts, after every `/clear`, and on each heartbeat. Fix every miss yourself in the same turn; never only report it.
   1. Exactly one loop is alive in this chat (`CronList` or the `/loop` status shows it), with the exit condition above. A loop survives `/clear`: create one only when none is alive, and delete duplicates.
   2. Its heartbeat is 30 minutes or less.
-  3. At most 10 subagents and workers in flight (pstack Orchestrate: "about ten workers in flight per coordinator"). Start the next one as one finishes.
+  3. Up to 10 subagents and workers in flight (pstack Orchestrate: "Keep about ten workers in flight per coordinator, and start the next one as each finishes"). Each tick run `~/.local/share/house-rules/fleet/slots --running <n> --ready <n>` and start exactly the number it prints. Fewer than 10 only for the reason it prints: at the cap, no ready ticket, CPU full, memory low. You coordinate; workers write the code.
   4. Every unit in flight has a ticket in its true column, assigned to you, with its worker and result file on it.
   5. Your handover file names the loop and its counts.
-  Report one line: `Drain: loop <id> ok | <n> in flight | <n> to do | <n> subagents running | fixed: <what, or none>`.
+  Report one line: `Drain: loop <id> ok | <n> in flight | <n> to do | <n> subagents running | slots: <its line> | fixed: <what, or none>`.
 - **Short chats:** Past about 150k tokens of context, run pstack's Pause safely: write `~/handover/<chat name>.md` (role, goal, open tickets and PRs, running workers and their result files, next 3 actions). With the user present, end with "Handover saved. Type /clear and I continue fresh." Unattended, start your own fresh session. A new chat reads its handover first and follows Session pickup. In Claude chats the `short-chat` hook enforces this.
 - **Checks:** You own your repo's checks. Budget: a merge ships within 15 minutes, a fix check stays under 20 jobs, old runs cancel when newer code arrives. When the session start shows CHECKS OVER BUDGET, fix the checks before new feature work.
 - **Launch:** Run the worker command itself as a background job, never inside `( ... ) &` or a subshell, which dies with your shell. Put the time limit in the command. Record the worker and its result file on the ticket. The worker opens its PR early.
