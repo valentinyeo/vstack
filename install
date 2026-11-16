@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install: point Claude Code, Codex, Cursor and pi at this checkout's skills.
+# install: point Claude Code, Codex, Cursor, pi and shared agents at these skills.
 # Safe to run twice. A stale symlink is replaced. A real file or directory with
 # the same skill name is moved to ~/.local/state/skill-dupes-<epoch>/ and kept.
 set -euo pipefail
@@ -34,6 +34,7 @@ dests=(
   "$HOME/.codex/skills"
   "$HOME/.cursor/skills"
   "$HOME/.pi/agent/skills"
+  "$HOME/.agents/skills"
 )
 
 link_one() {
