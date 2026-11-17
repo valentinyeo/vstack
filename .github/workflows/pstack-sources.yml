@@ -69,9 +69,9 @@ jobs:
           Replay house-rules 593, 594, 595 and vstack 106, 107.
           Try clean rebases, changed patches, and FAIL verdicts.
           Check waiting-on-Valentin exclusion and board sync precedence.
-          These are prose contract tests, not an executable orchestrator.
+          These test prose contracts, not an executable orchestrator.
           Inspect whether instructions actually mandate these decisions.
-          Review scoped comments using pstack no-comments before verification.
+          Review scoped comments before verification, following pstack no-comments.
           Inspect and exercise the real changed skill or hook as a user.
           Test parent against head. Run three attempts to break the fix, including stale sources.
           Negative fixtures and historical wording are allowed. Confirm current sources still work.

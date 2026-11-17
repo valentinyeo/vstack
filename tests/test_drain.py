@@ -47,6 +47,7 @@ class DrainRuleTests(unittest.TestCase):
         for clause in ('0.15.43', 'checkable', 'steps 1-4', 'GitHub runners',
                        'never on the server', '.github/workflows/pstack-sources.yml',
                        'patch-id', 'bottom-up', 'read back', 'fallback',
+                       'Server verdict files never count',
                        'SOFT-2446', 'Valentin Review', 'Checks', 'AI Review',
                        'Todo', 'Doing', 'Done'):
             with self.subTest(clause=clause):
