@@ -24,6 +24,7 @@ out-of-bounds uses configured anonymous project names, regex-escaped.
 Read the diff and drive all real hooks using run_command.
 Run every hook --self-test, the migration tests, and installer tests.
 Try three independent break attempts using real stdin/transcripts.
+Batch related reads and commands. Finish once evidence covers the bar.
 Audit CI wiring, copied checklist, rule table, and correction routing.
 Do not require migration of remaining files or runtime hook installation.
 No user-facing app changed; feature maps are not applicable.
@@ -39,8 +40,12 @@ messages = [{'role': 'system', 'content': 'You are an independent skeptical veri
             {'role': 'user', 'content': prompt}]
 tool = {'type': 'function', 'function': {'name': 'run_command', 'description': 'Run read-only inspection or verification on the GitHub runner. Temporary test files/worktrees allowed. Never push, merge or modify candidate checkouts.',
         'parameters': {'type': 'object', 'properties': {'command': {'type': 'string'}}, 'required': ['command']}}}
-for iteration in range(24):
+for iteration in range(40):
+    if iteration == 39:
+        messages.append({'role': 'user', 'content': 'Tool budget exhausted. Return your final JSON verdict now. Use FAIL if evidence is insufficient. Do not invent evidence.'})
     body = {'model': MODEL, 'messages': messages, 'tools': [tool], 'max_tokens': 6500}
+    if iteration == 39:
+        body['tool_choice'] = 'none'
     req = urllib.request.Request('https://opencode.ai/zen/go/v1/chat/completions',
           data=json.dumps(body).encode(), headers={'Authorization': 'Bearer ' + os.environ['OPENCODE_API_KEY'],
                     'Content-Type': 'application/json', 'User-Agent': 'pstack-verifier/1.0',
