@@ -23,11 +23,10 @@ Nobody pushes to main.
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | A separate verifier posts a verdict before merge | Review procedure; branch protection is not configured here |
-
+| Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.
 Run `bin/install-ticket-claim` to install claim routing.
 The installer preserves unrelated global claim routes.
-| Worker briefs name both fault destinations | `hooks/book-check.py` |

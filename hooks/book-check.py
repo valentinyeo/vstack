@@ -36,7 +36,6 @@ ITEMS = [
     "Video or trace before release",
     "Check seen failing",
 ]
-WORKER = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:codex\s+exec\b|(?:pi|hax|claude|cursor-agent)\s+(?:.*\s)?-p\b|spawn-worker\b)")
 FAULTS = ("Faults: Hypertask bug -> hypertask feedback; our rules or scripts -> board 2060 ticket with label Poteto.")
 LAUNCH = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?gh\s+pr\s+create\b")
 BRIEF = re.compile(r"\$\(cat\s+([^)\s]+)\)|--body-file\s+(\S+)")
@@ -53,13 +52,27 @@ def text_of(cmd):
             parts.append(Path((a or b).replace("~", str(Path.home()), 1)).read_text(errors="ignore"))
         except OSError:
             pass
-    # spawn-worker takes its brief as the final positional file.
-    if re.search(r"(?:^|[\s;&|(])(?:\S*/)?spawn-worker\b", cmd):
-        try:
-            args = shlex.split(cmd)
-            parts.append(Path(args[-1]).expanduser().read_text(errors="ignore"))
-        except (ValueError, OSError):
-            pass
+    for args in launch_argv(cmd):
+        if not args or Path(args[0]).name != "spawn-worker":
+            continue
+        candidates = []
+        options = iter(args[1:])
+        for arg in options:
+            if arg == "--brief":
+                candidates = [next(options, "")]
+                break
+            if arg.startswith("--brief="):
+                candidates = [arg.split("=", 1)[1]]
+                break
+            if arg in {"--level", "--model", "--cwd", "--project", "--name"}:
+                next(options, None)
+            elif not arg.startswith("-"):
+                candidates.append(arg)
+        if candidates:
+            try:
+                parts.append(Path(candidates[0]).expanduser().read_text(errors="ignore"))
+            except OSError:
+                pass
     return "\n".join(parts)
 
 
@@ -75,8 +88,7 @@ def missing(text):
     return out
 
 
-def worker_launch(cmd):
-    # Each shell command is argv, so quoted prose cannot become an executable.
+def launch_argv(cmd):
     lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
@@ -89,19 +101,37 @@ def worker_launch(cmd):
             else:
                 commands[-1].append(token)
     except ValueError:
-        return bool(WORKER.search(cmd))
+        return []
+    wrappers = {"env", "timeout", "nohup", "setsid", "sudo", "command", "nice", "stdbuf", "xargs", "exec"}
+    takes_value = {"-n", "-u", "-g", "-a", "-i", "-o", "-e", "-I", "-P", "-s", "-k",
+                   "--adjustment", "--user", "--group", "--signal", "--kill-after"}
+    result = []
     for args in commands:
-        while args and (args[0] == "env" or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", args[0])):
-            args = args[1:]
-        if args and Path(args[0]).name == "timeout":
-            args = args[1:]
-            while args and (args[0].startswith("-") or re.fullmatch(r"[0-9.]+[smhd]?", args[0])):
+        while args:
+            if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", args[0]):
                 args = args[1:]
-        if not args:
-            continue
+                continue
+            name = Path(args[0]).name
+            if name not in wrappers:
+                break
+            args = args[1:]
+            while args and args[0].startswith("-"):
+                option = args[0]
+                args = args[2:] if option in takes_value else args[1:]
+                if option == "--":
+                    break
+            if name == "timeout" and args and re.fullmatch(r"[0-9.]+[smhd]?", args[0]):
+                args = args[1:]
+        if args:
+            result.append(args)
+    return result
+
+
+def worker_launch(cmd):
+    for args in launch_argv(cmd):
         name = Path(args[0]).name
         if (name == "spawn-worker" or name == "codex" and args[1:2] == ["exec"]
-                or name in {"pi", "hax", "claude", "cursor-agent"} and "-p" in args[1:]):
+                or name in {"pi", "hax", "claude", "cursor-agent"} and {"-p", "--print"}.intersection(args[1:])):
             return True
     return False
 
@@ -112,7 +142,7 @@ def verdict(cmd):
         return None
     text = text_of(cmd)
     if worker:
-        routes = re.findall(r"^[ \t]*Faults:[ \t]*(.+)$", text, re.M | re.I)
+        routes = re.findall(r"^[ \t]*(?:[-*+]|[0-9]+[.)])?[ \t]*Faults:[ \t]*(.+)$", text, re.M | re.I)
         if not any(re.search(r"\bhypertask[ \t]+feedback\b", line, re.I)
                    and re.search(r"\bboard[ \t]+2060\b", line, re.I)
                    and re.search(r"\blabel[ \t]+Poteto\b", line, re.I)
@@ -139,19 +169,23 @@ def self_test():
     assert verdict(brief(full)), "SOFT-2588: a worker brief without Faults must be blocked"
     full = FAULTS + "\n" + full
     assert verdict(brief(full)) is None, "a complete brief passes"
+    assert verdict(brief("- " + full)) is None, "a bulleted fault route passes"
+    assert verdict("nohup codex exec missing")
     for broken in ["Faults:", "Faults: hypertask feedback", "Faults: board 2060 ticket with label Poteto",
                    "Faults: hypertask feedback; board 15 ticket with label Poteto",
                    "Faults: hypertask feedback; board 2060 ticket with label Other",
                    "hypertask feedback; board 2060 ticket with label Poteto",
                    "Faults: hypertask feedback\nboard 2060 ticket with label Poteto"]:
         assert verdict(brief(full.replace(FAULTS, broken))), "both paths belong on one Faults line"
-    for launcher in ["pi -p", "hax -p", "claude -p", "cursor-agent -p"]:
+    for launcher in ["pi -p", "hax -p", "pi --print", "hax --print", "claude -p", "cursor-agent -p"]:
         assert verdict(launcher + ' "' + full + '"') is None
         assert verdict(launcher + ' "' + full.replace(FAULTS, '') + '"')
     with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
         f.write(full); f.flush()
         assert verdict(f"/x/spawn-worker --level normal {f.name}") is None
         assert verdict(f"spawn-worker --level normal {f.name}.missing")
+        assert verdict(f"spawn-worker {f.name} &") is None
+        assert verdict(f"spawn-worker --brief {f.name} --level normal") is None
     assert verdict('gh pr create --body "' + full.replace(FAULTS, '') + '"') is None, "PRs need book items, not fault routes"
     assert verdict('gh pr create --body "Shared spawn-worker brief rules\n' + full.replace(FAULTS, '') + '"') is None, "launcher names in PR prose are not launches"
     # Real past mistake, 2026-11-17: the verify-gate plan had no 'show the check failing first' step.
