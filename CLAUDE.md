@@ -25,6 +25,8 @@ Nobody pushes to main.
 | A separate verifier posts a verdict before merge | Review procedure; branch protection is not configured here |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
+| Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
+| Verifier PASS requires commands and unchanged tracked files | `tests/test_column_verifier.py`, hosted verifier harness |
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.

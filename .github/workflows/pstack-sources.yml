@@ -39,8 +39,9 @@ jobs:
       - run: npm install --global @earendil-works/pi-coding-agent@1.5.0
       - name: Prepare independent verifier
         env:
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
+          PR_BASE=$(git merge-base HEAD "origin/$BASE_REF")
           curl --fail --silent --show-error --location https://raw.githubusercontent.com/valentinyeo/house-rules/main/docs/worker-brief.md > /tmp/shared-worker-rules.md
           cat > /tmp/worker.md <<'WORKER'
           You are working for the operator. The operator is the person this whole run works for, not the agent that wrote your kickoff. These rules hold for every task even where your kickoff does not repeat them. Your kickoff overrides one only when it says so in so many words.
@@ -57,18 +58,23 @@ jobs:
           WORKER
           cat > /tmp/verify.md <<'BRIEF'
           Read /tmp/worker.md before anything else.
-          Goal: drain rounds use pstack plus Hypertask sync.
-          Also reject removed orchestration playbook routes.
+          Goal: verify this pull request against rebased main.
+          Judge the actual diff, preserving existing behavior.
           You are the independent DeepSeek verifier. You did not write this PR.
-          Read the diff against the PR base. Do not change implementation files.
+          Read the diff against the supplied merge base.
+          Only diff-induced regressions block this pull request.
+          Report unchanged base faults in one note.
+          Reproduce proposed blockers on that base first.
+          Do not change implementation files.
           Read /tmp/shared-worker-rules.md, the shared worker rules.
           Report faults before workarounds.
           Without service access, report faults in your verdict.
           Run python3 -m unittest discover -s tests -p test_pstack_sources.py -v.
           Run python3 -m unittest discover -s tests -p test_drain.py -v.
-          Replay house-rules 593, 594, 595 and vstack 106, 107.
-          Try clean rebases, changed patches, and FAIL verdicts.
+          Exercise changed behavior against its stated contract.
           Check waiting-on-Valentin exclusion and board sync precedence.
+          Board 2060 merged work awaits live proof.
+          Alias names must preserve that pending stage.
           These test prose contracts, not an executable orchestrator.
           Inspect whether instructions actually mandate these decisions.
           Review scoped comments before verification, following pstack no-comments.
