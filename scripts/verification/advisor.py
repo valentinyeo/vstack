@@ -10,26 +10,26 @@ OUT = Path('evidence')
 OUT.mkdir(exist_ok=True)
 prompt = f'''Read {max((Path.home() / ".claude/plugins/cache/cursor-plugins/pstack").glob("*"), key=lambda p: tuple(int(n) for n in p.name.split(".") if n.isdigit()))}/skills/poteto-mode/worker.md before anything else.
 Read book/CHECKLIST.md next.
+Read .github/briefs/shared-worker-rules.md, the shared worker rules.
+{Path(".github/briefs/shared-worker-rules.md").read_text()}
+Without service access, report faults in your verdict before workarounds.
 Goal: Lauren's setup. vstack publicly owns shared checks.
 You are DeepSeek Flash, independently verifying Codex-authored SOFT-2590.
 You run on GitHub-hosted Ubuntu. Never edit candidates, push, or merge.
 pstack: skills/poteto-mode/playbooks/refactoring.md
 Candidate: current checkout. Head SHA: {os.environ['HEAD_SHA']}.
-The original hooks came from private advisor self-gate.
-The author records baseline equivalence outside this public checkout.
-You cannot independently fetch the private original. State that limit.
-Sensitive names were removed.
-Four hooks must retain exact behavior. book-check's diagnostic path changes.
-out-of-bounds uses configured anonymous project names, regex-escaped.
-Read the diff and drive all real hooks using run_command.
-Run every hook --self-test, the migration tests, and installer tests.
+Port ticket: SOFT-2573. Scope: ticket-way hook, ticket helper, idempotent claim installer.
+Read the diff against the PR base, then drive every changed hook.
+Run hooks/*.py --self-test and the focused tests named in advisor-checks.
+Run the migration tests and installer tests too.
 Try three independent break attempts using real stdin/transcripts.
+The source PR lives in a private repo. State that limit.
+Tests were committed before the fix. Inspect that commit and its parent.
+Reproduce failure using the test-only commit in a temporary worktree.
+Do not require unrelated private persona content or runtime installation.
 Batch related reads and commands. Finish once evidence covers the bar.
-Audit CI wiring, copied checklist, rule table, and correction routing.
-Do not require migration of remaining files or runtime hook installation.
+Audit CI wiring and the rule table.
 No user-facing app changed; feature maps are not applicable.
-The author committed migration tests before the fix and saw failures.
-Inspect git history. Reproduce their failure in a temporary base worktree.
 Before verdict perform pstack no-comments review. Report findings only.
 Hold only for failures at this head or bugs introduced here.
 Base bugs get notes. No extra gates. Never ask humans questions.

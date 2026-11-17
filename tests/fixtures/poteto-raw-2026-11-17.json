@@ -1,0 +1,20 @@
+[
+  {
+    "timestamp": "2026-11-17T10:34:11.086Z",
+    "source": "7b4fd565-8426-488a-8ea8-eb1991c59f9f.jsonl",
+    "command": "export PATH=~/.local/bin:$PATH; T=$(cat ~/.config/hypertask-agents/credentials/sessions/poteto-agent-token); hypertask --token \"$T\" task create --project 2060 --title \"Poteto gets 2 runners that deliver its tickets as PRs\" --description-file /tmp/runners.md 2>&1 | grep -oE \"https://app.hypertask.ai/detail/project-2060/[0-9]+|error[^,]*\" | head -2",
+    "fullCommand": "export PATH=~/.local/bin:$PATH; T=$(cat ~/.config/hypertask-agents/credentials/sessions/poteto-agent-token); hypertask --token \"$T\" task create --project 2060 --title \"Poteto gets 2 runners that deliver its tickets as PRs\" --description-file /tmp/runners.md 2>&1 | grep -oE \"https://app.hypertask.ai/detail/project-2060/[0-9]+|error[^,]*\" | head -2"
+  },
+  {
+    "timestamp": "2026-11-17T00:59:45.521Z",
+    "source": "eaeb14b1-4fa0-4ecf-b844-69663153c478.jsonl",
+    "command": "export PATH=~/.local/bin:$PATH; T=\"$(cat ~/.config/hypertask-agents/credentials/sessions/poteto-agent-token)\"; hypertask --token \"$T\" comment add SOFT-2500 --kind qa --file /tmp/poteto/c2500b.html 2>&1 | grep -o '\"success\":[a-z]*\\|error[^,]*'",
+    "fullCommand": "cat > /tmp/poteto/c2500b.html <<'EOF'\n<p>Poteto started a Codex worker on this blocker.</p>\n<p>It fixes the Settings journey that never reaches Release notes.</p>\n<p>It also checks why the verifier made no base run.</p>\n<p>Multi Bot: please do not start a second fix.</p>\nEOF\nexport PATH=~/.local/bin:$PATH; T=\"$(cat ~/.config/hypertask-agents/credentials/sessions/poteto-agent-token)\"; hypertask --token \"$T\" comment add SOFT-2500 --kind qa --file /tmp/poteto/c2500b.html 2>&1 | grep -o '\"success\":[a-z]*\\|error[^,]*'; printf '\\n- %s: PR 588 merged, caps live (Pecunia at 3 starts 0). Codex worker on multiprompt PR 1056 blocker: /tmp/w1056, brief /tmp/w1056-brief.md, log /tmp/w1056-log.txt, result /tmp/w1056-result.md. I commit its diff, push to the PR branch, rerun pr-verifier.\\n' \"$(date '+%F %H:%M')\" >> ~/handover/poteto.md"
+  },
+  {
+    "timestamp": "2026-11-17T10:54:47.081Z",
+    "source": "7b4fd565-8426-488a-8ea8-eb1991c59f9f.jsonl",
+    "command": "hypertask --token \"$T\" task update SOFT-2577 --project 2060 --section \"AI Review\" 2>&1 | grep -c success",
+    "fullCommand": "cd ~/projects/poteto-2-advisor && git add .claude/hooks/pstack-source.py && git -c user.name=\"RUNNER 11\" -c user.email=runner-11@agents.hypertask.ai commit -qm \"Advisor: worker briefs must start with pstack 0.15.43's worker.md line (SOFT-2577)\n\nSeen failing on this morning's gate brief, passing on the new verifier brief.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\" && git push -q origin main; git log --oneline -1\nexport PATH=~/.local/bin:$PATH; T=$(cat ~/.config/hypertask-agents/credentials/sessions/poteto-agent-token)\nhypertask --token \"$T\" task update SOFT-2577 --project 2060 --section \"AI Review\" 2>&1 | grep -c success\nhypertask --token \"$T\" comment add --project 2060 --ticket 2577 --kind qa --text \"Check live: https://github.com/valentinyeo/poteto-2-advisor/commit/$(git rev-parse --short HEAD). It blocks this morning's gate brief. It passes a brief with the line. Verifier queued for the next free slot.\" 2>&1 | grep -c '\"success\":true'\nfor n in 2568 2564 2565; do hypertask --token \"$T\" task update SOFT-$n --project 2060 --section \"AI Review\" 2>&1 | grep -c success; done | tr '\\n' ' '"
+  }
+]
