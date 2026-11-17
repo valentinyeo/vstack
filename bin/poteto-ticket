@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""One owner for Poteto's board 2060 ticket writes."""
+import argparse
+import html
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+from urllib.parse import urlparse
+
+BOARD = '2060'
+TOKEN = Path.home() / '.config/hypertask-agents/credentials/sessions/poteto-agent-token'
+STAGES = {'claim': 'Doing', 'review': 'AI Review', 'done': 'Done', 'ask': 'Valentin Review'}
+
+
+class Client:
+    def __init__(self):
+        self.token = TOKEN.read_text().strip()
+        if not self.token:
+            raise ValueError('Poteto token is empty.')
+        self.binary = shutil.which('hypertask')
+        if not self.binary:
+            raise ValueError('Install hypertask before using poteto-ticket.')
+        self.checked = set()
+
+    def call(self, group, action, *args):
+        command = (group, action)
+        if command not in self.checked:
+            help_result = subprocess.run([self.binary, group, action, '--help'], capture_output=True, text=True)
+            if help_result.returncode:
+                raise ValueError(f'Unsupported hypertask command: {group} {action}')
+            self.checked.add(command)
+        result = subprocess.run([self.binary, '--token', self.token, '--json', group, action, *args],
+                                capture_output=True, text=True)
+        try:
+            data = json.loads(result.stdout)
+        except ValueError:
+            data = None
+        if result.returncode or not isinstance(data, dict) or data.get('success') is False:
+            detail = (result.stderr or result.stdout).replace(self.token, '[redacted]').strip()
+            raise ValueError(f'hypertask {group} {action} failed: {detail}')
+        return data
+
+
+def task_from(data):
+    rows = data.get('tasks')
+    task = rows[0] if isinstance(rows, list) and rows else data.get('task', data)
+    if not isinstance(task, dict) or not task.get('ticketNumber'):
+        raise ValueError('Hypertask returned no ticket number. Inspect board 2060 before retrying.')
+    return task
+
+
+def checked_ticket(client, ref):
+    if not re.fullmatch(r'(?:SOFT-)?[1-9][0-9]*', ref):
+        raise ValueError('Use a board 2060 ticket number, such as SOFT-2573.')
+    options = ['--project', BOARD] if ref.isdigit() else []
+    task = task_from(client.call('task', 'get', ref, *options))
+    if str(task.get('projectId', task.get('boardId'))) != BOARD:
+        raise ValueError('poteto-ticket only writes board 2060.')
+    return task['ticketNumber']
+
+
+def verdict_url(value):
+    url = urlparse(value)
+    if (url.scheme != 'https' or url.hostname != 'github.com' or url.username or url.password
+            or not (re.fullmatch(r'/[^/]+/[^/]+/(?:pull|issues)/\d+', url.path)
+                    and re.fullmatch(r'(?:issuecomment|pullrequestreview)-\d+', url.fragment)
+                    or re.fullmatch(r'/[^/]+/[^/]+/actions/runs/\d+(?:/job/\d+)?', url.path))):
+        raise ValueError('Use a GitHub verdict comment or Actions run URL.')
+    return value
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    new = commands.add_parser('new', help='Create in Todo, label Poteto, run Task Writer.')
+    new.add_argument('brief')
+    new.add_argument('--task', help='Retry Task Writer on an already-created ticket.')
+    for name in ('claim', 'log', 'review', 'done', 'ask'):
+        sub = commands.add_parser(name)
+        sub.add_argument('ticket')
+        if name in {'log', 'ask'}:
+            sub.add_argument('text')
+        if name == 'done':
+            sub.add_argument('proof', type=verdict_url)
+    args = parser.parse_args()
+    try:
+        client = Client()
+        if args.command == 'new':
+            if not args.brief.strip():
+                raise ValueError('Provide a nonempty brief.')
+            if args.task:
+                ticket = checked_ticket(client, args.task)
+            else:
+                task = task_from(client.call(
+                    'task', 'create', '--project', BOARD, '--section', 'Todo',
+                    '--labels', 'Poteto,brain-medium', '--title', ' '.join(args.brief.split()[:8]),
+                    '--description', '<p><b>Problem:</b> This ticket awaits the Task Writer.</p>'
+                    '<p><b>Fix:</b> Draft the supplied brief.</p>'
+                    '<p><b>Done when:</b> Task Writer fills this ticket.</p>'
+                    '<p><b>Risk:</b> Drafting may fail. Retry this ticket.</p>'
+                    '<p><b>Decision:</b> none</p>'))
+                ticket = task['ticketNumber']
+                print(f'Created {ticket}: https://app.hypertask.ai/detail/project-{BOARD}/{ticket.split("-")[-1]}', flush=True)
+            client.call('ai', 'write', args.brief, '--task', ticket, '--mode', 'task-writer',
+                        '--instructions', 'Use exactly these HTML headings: Problem, Fix, Done when, Risk, Decision. '
+                        'Every sentence and title must contain at most eight words. '
+                        'Risk must name a failure and its undo. Use plain product words. '
+                        'No introductory paragraph, code names, paths, or status. '
+                        'Keep the supplied scope. Do not invent steps or questions. '
+                        'Use Decision: none unless the brief requires one.', '--apply')
+            print(f'{ticket}: Task Writer applied.')
+            return 0
+        ticket = checked_ticket(client, args.ticket)
+        if args.command == 'log':
+            client.call('activity', 'add', ticket, '--text', args.text)
+        elif args.command == 'claim':
+            client.call('task', 'assign', ticket, '--agent', 'Poteto')
+            client.call('task', 'update', ticket, '--add-label', 'Poteto', '--section', STAGES['claim'])
+            client.call('activity', 'add', ticket, '--text', 'Claimed.')
+        else:
+            if args.command == 'done':
+                text = f'<p><b>Verified and closed.</b></p><p>Proof: {html.escape(args.proof)}</p><p>Nothing to decide.</p>'
+                client.call('comment', 'add', ticket, '--kind', 'done', '--text', text)
+            elif args.command == 'ask':
+                client.call('comment', 'add', ticket, '--kind', 'question', '--text', args.text)
+            client.call('task', 'update', ticket, '--section', STAGES[args.command])
+        print(f'{ticket}: {args.command} complete.')
+        return 0
+    except (OSError, ValueError) as exc:
+        print(f'poteto-ticket: {exc}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
