@@ -49,16 +49,22 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
   3. Use `playbooks/babysit.md` and `scripts/watch-pr/watch-pr` for event wakes. Re-arm after each result. Watch worker completion through the worker's event watcher. Cron is only the slow fallback. Keep exactly one fallback, at most 30 minutes. Follow Shipping's queued-stack watcher for a landing run.
   4. Sync Hypertask from current facts. Use `~/.local/share/house-rules/fleet/reconcile` when SOFT-2446 lands. Until then apply this table by hand. Preserve Valentin Review and explicit waiting/blocker state. Keep the lead assigned, removing stale owners. Record each move's facts on its ticket.
 
+     This table applies only to board 2060.
+     Other boards use their own workflow and columns.
+     Resolve Building/Doing and Verifier/AI Review against actual columns.
+     Prefer new names when both exist.
+
      | Current facts, first match wins | Column |
      | --- | --- |
-     | Already in Valentin Review | Preserve |
+     | Done, Valentin Review, Not now, unknown column | Preserve |
      | Waiting on Valentin or unresolved BlockedBy | Preserve, outside finish line |
-     | All ticket PRs merged, PASS and live proof | Done |
+     | Touched within 2h | Preserve |
+     | Live worker lease | Building |
+     | All ticket PRs merged, current-head PASS and live proof | Done |
      | Open PR, CI pending or failing | Checks |
-     | Open PR, CI green, verifier pending or FAIL | AI Review |
-     | Open PR, CI green, PASS or PASS+NOTES | AI Review until Shipping merges |
-     | Live worker, no open PR | Doing |
-     | No live worker or open PR | Todo |
+     | Open PR, CI green | Verifier |
+     | Merged PR, current-head PASS or live proof missing | Verifier |
+     | No live lease, open PR, or merged PR | Todo |
 
   5. Fill slots using `~/.local/share/house-rules/fleet/slots --running <n> --ready <n> --project "<your roster name>"`. Before the first merge, run one worker. Otherwise start the printed count, maximum 10. Record any project cap in the handover. Let excess workers finish. Include worker handles and result files on tickets. Ready counts exclude waiting and BlockedBy tickets.
 - **Short chats:** Past about 150k tokens of context, run pstack's Pause safely: write `~/handover/<chat name>.md` (role, goal, open tickets and PRs, running workers and their result files, next 3 actions). Then start your own fresh session; never ask the user to type `/clear`. A new chat reads its handover first and follows Session pickup. In Claude chats the `short-chat` hook enforces this.

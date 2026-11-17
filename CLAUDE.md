@@ -23,8 +23,10 @@ Nobody pushes to main.
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | A separate verifier posts a verdict before merge | Review procedure; branch protection is not configured here |
-
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
+
+| Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
+| Verifier PASS requires commands and unchanged tracked files | `tests/test_column_verifier.py`, hosted verifier harness |
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.
