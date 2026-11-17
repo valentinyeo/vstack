@@ -19,6 +19,7 @@ base = subprocess.check_output(['git', 'merge-base', sha, 'origin/' + os.environ
 brief = f'''Read {root}/scripts/worker.md before anything else.
 Goal: prepare board 2060 callers for Building and Verifier, accepting Doing and AI Review until renamed. PR opened -> Checks; green checks -> Verifier; merged -> Verifier pending live proof. current-head PASS, merged, and live proof -> Done. Never rename columns. Other boards keep their names.
 You are the independent DeepSeek verifier after the Codex author. Run these commands in {root}: {json.dumps(commands)}.
+Run each required command as a separate bash tool call, exactly as listed, from {root}. Do not combine commands or add shell wrappers. Successful tool output must show the command results.
 Read git diff {base}..{sha}. Only diff-induced regressions block. Report unchanged base faults as notes. Reproduce proposed blockers on this base first. Read docs/soft-2446-evidence.md if present.
 Try to break aliases, stale verdicts, missing checks, pagination, and preservation of other boards. Inspect comments under pstack no-comments: flag misleading or unnecessary new comments. Do not edit tracked files.
 Test the real scripts, not merely syntax. A scoped fixture may replace external writes. No live board credentials are available on GitHub. The author's real-server read-only trace supplies the real-size baseline.
@@ -44,7 +45,10 @@ for line in result.stdout.splitlines():
     if event.get('type') == 'tool_execution_start' and event.get('toolName') == 'bash':
         started[event['toolCallId']] = (event.get('args') or {}).get('command', '')
     if event.get('type') == 'tool_execution_end' and event.get('toolName') == 'bash' and not event.get('isError'):
-        executed.append(started.get(event.get('toolCallId'), ''))
+        tool_result = event.get('result') or {}
+        details = tool_result.get('structuredContent') or {}
+        if not tool_result.get('isError') and details.get('exit_code') == 0 and details.get('output', '').strip():
+            executed.append(started.get(event.get('toolCallId'), ''))
     message = event.get('message') or {}
     if event.get('type') == 'message_end' and message.get('role') == 'assistant':
         answers.append('\n'.join(c.get('text', '') for c in message.get('content', []) if c.get('type') == 'text'))
@@ -56,7 +60,7 @@ def normalize(command):
     except ValueError:
         return ' '.join(command.split())
 
-missing = [command for command in commands if not any(normalize(command) in normalize(actual) for actual in executed)]
+missing = [command for command in commands if not any(normalize(command) == normalize(actual) for actual in executed)]
 clean = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--']).returncode == 0
 verdict = match.group(1) if result.returncode == 0 and match and not missing and clean else 'FAIL'
 body = f'pstack-verifier: {verdict} @ {sha}\n\nDeepSeek deepseek-v4.1-flash, GitHub-hosted.\n\n'

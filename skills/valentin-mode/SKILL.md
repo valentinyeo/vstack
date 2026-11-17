@@ -58,12 +58,12 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
      | --- | --- |
      | Done, Valentin Review, Not now, unknown column | Preserve |
      | Waiting on Valentin or unresolved BlockedBy | Preserve, outside finish line |
-     | Touched within 2h | Preserve |
      | Live worker lease | Building |
      | All ticket PRs merged, current-head PASS and live proof | Done |
      | Open PR, CI pending or failing | Checks |
      | Open PR, CI green | Verifier |
      | Merged PR, current-head PASS or live proof missing | Verifier |
+     | Touched within 2h | Preserve |
      | No live lease, open PR, or merged PR | Todo |
 
   5. Fill slots using `~/.local/share/house-rules/fleet/slots --running <n> --ready <n> --project "<your roster name>"`. Before the first merge, run one worker. Otherwise start the printed count, maximum 10. Record any project cap in the handover. Let excess workers finish. Include worker handles and result files on tickets. Ready counts exclude waiting and BlockedBy tickets.
