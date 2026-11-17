@@ -85,7 +85,8 @@ Use the project's shipping skill when it has one. It owns claim, PR, merge, depl
 Move every ticket live as work changes:
 
 - Start: In Progress, plus a `Start:` note.
-- PR open or waiting on a reviewer: the review column, or a `review` label on GitHub.
+- Board 2060 follows Software Factory columns below.
+- Other boards use their review column. GitHub uses `review`.
 - Shipped and proved: Done or closed, with a short comment carrying the evidence link.
 - Blocked: blocked state plus the reason. Only the owner's own calls get a marked Question.
 
@@ -115,3 +116,22 @@ Run unlazy's final audit, then write the reply per poteto-mode's Writing the rep
 - Principles that changed a decision.
 
 Never report done while a gate is unmet, abandoned or waiting on an owner decision, or while any ticket of this task is not Done or closed.
+
+## Software Factory columns
+
+Board 2060 supplies every project view's columns.
+Use Todo, Building, Checks, Verifier, Valentin Review, Done.
+
+- Starting work -> Building.
+- PR opened -> Checks.
+- checks green -> Verifier.
+- current-head PASS and merged -> Done.
+- Valentin Review holds only Valentin's decisions.
+
+Building accepts Doing during the migration.
+Verifier accepts AI Review during the migration.
+Prefer the new name when both exist.
+Read actual columns before choosing a move.
+Never rename the columns during caller migration.
+Remove aliases in one follow-up after the rename.
+Other boards retain their own column names.
