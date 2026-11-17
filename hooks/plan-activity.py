@@ -21,18 +21,23 @@ def activity_texts(command):
         return []
     texts = []
     for i, token in enumerate(tokens):
-        if Path(token).name not in {'hypertask', 'vcc'}:
+        if Path(token).name not in {'hypertask', 'vcc', 'poteto-ticket'}:
             continue
         # Global flags may precede the activity subcommand.
         end = next((j for j in range(i + 1, len(tokens)) if tokens[j] and set(tokens[j]) <= set(';&|()\n')), len(tokens))
         args = tokens[i + 1:end]
-        try:
-            at = args.index('activity')
-        except ValueError:
-            continue
-        if args[at:at + 2] != ['activity', 'add']:
-            continue
-        args = args[at + 2:]
+        if Path(token).name == 'poteto-ticket':
+            if args[:1] != ['log']:
+                continue
+            args = args[1:]
+        else:
+            try:
+                at = args.index('activity')
+            except ValueError:
+                continue
+            if args[at:at + 2] != ['activity', 'add']:
+                continue
+            args = args[at + 2:]
         values = []
         positional = []
         j = 0
@@ -78,7 +83,9 @@ def self_test():
     assert verdict('hypertask activity add SOFT-2446 --text ' + shlex.quote(fixture.read_text())) == MESSAGE
     for marker in ['Scope: add X', 'Plan: build X', 'Fix: add X', 'Done when tests pass', 'New plan: X', 'Plan build X', '<h2>Scope</h2><p>Add X</p>']:
         assert verdict('hypertask --token dummy activity add T --text ' + shlex.quote(marker)) == MESSAGE
-    for command in ['hypertask activity add T --text "CI passed."',
+    assert verdict('bin/poteto-ticket log SOFT-1 "Scope: add X"') == MESSAGE
+    for command in ['bin/poteto-ticket log SOFT-1 "CI passed."',
+                    'hypertask activity add T --text "CI passed."',
                     'hypertask task update T --description "Plan: X"',
                     'echo "hypertask activity add T Plan: X"', 'echo "unterminated']:
         assert verdict(command) is None, command

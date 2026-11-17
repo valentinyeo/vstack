@@ -31,7 +31,8 @@ def slug(text):
 
 def inventory():
     generator = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/pstack-index"))
-    return generator["refresh"]()
+    root = generator["newest"]()
+    return generator["render"](root) if root else generator["OUTPUT"].read_text()
 
 
 def known(index=None):
@@ -55,7 +56,7 @@ def known(index=None):
 
 # A tool plan needs its own inventory disclosure, even in a short reply.
 TOOL = re.compile(r"\b(script|tool|launcher|utility|helper|watcher|automation|command|program)s?\b", re.I)
-INTENT = re.compile(r"\b(build|building|write|writing|create|creating|implement|implementing|add|make|develop|design|propose|recommend|generate|craft|introduce|assemble|plan|fix order|smallest fix|need)\b", re.I)
+INTENT = re.compile(r"\b(build|building|write|writing|create|creating|implement|implementing|add|make|develop|design|propose|recommend|generate|craft|introduce|assemble|plan|fix order|smallest fix|need|replace|replacing|rewrite|rewriting|refactor|refactoring)\b", re.I)
 HAS = re.compile(r"^\W*pstack has:\s*(.+)$", re.I | re.M)
 NONE = re.compile(r"none\s*\(searched:\s*([^()]+)\)\s*$", re.I)
 

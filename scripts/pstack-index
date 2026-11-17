@@ -19,7 +19,7 @@ def description(path):
     # Frontmatter descriptions can span folded YAML lines.
     m = re.search(r'^description:\s*(.+(?:\n[ \t]+.+)*)', text, re.M)
     if m:
-        return ' '.join(m[1].strip().strip('"\'').split())
+        return ' '.join(re.sub(r'^[>|][+-]?\s*', '', m[1].strip()).strip('"\'').split())
     m = re.search(r'^#{1,6}\s+(.+)', text, re.M)
     if m:
         heading = m[1].strip()
@@ -29,15 +29,17 @@ def description(path):
     m = re.search(r'\.description\(\s*[\"\']([^\"\']+)', text)
     if m:
         return m[1].split(r'\n')[0]
-    # Script docstrings and leading comments, skipping shebangs/imports.
+    # Only leading comments describe the script itself.
     for line in text.splitlines():
         line = line.strip()
-        if line.startswith('#!'):
+        if not line or line.startswith('#!'):
             continue
         if line.startswith(('"""', "'''", '//', '# ', '/*', '* ')):
             line = re.sub(r'^(?:["\']{3}|//|#|/\*|\*)\s*', '', line).strip('"\' ')
-            if line:
+            if re.search(r'[A-Za-z]', line):
                 return line
+        else:
+            break
     # A thin executable wrapper takes its purpose from the CLI it imports.
     if not path.suffix and (path.parent / 'cli.ts').is_file():
         return description(path.parent / 'cli.ts')
