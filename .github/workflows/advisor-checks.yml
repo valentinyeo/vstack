@@ -18,7 +18,7 @@ jobs:
         run: |
           git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins /tmp/cp
           git -C /tmp/cp sparse-checkout set pstack
-          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/.claude-plugin/plugin.json'))['version'])")
+          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/plugin.json'))['version'])")
           mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
           cp -r /tmp/cp/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
           echo "pstack $v"
@@ -47,7 +47,7 @@ jobs:
         run: |
           git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins /tmp/cp
           git -C /tmp/cp sparse-checkout set pstack
-          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/.claude-plugin/plugin.json'))['version'])")
+          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/plugin.json'))['version'])")
           mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
           cp -r /tmp/cp/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
       - name: independent DeepSeek Flash verification
