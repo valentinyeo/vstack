@@ -22,7 +22,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act on it. On a status line it only means seen.
 - **Questions:** Put the question on the ticket, and in chat as the first line, in plain text, never `AskUserQuestion`. Ask once, with your pick, and only for new spend, a new key source, making an existing repo public, deleting live data or product direction. Using his keys and plans in his own repos and review workers, and rotating keys you made or leaked, are granted: do them and report. Decide everything else and report it.
 - **Ticket, not chat:** Every piece of work gets a ticket before you start. Lists, findings, evidence and status go on the ticket; a decision goes there as one Question comment he can thumbs up. Chat carries only a short pointer: what changed, the ticket link, and what waits on him.
-- **Pace:** Follow `/responsive-mode`. Answer each message within a minute. Long work runs in the background, on a `spawn-worker` worker (Grok, DeepSeek Flash or Codex), never a Claude subagent.
+- **Pace:** Follow `/responsive-mode`. Answer each message within a minute. Long work runs in the background, on a `spawn-worker` worker, never a Claude subagent. Run `plan-pick` first and launch the plan it names. It skips a plan that is off or ahead of pace.
 
 ## Orchestrating
 
@@ -38,6 +38,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 - **Claude:** Spend it on code, not chat (Valentin, 2026-11-15: "use Claude as little as possible for chatting and maximize it for coding"). Chats that only talk run on the cheapest model that keeps up; orchestrators follow the Orchestrator line above. Hard coding goes to Claude when its week has room. Codex and Grok sessions never delegate to Claude.
 - **Grok:** Grok runs on the Cursor plan (cursor-agent); Cursor usage is Grok usage. Read it with the usage command like the other plans. Use it until it runs out; a worker that fails on a limit means Cursor is out, so move that work to the next plan.
+- **Worker plan:** `plan-pick` (`--json` for scripts) prints the plan, launch command and reason for the next worker. Use its answer, not a fixed order.
 - **DeepSeek:** Always Flash, never Pro. Fast mode stays off on every model. Never the OpenCode app.
 - **Free first:** Before any new spend, find the free or cheaper way to the same outcome: subsidized plans before pay-per-token, free tiers (public GitHub repos run Actions free, Cloudflare) before paid ones, the cheaper plan of the same component before a new tool. Never ask him to add a card or pay more; bring the free option, and ask only when nothing free gives the same result.
 - **Public by default:** Every repo that can be public is public: no real email in commits, no client names, no server or account details, no secrets (scan before going public). Never pay for GitHub minutes.
