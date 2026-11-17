@@ -10,6 +10,9 @@ OUT = Path('evidence')
 OUT.mkdir(exist_ok=True)
 prompt = f'''Read {max((Path.home() / ".claude/plugins/cache/cursor-plugins/pstack").glob("*"), key=lambda p: tuple(int(n) for n in p.name.split(".") if n.isdigit()))}/skills/poteto-mode/worker.md before anything else.
 Read book/CHECKLIST.md next.
+Read .github/briefs/shared-worker-rules.md, the shared worker rules.
+{Path(".github/briefs/shared-worker-rules.md").read_text()}
+Without service access, report faults in your verdict before workarounds.
 Goal: Lauren's setup. vstack publicly owns shared checks.
 You are DeepSeek Flash, independently verifying Codex-authored SOFT-2590.
 You run on GitHub-hosted Ubuntu. Never edit candidates, push, or merge.
