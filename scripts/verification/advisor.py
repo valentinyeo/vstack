@@ -20,6 +20,7 @@ pstack: skills/poteto-mode/playbooks/refactoring.md
 Candidate: current checkout. Head SHA: {os.environ['HEAD_SHA']}.
 Port ticket: SOFT-2588. Scope: require both fault reporting destinations on one worker brief line.
 Port ticket: SOFT-2572. Scope: reject removed playbook sources in reply and worker guards.
+Port ticket: SOFT-2608. Scope: generated pstack index, tool-plan disclosure and scope activity guard.
 Read the diff against the PR base, then drive every changed hook.
 Run hooks/*.py --self-test and the focused tests named in advisor-checks.
 Run the migration tests and installer tests too.

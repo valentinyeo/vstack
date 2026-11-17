@@ -25,8 +25,15 @@ Nobody pushes to main.
 | A separate verifier posts a verdict before merge | Review procedure; branch protection is not configured here |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
+| Tool plans disclose existing pstack parts | `hooks/pstack-reply.py`, `scripts/pstack-index` |
+| Plan changes update ticket descriptions | `hooks/plan-activity.py` |
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.
 Run `bin/install-ticket-claim` to install claim routing.
 The installer preserves unrelated global claim routes.
+
+Before custom tools, read `pstack-index.md`.
+Declare `pstack has: <part>`.
+Or declare `pstack has: none (searched: <terms>)`.
+Put scope changes in the ticket description.

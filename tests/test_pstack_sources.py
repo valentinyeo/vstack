@@ -26,7 +26,7 @@ class PstackSources(unittest.TestCase):
         self.cache = self.home / '.claude/plugins/cache/cursor-plugins/pstack'
         for version, books in [('0.15.9', ['orchestrate']),
                                ('0.15.42', ['orchestrate']),
-                               ('0.15.43', ['autonomous-run', 'bug-fix'])]:
+                               ('0.15.43', ['autonomous-run', 'bug-fix', 'shipping'])]:
             folder = self.cache / version / 'skills/poteto-mode/playbooks'
             folder.mkdir(parents=True)
             for book in books:
@@ -35,9 +35,16 @@ class PstackSources(unittest.TestCase):
             folder = self.cache / '0.15.43/skills' / skill
             folder.mkdir()
             (folder / 'SKILL.md').touch()
+        watcher = self.cache / '0.15.43/skills/poteto-mode/scripts/watch-pr/watch-pr'
+        watcher.parent.mkdir(parents=True)
+        watcher.write_text('# Watch pull requests.\n')
         self.reply = load('pstack-reply')
         self.source = load('pstack-source')
         self.reply.PSTACK = self.source.PSTACK = self.cache
+        import unittest.mock
+        home_patch = unittest.mock.patch.dict(os.environ, HOME=str(self.home))
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
 
     def test_advice_rejects_removed_source_from_older_versions(self):
         self.assertIsNotNone(self.reply.verdict(ADVICE + '\npstack: Orchestrate playbook'))
@@ -54,7 +61,7 @@ class PstackSources(unittest.TestCase):
     def test_hook_feedback_points_at_current_playbook(self):
         reason = self.reply.verdict(ADVICE)
         self.assertNotIn('Orchestrate', reason)
-        self.assertIn('Autonomous run', reason)
+        self.assertIn('Shipping', reason)
 
     def test_public_sources_name_current_playbook(self):
         text = (ROOT / 'book/pstack-sources.md').read_text()
