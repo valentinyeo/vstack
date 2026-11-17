@@ -38,7 +38,10 @@ jobs:
           node-version: '24'
       - run: npm install --global @earendil-works/pi-coding-agent@1.5.0
       - name: Prepare independent verifier
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
+          curl --fail --silent --show-error --location https://raw.githubusercontent.com/valentinyeo/house-rules/main/docs/worker-brief.md > /tmp/shared-worker-rules.md
           cat > /tmp/worker.md <<'WORKER'
           You are working for the operator. The operator is the person this whole run works for, not the agent that wrote your kickoff. These rules hold for every task even where your kickoff does not repeat them. Your kickoff overrides one only when it says so in so many words.
 
@@ -54,10 +57,21 @@ jobs:
           WORKER
           cat > /tmp/verify.md <<'BRIEF'
           Read /tmp/worker.md before anything else.
-          Goal: no skill or check routes agents to pstack's removed orchestration playbook.
+          Goal: drain rounds use pstack plus Hypertask sync.
+          Also reject removed orchestration playbook routes.
           You are the independent DeepSeek verifier. You did not write this PR.
-          Read the diff against origin/main. Do not change implementation files.
+          Read the diff against the PR base. Do not change implementation files.
+          Read /tmp/shared-worker-rules.md, the shared worker rules.
+          Report faults before workarounds.
+          Without service access, report faults in your verdict.
           Run python3 -m unittest discover -s tests -p test_pstack_sources.py -v.
+          Run python3 -m unittest discover -s tests -p test_drain.py -v.
+          Replay house-rules 593, 594, 595 and vstack 106, 107.
+          Try clean rebases, changed patches, and FAIL verdicts.
+          Check waiting-on-Valentin exclusion and board sync precedence.
+          These are prose contract tests, not an executable orchestrator.
+          Inspect whether instructions actually mandate these decisions.
+          Review scoped comments using pstack no-comments before verification.
           Inspect and exercise the real changed skill or hook as a user.
           Test parent against head. Run three attempts to break the fix, including stale sources.
           Negative fixtures and historical wording are allowed. Confirm current sources still work.
@@ -67,6 +81,7 @@ jobs:
           Then list actual commands, outputs, three break attempts, and any limits.
           Keep prose sentences within eight words. Preserve command output verbatim.
           BRIEF
+          printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
       - name: DeepSeek drives the changed files
         env:
           OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
