@@ -103,3 +103,22 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 - **Reflect:** Apply the Accepted edits without waiting for approval, then report them. This replaces reflect step 5's wait.
 - **This skill:** Refresh it with `/pstack:automate-me` when habits change.
+
+## Software Factory columns
+
+Board 2060 supplies every project view's columns.
+Use Todo, Building, Checks, Verifier, Valentin Review, Done.
+
+- Starting work -> Building.
+- PR opened -> Checks.
+- checks green -> Verifier.
+- current-head PASS and merged -> Done.
+- Valentin Review holds only Valentin's decisions.
+
+Building accepts Doing during the migration.
+Verifier accepts AI Review during the migration.
+Prefer the new name when both exist.
+Read actual columns before choosing a move.
+Never rename the columns during caller migration.
+Remove aliases in one follow-up after the rename.
+Other boards retain their own column names.
