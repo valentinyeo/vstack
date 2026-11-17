@@ -40,9 +40,9 @@ def text_of(cmd):
 def resolves(ref):
     ref = ref.strip("`'\"")
     path = Path(ref.replace("~", str(Path.home()), 1))
-    if path.is_absolute():
-        return path.is_file() and newest() in path.parents
-    return newest().joinpath(ref).is_file()
+    root = newest().resolve()
+    path = (root / path).resolve()
+    return path.is_file() and root in path.parents
 
 
 def newest():
