@@ -76,7 +76,8 @@ class PstackSources(unittest.TestCase):
                 result = subprocess.run(['python3', str(ROOT / 'hooks/pstack-source.py')],
                     input=json.dumps({'tool_name': 'Bash', 'tool_input': {'command':
                         'codex exec "Read /x/skills/poteto-mode/worker.md before anything else. '
-                        f'pstack: {path}"'}}), text=True, capture_output=True)
+                        f'pstack: {path}"'}}), text=True, capture_output=True,
+                    env=dict(os.environ, HOME=str(self.home)))
                 self.assertEqual(result.returncode, 2, result.stderr)
 
     def test_worker_source_rejects_symlink_into_old_version(self):
