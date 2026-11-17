@@ -15,7 +15,7 @@ Valentin, 2026-11-13, after a turn chained 15 to 25 foreground steps (each under
 
 Same idea as Grok Build: work runs out of the way, the chat stays free.
 
-pstack already covers part of this: the chat runs the program, never the code (`poteto-mode` Orchestrate playbook), and every helper starts in the background because a foreground call holds the turn (`poteto-mode` Subagents). This skill adds only what pstack lacks: a reply within a minute, one reply per message, and stopping the chain when a new message arrives.
+pstack owns the work loop through `poteto-mode` autonomous-run. Use `figure-it-out` when no narrower playbook fits. The poteto-mode Subagents section requires background helpers. This skill adds replies within one minute. Each message gets its own reply. A new message stops the foreground chain.
 
 For the rest of this session:
 

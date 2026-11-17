@@ -1,4 +1,3 @@
-"""Keep installed skills on the current pstack workflow."""
 from pathlib import Path
 import re
 import unittest

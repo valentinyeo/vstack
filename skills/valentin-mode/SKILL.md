@@ -26,7 +26,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 
 ## Orchestrating
 
-- **Orchestrator:** Claude Opus 5.5, medium effort. Orchestrate. Hand the work to workers. Fable only with the user's written yes for that chat. On the wrong model or effort, say so in your first line in capitals and stop.
+- **Orchestrator:** Claude Opus 5.5, medium effort. Use autonomous-run and figure-it-out. Hand the work to workers. Fable only with the user's written yes for that chat. On the wrong model or effort, say so in your first line in capitals and stop.
 - **Read usage first:** Before each worker, and whenever asked how much is left, run `token-ladder pools --json` (used %, state, reset time per plan; Grok is the Cursor plan). Start each worker with the launcher that reads usage and refuses a plan that is out.
 - **Pick by difficulty:**
 
@@ -47,7 +47,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 - **Drain check (Valentin, 2026-11-16: "verify their own drain loop against a template"):** Run it when the loop starts, after every `/clear`, and on each heartbeat. Fix every miss yourself in the same turn; never only report it.
   1. Exactly one loop is alive in this chat (`CronList` or the `/loop` status shows it), with the exit condition above. A loop survives `/clear`: create one only when none is alive, and delete duplicates.
   2. Its heartbeat is 30 minutes or less.
-  3. Up to 10 subagents and workers in flight (pstack Orchestrate: "Keep about ten workers in flight per coordinator, and start the next one as each finishes"). Until your first unit has merged, run one (Orchestrate: "Start with one unit"). After that, each tick run `~/.local/share/house-rules/fleet/slots --running <n> --ready <n> --project "<your roster name>"` and start exactly the number it prints; it is our one exception to Orchestrate's "call no scripts", since it only reads counts and machine load. When the server is busy it serves Hypertask first, then Multibot (Valentin, 2026-11-16: "hypertask is the most important project then multibot"). Start fewer only for the reason it prints. A small project may pass `--cap <n>` below 10 and names it in its handover. Over the cap: start none and let the extra finish; never kill a worker to get under. You coordinate; workers write the code.
+  3. Up to 10 subagents and workers in flight. Until your first unit has merged, run one. Use pstack autonomous-run for the work loop. Use figure-it-out when no narrower playbook fits. After that, each tick run `~/.local/share/house-rules/fleet/slots --running <n> --ready <n> --project "<your roster name>"` and start exactly the number it prints. It only reads counts and machine load. When the server is busy it serves Hypertask first, then Multibot (Valentin, 2026-11-16: "hypertask is the most important project then multibot"). Start fewer only for the reason it prints. A small project may pass `--cap <n>` below 10 and names it in its handover. Over the cap: start none and let the extra finish; never kill a worker to get under. You coordinate; workers write the code.
   4. Every unit in flight has a ticket in its true column, assigned to you, with its worker and result file on it.
   5. Your handover file names the loop and its counts.
   Report one line: `Drain: loop <id> ok | <n> in flight (In Progress or review) | <n> to do (Todo, blocked included) | <n> subagents running (subagents plus background workers you started) | slots: <its line> | fixed: <what, or none>`.
