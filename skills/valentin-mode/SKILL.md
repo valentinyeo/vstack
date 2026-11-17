@@ -43,18 +43,24 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
 - **Public by default:** Every repo that can be public is public: no real email in commits, no client names, no server or account details, no secrets (scan before going public). Never pay for GitHub minutes.
 - **Board:** Own a board or a view named after your repo, or after your Multibot name when you have no repo; create the view if missing. Hiding empty columns has no CLI or MCP switch yet (filed as HTPR-9369); skip it until it ships. Assign yourself to every ticket you work on or plan to, remove stale agent assignees, and move each ticket to its true column the moment its work moves.
 - **Hypertask gaps:** When Hypertask cannot do something you need, file it the same minute with `hypertask feedback --kind missing|bug|friction --tool "<command>" "<one line>"` (or the MCP report-feedback tool), then tell the user the ticket link. Never just report "the tool has no switch".
-- **Drain:** Follow pstack 0.15.43 `playbooks/autonomous-run.md`. Write a checkable goal before the first round. Default goal: no actionable tickets remain in scope. Name the board or view. Prove the goal through current ticket states. Include pending workers, CI and verdicts. Temporary waits do not meet the goal.
-  - Watch these events: worker finished, CI result, verdict posted. A watcher wakes this chat for each event. Re-arm the watcher after each result. Keep one 30-minute timer as slow fallback. Without events, choose a useful fixed interval.
-  - Each round makes the smallest justified change. Verify it against the goal. Keep progress, discard changes that did not help. Check each unit before starting the next. Fix reversible discoveries yourself, then resume the goal.
-  - Write one checkpoint line per round. Follow pstack's show-me-your-work decision trail. Record the change and the goal's current state.
-  - Stop when current evidence proves the goal. A plateau never ends the run. Pivot and keep going. Surface a genuine dead end with evidence. Never weaken the goal to claim success.
-- **Drain check:** Run at start and every event or heartbeat. Fix each miss in the same turn.
-  1. Record the checkable goal and current evidence. Exactly one fallback timer serves this chat. Check `CronList` or `/loop` status. Create it only when missing. Delete duplicate timers.
-  2. Events use a live watcher and fallback timer. Record watcher ids and the next fallback time. A native watcher result proves an event wake. Chief of Staff accepts that transcript evidence. A chat's own claim proves nothing. Keep fallback gaps within 30 minutes.
-  3. Keep at most 10 workers in flight. Until the first merge, run one. Then run `~/.local/share/house-rules/fleet/slots --running <n> --ready <n> --project "<your roster name>"` each round. Start exactly the number it prints. Start fewer only for its stated reason. Busy servers serve Hypertask first, then Multibot. Smaller projects may pass `--cap <n>`. Record that cap in the handover. Above cap, let extra workers finish. Never kill workers to meet the cap. You coordinate, workers write code.
-  4. Each active unit has its own ticket. Keep its column and assignee current. Record its worker and result file there.
-  5. The handover names the goal and evidence. Include watchers, fallback timer and worker counts.
-  Report one checkpoint line: `Drain: goal <predicate and evidence> | changed <change or none> | loop <fallback id> | watchers <ids or no events> | <n> in flight | <n> to do, blocked included | <n> workers running | slots: <its line> | fixed: <what, or none> | next wake <event or fallback time>`.
+- **Drain:** Run one round at start and every wake. Use pstack 0.15.43 as written. Paths below resolve from `skills/poteto-mode/` inside pstack.
+  1. Run `playbooks/autonomous-run.md` for the named board/view. Set a checkable finish line before starting. Exclude tickets waiting on Valentin or BlockedBy. Pending workers, CI and verdicts remain actionable. Use its checkpoint and recovery steps.
+  2. Run `playbooks/shipping.md` steps 1-4 on every open PR of the lead's tickets. GitHub verdicts come from independent cross-family verifiers. Read verdicts only from PR comments or reviews. Server verdict files never count. Run verifiers on GitHub runners, never on the server. Existing workflow: vstack `.github/workflows/pstack-sources.yml`, job `verifier`, DeepSeek Flash. Compare git patch-id under Shipping step 3. A clean rebase keeps PASS. Changed patches and FAIL require fresh verification. Merge bottom-up and read back merged, following Shipping. Never substitute green CI for a verdict.
+  3. Use `playbooks/babysit.md` and `scripts/watch-pr/watch-pr` for event wakes. Re-arm after each result. Watch worker completion through the worker's event watcher. Cron is only the slow fallback. Keep exactly one fallback, at most 30 minutes. Follow Shipping's queued-stack watcher for a landing run.
+  4. Sync Hypertask from current facts. Use `~/.local/share/house-rules/fleet/reconcile` when SOFT-2446 lands. Until then apply this table by hand. Preserve Valentin Review and explicit waiting/blocker state. Keep the lead assigned, removing stale owners. Record each move's facts on its ticket.
+
+     | Current facts, first match wins | Column |
+     | --- | --- |
+     | Already in Valentin Review | Preserve |
+     | Waiting on Valentin or unresolved BlockedBy | Preserve, outside finish line |
+     | All ticket PRs merged, covered by PASS | Done |
+     | Open PR, CI pending or failing | Checks |
+     | Open PR, CI green, verifier pending or FAIL | AI Review |
+     | Open PR, CI green, PASS or PASS+NOTES | AI Review until Shipping merges |
+     | Live worker, no open PR | Doing |
+     | No live worker or open PR | Todo |
+
+  5. Fill slots using `~/.local/share/house-rules/fleet/slots --running <n> --ready <n> --project "<your roster name>"`. Before the first merge, run one worker. Otherwise start the printed count, maximum 10. Record any project cap in the handover. Let excess workers finish. Include worker handles and result files on tickets. Ready counts exclude waiting and BlockedBy tickets.
 - **Short chats:** Past about 150k tokens of context, run pstack's Pause safely: write `~/handover/<chat name>.md` (role, goal, open tickets and PRs, running workers and their result files, next 3 actions). Then start your own fresh session; never ask the user to type `/clear`. A new chat reads its handover first and follows Session pickup. In Claude chats the `short-chat` hook enforces this.
 - **Checks:** You own your repo's checks. Budget: a merge ships within 15 minutes, a fix check stays under 20 jobs, old runs cancel when newer code arrives. When the session start shows CHECKS OVER BUDGET, fix the checks before new feature work.
 - **Launch:** Run the worker command itself as a background job, never inside `( ... ) &` or a subshell, which dies with your shell. Put the time limit in the command. Record the worker and its result file on the ticket. The worker opens its PR early.
