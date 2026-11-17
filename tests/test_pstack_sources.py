@@ -2,6 +2,8 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+from unittest import mock
 from pathlib import Path
 import subprocess
 import tempfile
@@ -38,11 +40,17 @@ class PstackSources(unittest.TestCase):
         watcher = self.cache / '0.15.43/skills/poteto-mode/scripts/watch-pr/watch-pr'
         watcher.parent.mkdir(parents=True)
         watcher.write_text('# Watch pull requests.\n')
+        # Index refresh writes beside the hooks. Exercise an isolated checkout.
+        checkout = self.home / 'checkout'
+        for relative in ['hooks', 'scripts', 'tests/fixtures', 'book']:
+            shutil.copytree(ROOT / relative, checkout / relative)
+        root_patch = mock.patch(__name__ + '.ROOT', checkout)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
         self.reply = load('pstack-reply')
         self.source = load('pstack-source')
         self.reply.PSTACK = self.source.PSTACK = self.cache
-        import unittest.mock
-        home_patch = unittest.mock.patch.dict(os.environ, HOME=str(self.home))
+        home_patch = mock.patch.dict(os.environ, HOME=str(self.home))
         home_patch.start()
         self.addCleanup(home_patch.stop)
 
