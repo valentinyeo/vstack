@@ -42,7 +42,7 @@ class PstackSources(unittest.TestCase):
         watcher.write_text('# Watch pull requests.\n')
         # Index refresh writes beside the hooks. Exercise an isolated checkout.
         checkout = self.home / 'checkout'
-        for relative in ['hooks', 'scripts', 'tests/fixtures', 'book']:
+        for relative in ['hooks', 'scripts', 'tests/fixtures', 'book', 'skills']:
             shutil.copytree(ROOT / relative, checkout / relative)
         root_patch = mock.patch(__name__ + '.ROOT', checkout)
         root_patch.start()

@@ -141,7 +141,7 @@ def self_test():
     real = (Path(__file__).resolve().parents[1] / "tests/fixtures/soft-2608/merge-plan.txt").read_text()
     why = verdict(real, names)
     assert why and "shipping.md" in why and "scripts/watch-pr" in why
-    assert verdict(real + "\npstack has: Shipping", names) is None
+    assert verdict(SOURCE.sub("pstack: Shipping", real) + "\npstack has: Shipping", names) is None
     for plan in ["I'll write a merge helper.", "We need a custom PR watcher.", "Plan: create an automation command."]:
         assert verdict(plan, names), plan
         assert verdict(plan + "\npstack has: Shipping", names) is None
