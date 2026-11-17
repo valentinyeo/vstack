@@ -54,7 +54,8 @@ def verdict(cmd):
     if not LAUNCH.search(cmd) or "NO_TICKET_REASON=" in cmd:
         return None
     text = text_of(cmd)
-    if not any(resolves(r) for r in SOURCE.findall(text)):
+    sources = SOURCE.findall(text)
+    if not sources or not all(resolves(r) for r in sources):
         return MESSAGE
     if not WORKER.search(text) and not re.search(r"gh\s+pr\s+create\b", cmd):
         return WORKER_MESSAGE

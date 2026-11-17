@@ -39,23 +39,31 @@ def known():
         names.add(skill.name.removeprefix("principle-"))
     for book in newest.glob("skills/poteto-mode/playbooks/*.md"):
         names.add(book.stem)
+    for path in newest.rglob("*.md"):
+        if path.resolve().is_relative_to(newest.resolve()):
+            names.update({slug(str(path)), slug(str(path.relative_to(newest)))})
     return names
 
 
 def named(line, names):
-    parts = re.split(r"[,;/+]| and ", line)
+    parts = re.split(r"[,;+]| and ", line)
     for part in parts:
-        s = slug(re.sub(r"\b(playbook|principle|skill|pstack)\b", "", part, flags=re.I))
-        if s and (s in names or any(n in s for n in names if len(n) > 5)):
-            return True
-    return False
+        part = part.strip("` ")
+        if "/" in part or part.endswith(".md"):
+            name = slug(part)
+        else:
+            name = slug(re.sub(r"\b(playbook|principle|skill|pstack)\b", "", part, flags=re.I))
+        if not name or name not in names:
+            return False
+    return bool(parts)
 
 
 def verdict(text, names=None):
     names = known() if names is None else names
     if len(text) < MIN_LEN or not ADVICE.search(text):
         return None
-    return None if any(named(m, names) for m in SOURCE.findall(text)) else MESSAGE
+    sources = SOURCE.findall(text)
+    return None if sources and all(named(m, names) for m in sources) else MESSAGE
 
 
 def last_reply(transcript):
