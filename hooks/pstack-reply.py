@@ -55,7 +55,7 @@ def known(index=None):
 
 # A tool plan needs its own inventory disclosure, even in a short reply.
 TOOL = re.compile(r"\b(script|tool|launcher|utility|helper|watcher|automation|command|program)s?\b", re.I)
-INTENT = re.compile(r"\b(build|building|write|writing|create|creating|implement|implementing|add|make|develop|design|propose|recommend|generate|craft|introduce|assemble|plan|fix order|smallest fix|need|i'll|i will)\b", re.I)
+INTENT = re.compile(r"\b(build|building|write|writing|create|creating|implement|implementing|add|make|develop|design|propose|recommend|generate|craft|introduce|assemble|plan|fix order|smallest fix|need)\b", re.I)
 HAS = re.compile(r"^\W*pstack has:\s*(.+)$", re.I | re.M)
 NONE = re.compile(r"none\s*\(searched:\s*([^()]+)\)\s*$", re.I)
 
@@ -136,6 +136,7 @@ def self_test():
     assert verdict(bad + "\npstack: Attack the Premise\npstack has: Shipping", names) is None, "a real source passes"
     assert verdict(bad + "\npstack: Made Up Method", names), "a made-up source is blocked"
     assert verdict("Yes, it's in place. Tested live just now.", names) is None, "a short status passes"
+    assert verdict("The command finished; I'll check the output.", names) is None
     assert verdict("x" * 400, names) is None, "long text without advice passes"
     real = (Path(__file__).resolve().parents[1] / "tests/fixtures/soft-2608/merge-plan.txt").read_text()
     why = verdict(real, names)
