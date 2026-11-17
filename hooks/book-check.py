@@ -7,12 +7,14 @@ playbook closely existed with nothing enforcing it. This check makes a skipped i
 A worker launch (codex exec, pi -p, cursor-agent -p) or `gh pr create` must carry a `Book check:` block in the
 brief or PR body. The block names every item below on its own line, followed by `:` and how the work covers it,
 or `n/a <reason>`. Any missing item blocks the launch and the message names it. Items and quotes:
-book/CHECKLIST.md. Verifiers prefixed with NO_TICKET_REASON= are exempt: they check work, they do not plan it.
+book/CHECKLIST.md. Worker briefs also need a Faults: line naming both reporting paths.
+Verifiers prefixed with NO_TICKET_REASON= skip book items, but still need fault routing.
 
 book-check.py --self-test
 """
 import json
 import re
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -34,16 +36,29 @@ ITEMS = [
     "Video or trace before release",
     "Check seen failing",
 ]
-LAUNCH = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:codex\s+exec\b|pi\s+(?:.*\s)?-p\b|cursor-agent\s+(?:.*\s)?-p\b|gh\s+pr\s+create\b)")
+WORKER = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:codex\s+exec\b|(?:pi|hax|claude|cursor-agent)\s+(?:.*\s)?-p\b|spawn-worker\b)")
+FAULTS = ("Faults: Hypertask bug -> hypertask feedback; our rules or scripts -> board 2060 ticket with label Poteto.")
+LAUNCH = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?gh\s+pr\s+create\b")
 BRIEF = re.compile(r"\$\(cat\s+([^)\s]+)\)|--body-file\s+(\S+)")
 
 
 def text_of(cmd):
     parts = [cmd]
+    try:
+        parts.extend(shlex.split(cmd))
+    except ValueError:
+        pass
     for a, b in BRIEF.findall(cmd):
         try:
             parts.append(Path((a or b).replace("~", str(Path.home()), 1)).read_text(errors="ignore"))
         except OSError:
+            pass
+    # spawn-worker takes its brief as the final positional file.
+    if re.search(r"(?:^|[\s;&|(])(?:\S*/)?spawn-worker\b", cmd):
+        try:
+            args = shlex.split(cmd)
+            parts.append(Path(args[-1]).expanduser().read_text(errors="ignore"))
+        except (ValueError, OSError):
             pass
     return "\n".join(parts)
 
@@ -60,10 +75,52 @@ def missing(text):
     return out
 
 
+def worker_launch(cmd):
+    # Each shell command is argv, so quoted prose cannot become an executable.
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    commands = [[]]
+    try:
+        for token in lexer:
+            if all(char in ";&|()\n" for char in token):
+                commands.append([])
+            else:
+                commands[-1].append(token)
+    except ValueError:
+        return bool(WORKER.search(cmd))
+    for args in commands:
+        while args and (args[0] == "env" or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", args[0])):
+            args = args[1:]
+        if args and Path(args[0]).name == "timeout":
+            args = args[1:]
+            while args and (args[0].startswith("-") or re.fullmatch(r"[0-9.]+[smhd]?", args[0])):
+                args = args[1:]
+        if not args:
+            continue
+        name = Path(args[0]).name
+        if (name == "spawn-worker" or name == "codex" and args[1:2] == ["exec"]
+                or name in {"pi", "hax", "claude", "cursor-agent"} and "-p" in args[1:]):
+            return True
+    return False
+
+
 def verdict(cmd):
-    if not LAUNCH.search(cmd) or "NO_TICKET_REASON=" in cmd:
+    worker = worker_launch(cmd)
+    if not worker and not LAUNCH.search(cmd):
         return None
-    gaps = missing(text_of(cmd))
+    text = text_of(cmd)
+    if worker:
+        routes = re.findall(r"^[ \t]*Faults:[ \t]*(.+)$", text, re.M | re.I)
+        if not any(re.search(r"\bhypertask[ \t]+feedback\b", line, re.I)
+                   and re.search(r"\bboard[ \t]+2060\b", line, re.I)
+                   and re.search(r"\blabel[ \t]+Poteto\b", line, re.I)
+                   for line in routes):
+            return "Worker brief missing fault reporting. Add this line to the brief: " + FAULTS
+    if "NO_TICKET_REASON=" in cmd:
+        return None
+    gaps = missing(text)
     if not gaps:
         return None
     return ("Book check incomplete. Add a `Book check:` block to the brief or PR body with one line per item, "

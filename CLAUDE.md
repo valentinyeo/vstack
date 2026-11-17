@@ -30,3 +30,4 @@ Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.
 Run `bin/install-ticket-claim` to install claim routing.
 The installer preserves unrelated global claim routes.
+| Worker briefs name both fault destinations | `hooks/book-check.py` |
