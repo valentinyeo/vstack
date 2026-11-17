@@ -68,6 +68,25 @@ class PstackSources(unittest.TestCase):
                 'codex exec "Read /x/skills/poteto-mode/worker.md before anything else. '
                 f'pstack: {path}"'))
 
+    def test_worker_source_rejects_traversal_into_old_version(self):
+        newest = self.cache / '0.15.43'
+        relative = '../0.15.42/skills/poteto-mode/playbooks/orchestrate.md'
+        for path in [relative, str(newest / relative)]:
+            with self.subTest(path=path):
+                result = subprocess.run(['python3', str(ROOT / 'hooks/pstack-source.py')],
+                    input=json.dumps({'tool_name': 'Bash', 'tool_input': {'command':
+                        'codex exec "Read /x/skills/poteto-mode/worker.md before anything else. '
+                        f'pstack: {path}"'}}), text=True, capture_output=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_worker_source_rejects_symlink_into_old_version(self):
+        old = self.cache / '0.15.42/skills/poteto-mode/playbooks/orchestrate.md'
+        link = self.cache / '0.15.43/skills/poteto-mode/playbooks/alias.md'
+        link.symlink_to(old)
+        self.assertIsNotNone(self.source.verdict(
+            'codex exec "Read /x/skills/poteto-mode/worker.md before anything else. '
+            'pstack: skills/poteto-mode/playbooks/alias.md"'))
+
     def test_real_hook_protocol_and_self_tests(self):
         transcript = self.home / 'transcript.jsonl'
         transcript.write_text(json.dumps({'type': 'assistant', 'message': {'content': [
