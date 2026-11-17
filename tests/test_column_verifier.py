@@ -9,7 +9,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/column-verifier.py'
 
 
 class ColumnVerifierTests(unittest.TestCase):
-    def run_verifier(self, commands_seen, dirty=False):
+    def run_verifier(self, commands_seen, dirty=False, output=True, exit_code=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
@@ -25,7 +25,9 @@ class ColumnVerifierTests(unittest.TestCase):
             events = []
             for n, command in enumerate(commands_seen):
                 events += [dict(type='tool_execution_start', toolCallId=str(n), toolName='bash', args={'command': command}),
-                           dict(type='tool_execution_end', toolCallId=str(n), toolName='bash', isError=False)]
+                           dict(type='tool_execution_end', toolCallId=str(n), toolName='bash', isError=False,
+                                result={'structuredContent': {'output': 'fixture output' if output else '',
+                                                              'exit_code': exit_code}, 'isError': False})]
             events.append(dict(type='message_end', message={'role': 'assistant', 'content': [
                 {'type': 'text', 'text': 'VERDICT: PASS'}]}))
             fake_bin = root / 'bin'
@@ -57,7 +59,7 @@ class ColumnVerifierTests(unittest.TestCase):
                 self.assertIn('pstack-verifier: FAIL', body)
 
     def test_complete_command_evidence_can_pass(self):
-        code, body = self.run_verifier(['printf one && printf two'])
+        code, body = self.run_verifier(['printf one', 'printf two'])
         self.assertEqual(code, 0, body)
         self.assertIn('pstack-verifier: PASS', body)
 
@@ -65,3 +67,14 @@ class ColumnVerifierTests(unittest.TestCase):
         code, body = self.run_verifier(['printf one && printf two'], dirty=True)
         self.assertNotEqual(code, 0)
         self.assertIn('pstack-verifier: FAIL', body)
+
+    def test_echoed_command_names_are_not_execution(self):
+        code, body = self.run_verifier(["echo 'printf one && printf two'"])
+        self.assertNotEqual(code, 0, body)
+        self.assertIn('pstack-verifier: FAIL', body)
+
+    def test_empty_or_failed_tool_results_are_not_evidence(self):
+        for options in ({'output': False}, {'exit_code': 1}):
+            with self.subTest(options=options):
+                code, body = self.run_verifier(['printf one', 'printf two'], **options)
+                self.assertNotEqual(code, 0, body)

@@ -35,3 +35,23 @@ class DrainColumnTableTests(unittest.TestCase):
         self.assertIn('Other boards use their own workflow and columns.', table_intro)
         self.assertIn('Resolve Building/Doing and Verifier/AI Review against actual columns.', table_intro)
         self.assertIn('Prefer new names when both exist.', table_intro)
+
+    def test_recent_touch_only_delays_fallback_to_todo(self):
+        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
+        rows = [line.strip().split('|')[1:3] for line in text.splitlines()
+                if line.strip().startswith('| ')][2:]
+        cases = [
+            ('Open PR, CI green', 'Verifier'),
+            ('Live worker lease', 'Building'),
+            ('Open PR, CI pending or failing', 'Checks'),
+            ('Merged PR, current-head PASS or live proof missing', 'Verifier'),
+            ('All ticket PRs merged, current-head PASS and live proof', 'Done'),
+            ('Waiting on Valentin or unresolved BlockedBy', 'Preserve, outside finish line'),
+            ('Done, Valentin Review, Not now, unknown column', 'Preserve'),
+            ('No live lease, open PR, or merged PR', 'Preserve'),
+        ]
+        for fact, expected in cases:
+            with self.subTest(fact=fact):
+                actual = next(column.strip() for condition, column in rows
+                              if condition.strip() in (fact, 'Touched within 2h'))
+                self.assertEqual(actual, expected)
