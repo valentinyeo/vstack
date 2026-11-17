@@ -34,3 +34,26 @@ Then call a skill by name, for example `/web-writing` or `/valentin-mode`.
 Any other model: paste the body of a `SKILL.md` (below the frontmatter) as the system prompt, followed by your text.
 
 By Valentin Yeo, https://valentinyeo.com
+
+## Shared checks
+
+pstack holds workflow rules. vstack holds shared checks.
+Product repos hold their own facts.
+
+[The rules table](CLAUDE.md) names each hook.
+[The book checklist](book/CHECKLIST.md) records pstack sources.
+`advisor-checks` installs pstack from `cursor/plugins`.
+It runs every `hooks/*.py --self-test`.
+Migration tests and installer tests run there too.
+DeepSeek Flash verifies PRs on GitHub-hosted runners.
+Its command trace becomes a workflow artifact.
+Its verdict appears on the PR.
+
+Project boundaries use local environment values:
+
+- `VSTACK_READ_ONLY_PROJECT`, default `read-only-project`.
+- `VSTACK_BLOCKED_PROJECT`, default `restricted-project`.
+
+Keep private project names outside this repo.
+This change installs no runtime hooks.
+Configure hook paths from your vstack checkout.

@@ -1,4 +1,3 @@
-"""Public checks must run without the private advisor checkout."""
 import json
 import subprocess
 import unittest

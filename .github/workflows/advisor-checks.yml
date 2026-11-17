@@ -1,0 +1,73 @@
+name: advisor-checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: advisor-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  hook-self-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: install pstack from cursor/plugins (what the hooks read)
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins /tmp/cp
+          git -C /tmp/cp sparse-checkout set pstack
+          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/.claude-plugin/plugin.json'))['version'])")
+          mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
+          cp -r /tmp/cp/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
+          echo "pstack $v"
+      - name: every hook proves its rule on a real past mistake
+        run: |
+          set -e
+          for h in hooks/*.py; do echo "== $h"; python3 "$h" --self-test; done
+      - name: public migration contract
+        run: python3 -m unittest discover -s tests -p 'test_advisor_migration.py'
+      - name: existing skill installer
+        run: bash tests/install.sh
+  deepseek-verifier:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: install pstack
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins /tmp/cp
+          git -C /tmp/cp sparse-checkout set pstack
+          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/.claude-plugin/plugin.json'))['version'])")
+          mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
+          cp -r /tmp/cp/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
+      - name: independent DeepSeek Flash verification
+        env:
+          OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PYTHONUNBUFFERED: "1"
+        run: python3 scripts/verification/advisor.py
+      - name: post verifier verdict
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          test -f evidence/verdict.md
+          gh pr comment "$PR_NUMBER" --body-file evidence/verdict.md
+          python3 -c "import json; v=json.load(open('evidence/verdict.json')); assert v['verdict'] in ('PASS','PASS+NOTES'), v"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: advisor-deepseek-evidence
+          path: evidence
+          retention-days: 14
