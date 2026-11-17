@@ -1,0 +1,11 @@
+{
+  "merge-plan.txt": {
+    "session": "82af8f3d-e5b8-46ed-b02c-6d73b2a1a586.jsonl",
+    "timestamp": "2026-11-17T12:51:47.117Z"
+  },
+  "scope-add.txt": {
+    "ticket": "SOFT-2446",
+    "activity": "6a43f449-3447-4266-ae95-9353d8109a55",
+    "timestamp": "2026-11-17T12:29:24.920Z"
+  }
+}

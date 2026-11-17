@@ -1,0 +1,25 @@
+Your goal is a drain loop that keeps work moving by itself. Smallest fix: one script the loop runs every round, plus a wake-up when a worker finishes. I compared today's loop against pstack's "Autonomous run" playbook. I found 8 problems and logged them on SOFT-2607: https://app.hypertask.ai/detail/project-2060/2607
+
+1. **Its goal can never be met.** "Every Poteto ticket Done" includes tickets that wait on your decision, like making repos public, or on other tickets. So the loop never finishes and has no order of work.
+2. **Nothing wakes it when a worker finishes.** Workers run detached, so a finished worker tells nobody. The timer only fires when the chat is idle, and while you chat with me, rounds are skipped. That's why results sat from 12:53 to 13:40.
+3. **It read the wrong place.** It looked at server files, not GitHub. That's fixed for now.
+4. **Verifiers run on the server, which breaks your house rule.** The rule says verifiers run on GitHub. On the server they also use up your 3 worker slots, so real work waits behind them.
+5. **Merging one pull request breaks its neighbours.** 593, 594 and 107 clashed after 595 merged and need checking again. Merging each one the moment it passes keeps that window small.
+6. **One ticket stuck means stuck forever.** A ticket only goes Done when all its pull requests merge. 3 Poteto 2 Advisor pull requests fail their checks, and that repo is moving into vstack. So 2572, 2573 and 2588 never close.
+7. **No record per round.** There's no row per round saying what moved. My open-promises list is out of date.
+8. **The timer is fragile.** It dies on a fresh chat start and expires after 7 days. Chief Of Staff calls it dead whenever I'm busy.
+
+**Fix order:**
+1. One drain script reads GitHub, which workers are alive and the board, prints its plan, then merges and moves. That fixes 1, 3, 5 and 7.
+2. A finished worker or pull request wakes the chat, with the timer as backup. That fixes 2 and 8.
+3. Verifiers move to GitHub. That fixes 4.
+4. Poteto 2 Advisor's pull requests are redone in vstack. That fixes 6.
+
+The first step starts when a slot frees. The ticket-moving worker is still building the column part.
+
+Principles:
+- **Build the Lever:** a script instead of more instructions.
+- **Make Operations Idempotent:** each round reads facts and changes only what's wrong.
+- **Model the Domain:** one table decides each ticket's column.
+
+pstack: poteto-mode playbooks/autonomous-run, principle-build-the-lever, principle-make-operations-idempotent, principle-model-the-domain
