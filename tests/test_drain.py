@@ -48,8 +48,7 @@ class DrainRuleTests(unittest.TestCase):
                        'never on the server', '.github/workflows/pstack-sources.yml',
                        'patch-id', 'bottom-up', 'read back', 'fallback',
                        'Server verdict files never count',
-                       'SOFT-2446', 'Valentin Review', 'Checks', 'AI Review',
-                       'Todo', 'Doing', 'Done'):
+                       'fleet/reconcile', '--apply', 'Valentin Review'):
             with self.subTest(clause=clause):
                 self.assertIn(clause, text)
         self.assertNotIn('Drain check:', text)
