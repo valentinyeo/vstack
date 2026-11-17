@@ -20,6 +20,13 @@ def reply(text):
 
 
 class Replay(unittest.TestCase):
+    def test_short_status_with_command_is_exempt(self):
+        for text in ["The command finished; I'll check the output.",
+                     "I'll check the script output.",
+                     "The tool finished. I will inspect the result."]:
+            with self.subTest(text=text):
+                self.assertEqual(reply(text), {})
+
     def test_real_merge_plan(self):
         result = reply((FIXTURES / 'merge-plan.txt').read_text())
         self.assertEqual(result.get('decision'), 'block', result)
