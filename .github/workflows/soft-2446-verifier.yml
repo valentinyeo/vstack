@@ -27,7 +27,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          VERIFY_'["python3 -m unittest discover -s tests -p test_board_columns.py -v", "bash tests/install.sh"]': '["python3 -m unittest discover -s tests -p test_board_columns.py -v", "bash tests/install.sh"]'
+          VERIFY_COMMANDS: '["python3 -m unittest discover -s tests -p test_board_columns.py -v", "bash tests/install.sh"]'
         run: python3 scripts/column-verifier.py
       - uses: actions/upload-artifact@v4
         if: always()
