@@ -8,7 +8,7 @@ Canonical order: Todo, Building, Checks, Verifier, Valentin Review, Done.
 
 - PR opened -> Checks.
 - checks green -> Verifier.
-- current-head PASS and merged -> Done.
+- merged -> Verifier pending live proof. current-head PASS, merged, and live proof -> Done.
 
 
 The related house-rules PR holds the caller inventory.

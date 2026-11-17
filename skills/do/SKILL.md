@@ -125,7 +125,7 @@ Use Todo, Building, Checks, Verifier, Valentin Review, Done.
 - Starting work -> Building.
 - PR opened -> Checks.
 - checks green -> Verifier.
-- current-head PASS and merged -> Done.
+- merged -> Verifier pending live proof. current-head PASS, merged, and live proof -> Done.
 - Valentin Review holds only Valentin's decisions.
 
 Building accepts Doing during the migration.

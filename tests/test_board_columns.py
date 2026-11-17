@@ -10,7 +10,8 @@ class BoardInstructionsTests(unittest.TestCase):
             text = (ROOT / 'skills' / skill / 'SKILL.md').read_text()
             with self.subTest(skill=skill):
                 for instruction in ('PR opened -> Checks', 'checks green -> Verifier',
-                                    'current-head PASS and merged -> Done',
+                                    'merged -> Verifier pending live proof',
+                                    'current-head PASS, merged, and live proof -> Done',
                                     'Building accepts Doing', 'Verifier accepts AI Review'):
                     self.assertIn(instruction, text)
                 self.assertIn('Never rename the columns during caller migration.', text)

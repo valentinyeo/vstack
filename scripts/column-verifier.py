@@ -15,7 +15,7 @@ if not key:
     sys.exit('Missing existing DeepSeek plan login')
 commands = json.loads(os.environ['VERIFY_COMMANDS'])
 brief = f'''Read {root}/scripts/worker.md before anything else.
-Goal: prepare board 2060 callers for Building and Verifier, accepting Doing and AI Review until renamed. PR opened -> Checks; green checks -> Verifier; current-head PASS and merged -> Done. Never rename columns. Other boards keep their names.
+Goal: prepare board 2060 callers for Building and Verifier, accepting Doing and AI Review until renamed. PR opened -> Checks; green checks -> Verifier; merged -> Verifier pending live proof. current-head PASS, merged, and live proof -> Done. Never rename columns. Other boards keep their names.
 You are the independent DeepSeek verifier after the Codex author. Run these commands in {root}: {json.dumps(commands)}.
 Read git diff {os.environ['BASE_SHA']}..{sha}. Read docs/soft-2446-evidence.md if present.
 Try to break aliases, stale verdicts, missing checks, pagination, and preservation of other boards. Inspect comments under pstack no-comments: flag misleading or unnecessary new comments. Do not edit tracked files.

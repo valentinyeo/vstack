@@ -53,7 +53,7 @@ One way for every repo. This skill holds how agents work with Hypertask, Multibo
      | --- | --- |
      | Already in Valentin Review | Preserve |
      | Waiting on Valentin or unresolved BlockedBy | Preserve, outside finish line |
-     | All ticket PRs merged, covered by PASS | Done |
+     | All ticket PRs merged, PASS and live proof | Done |
      | Open PR, CI pending or failing | Checks |
      | Open PR, CI green, verifier pending or FAIL | AI Review |
      | Open PR, CI green, PASS or PASS+NOTES | AI Review until Shipping merges |
@@ -112,7 +112,7 @@ Use Todo, Building, Checks, Verifier, Valentin Review, Done.
 - Starting work -> Building.
 - PR opened -> Checks.
 - checks green -> Verifier.
-- current-head PASS and merged -> Done.
+- merged -> Verifier pending live proof. current-head PASS, merged, and live proof -> Done.
 - Valentin Review holds only Valentin's decisions.
 
 Building accepts Doing during the migration.
