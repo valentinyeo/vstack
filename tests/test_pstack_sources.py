@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -87,6 +88,38 @@ class PstackSources(unittest.TestCase):
         self.assertIsNotNone(self.source.verdict(
             'codex exec "Read /x/skills/poteto-mode/worker.md before anything else. '
             'pstack: skills/poteto-mode/playbooks/alias.md"'))
+
+    def test_reply_rejects_removed_paths_and_mixed_sources(self):
+        old = 'skills/poteto-mode/playbooks/orchestrate.md'
+        absolute = str(self.cache / '0.15.42' / old)
+        for citation in [old, absolute, 'Autonomous run playbook, Orchestrate playbook',
+                         'Autonomous run playbook\npstack: ' + old,
+                         'Made Up Autonomous Run playbook']:
+            with self.subTest(citation=citation):
+                self.assertIsNotNone(self.reply.verdict(ADVICE + '\npstack: ' + citation))
+
+    def test_worker_rejects_removed_plus_current_sources(self):
+        self.assertIsNotNone(self.source.verdict(
+            'codex exec "Read /x/skills/poteto-mode/worker.md before anything else. '
+            'pstack: skills/poteto-mode/playbooks/orchestrate.md\n'
+            'pstack: skills/poteto-mode/playbooks/autonomous-run.md"'))
+
+    def test_reply_accepts_current_paths(self):
+        relative = 'skills/poteto-mode/playbooks/autonomous-run.md'
+        for path in [relative, str(self.cache / '0.15.43' / relative)]:
+            with self.subTest(path=path):
+                self.assertIsNone(self.reply.verdict(ADVICE + '\npstack: ' + path))
+
+    def test_skills_do_not_route_to_removed_playbook(self):
+        for path in sorted((ROOT / 'skills').rglob('SKILL.md')):
+            with self.subTest(skill=str(path.relative_to(ROOT))):
+                self.assertIsNone(re.search(r'\borchestrate\b', path.read_text(), re.I),
+                                  f'{path}: use autonomous-run and figure-it-out')
+
+    def test_responsive_mode_names_current_workflow(self):
+        text = (ROOT / 'skills/responsive-mode/SKILL.md').read_text()
+        self.assertIn('autonomous-run', text)
+        self.assertIn('figure-it-out', text)
 
     def test_real_hook_protocol_and_self_tests(self):
         transcript = self.home / 'transcript.jsonl'
