@@ -42,7 +42,9 @@ tool = {'type': 'function', 'function': {'name': 'run_command', 'description': '
 for iteration in range(24):
     body = {'model': MODEL, 'messages': messages, 'tools': [tool], 'max_tokens': 6500}
     req = urllib.request.Request('https://opencode.ai/zen/go/v1/chat/completions',
-          data=json.dumps(body).encode(), headers={'Authorization': 'Bearer ' + os.environ['OPENCODE_API_KEY'], 'Content-Type': 'application/json'})
+          data=json.dumps(body).encode(), headers={'Authorization': 'Bearer ' + os.environ['OPENCODE_API_KEY'],
+                    'Content-Type': 'application/json', 'User-Agent': 'pstack-verifier/1.0',
+                    'x-opencode-session': os.environ['GITHUB_RUN_ID']})
     try:
         with urllib.request.urlopen(req, timeout=240) as response:
             result = json.load(response)
