@@ -30,6 +30,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_advisor_migration.py'
       - name: port regression tests
         run: |
+          python3 -m unittest discover -s tests -p test_fault_routes.py -v
           python3 -m unittest discover -s tests -p test_ticket_way.py -v
           python3 -m unittest discover -s tests -p test_poteto_ticket.py -v
           python3 -m unittest discover -s tests -p test_install_ticket_claim.py -v

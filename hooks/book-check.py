@@ -7,12 +7,14 @@ playbook closely existed with nothing enforcing it. This check makes a skipped i
 A worker launch (codex exec, pi -p, cursor-agent -p) or `gh pr create` must carry a `Book check:` block in the
 brief or PR body. The block names every item below on its own line, followed by `:` and how the work covers it,
 or `n/a <reason>`. Any missing item blocks the launch and the message names it. Items and quotes:
-book/CHECKLIST.md. Verifiers prefixed with NO_TICKET_REASON= are exempt: they check work, they do not plan it.
+book/CHECKLIST.md. Worker briefs also need a Faults: line naming both reporting paths.
+Verifiers prefixed with NO_TICKET_REASON= skip book items, but still need fault routing.
 
 book-check.py --self-test
 """
 import json
 import re
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -34,17 +36,43 @@ ITEMS = [
     "Video or trace before release",
     "Check seen failing",
 ]
-LAUNCH = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:codex\s+exec\b|pi\s+(?:.*\s)?-p\b|cursor-agent\s+(?:.*\s)?-p\b|gh\s+pr\s+create\b)")
+FAULTS = ("Faults: Hypertask bug -> hypertask feedback; our rules or scripts -> board 2060 ticket with label Poteto.")
+LAUNCH = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?gh\s+pr\s+create\b")
 BRIEF = re.compile(r"\$\(cat\s+([^)\s]+)\)|--body-file\s+(\S+)")
 
 
 def text_of(cmd):
     parts = [cmd]
+    try:
+        parts.extend(shlex.split(cmd))
+    except ValueError:
+        pass
     for a, b in BRIEF.findall(cmd):
         try:
             parts.append(Path((a or b).replace("~", str(Path.home()), 1)).read_text(errors="ignore"))
         except OSError:
             pass
+    for args in launch_argv(cmd):
+        if not args or Path(args[0]).name != "spawn-worker":
+            continue
+        candidates = []
+        options = iter(args[1:])
+        for arg in options:
+            if arg == "--brief":
+                candidates = [next(options, "")]
+                break
+            if arg.startswith("--brief="):
+                candidates = [arg.split("=", 1)[1]]
+                break
+            if arg in {"--level", "--model", "--cwd", "--project", "--name"}:
+                next(options, None)
+            elif not arg.startswith("-"):
+                candidates.append(arg)
+        if candidates:
+            try:
+                parts.append(Path(candidates[0]).expanduser().read_text(errors="ignore"))
+            except OSError:
+                pass
     return "\n".join(parts)
 
 
@@ -60,10 +88,69 @@ def missing(text):
     return out
 
 
+def launch_argv(cmd):
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    commands = [[]]
+    try:
+        for token in lexer:
+            if all(char in ";&|()\n" for char in token):
+                commands.append([])
+            else:
+                commands[-1].append(token)
+    except ValueError:
+        return []
+    wrappers = {"env", "timeout", "nohup", "setsid", "sudo", "command", "nice", "stdbuf", "xargs", "exec"}
+    takes_value = {"-n", "-u", "-g", "-a", "-i", "-o", "-e", "-I", "-P", "-s", "-k",
+                   "--adjustment", "--user", "--group", "--signal", "--kill-after"}
+    result = []
+    for args in commands:
+        while args:
+            if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", args[0]):
+                args = args[1:]
+                continue
+            name = Path(args[0]).name
+            if name not in wrappers:
+                break
+            args = args[1:]
+            while args and args[0].startswith("-"):
+                option = args[0]
+                args = args[2:] if option in takes_value else args[1:]
+                if option == "--":
+                    break
+            if name == "timeout" and args and re.fullmatch(r"[0-9.]+[smhd]?", args[0]):
+                args = args[1:]
+        if args:
+            result.append(args)
+    return result
+
+
+def worker_launch(cmd):
+    for args in launch_argv(cmd):
+        name = Path(args[0]).name
+        if (name == "spawn-worker" or name == "codex" and args[1:2] == ["exec"]
+                or name in {"pi", "hax", "claude", "cursor-agent"} and {"-p", "--print"}.intersection(args[1:])):
+            return True
+    return False
+
+
 def verdict(cmd):
-    if not LAUNCH.search(cmd) or "NO_TICKET_REASON=" in cmd:
+    worker = worker_launch(cmd)
+    if not worker and not LAUNCH.search(cmd):
         return None
-    gaps = missing(text_of(cmd))
+    text = text_of(cmd)
+    if worker:
+        routes = re.findall(r"^[ \t]*(?:[-*+]|[0-9]+[.)])?[ \t]*Faults:[ \t]*(.+)$", text, re.M | re.I)
+        if not any(re.search(r"\bhypertask[ \t]+feedback\b", line, re.I)
+                   and re.search(r"\bboard[ \t]+2060\b", line, re.I)
+                   and re.search(r"\blabel[ \t]+Poteto\b", line, re.I)
+                   for line in routes):
+            return "Worker brief missing fault reporting. Add this line to the brief: " + FAULTS
+    if "NO_TICKET_REASON=" in cmd:
+        return None
+    gaps = missing(text)
     if not gaps:
         return None
     return ("Book check incomplete. Add a `Book check:` block to the brief or PR body with one line per item, "
@@ -79,7 +166,28 @@ def self_test():
         return f'codex exec -C /tmp/x "$(cat {f.name})"'
 
     full = "Goal: x\nBook check:\n" + "\n".join(f"- {i}: covered by step {n}" for n, i in enumerate(ITEMS))
-    assert verdict(brief(full)) is None, "a brief walking all items passes"
+    assert verdict(brief(full)), "SOFT-2588: a worker brief without Faults must be blocked"
+    full = FAULTS + "\n" + full
+    assert verdict(brief(full)) is None, "a complete brief passes"
+    assert verdict(brief("- " + full)) is None, "a bulleted fault route passes"
+    assert verdict("nohup codex exec missing")
+    for broken in ["Faults:", "Faults: hypertask feedback", "Faults: board 2060 ticket with label Poteto",
+                   "Faults: hypertask feedback; board 15 ticket with label Poteto",
+                   "Faults: hypertask feedback; board 2060 ticket with label Other",
+                   "hypertask feedback; board 2060 ticket with label Poteto",
+                   "Faults: hypertask feedback\nboard 2060 ticket with label Poteto"]:
+        assert verdict(brief(full.replace(FAULTS, broken))), "both paths belong on one Faults line"
+    for launcher in ["pi -p", "hax -p", "pi --print", "hax --print", "claude -p", "cursor-agent -p"]:
+        assert verdict(launcher + ' "' + full + '"') is None
+        assert verdict(launcher + ' "' + full.replace(FAULTS, '') + '"')
+    with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
+        f.write(full); f.flush()
+        assert verdict(f"/x/spawn-worker --level normal {f.name}") is None
+        assert verdict(f"spawn-worker --level normal {f.name}.missing")
+        assert verdict(f"spawn-worker {f.name} &") is None
+        assert verdict(f"spawn-worker --brief {f.name} --level normal") is None
+    assert verdict('gh pr create --body "' + full.replace(FAULTS, '') + '"') is None, "PRs need book items, not fault routes"
+    assert verdict('gh pr create --body "Shared spawn-worker brief rules\n' + full.replace(FAULTS, '') + '"') is None, "launcher names in PR prose are not launches"
     # Real past mistake, 2026-11-17: the verify-gate plan had no 'show the check failing first' step.
     gate_plan = full.replace("- Check seen failing: covered by step 14", "")
     why = verdict(brief(gate_plan))
@@ -87,7 +195,11 @@ def self_test():
     assert verdict(brief(full.replace("Fix: covered by step 5", "Fix:"))), "an item with no answer is blocked"
     assert "Fix" not in (verdict(brief(full.replace("Fix: covered by step 5", "Fix: n/a no code change"))) or ""), "n/a with a reason passes"
     assert verdict(brief("pstack: skills/poteto-mode/playbooks/autonomous-run.md\n")), "a brief with no book check is blocked"
-    assert verdict('NO_TICKET_REASON="verifier" codex exec "$(cat /tmp/v.md)"') is None, "verifiers are exempt"
+    assert verdict('NO_TICKET_REASON="verifier" pi -p "' + FAULTS + '"') is None, "verifiers skip book items"
+    assert verdict('NO_TICKET_REASON="verifier" pi -p "check it"'), "verifiers still report faults"
+    assert verdict('echo "Shared spawn-worker instructions"') is None
+    assert verdict('gh pr create --body "' + full.replace(FAULTS, '') + '" && pi -p "missing routes"')
+    assert verdict('NO_TICKET_REASON=verifier timeout 10s pi -p "' + FAULTS + '"') is None
     assert verdict("git status") is None, "other commands pass"
     assert verdict('gh pr create --title t --body "x"'), "a PR without a book check is blocked"
     print("book-check self-test ok")
