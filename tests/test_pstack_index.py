@@ -8,6 +8,21 @@ INDEX = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/pstack
 
 
 class Inventory(unittest.TestCase):
+    def test_descriptions_exclude_yaml_and_code_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = [
+                ('SKILL.md', '---\ndescription: >-\n  Build custom tools.\n---\n', 'Build custom tools.'),
+                ('types.ts', 'export type Thing = string;\n/**\n *\n */\n', 'types'),
+                ('statechart', '#!/bin/sh\ncase $link in\n    /*) self=$link ;;\nesac\n', 'statechart'),
+            ]
+            for name, text, expected in cases:
+                with self.subTest(name=name):
+                    path = root / name
+                    path.write_text(text)
+                    self.assertEqual(INDEX['description'](path), expected)
+                    path.unlink()
+
     def test_newest_idempotent_and_refresh(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / 'cache'
