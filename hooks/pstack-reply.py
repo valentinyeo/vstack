@@ -3,7 +3,7 @@
 
 Valentin, 2026-11-16: "when i chat with you you give me bad non pstack advice."
 A reply that proposes, recommends, plans or fixes must carry a line `pstack: <name>` where <name> is a real
-pstack playbook (Orchestrate, Autonomous run, Bug fix ...), principle (Attack the Premise ...) or skill.
+pstack playbook (Autonomous run, Bug fix ...), principle (Attack the Premise ...) or skill (figure-it-out ...).
 Short replies and plain status answers pass.
 
 pstack-reply.py --self-test
@@ -19,7 +19,7 @@ SOURCE = re.compile(r"^\W*pstack:\s*(.+)$", re.I | re.M)
 MIN_LEN = 300
 MESSAGE = ("This reply gives advice or a plan without naming its pstack source. Check the advice against the pstack "
            "playbook or principle first (" + str(PSTACK) + "), change it if it disagrees, then end the reply with one line "
-           "`pstack: <playbook or principle name>`, for example `pstack: Orchestrate playbook, Attack the Premise`. "
+           "`pstack: <playbook or principle name>`, for example `pstack: Autonomous run playbook, Attack the Premise`. "
            "No pstack source covers it? Say \"my design, not pstack\" and do not build it. "
            "Your reply is already shown to the user: send ONLY the missing `pstack:` line now. Never repeat the reply.")
 
@@ -30,12 +30,15 @@ def slug(text):
 
 def known():
     names = set()
-    for version in PSTACK.glob("*"):
-        for skill in version.glob("skills/*"):
-            names.add(skill.name)
-            names.add(skill.name.removeprefix("principle-"))
-        for book in version.glob("skills/poteto-mode/playbooks/*.md"):
-            names.add(book.stem)
+    versions = list(PSTACK.glob("*"))
+    if not versions:
+        return names
+    newest = max(versions, key=lambda v: tuple(int(x) for x in v.name.split(".") if x.isdigit()))
+    for skill in newest.glob("skills/*"):
+        names.add(skill.name)
+        names.add(skill.name.removeprefix("principle-"))
+    for book in newest.glob("skills/poteto-mode/playbooks/*.md"):
+        names.add(book.stem)
     return names
 
 
@@ -78,12 +81,12 @@ def last_reply(transcript):
 
 def self_test():
     names = known()
-    assert verdict("pstack: Orchestrate playbook", names) is None, "a lone pstack line after a block must pass"
+    assert verdict("pstack: Autonomous run playbook", names) is None, "a lone pstack line after a block must pass"
     bad = ("Partly. Lauren's goal: a finished worker wakes its chat. The fix, building now: a real spawn-worker "
            "launcher that starts the worker, records it, and wakes the chat that started it when it ends. "
            "I'll also add a hook that blocks detached workers, and I recommend we roll it out to every chat.") * 2
     assert verdict(bad, names), "the spawn-worker advice without a source is blocked"
-    assert verdict(bad + "\npstack: Orchestrate playbook, Attack the Premise", names) is None, "a real source passes"
+    assert verdict(bad + "\npstack: Autonomous run playbook, Attack the Premise", names) is None, "a real source passes"
     assert verdict(bad + "\npstack: Made Up Method", names), "a made-up source is blocked"
     assert verdict("Yes, it's in place. Tested live just now.", names) is None, "a short status passes"
     assert verdict("x" * 400, names) is None, "long text without advice passes"

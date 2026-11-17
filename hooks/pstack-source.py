@@ -41,7 +41,7 @@ def resolves(ref):
     ref = ref.strip("`'\"")
     path = Path(ref.replace("~", str(Path.home()), 1))
     if path.is_absolute():
-        return path.is_file() and PSTACK in path.parents
+        return path.is_file() and newest() in path.parents
     return newest().joinpath(ref).is_file()
 
 
@@ -56,7 +56,7 @@ def verdict(cmd):
     text = text_of(cmd)
     if not any(resolves(r) for r in SOURCE.findall(text)):
         return MESSAGE
-    if not WORKER.search(text) and not re.search(r"gh\s+pr\s+create\b", cmd):
+    if not WORKER.search(text):
         return WORKER_MESSAGE
     return None
 
@@ -81,7 +81,6 @@ def self_test():
     assert verdict(f'codex exec "$(cat {h.name})"'), "orchestrate.md, removed in pstack 0.15.43, is blocked"
     assert verdict("git status") is None, "other commands pass"
     assert verdict('gh pr create --title t --body "x"'), "a PR without a source is blocked"
-    assert verdict(f'gh pr create --body-file {f.name}') is None, "a PR needs a pstack source but not the worker.md kickoff line"
     print("pstack-source self-test ok")
 
 

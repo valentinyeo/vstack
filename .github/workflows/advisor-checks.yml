@@ -34,6 +34,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_ticket_way.py -v
           python3 -m unittest discover -s tests -p test_poteto_ticket.py -v
           python3 -m unittest discover -s tests -p test_install_ticket_claim.py -v
+          python3 -m unittest discover -s tests -p test_pstack_sources.py -v
       - name: existing skill installer
         run: bash tests/install.sh
   deepseek-verifier:
