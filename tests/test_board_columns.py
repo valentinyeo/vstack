@@ -55,3 +55,19 @@ class DrainColumnTableTests(unittest.TestCase):
                 actual = next(column.strip() for condition, column in rows
                               if condition.strip() in (fact, 'Touched within 2h'))
                 self.assertEqual(actual, expected)
+
+    def test_pr_stages_win_over_a_live_worker(self):
+        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
+        rows = [line.strip().split('|')[1:3] for line in text.splitlines()
+                if line.strip().startswith('| ')][2:]
+        cases = [
+            ('Open PR, CI pending or failing', 'Checks'),
+            ('Open PR, CI green', 'Verifier'),
+            ('Merged PR, current-head PASS or live proof missing', 'Verifier'),
+            ('All ticket PRs merged, current-head PASS and live proof', 'Done'),
+        ]
+        for fact, expected in cases:
+            with self.subTest(fact=fact):
+                actual = next(column.strip() for condition, column in rows
+                              if condition.strip() in (fact, 'Live worker lease'))
+                self.assertEqual(actual, expected)
