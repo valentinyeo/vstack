@@ -18,11 +18,14 @@ Machine setup: see your private reference.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
 - **Ticket, not chat:** Every piece of work gets a ticket before you start. Lists, findings, evidence and status go on the ticket. Chat carries a short pointer: what changed, the ticket link, and what waits on him.
-- **Pace:** Answer each message within a minute. Long work runs in the background, never a Claude subagent.
+- **Pace:** Answer each message within a minute. Long work runs in the background. Use `plan-pick`.
 
 ## Models
 
-- Run `plan-pick` before every worker. It prints the plan, launch command and reason.
+- Run `plan-pick` before every worker or helper.
+- Use the plan it selects.
+- Claude helpers only when `plan-pick` picks Claude.
+- Claude must be under pace.
 - Orchestrator: Claude Opus at medium effort.
 - Claude goes to code, not chat.
 - DeepSeek is always Flash. Fast mode stays off on every model.
