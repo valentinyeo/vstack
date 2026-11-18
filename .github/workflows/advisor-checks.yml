@@ -38,6 +38,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_ticket_way.py -v
           python3 -m unittest discover -s tests -p test_poteto_ticket.py -v
           python3 -m unittest discover -s tests -p test_install_ticket_claim.py -v
+          python3 -m unittest discover -s tests -p test_pick_verifier_model.py -v
       - name: existing skill installer
         run: bash tests/install.sh
   deepseek-verifier:
@@ -64,7 +65,11 @@ jobs:
           v=$(python3 -c "import json;print(json.load(open('.pstack-source/pstack/plugin.json'))['version'])")
           mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
           cp -r .pstack-source/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
-      - name: independent DeepSeek Flash verification
+      - name: Pick verifier model
+        run: |
+          model=$(python3 scripts/pick-verifier-model)
+          echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
+      - name: independent verification
         env:
           OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -82,6 +87,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: advisor-deepseek-evidence
+          name: advisor-verifier-evidence
           path: evidence
           retention-days: 14
