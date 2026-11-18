@@ -6,6 +6,8 @@ import re
 import subprocess
 import sys
 
+from verdict import PASSING, find_verdict
+
 root = Path.cwd()
 sha = os.environ['HEAD_SHA']
 model = os.environ['VERIFIER_MODEL']
@@ -72,18 +74,23 @@ for line in result.stdout.splitlines():
     if event.get('type') == 'message_end' and message.get('role') == 'assistant':
         answers.append('\n'.join(c.get('text', '') for c in message.get('content', []) if c.get('type') == 'text'))
 answer = answers[-1] if answers else ''
-match = re.match(r'^VERDICT: (PASS\+NOTES|PASS|FAIL)(?=\s|$)', answer)
+verdict, why = find_verdict(answer)
 missing = [check['command'] for check in checks if check['exit_code'] != 0 or not check['output'].strip()]
 clean = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--']).returncode == 0
-verdict = match.group(1) if result.returncode == 0 and match and not missing and clean else 'FAIL'
+faults = [why] if why else []
+faults += [f'Verifier exited {result.returncode}.'] if result.returncode else []
+faults += ['Missing command evidence: ' + json.dumps(missing)] if missing else []
+faults += ['Verifier changed tracked files.'] if not clean else []
+if faults:
+    verdict = 'FAIL'
 body = f'pstack-verifier: {verdict} @ {sha}\n\nVerifier model: {model}, GitHub-hosted.\n\n'
 body += answer.replace(key, '[REDACTED]') if answer else 'Verifier failed to return a verdict. See the command trace artifact.'
-body += '\n\nMissing command evidence: ' + json.dumps(missing) if missing else ''
-body += '\n\nVerifier changed tracked files.' if not clean else ''
+for fault in faults:
+    body += f'\n\n{fault}'
 body += f"\n\nTrace: https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n"
 comment = scratch / 'comment.md'
 comment.write_text(body)
 subprocess.run(['gh', 'pr', 'comment', os.environ['PR_NUMBER'], '--repo', os.environ['GITHUB_REPOSITORY'],
                 '--body-file', str(comment)], check=True)
 print(body)
-sys.exit(0 if verdict in ('PASS', 'PASS+NOTES') else 1)
+sys.exit(0 if verdict in PASSING else 1)

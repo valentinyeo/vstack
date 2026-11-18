@@ -29,6 +29,7 @@ Nobody pushes to main.
 | Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
 | Reconcile keeps boards 15 and 2060 truthful | `skills/hypertask-work/reconcile`, `tests/test_hypertask_work.py` |
 | Verifier PASS requires commands and unchanged tracked files | `tests/test_column_verifier.py`, hosted verifier harness |
+| Every verifier reads its verdict through one parser | `scripts/verdict.py`, `tests/test_verdict.py` |
 | Advisor reports keep exact-head validation | `tests/test_advisor_verdict.py` |
 | Skill budgets, copied rules, references and new-skill prior art pass | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
 
