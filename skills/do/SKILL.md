@@ -122,11 +122,13 @@ Never report done while a gate is unmet, abandoned or waiting on an owner decisi
 Board 2060 supplies every project view's columns.
 Use Todo, Building, Checks, Verifier, Valentin Review, Done.
 
-- Starting work -> Building.
+Earlier lines win: an open PR outranks a live worker.
+
+- Valentin Review holds only Valentin's decisions.
 - PR opened -> Checks.
 - checks green -> Verifier.
 - merged -> Verifier pending live proof. current-head PASS, merged, and live proof -> Done.
-- Valentin Review holds only Valentin's decisions.
+- Starting work -> Building.
 
 Building accepts Doing during the migration.
 Verifier accepts AI Review during the migration.

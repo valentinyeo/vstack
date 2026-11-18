@@ -1,0 +1,18 @@
+name: Skill lint
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: write
+concurrency:
+  group: skill-lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  skill-lint:
+    uses: valentinyeo/house-rules/.github/workflows/skill-lint.yml@d60a2c149b29ef555dec42f20afc074543624f7b
+    with:
+      lint-ref: d60a2c149b29ef555dec42f20afc074543624f7b
+    secrets: inherit
