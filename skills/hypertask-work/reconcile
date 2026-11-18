@@ -23,7 +23,6 @@ BOARD = 2060
 PROTECTED = {'Valentin Review', 'Done', 'Not now'}
 MANAGED = {'Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'}
 WINDOW_DAYS = 30
-JOBS = int(os.environ.get('RECONCILE_JOBS', '8'))
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
 PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
 # A wrapper hides the command it runs behind the first word or two.
@@ -32,6 +31,18 @@ WRAPPERS = {'sudo', 'env', 'nohup', 'timeout', 'exec', 'command', 'stdbuf', 'ion
 # These name a ticket only to read it.
 READERS = {'grep', 'egrep', 'fgrep', 'pgrep', 'pkill', 'rg', 'ag', 'ack', 'ps', 'top', 'htop',
            'cat', 'head', 'tail', 'less', 'more', 'awk', 'sed', 'journalctl'}
+
+
+def jobs(value=None):
+    """RECONCILE_JOBS: how many independent reads run side by side."""
+    raw = os.environ.get('RECONCILE_JOBS', '8') if value is None else value
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        count = 0
+    if count < 1:
+        raise ValueError(f'RECONCILE_JOBS must be a whole number of at least 1, not {raw!r}')
+    return count
 
 
 @dataclass(frozen=True)
@@ -122,6 +133,14 @@ def stamp(value):
     if isinstance(value, (int, float)):
         return float(value)
     return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+
+
+def ticket_date(value):
+    """Ticket creation date, or None when the board sent nothing usable."""
+    try:
+        return datetime.fromtimestamp(stamp(value), timezone.utc).date() if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 def pid_alive(pid):
@@ -308,7 +327,7 @@ def parallel(function, items):
     items = list(items)
     if not items:
         return []
-    with ThreadPoolExecutor(min(JOBS, len(items))) as pool:
+    with ThreadPoolExecutor(min(jobs(), len(items))) as pool:
         return list(pool.map(function, items))
 
 
@@ -458,8 +477,7 @@ def scan_plan(created, days=WINDOW_DAYS, today=None):
     before it exists, so newer tickets need nothing before their own start.
     """
     today = today or datetime.now(timezone.utc).date()
-    dates = {key: (datetime.fromtimestamp(stamp(value), timezone.utc).date() if value else None)
-             for key, value in created.items()}
+    dates = {key: ticket_date(value) for key, value in created.items()}
     known = [d for d in dates.values() if d]
     since = max(today - timedelta(days=days), min(known)) if known else today - timedelta(days=days)
     return since, [key for key, d in dates.items() if d is None or d < since]
@@ -686,6 +704,10 @@ def main():
         parser.error('--section is read-only')
     if args.limit < 1:
         parser.error('--limit must be positive')
+    try:
+        jobs()
+    except ValueError as error:
+        parser.error(str(error))
     os.environ['PATH'] = f'{Path.home()}/.local/bin:' + os.environ.get('PATH', '')
     if args.apply and board.id == 15:
         require_board15_agent()
@@ -706,8 +728,14 @@ def main():
             sections = (read_sections(board) if board is DEFAULT else set()) | {t['section'] for t in tasks}
         names = stage_names(sections=sections) if board is DEFAULT else {}
         candidates = [t for t in tasks if t['section'] in board.managed]
-        pulls = discover([t['ticketNumber'] for t in candidates],
-                         created={t['ticketNumber']: t.get('createdAt') for t in candidates}, **options)
+        created = {}
+        for candidate in candidates:
+            value = candidate.get('createdAt')
+            if value and ticket_date(value) is None:
+                print(f'NOTE {candidate["ticketNumber"]} | unparsable createdAt {value!r}; searched full history', flush=True)
+                value = None
+            created[candidate['ticketNumber']] = value
+        pulls = discover([t['ticketNumber'] for t in candidates], created=created, **options)
         with phase('pulls'):
             prefetch(pulls, **options)
         now, errors = time.time(), 0

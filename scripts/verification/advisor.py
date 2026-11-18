@@ -2,9 +2,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from verdict import find_verdict
 
 
 def latest_pstack():
@@ -93,7 +97,8 @@ def main():
             verdict = json.loads(raw)
             assert iteration > 0, 'verifier must drive the code'
             assert verdict['head_sha'] == os.environ['HEAD_SHA'], 'wrong head'
-            assert verdict['verdict'] in ('PASS', 'PASS+NOTES', 'FAIL'), 'invalid verdict'
+            value, why = find_verdict(content)
+            assert value == verdict['verdict'], why or 'verdict field and answer disagree'
             (OUT / 'verdict.json').write_text(json.dumps(verdict, indent=2))
             (OUT / 'verdict.md').write_text(
                 f"{verdict['verdict']}\n\nVerifier model: {MODEL}, independent pstack verifier.\n"

@@ -369,6 +369,52 @@ class ReconcileTest(unittest.TestCase):
         since, old = r.scan_plan({'SOFT-2': '2026-11-10T08:00:00Z'}, today=today)
         self.assertEqual((since, old), (date(2026, 11, 10), []))
 
+    def test_unparsable_created_at_keeps_full_history_for_that_ticket(self):
+        today = date(2026, 11, 18)
+        since, old = r.scan_plan({'SOFT-1': 'not a date', 'SOFT-2': '2026-11-10T00:00:00Z',
+                                  'SOFT-3': '2026-10-02T09:00:00', 'SOFT-4': 0}, today=today)
+        self.assertEqual(since, date(2026, 10, 19))
+        self.assertEqual(sorted(old), ['SOFT-1', 'SOFT-3', 'SOFT-4'])
+
+    def test_bad_created_at_costs_only_its_own_ticket(self):
+        broken = {**task(), 'ticketNumber': 'SOFT-2', 'createdAt': 'yesterday'}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[broken, task()]), \
+                patch.object(r, 'discover', return_value={'SOFT-2': [], 'SOFT-1': []}) as discover, \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), 0)
+            discover.assert_called_once_with(['SOFT-2', 'SOFT-1'], created={'SOFT-2': None, 'SOFT-1': None})
+            self.assertIn("NOTE SOFT-2 | unparsable createdAt 'yesterday'", out.getvalue())
+            self.assertIn('PLAN SOFT-1 Doing -> Todo', out.getvalue())
+
+    def test_reconcile_jobs_parses_and_validates(self):
+        with patch.dict(os.environ, {'RECONCILE_JOBS': '4'}):
+            self.assertEqual(r.jobs(), 4)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(r.jobs(), 8)
+        for bad in ('abc', '0', '-2', '1.5', ''):
+            with self.subTest(bad=bad), \
+                    self.assertRaisesRegex(ValueError, 'RECONCILE_JOBS must be a whole number of at least 1'):
+                r.jobs(bad)
+
+    def test_bad_reconcile_jobs_stops_the_run_with_one_line(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.dict(os.environ, {'RECONCILE_JOBS': 'abc'}), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r, 'tickets') as tickets, \
+                contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit) as raised:
+            r.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("RECONCILE_JOBS must be a whole number of at least 1, not 'abc'", err.getvalue())
+        tickets.assert_not_called()
+
     def test_ticket_with_pr_merged_long_ago_still_owned(self):
         merged = {'url': 'https://github.com/valentinyeo/another-repo/pull/7', 'state': 'MERGED',
                   'title': 'SOFT-1 old fix', 'body': '', 'headRefName': 'feat/old', 'number': 7,
