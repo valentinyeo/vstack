@@ -56,7 +56,10 @@ answer = answers[-1] if answers else ''
 match = re.match(r'^VERDICT: (PASS\+NOTES|PASS|FAIL)\b', answer)
 def normalize(command):
     try:
-        return ' '.join(shlex.split(command))
+        parts = shlex.split(command)
+        if len(parts) >= 3 and parts[0] == 'cd' and parts[2] == '&&' and Path(parts[1]).resolve() == root:
+            parts = parts[3:]
+        return ' '.join(parts)
     except ValueError:
         return ' '.join(command.split())
 
