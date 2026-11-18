@@ -99,5 +99,5 @@ Put the feedback link on the ticket.
 ## Act as yourself
 
 Never act as Valentin and never use his token.
-The Poteto advisor owns `reconcile` and `lease`.
+Fleet Tools owns the script's code (`reconcile` and `lease`).
 Each orchestrator runs them on its own board.
