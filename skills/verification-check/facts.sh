@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-[ $# -ge 1 ] || { echo "usage: facts.sh <repo-path | session-name>"; exit 2; }
-target="$1"
+target="${1:-.}"
 
 if [ -d "$target" ]; then
   repo="$target"
@@ -71,4 +70,4 @@ done
 
 echo
 echo "## Recent PR verdicts (last 10 merged)"
-gh pr list --repo "$slug" --state merged --limit 10 --json number,title,comments -q '.[]|"#\(.number) \(.title[0:60]) | \([.comments[].body|select(test("pstack-verifier:"))]|last|.[0:60]? // "no verifier comment")"' 2>/dev/null | tr '\n' '\n'
+gh pr list --repo "$slug" --state merged --limit 10 --json number,title,comments -q '.[]|"#\(.number) \(.title[0:60]) | \([.comments[].body|select(test("^(pstack-verifier:[ \t]*)?(PASS(\\+NOTES)?|FAIL)([ \t\\r\\n]|$)"))]|last|.[0:60]? // "no verifier comment")"' 2>/dev/null | tr '\n' '\n'
