@@ -33,6 +33,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: picker-base
+          persist-credentials: false
       - name: Read pinned verifier sources
         id: verifier-sources
         run: |
@@ -113,7 +118,7 @@ jobs:
           printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
       - name: Pick verifier model
         run: |
-          model=$(python3 scripts/pick-verifier-model)
+          model=$(python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model")
           echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
       - name: Verifier drives the changed files
         env:
