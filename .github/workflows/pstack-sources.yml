@@ -134,14 +134,18 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 - <<'PYTHON'
-          import json, os, re
+          import json, os, sys
           from pathlib import Path
+          sys.path.insert(0, 'scripts')
+          from verdict import find_verdict
           events = [json.loads(line) for line in Path('verifier.jsonl').read_text().splitlines() if line.startswith('{')]
           assert any(e.get('type') == 'tool_execution_end' and e.get('toolName') == 'bash' for e in events), 'Verifier must execute checks'
           messages = [e['message'] for e in events if e.get('type') == 'message_end' and e.get('message', {}).get('role') == 'assistant']
-          verdict = '\n'.join(c.get('text', '') for c in messages[-1].get('content', []) if c.get('type') == 'text').strip()
-          assert re.match(r'^(PASS\+NOTES|PASS|FAIL)\b', verdict), verdict
-          Path('verdict.md').write_text(verdict + '\n\nVerifier model: ' + os.environ['VERIFIER_MODEL'] + '. Head `' + os.environ['PR_HEAD'] + '`.\n')
+          answer = '\n'.join(c.get('text', '') for c in messages[-1].get('content', []) if c.get('type') == 'text').strip()
+          verdict, why = find_verdict(answer)
+          assert verdict, why
+          Path('verdict.md').write_text(answer + '\n\nVerifier model: ' + os.environ['VERIFIER_MODEL'] + '. Head `' + os.environ['PR_HEAD'] + '`.\n')
+          Path('verdict.value').write_text(verdict + '\n')
           print(verdict)
           PYTHON
       - name: Post independent verdict
@@ -150,7 +154,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh pr comment "$PR_NUMBER" --body-file verdict.md
-          head -1 verdict.md | grep -Eq '^PASS(\+NOTES)?$'
+          python3 scripts/verdict.py verdict.value
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -56,9 +56,11 @@ GitHub matches only the start of a branch name there.
 An older merged PR needs a title, `Ticket:` line or URL link, or a branch that starts with the key.
 Date partitions avoid GitHub search truncation.
 Independent reads run side by side; `RECONCILE_JOBS` sets how many (default 8).
+A value below 1 or not a whole number stops the run before it reads anything.
 Each phase prints one progress line to stderr.
 `RECONCILE_TIMING=1` adds a per-phase table of seconds and external calls.
 Malformed keys report UNKNOWN without stopping other tickets.
+A `createdAt` that does not parse costs that ticket only: it searches full history.
 Closed, unmerged PRs count as no PR.
 Read failures print UNKNOWN and prevent that move.
 Fresh foreign-host leases also prevent moves.
