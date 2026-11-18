@@ -17,7 +17,7 @@ Machine setup: see your private reference.
 - **Screenshots:** One public https URL, never a file path or a second image host.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
-- **Ticket, not chat:** Every piece of work gets a ticket before you start. Lists, findings, evidence and status go on the ticket. Chat carries a short pointer: what changed, the ticket link, and what waits on him.
+- **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat. The `hypertask-work` skill owns the ticket rules.
 - **Pace:** Answer each message within a minute. Long work runs in the background, never a Claude subagent.
 
 ## Models
@@ -30,11 +30,11 @@ Machine setup: see your private reference.
 
 ## Working
 
-- **Hypertask gaps:** file one the same minute with `hypertask feedback`, then tell him the link.
+- **Hypertask gaps:** file one the same minute with `hypertask feedback`, then tell him the link. The `hypertask-work` skill has the command.
 - **Bans live in lint** (Lauren Tan): a ban written only in markdown is not a ban.
 - **Checks:** a merge ships within 15 minutes, a fix check stays under 20 jobs, old runs cancel when newer code arrives.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
-- **Columns:** the house rules "Board sync for orchestrators" section and its `docs/fleet-reconcile.md` own the sync. An open PR outranks a live worker. Building accepts Doing; Verifier accepts AI Review. Other boards keep their own columns.
+- **Columns:** the `hypertask-work` skill owns the login, board, columns, worker leases and reconcile.
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
 - **Verifier:** from a different model family than every author.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
