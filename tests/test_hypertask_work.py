@@ -96,13 +96,61 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(r.target(r.Facts('Doing', 8000, False, (pull('MERGED', passed=True),))),
                          ('AI Review', 'merged PR with PASS; live proof pending'))
 
-    def test_apply_previews_and_caps_before_any_write(self):
-        plans = [(dict(task(), ticketNumber=f'SOFT-{i}'), r.Facts('Doing', 8000)) for i in range(1, 7)]
-        with patch.object(r, 'api') as api, patch.object(r, 'run') as run, contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(r.apply_plan(plans, 5, {'SOFT-1': []}), 1)
-            self.assertIn('move cap', out.getvalue())
-            api.assert_not_called()
-            run.assert_not_called()
+    def seven_plans(self):
+        # Todo-bound moves listed first on purpose: order must come from the sort.
+        back = [(dict(task(), ticketNumber=f'SOFT-{i}'), r.Facts('Doing', 8000)) for i in (1, 2)]
+        live = [(dict(task('Todo'), ticketNumber=f'SOFT-{i}'), r.Facts('Todo', 8000, True)) for i in (13, 11, 12)]
+        pr = [(dict(task('Todo'), ticketNumber=f'SOFT-{i}'), r.Facts('Todo', 8000, False, (pull(checks='red'),))) for i in (21, 20)]
+        return back + live + pr
+
+    def fake_board(self, moved, tasks):
+        def api(*args):
+            if args[:2] == ('task', 'get'):
+                return {'tasks': [tasks[args[2]]]}
+            moved.append(args[2])
+            return {}
+        return api
+
+    def test_over_limit_applies_first_n_in_order_and_defers_rest(self):
+        plans = self.seven_plans()
+        tasks = {t['ticketNumber']: t for t, _ in plans}
+        facts = {t['ticketNumber']: f for t, f in plans}
+        moved = []
+        pulls = {key: [] for key in tasks}
+        with patch.object(r, 'api', self.fake_board(moved, tasks)), patch.object(r, 'run'), \
+                patch.object(r, 'collect', side_effect=lambda t, *a, **k: facts[t['ticketNumber']]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.apply_plan(plans, 5, pulls), 0)
+        self.assertEqual(moved, ['SOFT-11', 'SOFT-12', 'SOFT-13', 'SOFT-20', 'SOFT-21'])
+        deferred = [l for l in out.getvalue().splitlines() if l.startswith('DEFERRED')]
+        self.assertEqual([l.split()[1] for l in deferred], ['SOFT-1', 'SOFT-2'])
+        self.assertNotIn('REFUSE', out.getvalue())
+        # Second run: the five moved tickets now sit in their target column.
+        rest = [(t, f) for t, f in plans if t['ticketNumber'] in ('SOFT-1', 'SOFT-2')]
+        moved.clear()
+        with patch.object(r, 'api', self.fake_board(moved, tasks)), patch.object(r, 'run'), \
+                patch.object(r, 'collect', side_effect=lambda t, *a, **k: facts[t['ticketNumber']]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.apply_plan(rest, 5, pulls), 0)
+        self.assertEqual(moved, ['SOFT-1', 'SOFT-2'])
+        self.assertNotIn('DEFERRED', out.getvalue())
+
+    def test_unknown_applies_nothing(self):
+        plans = self.seven_plans()
+        calls = []
+        with patch.object(r, 'api', side_effect=lambda *a: calls.append(a)), patch.object(r, 'run', side_effect=lambda *a: calls.append(a)), \
+                patch.object(r, 'tickets', return_value=[t for t, _ in plans] + [dict(task(), ticketNumber='BROKEN')]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'discover', return_value={t['ticketNumber']: [] for t, _ in plans}), \
+                patch.object(r, 'apply_plan') as apply_plan, \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r.sys, 'argv', ['reconcile', '--apply']), \
+                patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto', 'HOME': tempfile.mkdtemp()}), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), True)
+        self.assertIn('UNKNOWN BROKEN', out.getvalue())
+        apply_plan.assert_not_called()
+        self.assertEqual(calls, [])
 
     def test_apply_rechecks_changed_ticket_before_writes(self):
         plans = [(task(), r.Facts('Doing', 8000))]
@@ -393,13 +441,22 @@ else:
         self.assertEqual(self.target('Backlog', age=7200, alive=True), 'In Progress')
 
     def test_five_move_cap(self):
-        plans = [({'ticketNumber': f'HTPR-{i}', 'section': 'Backlog', 'projectId': 15},
+        plans = [({'ticketNumber': f'HTPR-{i}', 'section': 'Backlog', 'projectId': 15, 'updatedAt': 1},
                   r.Facts('Backlog', 8000, True)) for i in range(1, 7)]
-        with patch.object(r, 'api') as api, patch.object(r, 'run') as run, contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(r.apply_plan(plans, 99, {}, board=r.BOARDS[15]), 1)
-            self.assertIn('limit=5', out.getvalue())
-            api.assert_not_called()
-            run.assert_not_called()
+        moved = []
+
+        def api(*args):
+            if args[:2] == ('task', 'get'):
+                return {'tasks': [{'ticketNumber': args[2], 'section': 'Backlog', 'projectId': 15, 'updatedAt': 1}]}
+            moved.append(args[2])
+            return {}
+        with patch.object(r, 'api', api), patch.object(r, 'run'), patch.object(r, 'require_board15_agent'), \
+                patch.object(r, 'collect', return_value=r.Facts('Backlog', 8000, True)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.apply_plan(plans, 99, {f'HTPR-{i}': [] for i in range(1, 7)}, board=r.BOARDS[15]), 0)
+        self.assertEqual(moved, [f'HTPR-{i}' for i in range(1, 6)])
+        self.assertIn('DEFERRED HTPR-6', out.getvalue())
+        self.assertIn('limit=5', out.getvalue())
 
     def test_board15_accepts_only_its_ticket_keys_and_urls(self):
         board = r.BOARDS[15]

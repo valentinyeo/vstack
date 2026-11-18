@@ -442,8 +442,12 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
     options = {} if board == DEFAULT else {'board': board}
     moves = [(task, facts) for task, facts in plans if target(facts, board, names)[0] != task['section']]
     if len(moves) > limit:
-        print(f'REFUSE move cap: planned={len(moves)} limit={limit}; no writes', flush=True)
-        return 1
+        # Moves backed by a live lease or PR go first; moves back to Todo go last.
+        moves.sort(key=lambda m: (target(m[1], board, names)[0] == 'Todo', int(ticket_index(m[0]['ticketNumber'], board))))
+        for old, facts in moves[limit:]:
+            column, reason = target(facts, board, names)
+            print(f'DEFERRED {old["ticketNumber"]} {old["section"]} -> {column} | {reason}; over limit={limit}', flush=True)
+        moves = moves[:limit]
     fresh_tasks = []
     for old, facts in moves:
         fresh = api('task', 'get', old['ticketNumber'])['tasks'][0]
