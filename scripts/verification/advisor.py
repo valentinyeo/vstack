@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import subprocess
 import urllib.request
 import urllib.error
@@ -68,11 +67,9 @@ for iteration in range(40):
         content = msg.get('content') or ''
         (OUT / 'verdict.txt').write_text(content)
         raw = content.strip()
-        if not raw.startswith('{'):
-            blocks = re.findall(r'^```(?:json)?[ \t]*\r?\n(.*?)^```[ \t]*$', raw, re.M | re.S)
-            if len(blocks) != 1:
-                raise ValueError('Expected one JSON verdict')
-            raw = blocks[0].strip()
+        fence = raw.find('```')
+        if not raw.startswith('{') and fence != -1:
+            raw = raw[fence:].split('\n', 1)[1].rsplit('```', 1)[0].strip()
         verdict = json.loads(raw)
         assert iteration > 0, 'verifier must drive the code'
         assert verdict['head_sha'] == os.environ['HEAD_SHA'], 'wrong head'

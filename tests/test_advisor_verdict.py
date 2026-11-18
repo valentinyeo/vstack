@@ -40,7 +40,7 @@ class AdvisorVerdict(unittest.TestCase):
                 runpy.run_path(str(SCRIPT), run_name='__main__')
             output = root / 'evidence'
             self.assertEqual(json.loads((output / 'verdict.json').read_text()), self.verdict())
-            self.assertEqual((output / 'verdict.txt').read_text(), content)
+            self.assertEqual((output / 'verdict.txt').read_bytes(), content.encode())
             self.assertIn('smoke-evidence', (output / 'commands.log').read_text())
             self.assertIn('Verifier model: glm-5.3-flash', (output / 'verdict.md').read_text())
 
@@ -50,7 +50,9 @@ class AdvisorVerdict(unittest.TestCase):
 
     def test_json_reports_with_optional_fence_and_preamble(self):
         raw = json.dumps(self.verdict())
-        for content in (raw, f'```json\n{raw}\n```',
+        for content in (raw, f'```json\n{raw}\n```', f'```JSON\n{raw}\n```',
+                        f'``` json\n{raw}\n```', f'```jsonc\n{raw}\n```',
+                        f'```json\n{raw}', f'```json\r\n{raw}\r\n```',
                         f'Evidence complete. Final report:\n\n```json\n{raw}\n```'):
             with self.subTest(content=content[:40]):
                 self.drive(content)
