@@ -1,4 +1,5 @@
 import contextlib
+from datetime import date, datetime, timedelta, timezone
 import importlib.machinery
 import importlib.util
 import io
@@ -318,7 +319,7 @@ class ReconcileTest(unittest.TestCase):
         p = {'title': 'SOFT-1 fix', 'body': '', 'url': pull().url, 'state': 'OPEN',
              'repository': {'nameWithOwner': 'valentinyeo/another-repo'}, 'number': 1}
         result = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [p, {**p, 'state': 'CLOSED'}, {**p, 'title': 'SOFT-10 fix'}]}}}
-        with patch.object(r, 'run', return_value=json.dumps(result)) as run, patch.object(r, 'branch_pulls', return_value=[]):
+        with patch.object(r, 'run', return_value=json.dumps(result)) as run, patch.object(r, 'branch_pulls', return_value=[]), patch.object(r, 'head_pulls', return_value=[]):
             self.assertEqual(r.discover(['SOFT-1']), {'SOFT-1': [p]})
             self.assertIn('user:hypertask-ai', run.call_args.args[-1])
         result['data']['q0']['pageInfo']['hasNextPage'] = True
@@ -340,9 +341,54 @@ class ReconcileTest(unittest.TestCase):
                 'pageInfo': {'hasNextPage': more, 'endCursor': cursor}}}})
         responses = [page(1001), page(101, [pr], True, 'next'), page(101), page(0)]
         with patch.object(r, 'run', side_effect=responses) as run:
-            self.assertEqual(list(r.branch_pulls()), [pr])
+            self.assertEqual(r.scan_window(r.DEFAULT, 'is:open', 'created', date(2026, 1, 1), date(2026, 1, 8)), [pr])
             self.assertIn('after:"next"', run.call_args_list[2].args[-1])
             self.assertEqual(run.call_count, 4)
+
+    def test_branch_scan_reads_open_prs_and_recent_merges_only(self):
+        queries = []
+        def search(*args):
+            queries.append(next(a for a in args if 'search(query' in a))
+            return json.dumps({'data': {'search': {'issueCount': 0, 'nodes': [],
+                                                    'pageInfo': {'hasNextPage': False, 'endCursor': None}}}})
+        since = datetime.now(timezone.utc).date() - timedelta(days=2)
+        with patch.object(r, 'run', side_effect=search):
+            self.assertEqual(r.branch_pulls(r.DEFAULT, since), [])
+        self.assertEqual(len(queries), 4)
+        self.assertEqual(sum('is:open' in q for q in queries), 1)
+        merged = sorted(q for q in queries if 'is:merged' in q)
+        self.assertEqual([q.split('merged:')[1].split('..')[0].split('\\')[0] for q in merged],
+                         [str(since + timedelta(days=n)) for n in range(3)])
+
+    def test_scan_window_starts_at_oldest_ticket_or_thirty_days(self):
+        today = date(2026, 11, 18)
+        since, old = r.scan_plan({'SOFT-1': '2026-05-01T00:00:00Z', 'SOFT-2': '2026-11-10T00:00:00Z',
+                                  'SOFT-3': None}, today=today)
+        self.assertEqual(since, date(2026, 10, 19))
+        self.assertEqual(old, ['SOFT-1', 'SOFT-3'])
+        since, old = r.scan_plan({'SOFT-2': '2026-11-10T08:00:00Z'}, today=today)
+        self.assertEqual((since, old), (date(2026, 11, 10), []))
+
+    def test_ticket_with_pr_merged_long_ago_still_owned(self):
+        merged = {'url': 'https://github.com/valentinyeo/another-repo/pull/7', 'state': 'MERGED',
+                  'title': 'SOFT-1 old fix', 'body': '', 'headRefName': 'feat/old', 'number': 7,
+                  'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+        prefixed = {'url': 'https://github.com/valentinyeo/another-repo/pull/8', 'state': 'MERGED',
+                    'headRefName': 'soft-1-branch-only', 'number': 8,
+                    'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+        def search(*args):
+            query = next(a for a in args if 'search(query' in a)
+            nodes = [prefixed] if 'head:SOFT-1' in query else [merged]
+            return json.dumps({'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': nodes}}})
+        with patch.object(r, 'run', side_effect=search), patch.object(r, 'branch_pulls', return_value=[]):
+            found = r.discover(['SOFT-1'], created={'SOFT-1': '2026-05-01T00:00:00Z'})
+        self.assertEqual({p['url'] for p in found['SOFT-1']}, {merged['url'], prefixed['url']})
+
+    def test_failed_pr_read_in_prefetch_leaves_the_error_to_its_ticket(self):
+        pulls = {'SOFT-1': [{'repository': {'nameWithOwner': 'valentinyeo/another-repo'}, 'number': 1, 'state': 'MERGED'}]}
+        with patch.object(r, 'read_pull', side_effect=RuntimeError('boom')) as read:
+            r.prefetch(pulls)
+        read.assert_called_once_with('valentinyeo/another-repo', 1)
 
     def test_unknown_column_bypasses_discovery_and_lease(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -353,7 +399,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r, 'discover', return_value={}) as discover, \
                 patch.object(r, 'collect') as collect, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
-            discover.assert_called_once_with([])
+            discover.assert_called_once_with([], created={})
             collect.assert_not_called()
             self.assertIn('KEEP SOFT-1 Future -> Future | unknown column; kept', out.getvalue())
 
@@ -471,7 +517,7 @@ else:
               'state': 'OPEN', 'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}, 'number': 1}
         wrong = {**pr, 'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
         data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [pr, wrong]}}}
-        with patch.object(r, 'run', return_value=json.dumps(data)) as run, patch.object(r, 'branch_pulls', return_value=[]):
+        with patch.object(r, 'run', return_value=json.dumps(data)) as run, patch.object(r, 'branch_pulls', return_value=[]), patch.object(r, 'head_pulls', return_value=[]):
             self.assertEqual(r.discover(['HTPR-1'], board=r.BOARDS[15]), {'HTPR-1': [pr]})
             self.assertIn('repo:hypertask-ai/hypertask', run.call_args.args[-1])
 
