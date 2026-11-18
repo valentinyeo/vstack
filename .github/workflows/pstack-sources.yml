@@ -33,6 +33,25 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - name: Read pinned verifier sources
+        id: verifier-sources
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, re
+          pins = json.load(open('.skill-lint.json'))
+          repository = pins['catalog-repository']
+          revision = pins['catalog-ref']
+          assert repository in ('valentinyeo/house-rules', 'valentinyeo/vstack')
+          assert re.fullmatch('[0-9a-f]{40}', revision)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'repository={repository}\nrevision={revision}\n')
+          PYTHON
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.verifier-sources.outputs.repository }}
+          ref: ${{ steps.verifier-sources.outputs.revision }}
+          path: .verifier-catalog
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -62,6 +81,11 @@ jobs:
           Judge the actual diff, preserving existing behavior.
           You are an independent verifier from a different model family than the author. You did not write this PR.
           Read the diff against the supplied merge base.
+          Pinned shared sources are in .verifier-catalog.
+          That checkout matches .skill-lint.json exactly.
+          Search only this repository and .verifier-catalog.
+          Never search machine directories for missing sources.
+          Report unavailable evidence as a limit.
           Only diff-induced regressions block this pull request.
           Report unchanged base faults in one note.
           Reproduce proposed blockers on that base first.
