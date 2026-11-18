@@ -39,7 +39,7 @@ Machine setup: see your private reference.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Columns:** The `hypertask-work` skill owns the login, board, columns, worker leases and reconcile.
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
-- **Verifier:** from a different model family than every author.
+- **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author; the picker reads it.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
 
 ## Designing

@@ -5,7 +5,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-MODEL = 'deepseek-v4.1-flash'
+MODEL = os.environ['VERIFIER_MODEL']
 OUT = Path('evidence')
 OUT.mkdir(exist_ok=True)
 prompt = f'''Read {max((Path.home() / ".claude/plugins/cache/cursor-plugins/pstack").glob("*"), key=lambda p: tuple(int(n) for n in p.name.split(".") if n.isdigit()))}/skills/poteto-mode/worker.md before anything else.
@@ -14,7 +14,7 @@ Read .github/briefs/shared-worker-rules.md, the shared worker rules.
 {Path(".github/briefs/shared-worker-rules.md").read_text()}
 Without service access, report faults in your verdict before workarounds.
 Goal: Lauren's setup. vstack publicly owns shared checks.
-You are DeepSeek Flash, independently verifying Codex-authored SOFT-2590.
+You are an independent verifier from a different model family than the author, verifying SOFT-2590.
 You run on GitHub-hosted Ubuntu. Never edit candidates, push, or merge.
 pstack: skills/poteto-mode/playbooks/refactoring.md
 Candidate: current checkout. Head SHA: {os.environ['HEAD_SHA']}.
@@ -75,7 +75,7 @@ for iteration in range(40):
         assert verdict['verdict'] in ('PASS', 'PASS+NOTES', 'FAIL'), 'invalid verdict'
         (OUT / 'verdict.json').write_text(json.dumps(verdict, indent=2))
         (OUT / 'verdict.md').write_text(
-            f"{verdict['verdict']}\n\nDeepSeek Flash independent pstack verifier.\n"
+            f"{verdict['verdict']}\n\nVerifier model: {MODEL}, independent pstack verifier.\n"
             f"Head: `{verdict['head_sha']}`\n\n" + json.dumps(verdict, indent=2) + '\n')
         (OUT / 'transcript.json').write_text(json.dumps(messages, indent=2))
         print(content)

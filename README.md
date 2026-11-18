@@ -46,7 +46,9 @@ Product repos hold their own facts.
 `advisor-checks` installs pstack from `cursor/plugins`.
 It runs every `hooks/*.py --self-test`.
 Migration tests and installer tests run there too.
-DeepSeek Flash verifies PRs on GitHub-hosted runners.
+A verifier from another model family than the author checks PRs on GitHub-hosted runners.
+`scripts/pick-verifier-model` reads the PR body's `Author model: <family>/<model>` lines and picks DeepSeek Flash, else GLM, else Kimi.
+A PR without that line fails its verifier.
 Its command trace becomes a workflow artifact.
 Its verdict appears on the PR.
 
