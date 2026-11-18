@@ -69,9 +69,9 @@ Read this skill's `reconcile.md` for the column rules, board 15, and the timer.
 ## Keep workers live
 
 A worker launched with plain `codex exec`, `pi -p` or `cursor-agent` writes no lease.
-Reconcile then sees the ticket as dead and sends it back to Todo.
-
-Wrap the launch in one line:
+A running command line that holds the ticket key or ticket URL still counts as live,
+so such a worker keeps its ticket without one.
+Wrap the launch anyway, because a lease is the stronger sign:
 
 ```sh
 skills/hypertask-work/lease "$KEY" run -- worker-command worker-arguments
@@ -84,7 +84,8 @@ skills/hypertask-work/lease "$KEY" watch --pid "$WORKER_PID" &
 ```
 
 The lease records the PID and host and renews every minute.
-A dead PID, a 15-minute-old lease, or no lease reads not live.
+A dead PID, a 15-minute-old lease, or no lease reads not live,
+unless a live local process names the ticket in its arguments.
 
 ## Hypertask gaps
 

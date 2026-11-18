@@ -25,6 +25,13 @@ MANAGED = {'Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'}
 WINDOW_DAYS = 30
 JOBS = int(os.environ.get('RECONCILE_JOBS', '8'))
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
+PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
+# A wrapper hides the command it runs behind the first word or two.
+WRAPPERS = {'sudo', 'env', 'nohup', 'timeout', 'exec', 'command', 'stdbuf', 'ionice', 'nice',
+            'bash', 'sh', 'dash', 'zsh', 'fish'}
+# These name a ticket only to read it.
+READERS = {'grep', 'egrep', 'fgrep', 'pgrep', 'pkill', 'rg', 'ag', 'ack', 'ps', 'top', 'htop',
+           'cat', 'head', 'tail', 'less', 'more', 'awk', 'sed', 'journalctl'}
 
 
 @dataclass(frozen=True)
@@ -54,9 +61,9 @@ RULES = (
     (lambda f: any(p.state == 'OPEN' for p in f.pulls), 'AI Review', 'open PR checks green; verifier or merge pending'),
     (lambda f: bool(f.pulls) and all(p.state == 'MERGED' and p.passed for p in f.pulls), 'AI Review', 'merged PR with PASS; live proof pending'),
     (lambda f: any(p.state == 'MERGED' for p in f.pulls), 'AI Review', 'merged PR missing PASS on current head'),
-    (lambda f: f.alive, 'Doing', 'live lease'),
+    (lambda f: f.alive, 'Doing', 'live worker: lease or process'),
     (lambda f: f.age < 7200, None, 'touched within 2h'),
-    (lambda f: True, 'Todo', 'no live lease and no PR'),
+    (lambda f: True, 'Todo', 'no live worker and no PR'),
 )
 
 
@@ -146,8 +153,72 @@ def live_lease(key, now, directory=None):
     return 0 <= age < 900 and started <= now and pid_alive(lease['pid'])
 
 
+def process_chain(pid=None, directory=None):
+    """This process and its parents. A brief that names a ticket is not that worker."""
+    directory = directory or PROC
+    chain, pid = set(), os.getpid() if pid is None else pid
+    while pid and pid not in chain:
+        chain.add(pid)
+        try:
+            fields = (directory / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
+            pid = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return chain
+
+
+def reads_only(argv):
+    """A grep or ps whose arguments name a ticket only reads that ticket."""
+    for word in argv:
+        text = word.strip().split()[0] if word.strip() else ''
+        name = Path(text).name
+        if not text or name in WRAPPERS or text.startswith('-'):
+            continue
+        if re.fullmatch(r'\d+[smhd]?', text) or re.fullmatch(r'[A-Za-z_]\w*=.*', text):
+            continue
+        return name in READERS
+    return False
+
+
+@lru_cache(maxsize=2)
+def process_tickets(board=DEFAULT):
+    """Fallback liveness for workers started without the lease wrapper.
+
+    hax -p, pi -p, codex exec, cursor-agent and claude -p carry their ticket in
+    their own command line. Word boundaries keep SOFT-27 out of SOFT-2730.
+    """
+    ignore = process_chain()
+    url = re.compile(r'https://app\.hypertask\.ai/detail/project-' + str(board.id) + r'/([1-9]\d*)(?!\w)')
+    key = re.compile(r'(?<![\w-])' + re.escape(board.prefix) + r'-[1-9]\d*(?![\w-])', re.I)
+    found = set()
+    try:
+        entries = sorted(PROC.iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.isdigit() or int(entry.name) in ignore:
+            continue
+        try:
+            argv = [os.fsdecode(part) for part in (entry / 'cmdline').read_bytes().split(b'\0') if part]
+        except OSError:
+            continue
+        if not argv or reads_only(argv):
+            continue
+        line = ' '.join(argv)
+        found |= {board.prefix + '-' + match[1] for match in url.finditer(line)}
+        found |= {match[0].upper() for match in key.finditer(line)}
+    return found
+
+
+def worker_alive(key, now, board=DEFAULT):
+    """A lease wins; without one, a live command line that names the ticket counts."""
+    if board != DEFAULT:
+        return live_product_worker(key, now)
+    return live_lease(key, now) or key.upper() in process_tickets(board)
+
+
 def worker_state_directory(slug, pid):
-    environment = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+    environment = (PROC / str(pid) / 'environ').read_bytes().split(b'\0')
     for item in environment:
         if item.startswith(b'HT_AGENT_STATE_DIR='):
             return Path(os.fsdecode(item.split(b'=', 1)[1]))
@@ -527,7 +598,7 @@ def prefetch(pulls, board=DEFAULT):
 
 def collect(task, pulls, now, board=DEFAULT):
     ticket_index(task['ticketNumber'], board)
-    alive = live_lease(task['ticketNumber'], now) if board == DEFAULT else live_product_worker(task['ticketNumber'], now)
+    alive = worker_alive(task['ticketNumber'], now, board)
     if board == DEFAULT:
         details = tuple(pull_facts(p) for p in pulls)
     else:

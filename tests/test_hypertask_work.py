@@ -208,7 +208,7 @@ class ReconcileTest(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
             collect.assert_called_once()
-            self.assertIn('KEEP SOFT-1 Doing -> Doing | live lease', out.getvalue())
+            self.assertIn('KEEP SOFT-1 Doing -> Doing | live worker: lease or process', out.getvalue())
 
     def test_overlap_is_a_clean_skip(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -221,7 +221,7 @@ class ReconcileTest(unittest.TestCase):
             tickets.assert_not_called()
 
     def test_idle_doing_returns_todo(self):
-        self.assertEqual(r.target(r.Facts('Doing', 7201)), ('Todo', 'no live lease and no PR'))
+        self.assertEqual(r.target(r.Facts('Doing', 7201)), ('Todo', 'no live worker and no PR'))
 
     def test_table(self):
         cases = [
@@ -289,7 +289,7 @@ class ReconcileTest(unittest.TestCase):
             r.reconcile(t, facts, apply=True)
             api.assert_called_once_with('task', 'move', 'SOFT-1', '--section', 'Todo')
             self.assertEqual(run.call_count, 1)
-            self.assertIn('no live lease and no PR', run.call_args.args[-1])
+            self.assertIn('no live worker and no PR', run.call_args.args[-1])
             self.assertEqual(t['assignees'], [{'displayName': 'Runner 9'}])
             api.reset_mock()
             run.reset_mock()
@@ -596,6 +596,86 @@ class ProductWorkerTest(unittest.TestCase):
         with patch.object(r, 'run', side_effect=RuntimeError('systemctl failed')):
             with self.assertRaises(RuntimeError):
                 r.product_workers(NOW)
+
+
+class ProcessLivenessTest(unittest.TestCase):
+    """A worker started without the lease wrapper still holds its ticket."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.proc = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        patcher = patch.object(r, 'PROC', self.proc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        r.process_tickets.cache_clear()
+        self.addCleanup(r.process_tickets.cache_clear)
+
+    def spawn(self, pid, argv, ppid=1):
+        directory = self.proc / str(pid)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'stat').write_text(f'{pid} (cmd) S {ppid} {ppid} {ppid}\n')
+        (directory / 'cmdline').write_bytes(b'\0'.join(os.fsencode(word) for word in argv) + b'\0')
+
+    def test_url_marks_its_ticket_live(self):
+        self.spawn(4001, ['hax', '-p', '--model=gpt-6.1-sol',
+                          'https://app.hypertask.ai/detail/project-2060/2730'])
+        self.assertEqual(r.process_tickets(), {'SOFT-2730'})
+
+    def test_neighbouring_ticket_numbers_stay_apart(self):
+        self.spawn(4001, ['hax', '-p', 'https://app.hypertask.ai/detail/project-2060/2730'])
+        found = r.process_tickets()
+        self.assertIn('SOFT-2730', found)
+        self.assertNotIn('SOFT-273', found)
+        self.assertNotIn('SOFT-27', found)
+
+    def test_short_ticket_url_does_not_prove_the_longer_ticket(self):
+        self.spawn(4002, ['pi', '-p', 'https://app.hypertask.ai/detail/project-2060/27'])
+        self.assertEqual(r.process_tickets(), {'SOFT-27'})
+
+    def test_ticket_key_token_marks_the_ticket_live(self):
+        self.spawn(4001, ['codex', 'exec', 'SOFT-2730 fix the release gate'])
+        self.assertEqual(r.process_tickets(), {'SOFT-2730'})
+
+    def test_partial_key_tokens_do_not_count(self):
+        self.spawn(4001, ['cursor-agent', 'fix', 'SOFT-2730b', 'and', 'ASOFT-2730', 'SOFT-2730-extra'])
+        self.assertEqual(r.process_tickets(), set())
+
+    def test_other_board_url_does_not_count(self):
+        self.spawn(4001, ['claude', '-p', 'https://app.hypertask.ai/detail/project-15/2730'])
+        self.assertEqual(r.process_tickets(), set())
+
+    def test_own_process_and_its_parents_are_ignored(self):
+        self.spawn(os.getpid(), ['python3', 'reconcile', '--section', 'Doing',
+                                 'https://app.hypertask.ai/detail/project-2060/2730'], ppid=4009)
+        self.spawn(4009, ['zsh', '-c', 'reconcile SOFT-2730'], ppid=1)
+        self.spawn(4001, ['hax', '-p', 'https://app.hypertask.ai/detail/project-2060/2731'])
+        self.assertEqual(r.process_tickets(), {'SOFT-2731'})
+
+    def test_grep_and_ps_only_read_the_ticket(self):
+        self.spawn(4001, ['bash', '-c', 'grep -rn SOFT-2730 /tmp/ft-runs'])
+        self.spawn(4002, ['ps', 'aux', 'SOFT-2730'])
+        self.spawn(4003, ['rg', 'https://app.hypertask.ai/detail/project-2060/2730'])
+        self.assertEqual(r.process_tickets(), set())
+
+    def test_unreadable_proc_adds_no_liveness(self):
+        with patch.object(r, 'PROC', self.proc / 'missing'):
+            self.assertEqual(r.process_tickets(r.BOARDS[15]), set())
+
+    def test_process_liveness_only_adds_to_the_lease(self):
+        self.spawn(4001, ['hax', '-p', 'SOFT-2730'])
+        with patch.object(r, 'live_lease', return_value=False):
+            self.assertTrue(r.worker_alive('SOFT-2730', NOW))
+            self.assertFalse(r.worker_alive('SOFT-1', NOW))
+        with patch.object(r, 'live_lease', return_value=True) as live:
+            self.assertTrue(r.worker_alive('SOFT-1', NOW))
+            live.assert_called_once()
+
+    def test_live_process_keeps_doing(self):
+        self.spawn(4001, ['hax', '-p', 'SOFT-1'])
+        with patch.object(r, 'live_lease', return_value=False):
+            self.assertEqual(r.target(r.Facts('Doing', 8000, r.worker_alive('SOFT-1', NOW))),
+                             ('Doing', 'live worker: lease or process'))
 
 
 class LeaseTest(unittest.TestCase):
