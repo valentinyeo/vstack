@@ -54,7 +54,8 @@ skills/hypertask-work/reconcile --board 2060
 ```
 
 Read every printed reason.
-Then apply with the cap:
+Then apply with the cap.
+A plan over the cap applies the first moves and prints DEFERRED for the rest:
 
 ```sh
 skills/hypertask-work/reconcile --board 2060 --apply --limit 5

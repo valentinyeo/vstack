@@ -7,7 +7,11 @@ Default runs print plans without moving tickets.
 `--section Doing` limits a dry run.
 `--apply` previews first, then permits five moves.
 `--limit N` changes that per-run cap.
-Exceeding the cap refuses every move.
+A plan over the cap applies only the first N moves.
+Moves backed by a live lease or an open or merged PR go first.
+Moves back to Todo go last.
+Each tier is ordered by ticket number.
+The rest print DEFERRED and the next run picks them up.
 Any UNKNOWN also refuses every move.
 Each move writes an agent-log entry.
 Owners and assignees stay unchanged.
@@ -102,7 +106,8 @@ Repeated ends are harmless.
 The supplied timer runs every fifteen minutes.
 Installation enables capped board moves after preview.
 The current backlog may exceed the default cap.
-Such runs refuse writes until reviewed separately.
+Such runs apply the first moves and report the rest as DEFERRED.
+Later runs work through the remainder.
 Keep installation for the approved release.
 
 The service uses the house-rules shim `~/.local/share/house-rules/fleet/reconcile`.
@@ -153,7 +158,8 @@ Agent Blocked (Infra) and Valentin Review stay.
 QA and every Flag column stay.
 No Flag and unknown columns also stay.
 Each run permits at most five moves.
-Exceeding that cap refuses every move.
+Board 15 keeps this hard cap, even with a higher `--limit`.
+Moves over the cap print DEFERRED and wait for the next run.
 
 Worker facts use the installed Hypertask workers.
 An active service alone proves no ticket work.
