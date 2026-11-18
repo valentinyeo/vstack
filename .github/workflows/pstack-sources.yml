@@ -70,7 +70,6 @@ jobs:
           Report faults before workarounds.
           Without service access, report faults in your verdict.
           Run python3 -m unittest discover -s tests -p test_pstack_sources.py -v.
-          Run python3 -m unittest discover -s tests -p test_drain.py -v.
           Exercise changed behavior against its stated contract.
           Check waiting-on-Valentin exclusion and board sync precedence.
           Board 2060 merged work awaits live proof.

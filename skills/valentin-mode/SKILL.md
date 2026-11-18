@@ -33,6 +33,7 @@ Machine setup: see your private reference.
 - **Hypertask gaps:** file one the same minute with `hypertask feedback`, then tell him the link.
 - **Bans live in lint** (Lauren Tan): a ban written only in markdown is not a ban.
 - **Checks:** a merge ships within 15 minutes, a fix check stays under 20 jobs, old runs cancel when newer code arrives.
+- **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Columns:** sync them as the house rules "Board sync for orchestrators" section and `docs/fleet-reconcile.md` say.
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
 - **Verifier:** from a different model family than every author.

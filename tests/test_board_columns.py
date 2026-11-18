@@ -10,7 +10,7 @@ def text(skill):
 
 
 class BoardInstructionsTests(unittest.TestCase):
-    def test_every_entrypoint_teaches_the_same_transitions(self):
+    def test_do_teaches_the_same_transitions(self):
         for skill in SKILLS:
             with self.subTest(skill=skill):
                 for instruction in ('PR opened -> Checks', 'checks green -> Verifier',
