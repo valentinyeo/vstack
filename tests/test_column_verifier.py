@@ -41,7 +41,7 @@ class ColumnVerifierTests(unittest.TestCase):
             gh.write_text('#!/bin/sh\nexit 0\n')
             gh.chmod(0o755)
             env = dict(os.environ, PATH=str(fake_bin) + ':' + os.environ['PATH'],
-                       HEAD_SHA=sha, BASE_REF='main', BASE_SHA='0' * 40,
+                       HEAD_SHA=sha, VERIFIER_MODEL='glm-5.3-flash', BASE_REF='main', BASE_SHA='0' * 40,
                        RUNNER_TEMP=str(root), OPENCODE_API_KEY='fixture-key',
                        VERIFY_COMMANDS=json.dumps(required if required is not None else ['printf one', 'printf two']),
                        PR_NUMBER='1', GITHUB_REPOSITORY='fixture/repo', GITHUB_RUN_ID='1')
@@ -54,6 +54,7 @@ class ColumnVerifierTests(unittest.TestCase):
         code, body = self.run_verifier([], verdict='PASS+NOTES')
         self.assertEqual(code, 0, body)
         self.assertIn('pstack-verifier: PASS+NOTES', body)
+        self.assertIn('Verifier model: glm-5.3-flash', body)
 
     def test_fail_verdict_still_fails(self):
         code, body = self.run_verifier([], verdict='FAIL')

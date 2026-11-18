@@ -60,7 +60,7 @@ jobs:
           Read /tmp/worker.md before anything else.
           Goal: verify this pull request against rebased main.
           Judge the actual diff, preserving existing behavior.
-          You are the independent DeepSeek verifier. You did not write this PR.
+          You are an independent verifier from a different model family than the author. You did not write this PR.
           Read the diff against the supplied merge base.
           Only diff-induced regressions block this pull request.
           Report unchanged base faults in one note.
@@ -87,12 +87,16 @@ jobs:
           Keep prose sentences within eight words. Preserve command output verbatim.
           BRIEF
           printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
-      - name: DeepSeek drives the changed files
+      - name: Pick verifier model
+        run: |
+          model=$(python3 scripts/pick-verifier-model)
+          echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
+      - name: Verifier drives the changed files
         env:
           OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
         run: |
           test -n "$OPENCODE_API_KEY"
-          timeout 540 pi --provider opencode-go --model deepseek-v4.1-flash --thinking low \
+          timeout 540 pi --provider opencode-go --model "$VERIFIER_MODEL" --thinking low \
             --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
             --tools read,bash --mode json --print "$(cat /tmp/verify.md)" > verifier.jsonl
           git diff --exit-code
@@ -108,7 +112,7 @@ jobs:
           messages = [e['message'] for e in events if e.get('type') == 'message_end' and e.get('message', {}).get('role') == 'assistant']
           verdict = '\n'.join(c.get('text', '') for c in messages[-1].get('content', []) if c.get('type') == 'text').strip()
           assert re.match(r'^(PASS\+NOTES|PASS|FAIL)\b', verdict), verdict
-          Path('verdict.md').write_text(verdict + '\n\nDeepSeek Flash. Head `' + os.environ['PR_HEAD'] + '`.\n')
+          Path('verdict.md').write_text(verdict + '\n\nVerifier model: ' + os.environ['VERIFIER_MODEL'] + '. Head `' + os.environ['PR_HEAD'] + '`.\n')
           print(verdict)
           PYTHON
       - name: Post independent verdict
@@ -121,7 +125,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: deepseek-verification
+          name: verifier-evidence
           path: |
             verifier.jsonl
             verdict.md
