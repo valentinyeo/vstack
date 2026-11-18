@@ -19,7 +19,7 @@ import time
 
 BOARD = 2060
 PROTECTED = {'Valentin Review', 'Done', 'Not now'}
-MANAGED = {'Todo', 'Doing', 'Checks', 'AI Review'}
+MANAGED = {'Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'}
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
 
 
@@ -37,18 +37,21 @@ class Facts:
     age: float
     alive: bool = False
     pulls: tuple = ()
+    waiting: bool = False
+    blocked: bool = False
 
 
-# Priority is deliberate: protected columns and grace precede live work.
+# An open or merged PR is the true stage; a live worker comes after it.
 RULES = (
     (lambda f: f.column in PROTECTED, None, 'protected column'),
     (lambda f: f.column not in MANAGED, None, 'unknown column; kept'),
-    (lambda f: f.age < 7200, None, 'touched within 2h'),
-    (lambda f: f.alive, 'Doing', 'live lease'),
+    (lambda f: f.waiting or f.blocked, None, 'waiting or blocked; kept'),
     (lambda f: any(p.state == 'OPEN' and p.checks != 'green' for p in f.pulls), 'Checks', 'open PR checks running, red, or missing'),
     (lambda f: any(p.state == 'OPEN' for p in f.pulls), 'AI Review', 'open PR checks green; verifier or merge pending'),
     (lambda f: bool(f.pulls) and all(p.state == 'MERGED' and p.passed for p in f.pulls), 'AI Review', 'merged PR with PASS; live proof pending'),
     (lambda f: any(p.state == 'MERGED' for p in f.pulls), 'AI Review', 'merged PR missing PASS on current head'),
+    (lambda f: f.alive, 'Doing', 'live lease'),
+    (lambda f: f.age < 7200, None, 'touched within 2h'),
     (lambda f: True, 'Todo', 'no live lease and no PR'),
 )
 
@@ -82,10 +85,19 @@ BOARDS = {
 DEFAULT = BOARDS[2060]
 
 
-def target(facts, board=DEFAULT):
+def stage_names(column=None, sections=()):
+    """Use the column name this board already shows for each moving stage."""
+    present = set(sections) | ({column} if column else set())
+    if present & {'Building', 'Verifier'}:
+        return {'Doing': 'Building', 'AI Review': 'Verifier'}
+    return {'Doing': 'Doing', 'AI Review': 'AI Review'}
+
+
+def target(facts, board=DEFAULT, names=None):
+    names = names if names is not None else (stage_names(facts.column) if board is DEFAULT else {})
     for matches, column, reason in board.rules:
         if matches(facts):
-            return column or facts.column, reason
+            return names.get(column, column) or facts.column, reason
 
 
 def stamp(value):
@@ -395,13 +407,14 @@ def collect(task, pulls, now, board=DEFAULT):
         details = tuple(pull_facts(p) for p in pulls)
     else:
         details = tuple(read_product_pull(p['number']) for p in pulls if p['state'] == 'OPEN')
-    return Facts(task['section'], now - stamp(task['updatedAt']), alive, details)
+    return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
+                 bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')))
 
 
-def reconcile(task, facts, apply=False, board=DEFAULT):
+def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
     if str(task['projectId']) != str(board.id):
         raise ValueError(f'ticket outside board {board.id}')
-    column, reason = target(facts, board)
+    column, reason = target(facts, board, names)
     key = task['ticketNumber']
     action = 'KEEP' if column == task['section'] else ('MOVE' if apply else 'PLAN')
     line = f'{action} {key} {task["section"]} -> {column} | {reason}'
@@ -416,11 +429,11 @@ def reconcile(task, facts, apply=False, board=DEFAULT):
     return column
 
 
-def apply_plan(plans, limit, pulls, board=DEFAULT):
+def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
     if board.id == 15:
         limit = min(limit, 5)
     options = {} if board == DEFAULT else {'board': board}
-    moves = [(task, facts) for task, facts in plans if target(facts, board)[0] != task['section']]
+    moves = [(task, facts) for task, facts in plans if target(facts, board, names)[0] != task['section']]
     if len(moves) > limit:
         print(f'REFUSE move cap: planned={len(moves)} limit={limit}; no writes', flush=True)
         return 1
@@ -438,7 +451,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT):
     ready = []
     for fresh, facts in fresh_tasks:
         latest = collect(fresh, pulls[fresh['ticketNumber']], time.time(), **options)
-        if target(latest, board) != target(facts, board):
+        if target(latest, board, names) != target(facts, board, names):
             print(f'SKIP {fresh["ticketNumber"]} | facts changed since preview', flush=True)
             continue
         ready.append((fresh, latest))
@@ -450,10 +463,10 @@ def apply_plan(plans, limit, pulls, board=DEFAULT):
         if board.id == 15:
             read_product_pull.cache_clear()
         final = collect(current, pulls[current['ticketNumber']], time.time(), **options)
-        if target(final, board) != target(facts, board):
+        if target(final, board, names) != target(facts, board, names):
             print(f'SKIP {task["ticketNumber"]} | facts changed during preflight', flush=True)
             continue
-        reconcile(current, final, apply=True, **options)
+        reconcile(current, final, apply=True, names=names, **options)
     return 0
 
 
@@ -488,6 +501,7 @@ def main():
             print(f'SKIP board={board.id} | reconciliation already running', flush=True)
             return 0
         tasks = tickets(args.section, **options)
+        names = stage_names(sections={t['section'] for t in tasks}) if board is DEFAULT else {}
         candidates = [t for t in tasks if t['section'] in board.managed]
         pulls = discover([t['ticketNumber'] for t in candidates], **options)
         now, errors = time.time(), 0
@@ -495,17 +509,19 @@ def main():
         for task in tasks:
             try:
                 if task['section'] not in board.managed or now - stamp(task['updatedAt']) < 7200:
-                    facts = Facts(task['section'], now - stamp(task['updatedAt']))
+                    facts = Facts(task['section'], now - stamp(task['updatedAt']),
+                                  waiting=bool(task.get('waitingOnUserId')),
+                                  blocked=bool(task.get('blockerCommentId')))
                 else:
                     facts = collect(task, pulls[task['ticketNumber']], now, **options)
-                reconcile(task, facts, **options)
+                reconcile(task, facts, names=names, **options)
                 plans.append((task, facts))
             except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
                 errors += 1
                 print(f'UNKNOWN {task["ticketNumber"]} | {error}', flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
         if args.apply and not errors:
-            return apply_plan(plans, args.limit, pulls, **options)
+            return apply_plan(plans, args.limit, pulls, names=names, **options)
         return bool(errors)
 
 

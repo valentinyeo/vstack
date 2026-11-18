@@ -20,13 +20,20 @@ Earlier rows take priority.
 | --- | --- |
 | Already Valentin Review, Done, or Not now | Keep |
 | Any column outside this table | Keep |
-| Ticket touched within two hours | Keep |
-| Fresh lease with a live local PID | Doing |
+| Waiting on Valentin or blocked by another ticket | Keep |
 | Open PR, checks running, red, or missing | Checks |
 | Open PR, checks green | AI Review |
 | Every matching PR merged, current-head PASS | AI Review, live proof pending |
 | Merged PR without current-head PASS | AI Review |
+| Fresh lease with a live local PID | Doing |
+| Ticket touched within two hours | Keep |
 | No live lease or matching PR | Todo |
+
+An open or merged PR outranks a live worker.
+Recent activity only delays the fallback to Todo.
+A waiting ticket or one with a blocker keeps its column.
+Building and Verifier are accepted as the renamed forms of Doing and AI Review.
+A board that shows them gets moves under those names.
 
 A passing open PR waits in AI Review.
 Merged work waits there for live proof.
@@ -110,7 +117,7 @@ GitHub access uses the server's `gh` login.
 After release approval, install the timer.
 
 ```sh
-bin/install-fleet-reconcile.sh
+~/.local/share/house-rules/bin/install-fleet-reconcile.sh
 ```
 
 The installer installs supplied user-service files.

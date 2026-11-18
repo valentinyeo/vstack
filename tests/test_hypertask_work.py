@@ -161,7 +161,9 @@ class ReconcileTest(unittest.TestCase):
     def test_table(self):
         cases = [
             (r.Facts('Todo', 8000, True), 'Doing'),
-            (r.Facts('Doing', 8000, True, (pull(checks='red'),)), 'Doing'),
+            (r.Facts('Doing', 8000, True), 'Doing'),
+            (r.Facts('Doing', 8000, True, (pull(checks='red'),)), 'Checks'),
+            (r.Facts('Doing', 8000, True, (pull(),)), 'AI Review'),
             (r.Facts('Doing', 8000, False, (pull(checks='running'),)), 'Checks'),
             (r.Facts('Doing', 8000, False, (pull(checks='red'),)), 'Checks'),
             (r.Facts('Doing', 8000, False, (pull(checks='missing'),)), 'Checks'),
@@ -178,6 +180,26 @@ class ReconcileTest(unittest.TestCase):
         for facts, expected in cases:
             with self.subTest(facts=facts):
                 self.assertEqual(r.target(facts)[0], expected)
+
+    def test_pr_stage_wins_over_grace_and_live_worker(self):
+        self.assertEqual(r.target(r.Facts('Doing', 100, True, (pull(),)))[0], 'AI Review')
+        self.assertEqual(r.target(r.Facts('Doing', 100, True, (pull(checks='red'),)))[0], 'Checks')
+        self.assertEqual(r.target(r.Facts('Doing', 7199, False, (pull('MERGED', passed=True),)))[0], 'AI Review')
+
+    def test_waiting_or_blocked_ticket_stays_put(self):
+        for facts in (r.Facts('Doing', 8000, True, waiting=True),
+                      r.Facts('Doing', 8000, True, blocked=True)):
+            with self.subTest(facts=facts):
+                self.assertEqual(r.target(facts), ('Doing', 'waiting or blocked; kept'))
+
+    def test_renamed_columns_resolve_to_their_own_family(self):
+        self.assertEqual(r.target(r.Facts('Building', 8000, True))[0], 'Building')
+        self.assertEqual(r.target(r.Facts('Building', 8000, False, (pull(),)))[0], 'Verifier')
+        self.assertEqual(r.target(r.Facts('Verifier', 8000, False, (pull(checks='red'),)))[0], 'Checks')
+        self.assertEqual(r.target(r.Facts('Verifier', 8000, True))[0], 'Building')
+        names = r.stage_names(sections={'Todo', 'Building', 'Verifier'})
+        self.assertEqual(r.target(r.Facts('Todo', 8000, True), names=names)[0], 'Building')
+        self.assertEqual(r.target(r.Facts('Todo', 8000, True), names=r.stage_names(sections={'Todo', 'Doing'}))[0], 'Doing')
 
     def test_no_writes_by_default_then_one_move_and_log(self):
         t = task()

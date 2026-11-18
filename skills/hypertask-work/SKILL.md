@@ -5,14 +5,14 @@ description: How a session works a Hypertask board: own login, own board or view
 
 # Hypertask work
 
-Paths resolve from this skill's folder. vstack `./install` links the folder into every harness.
+Paths resolve from this folder; vstack `./install` links it into every harness.
 
 ## Login and board
 
 Start with `~/.local/share/house-rules/skills/board-identity/SKILL.md`.
 Never ask Valentin for a login and never print a token.
 
-Own a board or a view named after your repo, or after your Multibot name when you have no repo.
+Own a board or view named after your repo, or after your Multibot name when you have no repo.
 Create the view when it is missing.
 Assign yourself to every ticket you work on.
 
@@ -25,15 +25,17 @@ One open Question, marked as the blocker, with your recommendation under it.
 
 ## True column
 
-Board 2060 uses Todo, Doing, Checks, AI Review, Valentin Review, Done.
-Move the ticket the moment its work moves:
+Board 2060 uses Todo, Doing or Building, Checks, AI Review or Verifier, Valentin Review, Done.
+Use the name the board shows.
+An open or merged PR outranks a live worker.
 
-- start work -> Doing
+- worker starts -> Doing or Building
 - PR opened -> Checks
-- checks green -> AI Review
-- merged -> AI Review, live proof pending
+- checks green -> AI Review or Verifier
+- merged -> AI Review or Verifier, live proof pending
 - live proof -> Done
 
+A ticket waiting on Valentin or blocked by another ticket stays put.
 Never move a ticket into Valentin Review.
 Only Valentin decides what leaves it.
 Other boards keep their own columns.
@@ -75,18 +77,18 @@ For a worker already running:
 skills/hypertask-work/lease "$KEY" watch --pid "$WORKER_PID" &
 ```
 
-The lease records the PID and host and renews every sixty seconds.
-A dead PID, a lease older than fifteen minutes, or no lease reads not live.
+The lease records the PID and host and renews every minute.
+A dead PID, a 15-minute-old lease, or no lease reads not live.
 
 ## Hypertask gaps
 
-When Hypertask cannot do what you need, file it the same minute:
+File a Hypertask gap the same minute:
 
 ```sh
 hypertask feedback --kind missing|bug|friction --category <category> --tool "<command>" "<one line>"
 ```
 
-Send command metadata and a sanitized note. Never ticket, board or comment content.
+Send command metadata and a sanitized note, never ticket content.
 Put the feedback link on the ticket.
 
 ## Act as yourself
