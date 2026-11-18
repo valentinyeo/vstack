@@ -17,12 +17,17 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: picker-base
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Pick verifier model
         run: |
-          model=$(python3 scripts/pick-verifier-model)
+          model=$(python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model")
           echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
       - name: Independent verification
         env:

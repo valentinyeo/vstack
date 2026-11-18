@@ -39,6 +39,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_poteto_ticket.py -v
           python3 -m unittest discover -s tests -p test_install_ticket_claim.py -v
           python3 -m unittest discover -s tests -p test_pick_verifier_model.py -v
+          python3 -m unittest discover -s tests -p test_picker_from_base.py -v
       - name: existing skill installer
         run: bash tests/install.sh
   deepseek-verifier:
@@ -56,6 +57,11 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: picker-base
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
           repository: cursor/plugins
           path: .pstack-source
           sparse-checkout: pstack
@@ -67,7 +73,7 @@ jobs:
           cp -r .pstack-source/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
       - name: Pick verifier model
         run: |
-          model=$(python3 scripts/pick-verifier-model)
+          model=$(python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model")
           echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
       - name: independent verification
         env:
