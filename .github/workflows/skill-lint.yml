@@ -8,11 +8,11 @@ permissions:
   contents: read
   pull-requests: write
 concurrency:
-  group: skill-lint-${{ github.event.pull_request.number || github.ref }}
+  group: skill-lint-caller-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   skill-lint:
-    uses: valentinyeo/house-rules/.github/workflows/skill-lint.yml@35edee8c697e4115febd3fcc5acd4b2026fdff46
+    uses: valentinyeo/house-rules/.github/workflows/skill-lint.yml@a0f08f2d968629ff76df1f5b4ee5751be8f56cc6
     with:
-      lint-ref: 35edee8c697e4115febd3fcc5acd4b2026fdff46
+      lint-ref: a0f08f2d968629ff76df1f5b4ee5751be8f56cc6
     secrets: inherit

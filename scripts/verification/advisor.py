@@ -67,8 +67,9 @@ for iteration in range(40):
         content = msg.get('content') or ''
         (OUT / 'verdict.txt').write_text(content)
         raw = content.strip()
-        if raw.startswith('```'):
-            raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+        fence = raw.find('```')
+        if not raw.startswith('{') and fence != -1:
+            raw = raw[fence:].split('\n', 1)[1].rsplit('```', 1)[0].strip()
         verdict = json.loads(raw)
         assert iteration > 0, 'verifier must drive the code'
         assert verdict['head_sha'] == os.environ['HEAD_SHA'], 'wrong head'
