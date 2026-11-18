@@ -4,70 +4,43 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def text(skill):
+    return (ROOT / 'skills' / skill / 'SKILL.md').read_text()
+
+
 class BoardInstructionsTests(unittest.TestCase):
-    def test_every_entrypoint_teaches_the_same_transitions(self):
+    def test_do_teaches_the_same_transitions(self):
+        body = text('do')
+        for instruction in ('PR opened -> Checks', 'checks green -> Verifier',
+                            'merged -> Verifier pending live proof',
+                            'current-head PASS, merged, and live proof -> Done',
+                            'Building accepts Doing', 'Verifier accepts AI Review'):
+            self.assertIn(instruction, body)
+        self.assertIn('Never rename the columns during caller migration.', body)
+
+    def test_pr_stage_outranks_a_live_worker(self):
         for skill in ('valentin-mode', 'do'):
-            text = (ROOT / 'skills' / skill / 'SKILL.md').read_text()
             with self.subTest(skill=skill):
-                for instruction in ('PR opened -> Checks', 'checks green -> Verifier',
-                                    'merged -> Verifier pending live proof',
-                                    'current-head PASS, merged, and live proof -> Done',
-                                    'Building accepts Doing', 'Verifier accepts AI Review'):
-                    self.assertIn(instruction, text)
-                self.assertIn('Never rename the columns during caller migration.', text)
+                self.assertIn('open pr outranks a live worker', text(skill).lower())
+        body = text('do')
+        self.assertIn('Earlier lines win: an open PR outranks a live worker.', body)
+        self.assertLess(body.index('- PR opened -> Checks.'),
+                        body.index('- Starting work -> Building.'))
+
+    def test_valentin_mode_points_at_the_house_rules(self):
+        body = text('valentin-mode')
+        self.assertIn('Board sync for orchestrators', body)
+        self.assertIn('docs/fleet-reconcile.md', body)
+        self.assertIn('Building accepts Doing; Verifier accepts AI Review.', body)
+        self.assertIn('Other boards keep their own columns.', body)
+
+    def test_board_scope_and_aliases_stay_stated(self):
+        body = text('do')
+        for rule in ('Other boards retain their own column names.',
+                     'Prefer the new name when both exist.',
+                     'Read actual columns before choosing a move.'):
+            self.assertIn(rule, body)
 
 
 if __name__ == '__main__':
     unittest.main()
-
-class DrainColumnTableTests(unittest.TestCase):
-    def test_merged_work_has_a_pending_proof_row_before_todo(self):
-        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
-        pending = '| Merged PR, current-head PASS or live proof missing | Verifier |'
-        self.assertIn(pending, text)
-        self.assertLess(text.index(pending), text.index('| No live lease, open PR, or merged PR | Todo |'))
-        self.assertIn('| All ticket PRs merged, current-head PASS and live proof | Done |', text)
-
-    def test_table_scopes_and_aliases_apply_to_each_move(self):
-        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
-        table_intro = text[text.index('  4. Sync Hypertask'):text.index('     | Current facts')]
-        self.assertIn('This table applies only to board 2060.', table_intro)
-        self.assertIn('Other boards use their own workflow and columns.', table_intro)
-        self.assertIn('Resolve Building/Doing and Verifier/AI Review against actual columns.', table_intro)
-        self.assertIn('Prefer new names when both exist.', table_intro)
-
-    def test_recent_touch_only_delays_fallback_to_todo(self):
-        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
-        rows = [line.strip().split('|')[1:3] for line in text.splitlines()
-                if line.strip().startswith('| ')][2:]
-        cases = [
-            ('Open PR, CI green', 'Verifier'),
-            ('Live worker lease', 'Building'),
-            ('Open PR, CI pending or failing', 'Checks'),
-            ('Merged PR, current-head PASS or live proof missing', 'Verifier'),
-            ('All ticket PRs merged, current-head PASS and live proof', 'Done'),
-            ('Waiting on Valentin or unresolved BlockedBy', 'Preserve, outside finish line'),
-            ('Done, Valentin Review, Not now, unknown column', 'Preserve'),
-            ('No live lease, open PR, or merged PR', 'Preserve'),
-        ]
-        for fact, expected in cases:
-            with self.subTest(fact=fact):
-                actual = next(column.strip() for condition, column in rows
-                              if condition.strip() in (fact, 'Touched within 2h'))
-                self.assertEqual(actual, expected)
-
-    def test_pr_stages_win_over_a_live_worker(self):
-        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
-        rows = [line.strip().split('|')[1:3] for line in text.splitlines()
-                if line.strip().startswith('| ')][2:]
-        cases = [
-            ('Open PR, CI pending or failing', 'Checks'),
-            ('Open PR, CI green', 'Verifier'),
-            ('Merged PR, current-head PASS or live proof missing', 'Verifier'),
-            ('All ticket PRs merged, current-head PASS and live proof', 'Done'),
-        ]
-        for fact, expected in cases:
-            with self.subTest(fact=fact):
-                actual = next(column.strip() for condition, column in rows
-                              if condition.strip() in (fact, 'Live worker lease'))
-                self.assertEqual(actual, expected)
