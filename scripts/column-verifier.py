@@ -1,4 +1,4 @@
-"""Run an independent DeepSeek Flash verifier on a GitHub-hosted runner."""
+"""Run an independent verifier (another model family than the author) on a GitHub-hosted runner."""
 import json
 import os
 from pathlib import Path
@@ -8,11 +8,12 @@ import sys
 
 root = Path.cwd()
 sha = os.environ['HEAD_SHA']
+model = os.environ['VERIFIER_MODEL']
 scratch = Path(os.environ['RUNNER_TEMP']) / 'column-verifier'
 scratch.mkdir(exist_ok=True)
 key = os.environ.get('OPENCODE_API_KEY')
 if not key:
-    sys.exit('Missing existing DeepSeek plan login')
+    sys.exit('Missing existing opencode-go plan login')
 commands = json.loads(os.environ['VERIFY_COMMANDS'])
 command_env = {k: v for k, v in os.environ.items()
                if not any(secret in k.upper() for secret in ('TOKEN', 'SECRET', 'KEY'))}
@@ -29,7 +30,7 @@ for command in commands:
 base = subprocess.check_output(['git', 'merge-base', sha, 'origin/' + os.environ['BASE_REF']], text=True).strip()
 brief = f'''Read {root}/scripts/worker.md before anything else.
 Goal: prepare board 2060 callers for Building and Verifier, accepting Doing and AI Review until renamed. PR opened -> Checks; green checks -> Verifier; merged -> Verifier pending live proof. current-head PASS, merged, and live proof -> Done. Never rename columns. Other boards keep their names.
-You are the independent DeepSeek verifier after the Codex author. Required commands in {root}: {json.dumps(commands)}.
+You are an independent verifier from a different model family than the author. Required commands in {root}: {json.dumps(commands)}.
 The driver already ran each required command directly. Read {scratch}/required-commands.json for exit codes and output. Independently investigate the diff and drive any changed behavior. Do not edit that evidence file.
 Read git diff {base}..{sha}. Only diff-induced regressions block. Report unchanged base faults as notes. Reproduce proposed blockers on this base first. Read docs/soft-2446-evidence.md if present.
 Try to break aliases, stale verdicts, missing checks, pagination, and preservation of other boards. Inspect comments under pstack no-comments: flag misleading or unnecessary new comments. Do not edit tracked files.
@@ -41,7 +42,7 @@ Path(env['HOME']).mkdir(exist_ok=True)
 result = subprocess.run(['npx', '-y', '@earendil-works/pi-coding-agent@1.5.2', '-p',
                          '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates',
                          '--no-mcp', '--tools', 'read,bash', '--mode', 'json', '--provider', 'opencode-go', '--model',
-                         'deepseek-v4.1-flash', '--thinking', 'medium', brief],
+                         model, '--thinking', 'medium', brief],
                         env=env, text=True, capture_output=True, timeout=1200)
 trace = (result.stdout + '\n' + result.stderr).replace(key, '[REDACTED]')
 (scratch / 'trace.jsonl').write_text(trace)
@@ -59,7 +60,7 @@ match = re.match(r'^VERDICT: (PASS\+NOTES|PASS|FAIL)(?=\s|$)', answer)
 missing = [check['command'] for check in checks if check['exit_code'] != 0 or not check['output'].strip()]
 clean = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--']).returncode == 0
 verdict = match.group(1) if result.returncode == 0 and match and not missing and clean else 'FAIL'
-body = f'pstack-verifier: {verdict} @ {sha}\n\nDeepSeek deepseek-v4.1-flash, GitHub-hosted.\n\n'
+body = f'pstack-verifier: {verdict} @ {sha}\n\nVerifier model: {model}, GitHub-hosted.\n\n'
 body += answer.replace(key, '[REDACTED]') if answer else 'Verifier failed to return a verdict. See the command trace artifact.'
 body += '\n\nMissing command evidence: ' + json.dumps(missing) if missing else ''
 body += '\n\nVerifier changed tracked files.' if not clean else ''
