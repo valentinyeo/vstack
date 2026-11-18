@@ -1,15 +1,20 @@
 ---
 name: hypertask-work
-description: How a session works a Hypertask board: own login, own board or view, ticket before work, true column, live worker leases, reconcile, and filing Hypertask gaps. Use when starting work on a Hypertask board, before creating or moving a ticket, when a plain worker must show as live, or when Hypertask cannot do what you need.
+description: >-
+  How a session works a Hypertask board: own login, own board or view, ticket before work, true column, live worker leases, reconcile, and filing Hypertask gaps. Use when starting work on a Hypertask board, before creating or moving a ticket, when a plain worker must show as live, or when Hypertask cannot do what you need.
 ---
 
 # Hypertask work
+
+Prior art: pstack poteto-mode covers task workflows.
+Its shipping playbook covers verification and merging.
+Neither covers Hypertask login, columns, or leases.
 
 Paths resolve from this folder; vstack `./install` links it into every harness.
 
 ## Login and board
 
-Start with `~/.local/share/house-rules/skills/board-identity/SKILL.md`.
+Start with `/board-identity`.
 Never ask Valentin for a login and never print a token.
 
 Own a board or view named after your repo, or after your Multibot name when you have no repo.
@@ -19,7 +24,7 @@ Assign yourself to every ticket you work on.
 ## Ticket first
 
 Every unit starts and ends on a ticket, before any work.
-Use `~/.local/share/house-rules/skills/tickets/SKILL.md` for the title, description, labels and comments.
+Use `/tickets` for the title, description, labels and comments.
 Status, evidence and questions live on the ticket, not in chat.
 One open Question, marked as the blocker, with your recommendation under it.
 

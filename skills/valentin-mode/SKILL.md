@@ -18,11 +18,14 @@ Machine setup: see your private reference.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
 - **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat. The `hypertask-work` skill owns the ticket rules.
-- **Pace:** Answer each message within a minute. Long work runs in the background, never a Claude subagent.
+- **Pace:** Answer each message within a minute. Long work runs in the background. Use `plan-pick`.
 
 ## Models
 
-- Run `plan-pick` before every worker. It prints the plan, launch command and reason.
+- Run `plan-pick` before every worker or helper.
+- Use the plan it selects.
+- Claude helpers only when `plan-pick` picks Claude.
+- Claude must be under pace.
 - Orchestrator: Claude Opus at medium effort.
 - Claude goes to code, not chat.
 - DeepSeek is always Flash. Fast mode stays off on every model.
@@ -32,7 +35,7 @@ Machine setup: see your private reference.
 
 - **Hypertask gaps:** file one the same minute with `hypertask feedback`, then tell him the link. The `hypertask-work` skill has the command.
 - **Bans live in lint** (Lauren Tan): a ban written only in markdown is not a ban.
-- **Checks:** a merge ships within 15 minutes, a fix check stays under 20 jobs, old runs cancel when newer code arrives.
+- **Checks:** pstack sets no number. Each repo improves push-to-verdict time with the pstack hillclimb playbook. Flaky checks get fixed per pstack tdd, never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Columns:** The `hypertask-work` skill owns the login, board, columns, worker leases and reconcile.
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.

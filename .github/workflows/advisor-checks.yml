@@ -14,13 +14,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: cursor/plugins
+          path: .pstack-source
+          sparse-checkout: pstack
+          persist-credentials: false
       - name: install pstack from cursor/plugins (what the hooks read)
         run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins /tmp/cp
-          git -C /tmp/cp sparse-checkout set pstack
-          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/plugin.json'))['version'])")
+          v=$(python3 -c "import json;print(json.load(open('.pstack-source/pstack/plugin.json'))['version'])")
           mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
-          cp -r /tmp/cp/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
+          cp -r .pstack-source/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
           echo "pstack $v"
       - name: every hook proves its rule on a real past mistake
         run: |
@@ -49,13 +53,17 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: cursor/plugins
+          path: .pstack-source
+          sparse-checkout: pstack
+          persist-credentials: false
       - name: install pstack
         run: |
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins /tmp/cp
-          git -C /tmp/cp sparse-checkout set pstack
-          v=$(python3 -c "import json;print(json.load(open('/tmp/cp/pstack/plugin.json'))['version'])")
+          v=$(python3 -c "import json;print(json.load(open('.pstack-source/pstack/plugin.json'))['version'])")
           mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
-          cp -r /tmp/cp/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
+          cp -r .pstack-source/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
       - name: independent DeepSeek Flash verification
         env:
           OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
