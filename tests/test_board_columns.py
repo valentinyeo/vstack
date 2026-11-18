@@ -2,7 +2,7 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILLS = ('valentin-mode', 'do')
+SKILLS = ('do',)
 
 
 def text(skill):
@@ -27,6 +27,12 @@ class BoardInstructionsTests(unittest.TestCase):
                 self.assertIn('Earlier lines win: an open PR outranks a live worker.', body)
                 self.assertLess(body.index('- PR opened -> Checks.'),
                                 body.index('- Starting work -> Building.'))
+
+    def test_valentin_mode_points_at_the_house_rules(self):
+        body = text('valentin-mode')
+        self.assertIn('Board sync for orchestrators', body)
+        self.assertIn('docs/fleet-reconcile.md', body)
+        self.assertNotIn('- PR opened -> Checks.', body)
 
     def test_board_scope_and_aliases_stay_stated(self):
         for skill in SKILLS:
