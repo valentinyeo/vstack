@@ -86,11 +86,18 @@ DEFAULT = BOARDS[2060]
 
 
 def stage_names(column=None, sections=()):
-    """Use the column name this board already shows for each moving stage."""
+    """Resolve each stage against the column names this board actually shows."""
     present = set(sections) | ({column} if column else set())
-    if present & {'Building', 'Verifier'}:
-        return {'Doing': 'Building', 'AI Review': 'Verifier'}
-    return {'Doing': 'Doing', 'AI Review': 'AI Review'}
+    return {'Doing': 'Building' if 'Building' in present else 'Doing',
+            'AI Review': 'Verifier' if 'Verifier' in present else 'AI Review'}
+
+
+def read_sections(board=DEFAULT):
+    try:
+        value = api('project', 'sections', '--project', str(board.id))
+        return {section['section_title'] for section in value.get('sections', [])}
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+        return set()
 
 
 def target(facts, board=DEFAULT, names=None):
@@ -501,14 +508,15 @@ def main():
             print(f'SKIP board={board.id} | reconciliation already running', flush=True)
             return 0
         tasks = tickets(args.section, **options)
-        names = stage_names(sections={t['section'] for t in tasks}) if board is DEFAULT else {}
+        sections = (read_sections(board) if board is DEFAULT else set()) | {t['section'] for t in tasks}
+        names = stage_names(sections=sections) if board is DEFAULT else {}
         candidates = [t for t in tasks if t['section'] in board.managed]
         pulls = discover([t['ticketNumber'] for t in candidates], **options)
         now, errors = time.time(), 0
         plans = []
         for task in tasks:
             try:
-                if task['section'] not in board.managed or now - stamp(task['updatedAt']) < 7200:
+                if task['section'] not in board.managed:
                     facts = Facts(task['section'], now - stamp(task['updatedAt']),
                                   waiting=bool(task.get('waitingOnUserId')),
                                   blocked=bool(task.get('blockerCommentId')))

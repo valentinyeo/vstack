@@ -139,11 +139,27 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r, 'tickets', return_value=[dict(task(), ticketNumber='BROKEN'), task()]), \
                 patch.object(r.time, 'time', return_value=NOW), \
                 patch.object(r, 'discover', return_value={'BROKEN': [], 'SOFT-1': []}), \
+                patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 1)
             self.assertIn('UNKNOWN BROKEN | invalid board-2060 ticket key', out.getvalue())
             self.assertIn('PLAN SOFT-1 Doing -> Todo', out.getvalue())
+
+    def test_fresh_managed_ticket_still_reads_prs_and_lease(self):
+        fresh = {**task(), 'updatedAt': NOW}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[fresh]), \
+                patch.object(r, 'discover', return_value={'SOFT-1': []}), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'collect', return_value=r.Facts('Doing', 0, alive=True)) as collect, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), 0)
+            collect.assert_called_once()
+            self.assertIn('KEEP SOFT-1 Doing -> Doing | live lease', out.getvalue())
 
     def test_overlap_is_a_clean_skip(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -192,14 +208,27 @@ class ReconcileTest(unittest.TestCase):
             with self.subTest(facts=facts):
                 self.assertEqual(r.target(facts), ('Doing', 'waiting or blocked; kept'))
 
-    def test_renamed_columns_resolve_to_their_own_family(self):
+    def test_renamed_columns_resolve_one_family_at_a_time(self):
         self.assertEqual(r.target(r.Facts('Building', 8000, True))[0], 'Building')
-        self.assertEqual(r.target(r.Facts('Building', 8000, False, (pull(),)))[0], 'Verifier')
+        self.assertEqual(r.target(r.Facts('Building', 8000, False, (pull(),)))[0], 'AI Review')
         self.assertEqual(r.target(r.Facts('Verifier', 8000, False, (pull(checks='red'),)))[0], 'Checks')
-        self.assertEqual(r.target(r.Facts('Verifier', 8000, True))[0], 'Building')
+        self.assertEqual(r.target(r.Facts('Verifier', 8000, True))[0], 'Doing')
         names = r.stage_names(sections={'Todo', 'Building', 'Verifier'})
         self.assertEqual(r.target(r.Facts('Todo', 8000, True), names=names)[0], 'Building')
-        self.assertEqual(r.target(r.Facts('Todo', 8000, True), names=r.stage_names(sections={'Todo', 'Doing'}))[0], 'Doing')
+        half = r.stage_names(sections={'Todo', 'Doing', 'Checks', 'Verifier'})
+        self.assertEqual(r.target(r.Facts('Todo', 8000, True), names=half)[0], 'Doing')
+        self.assertEqual(r.target(r.Facts('Checks', 8000, False, (pull(),)), names=half)[0], 'Verifier')
+
+    def test_empty_renamed_board_column_is_read_not_inferred(self):
+        with patch.object(r, 'api', return_value={'sections': [
+                {'section_title': 'Todo'}, {'section_title': 'Building'}]}):
+            self.assertEqual(r.read_sections(), {'Todo', 'Building'})
+            self.assertEqual(r.target(r.Facts('Todo', 8000, True), names=r.stage_names(
+                sections=r.read_sections()))[0], 'Building')
+
+    def test_section_read_failure_falls_back_to_ticket_sections(self):
+        with patch.object(r, 'api', side_effect=RuntimeError('down')):
+            self.assertEqual(r.read_sections(), set())
 
     def test_no_writes_by_default_then_one_move_and_log(self):
         t = task()
@@ -272,6 +301,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
                 patch.object(sys, 'argv', ['reconcile']), \
                 patch.object(r, 'tickets', return_value=[task('Future')]), \
+                patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'discover', return_value={}) as discover, \
                 patch.object(r, 'collect') as collect, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
