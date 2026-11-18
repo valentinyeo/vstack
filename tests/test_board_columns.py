@@ -19,20 +19,31 @@ class BoardInstructionsTests(unittest.TestCase):
         self.assertIn('Never rename the columns during caller migration.', body)
 
     def test_pr_stage_outranks_a_live_worker(self):
-        for skill in ('valentin-mode', 'do'):
+        for skill in ('hypertask-work', 'do'):
             with self.subTest(skill=skill):
-                self.assertIn('open pr outranks a live worker', text(skill).lower())
+                self.assertIn('pr outranks a live worker', text(skill).lower())
         body = text('do')
         self.assertIn('Earlier lines win: an open PR outranks a live worker.', body)
         self.assertLess(body.index('- PR opened -> Checks.'),
                         body.index('- Starting work -> Building.'))
 
-    def test_valentin_mode_points_at_the_house_rules(self):
+    def test_valentin_mode_points_at_the_skill(self):
         body = text('valentin-mode')
-        self.assertIn('Board sync for orchestrators', body)
-        self.assertIn('docs/fleet-reconcile.md', body)
-        self.assertIn('Building accepts Doing; Verifier accepts AI Review.', body)
-        self.assertIn('Other boards keep their own columns.', body)
+        self.assertIn('The `hypertask-work` skill owns the ticket rules.', body)
+        self.assertIn('The `hypertask-work` skill has the command.', body)
+        self.assertIn('The `hypertask-work` skill owns the login, board, columns, worker leases and reconcile.', body)
+        self.assertNotIn('Board sync for orchestrators', body)
+
+    def test_hypertask_work_names_the_real_columns(self):
+        body = text('hypertask-work')
+        for column in ('Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier',
+                       'Valentin Review', 'Done'):
+            self.assertIn(column, body)
+        pending = 'merged -> AI Review or Verifier, live proof pending'
+        proof = 'live proof -> Done'
+        self.assertLess(body.index(pending), body.index(proof))
+        self.assertIn('Never move a ticket into Valentin Review.', body)
+        self.assertIn('Reconcile never touches Valentin Review and never moves work to Done.', body)
 
     def test_board_scope_and_aliases_stay_stated(self):
         body = text('do')

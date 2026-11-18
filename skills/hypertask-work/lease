@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Write worker leases. fleet/lease KEY run -- COMMAND beats until COMMAND ends."""
+import argparse
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(Path(__file__).with_name('reconcile')))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+reconcile = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = reconcile
+loader.exec_module(reconcile)
+
+
+def write(key, action, pid, directory=None, now=None):
+    directory = directory or reconcile.LEASES
+    now = time.time() if now is None else now
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (key + '.json')
+    with (directory / (key + '.lock')).open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            old = json.loads(path.read_text())
+        except FileNotFoundError:
+            old = None
+        mine = old and old['pid'] == pid and old['host'] == socket.gethostname()
+        if action == 'end':
+            if mine:
+                path.unlink()
+            return
+        if old and not mine:
+            if 0 <= now - reconcile.stamp(old['last_beat']) < 900 and (old['host'] != socket.gethostname() or reconcile.pid_alive(old['pid'])):
+                raise ValueError('another live worker owns this lease')
+        if action == 'beat' and not mine:
+            raise ValueError('no matching lease to beat')
+        if not reconcile.pid_alive(pid):
+            raise ValueError('worker PID does not exist')
+        lease = dict(pid=pid, host=socket.gethostname(), started=old['started'] if mine else now, last_beat=now)
+        with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix=key + '.', delete=False) as temp:
+            try:
+                json.dump(lease, temp)
+                temp.flush()
+                os.fsync(temp.fileno())
+                os.replace(temp.name, path)
+            finally:
+                Path(temp.name).unlink(missing_ok=True)
+
+
+def watch(key, pid):
+    write(key, 'start', pid)
+    try:
+        while reconcile.pid_alive(pid):
+            write(key, 'beat', pid)
+            time.sleep(60)
+    finally:
+        write(key, 'end', pid)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('key')
+    parser.add_argument('action', choices=('start', 'beat', 'end', 'watch', 'run'), default='start', nargs='?')
+    parser.add_argument('--pid', type=int, default=os.getppid())
+    args, command = parser.parse_known_args()
+    if not re.fullmatch(r'[A-Z][A-Z0-9]*-\d+', args.key):
+        parser.error('KEY must be a ticket key')
+    if args.pid <= 0:
+        parser.error('PID must be positive')
+    if args.action == 'run':
+        if command[:1] == ['--']:
+            command = command[1:]
+        if not command:
+            parser.error('run requires -- COMMAND')
+        child = subprocess.Popen(command)
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, lambda number, frame: child.send_signal(number))
+        try:
+            try:
+                write(args.key, 'start', child.pid)
+            except ValueError:
+                if child.poll() is not None:
+                    return child.returncode
+                raise
+            while child.poll() is None:
+                try:
+                    write(args.key, 'beat', child.pid)
+                except ValueError:
+                    if child.poll() is not None:
+                        return child.returncode
+                    raise
+                try:
+                    child.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    pass
+            return child.returncode
+        except BaseException:
+            if child.poll() is None:
+                child.terminate()
+            child.wait()
+            raise
+        finally:
+            write(args.key, 'end', child.pid)
+    if command:
+        parser.error('unexpected arguments')
+    if args.action == 'watch':
+        try:
+            watch(args.key, args.pid)
+        except KeyboardInterrupt:
+            return 0
+    else:
+        write(args.key, args.action, args.pid)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (ValueError, KeyError, OSError) as error:
+        sys.exit(f'fleet/lease: {error}')
