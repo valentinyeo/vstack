@@ -29,7 +29,7 @@ Nobody pushes to main.
 | Verifier PASS requires commands and unchanged tracked files | `tests/test_column_verifier.py`, hosted verifier harness |
 | Skill budgets, copied rules, references and new-skill prior art pass | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
 
-Skill-lint commands and exceptions: [shared reference](https://github.com/valentinyeo/house-rules/blob/c2771034db66d4cdd3a95e9b4c336f2eccd3f346/docs/skill-lint.md).
+Skill-lint commands and exceptions: [shared reference](https://github.com/valentinyeo/house-rules/blob/d60a2c149b29ef555dec42f20afc074543624f7b/docs/skill-lint.md).
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.

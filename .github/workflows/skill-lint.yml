@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   skill-lint:
-    uses: valentinyeo/house-rules/.github/workflows/skill-lint.yml@c2771034db66d4cdd3a95e9b4c336f2eccd3f346
+    uses: valentinyeo/house-rules/.github/workflows/skill-lint.yml@d60a2c149b29ef555dec42f20afc074543624f7b
     with:
-      lint-ref: c2771034db66d4cdd3a95e9b4c336f2eccd3f346
+      lint-ref: d60a2c149b29ef555dec42f20afc074543624f7b
     secrets: inherit
