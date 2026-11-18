@@ -8,7 +8,7 @@ Default runs print plans without moving tickets.
 `--apply` previews first, then permits five moves.
 `--limit N` changes that per-run cap.
 A plan over the cap applies only the first N moves.
-Moves backed by a live lease or an open or merged PR go first.
+Moves backed by a live worker or an open or merged PR go first.
 Moves back to Todo go last.
 Each tier is ordered by ticket number.
 The rest print DEFERRED and the next run picks them up.
@@ -29,9 +29,9 @@ Earlier rows take priority.
 | Open PR, checks green | AI Review |
 | Every matching PR merged, current-head PASS | AI Review, live proof pending |
 | Merged PR without current-head PASS | AI Review |
-| Fresh lease with a live local PID | Doing |
+| Fresh lease with a live local PID, or a live process that names the ticket | Doing |
 | Ticket touched within two hours | Keep |
-| No live lease or matching PR | Todo |
+| No live worker or matching PR | Todo |
 
 An open or merged PR outranks a live worker.
 Recent activity only delays the fallback to Todo.
@@ -65,6 +65,21 @@ Closed, unmerged PRs count as no PR.
 Read failures print UNKNOWN and prevent that move.
 Fresh foreign-host leases also prevent moves.
 Stale leases expire after fifteen minutes.
+
+A lease is not the only sign of a live worker.
+One run reads every local command line under `/proc` once.
+A live process counts for a ticket when its arguments hold the exact ticket URL,
+`https://app.hypertask.ai/detail/project-<board>/<n>`,
+or the exact ticket key as a whole token.
+Word boundaries keep `SOFT-27` away from `SOFT-2730`, and the key `SOFT-2730b` proves nothing.
+This catches workers started outside the lease wrapper: `hax -p`, `pi -p`, `codex exec`,
+`cursor-agent`, and `claude -p`.
+Own board only; a URL for another board proves nothing.
+The reconcile process and its parents never count, because their brief names tickets.
+A `grep`, `ps`, `rg` or `tail` that names a ticket only reads it, so it never counts.
+Leases still win; the process fallback only adds liveness.
+Board 15 keeps its worker-service facts and does not read processes.
+`FLEET_PROC_DIR` overrides the process directory for tests.
 
 PASS requires a structured `verify-verdict` comment.
 The comment must name the current PR head.
