@@ -48,8 +48,16 @@ The title or branch contains the ticket key.
 An anchored `Ticket:` line also qualifies.
 An exact Hypertask ticket URL qualifies anywhere.
 Other body mentions establish no ownership.
-Branch discovery scans both owners, including merged PRs.
+Branch discovery scans both owners.
+It reads every open PR, and PRs merged in the last 30 days, one day per search.
+The window starts later when the oldest candidate ticket is newer than that.
+Tickets older than the window also get a search for branches that start with their key.
+GitHub matches only the start of a branch name there.
+An older merged PR needs a title, `Ticket:` line or URL link, or a branch that starts with the key.
 Date partitions avoid GitHub search truncation.
+Independent reads run side by side; `RECONCILE_JOBS` sets how many (default 8).
+Each phase prints one progress line to stderr.
+`RECONCILE_TIMING=1` adds a per-phase table of seconds and external calls.
 Malformed keys report UNKNOWN without stopping other tickets.
 Closed, unmerged PRs count as no PR.
 Read failures print UNKNOWN and prevent that move.
