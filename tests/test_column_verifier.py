@@ -63,6 +63,19 @@ class ColumnVerifierTests(unittest.TestCase):
         self.assertEqual(code, 0, body)
         self.assertIn('pstack-verifier: PASS', body)
 
+    def test_correct_checkout_cd_prefix_preserves_execution_evidence(self):
+        code, body = self.run_verifier(['cd . && printf one', 'cd . && printf two'])
+        self.assertEqual(code, 0, body)
+        self.assertIn('pstack-verifier: PASS', body)
+
+    def test_wrong_directory_and_extra_commands_are_not_required_execution(self):
+        for commands in (['cd / && printf one', 'cd / && printf two'],
+                         ['cd . && printf one && echo fabricated', 'cd . && printf two']):
+            with self.subTest(commands=commands):
+                code, body = self.run_verifier(commands)
+                self.assertNotEqual(code, 0, body)
+                self.assertIn('pstack-verifier: FAIL', body)
+
     def test_tracked_edits_fail_verification(self):
         code, body = self.run_verifier(['printf one && printf two'], dirty=True)
         self.assertNotEqual(code, 0)
