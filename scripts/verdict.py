@@ -9,11 +9,16 @@ A verifier may answer in any of three forms, and the last one in its text wins:
   a prefixed line   VERDICT: PASS
   a JSON field      {"verdict": "PASS"}
 
-A bare line inside a fenced code block is quoted evidence, not an answer.
+A bare line inside a fenced code block is quoted evidence, never an answer. A verifier
+that answers only inside a fence reads as no verdict, and run-verifier tries the next model.
+A JSON verdict counts only as JSON: a line holding a JSON object, or a lone
+"verdict": "<x>" field of a printed object. The same text quoted mid-sentence is an
+example, not the answer.
 Text with none of them reads as FAIL, and the caller prints why.
 Every vstack verifier workflow reads its verdict through this file.
 """
 import argparse
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -23,16 +28,42 @@ VERDICTS = ('PASS+NOTES', 'PASS', 'FAIL')
 PASSING = ('PASS', 'PASS+NOTES')
 TOKEN = r'(PASS\+NOTES|PASS|FAIL)(?![\w+-])'
 PREFIXED = re.compile(r'^[ \t]*VERDICT:[ \t]*' + TOKEN, re.M)
-JSON_FIELD = re.compile(r'"verdict"[ \t]*:[ \t]*"(PASS\+NOTES|PASS|FAIL)"')
+JSON_FIELD = re.compile(r'^[ \t]*"verdict"[ \t]*:[ \t]*"(PASS\+NOTES|PASS|FAIL)"[ \t]*,?[ \t]*\}?[ \t]*$', re.M)
 FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
 MISSING = ('no verdict found: expected a bare PASS, PASS+NOTES or FAIL line, '
            'a VERDICT: <x> line, or JSON "verdict": "<x>"')
 
 
+def json_verdicts(text):
+    """(offset, verdict) for every JSON answer: a line that is a JSON object with a verdict,
+    or a lone "verdict": "<x>" field line of a pretty-printed object.
+
+    vstack#137 head 014d895's verifier wrote `{"verdict": "FAIL"}` inside a sentence about
+    the parser while its real answer was `VERDICT: PASS`; matching that quote read FAIL out
+    of a passing review (SOFT-2802, job 135627154998)."""
+    found, offset = [], 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        value = None
+        if stripped.startswith('{'):
+            try:
+                answer = json.loads(stripped.rstrip(','))
+            except ValueError:
+                answer = None
+            value = answer.get('verdict') if isinstance(answer, dict) else None
+        else:
+            field = JSON_FIELD.match(stripped)
+            value = field.group(1) if field else None
+        if value in VERDICTS:
+            found.append((offset, value))
+        offset += len(line)
+    return found
+
+
 def occurrences(text):
     """(offset, verdict) for every accepted form, in text order."""
     found = [(match.start(), match.group(1)) for match in PREFIXED.finditer(text)]
-    found += [(match.start(), match.group(1)) for match in JSON_FIELD.finditer(text)]
+    found += json_verdicts(text)
     offset, fenced = 0, False
     for line in text.splitlines(keepends=True):
         stripped = line.strip()
@@ -44,8 +75,25 @@ def occurrences(text):
     return sorted(found)
 
 
+def json_answer(text):
+    """The JSON report a verifier ended with, bare or fenced, as a dict.
+
+    Raises ValueError when the text holds no JSON object, so a caller can report it."""
+    raw = (text or '').strip()
+    fence = raw.find('```')
+    if not raw.startswith('{') and fence != -1:
+        raw = raw[fence:].split('\n', 1)[1].rsplit('```', 1)[0].strip()
+    answer = json.loads(raw)
+    if not isinstance(answer, dict):
+        raise ValueError(f'JSON report is a {type(answer).__name__}, not an object')
+    return answer
+
+
 def find_verdict(text):
-    """The last accepted verdict in text, as (verdict or None, reason when None)."""
+    """The last accepted verdict in text, as (verdict or None, reason when None).
+
+    Fallback (SOFT-2802): an answer with no verdict outside fences may still box its verdict alone in a fence.
+    vstack#134 head 8507974: glm wrote "Verdict below." then a fence holding only PASS."""
     found = occurrences(text or '')
     return (found[-1][1], '') if found else (None, MISSING)
 
