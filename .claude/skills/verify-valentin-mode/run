@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# Start one fresh headless Claude Code chat and grade whether it used
+# valentin mode's three tools. Usage: run [--break no-valentin-mode] [--keep]
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+GRADE="$HERE/grade.py"
+TICKET=SOFT-2849
+AGENT="VVM Test Agent"
+BOARD=2060
+LABEL=vvm-test
+
+BREAK=""
+KEEP=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --break)
+      if [ "$#" -lt 2 ]; then
+        echo "run: --break needs a value" >&2
+        exit 2
+      fi
+      if [ "$2" != "no-valentin-mode" ]; then
+        echo "run: unknown --break value: $2" >&2
+        exit 2
+      fi
+      BREAK=$2
+      shift 2
+      ;;
+    --keep)
+      KEEP=1
+      shift
+      ;;
+    *)
+      echo "run: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# 1. Claude must be under pace before a Sonnet test chat starts.
+if ! gate_output=$("$HOME/.local/bin/plan-pick" --claude-helper 2>&1); then
+  printf '%s\n' "$gate_output"
+  echo "Claude is ahead of pace; try later" >&2
+  exit 3
+fi
+
+# 2. Test login token. Never echo it.
+TOKEN_FILE="$HOME/.config/hypertask-agents/credentials/sessions/vvm-test-agent-agent-token"
+if [ ! -s "$TOKEN_FILE" ]; then
+  echo "run: test login token missing at $TOKEN_FILE" >&2
+  echo "run: do the one-time setup in $HERE/SKILL.md" >&2
+  exit 3
+fi
+TOKEN=$(cat "$TOKEN_FILE")
+
+# 3. Evidence directory.
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+E="$HOME/.local/state/verify-valentin-mode/$RUN_ID${BREAK:+-$BREAK}"
+mkdir -p "$E"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$E/started_at"
+
+# 4. Scratch git repo the test chat works in.
+W=$(mktemp -d /tmp/vvm-scratch.XXXXXX)
+# shellcheck disable=SC2317  # runs from the EXIT trap
+cleanup() {
+  if [ "$KEEP" -eq 0 ] && [ -n "${W:-}" ] && [ -d "$W" ]; then
+    rm -rf "$W"
+  fi
+}
+trap cleanup EXIT
+
+git -C "$W" init -q
+{
+  printf '# Scratch project for the valentin mode check\n\n'
+  printf 'Hypertask board: %s, label: %s\n\n' "$BOARD" "$LABEL"
+  printf 'Your board login is the agent "%s". Its token is already set up; use SHIP_SESSION_NAME="%s".\n' \
+    "$AGENT" "$AGENT"
+  printf "This project's ticket is %s.\n" "$TICKET"
+} > "$W/CLAUDE.md"
+git -C "$W" add CLAUDE.md
+git -C "$W" -c user.name=vvm -c user.email=vvm@invalid commit -qm init
+printf '%s\n' "$W" > "$E/workdir"
+
+# 5. Prompt. It never names the tools; valentin mode has to.
+cat > "$E/prompt.txt" <<'EOF'
+Small job on ticket SOFT-2849: have a code worker create hello.txt in this folder containing exactly the line "hello from the worker". When it exists, leave a one-line note on the ticket that it is done, then sync the board. Work without asking me anything.
+EOF
+
+# 6. One fresh headless chat in the scratch repo.
+CLAUDE_ARGS=(--model sonnet --permission-mode bypassPermissions
+             --output-format stream-json --verbose --max-turns 40)
+if [ -n "$BREAK" ]; then
+  # One argument: the comma is part of the flag value.
+  # shellcheck disable=SC2054
+  CLAUDE_ARGS+=(--setting-sources project,local)
+fi
+echo "run: one test chat, 5 to 15 minutes; evidence $E" >&2
+set +e
+(cd "$W" && SHIP_SESSION_NAME="$AGENT" timeout 1500 "$HOME/.local/bin/claude" \
+  -p "$(cat "$E/prompt.txt")" "${CLAUDE_ARGS[@]}" \
+  > "$E/stream.jsonl" 2> "$E/stderr.txt")
+CLAUDE_EXIT=$?
+set -e
+printf '%s\n' "$CLAUDE_EXIT" > "$E/claude_exit"
+
+# 7. Collect the evidence.
+SID=$(python3 - "$E/stream.jsonl" <<'PY'
+import json
+import sys
+
+for line in open(sys.argv[1], errors='replace'):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    if event.get('type') == 'system' and event.get('subtype') == 'init':
+        session_id = event.get('session_id')
+        if isinstance(session_id, str) and session_id:
+            print(session_id)
+            break
+PY
+)
+
+: > "$E/launches.jsonl"
+LAUNCH_LOG="$HOME/.local/state/token-ladder/launches.jsonl"
+if [ -n "$SID" ] && [ -f "$LAUNCH_LOG" ]; then
+  python3 - "$LAUNCH_LOG" "$E/launches.jsonl" "$SID" <<'PY'
+import json
+import sys
+
+source, target, session_id = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(target, 'w') as out:
+    for line in open(source, errors='replace'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get('session') == session_id:
+            out.write(stripped + '\n')
+PY
+fi
+
+export PATH="$HOME/.local/bin:$PATH"
+hypertask --json --token "$TOKEN" task agent-log "$TICKET" > "$E/agent-log.json" 2>/dev/null || true
+hypertask --json --token "$TOKEN" comment list "$TICKET" > "$E/comments.json" 2>/dev/null || true
+if [ -f "$W/hello.txt" ]; then
+  cp "$W/hello.txt" "$E/hello.txt"
+fi
+
+# 8. Scrub tokens from anything a person may read.
+python3 - "$E/stream.jsonl" "$E/stderr.txt" <<'PY'
+import re
+import sys
+
+patterns = (
+    re.compile(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+    re.compile(r'sk-[A-Za-z0-9_-]{16,}'),
+)
+for path in sys.argv[1:]:
+    text = open(path, errors='replace').read()
+    for pattern in patterns:
+        text = pattern.sub('REDACTED', text)
+    with open(path, 'w') as handle:
+        handle.write(text)
+PY
+
+# 9. Grade and report.
+set +e
+"$GRADE" "$E"
+GRADE_EXIT=$?
+set -e
+echo "Evidence: $E"
+
+# 10. Cleanup runs from the EXIT trap; never deletes the evidence.
+exit "$GRADE_EXIT"

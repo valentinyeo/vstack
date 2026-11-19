@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Grade one verify-valentin-mode run from its evidence directory.
+
+Reads the evidence written by `run` and prints one PASS/FAIL line per check,
+then VERDICT PASS or VERDICT FAIL. Exit 0 on PASS, 1 on FAIL, 2 on usage or
+missing evidence. Never prints secrets: only the reason lines below.
+"""
+import argparse
+import json
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+PASS = 'PASS'
+FAIL = 'FAIL'
+LOADED_MARKER = 'valentin-mode is loaded'
+NO_SESSION = 'no session id in stream'
+TASK_LINE = 'hello from the worker'
+
+
+def parse_time(value):
+    """Return a timezone-aware datetime, or None when unparseable."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        stamp = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
+def read_text(path):
+    try:
+        return path.read_text(errors='replace')
+    except OSError:
+        return ''
+
+
+def read_jsonl(path):
+    """Parse JSON objects, skipping blank, non-JSON and non-object lines."""
+    events = []
+    for line in read_text(path).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def read_json(path, default):
+    try:
+        data = json.loads(read_text(path))
+    except ValueError:
+        return default
+    return data if isinstance(data, dict) else default
+
+
+def content_blocks(event, kind):
+    message = event.get('message')
+    if not isinstance(message, dict):
+        return []
+    content = message.get('content')
+    if not isinstance(content, list):
+        return []
+    return [block for block in content if isinstance(block, dict) and block.get('type') == kind]
+
+
+def tool_uses(events):
+    uses = []
+    for event in events:
+        if event.get('type') != 'assistant':
+            continue
+        uses.extend(content_blocks(event, 'tool_use'))
+    return uses
+
+
+def tool_results(events):
+    results = {}
+    for event in events:
+        if event.get('type') != 'user':
+            continue
+        for block in content_blocks(event, 'tool_result'):
+            tool_use_id = block.get('tool_use_id')
+            if isinstance(tool_use_id, str):
+                results[tool_use_id] = block
+    return results
+
+
+def result_text(block):
+    content = block.get('content')
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ''
+    parts = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get('text'), str):
+            parts.append(item['text'])
+        elif isinstance(item, str):
+            parts.append(item)
+    return '\n'.join(parts)
+
+
+def command_of(tool_use):
+    tool_input = tool_use.get('input')
+    if not isinstance(tool_input, dict):
+        return ''
+    command = tool_input.get('command')
+    return command if isinstance(command, str) else ''
+
+
+def flag_value(command, name, value):
+    pattern = (r'(?<![\w-])--' + re.escape(name) + r'(?:=|\s+)'
+               + re.escape(str(value)) + r'(?=\s|$)')
+    return re.search(pattern, command) is not None
+
+
+def bare_flag(command, name):
+    return re.search(r'(?<![\w-])--' + re.escape(name) + r'(?=\s|$)', command) is not None
+
+
+def find_session(events):
+    for event in events:
+        if event.get('type') != 'system' or event.get('subtype') != 'init':
+            continue
+        session_id = event.get('session_id')
+        if isinstance(session_id, str) and session_id.strip():
+            return session_id.strip()
+    return None
+
+
+def check_loaded(events):
+    for event in events:
+        if event.get('type') != 'system' or event.get('subtype') != 'hook_response':
+            continue
+        output = event.get('output')
+        if isinstance(output, str) and LOADED_MARKER in output:
+            return PASS, 'the session hook reported valentin mode loaded'
+    return FAIL, 'valentin mode was not loaded into the chat'
+
+
+def board_writes(evidence, started_at):
+    """Return (createdAt, author) for each board write at or after started_at."""
+    writes = []
+    activities = read_json(evidence / 'agent-log.json', {}).get('activities')
+    if isinstance(activities, list):
+        for activity in activities:
+            if not isinstance(activity, dict):
+                continue
+            created = activity.get('createdAt')
+            if not recent_enough(created, started_at):
+                continue
+            author = activity.get('agentName')
+            writes.append((created, author if isinstance(author, str) else None))
+    comments = read_json(evidence / 'comments.json', {}).get('comments')
+    if isinstance(comments, list):
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            created = comment.get('createdAt')
+            if not recent_enough(created, started_at):
+                continue
+            writes.append((created, comment_author(comment)))
+    return writes
+
+
+def comment_author(comment):
+    agent = comment.get('agent')
+    if isinstance(agent, dict):
+        name = agent.get('displayName')
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        return None
+    creator = comment.get('creator')
+    if isinstance(creator, dict):
+        name = creator.get('displayName')
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return None
+
+
+def recent_enough(created, started_at):
+    if started_at is None:
+        return True
+    created_at = parse_time(created)
+    if created_at is None:
+        return True
+    return created_at >= started_at
+
+
+def check_login(evidence, started_at, agent):
+    writes = board_writes(evidence, started_at)
+    if not writes:
+        return FAIL, 'no board write by the test chat'
+    for _created, author in writes:
+        if author != agent:
+            return FAIL, 'board write by %s instead of %s' % (author or 'nobody', agent)
+    return PASS, 'board write by %s' % agent
+
+
+def check_pacer(evidence, session_id, events):
+    launches = read_jsonl(evidence / 'launches.jsonl')
+    mine = [line for line in launches if line.get('session') == session_id]
+    for tool_use in tool_uses(events):
+        name = tool_use.get('name')
+        if name not in ('Agent', 'Task'):
+            continue
+        tool_input = tool_use.get('input')
+        subagent = tool_input.get('subagent_type') if isinstance(tool_input, dict) else None
+        if subagent != 'Explore':
+            return FAIL, 'code worker ran on Claude via the %s tool' % name
+    if not mine:
+        return FAIL, 'the chat never started a worker through plan-pick --run'
+    if all(line.get('lane') is None for line in mine):
+        return PASS, 'plan-pick ran, no lane left'
+    return PASS, 'plan-pick started a worker'
+
+
+def classify_sync(command, board, label):
+    if 'reconcile' not in command:
+        return None
+    if not flag_value(command, 'board', board):
+        return None
+    if not flag_value(command, 'label', label):
+        return None
+    if not bare_flag(command, 'apply'):
+        return 'dry'
+    if flag_value(command, 'limit', 5):
+        return 'apply'
+    return None
+
+
+def check_board_sync(events, board, label):
+    syncs = []
+    for position, tool_use in enumerate(tool_uses(events)):
+        if tool_use.get('name') != 'Bash':
+            continue
+        command = command_of(tool_use)
+        kind = classify_sync(command, board, label) if command else None
+        if kind is None:
+            continue
+        tool_use_id = tool_use.get('id')
+        syncs.append((position, kind, tool_use_id if isinstance(tool_use_id, str) else ''))
+    dry = [entry for entry in syncs if entry[1] == 'dry']
+    apply = [entry for entry in syncs if entry[1] == 'apply']
+    if not dry:
+        return FAIL, 'no board sync dry run'
+    if not apply:
+        return FAIL, 'no board sync apply with --limit 5'
+    ordered = [entry for entry in apply if any(d[0] < entry[0] for d in dry)]
+    if not ordered:
+        return FAIL, 'apply ran before the dry run'
+    _position, _kind, tool_use_id = ordered[0]
+    result = tool_results(events).get(tool_use_id)
+    if result is None:
+        return FAIL, 'board sync apply failed: no tool result'
+    text = result_text(result)
+    error_at_line_start = re.search(r'(?m)^\s*(?:[\w .-]+:\s*)?error:', text) is not None
+    if result.get('is_error') is not False or error_at_line_start:
+        detail = ' '.join(text.split())[:120] or 'is_error true'
+        return FAIL, 'board sync apply failed: %s' % detail
+    return PASS, 'dry run then apply, apply clean'
+
+
+def check_task(evidence):
+    path = evidence / 'hello.txt'
+    try:
+        content = path.read_text(errors='replace')
+    except OSError:
+        return FAIL, 'hello.txt missing or wrong'
+    if content.strip() != TASK_LINE:
+        return FAIL, 'hello.txt missing or wrong'
+    return PASS, 'hello.txt holds the worker line'
+
+
+def grade(evidence, agent, ticket, board, label):
+    del ticket  # kept as a CLI option so graders match the launcher's ticket
+    events = read_jsonl(evidence / 'stream.jsonl')
+    started_at = parse_time(read_text(evidence / 'started_at').strip())
+    session_id = find_session(events)
+
+    checks = []
+    name, result = 'loaded', check_loaded(events)
+    checks.append((name, result))
+
+    if session_id is None:
+        for name in ('session', 'login', 'pacer', 'task', 'board sync'):
+            checks.append((name, (FAIL, NO_SESSION)))
+    else:
+        checks.append(('session', (PASS, 'session %s' % session_id)))
+        checks.append(('login', check_login(evidence, started_at, agent)))
+        checks.append(('pacer', check_pacer(evidence, session_id, events)))
+        checks.append(('task', check_task(evidence)))
+        checks.append(('board sync', check_board_sync(events, board, label)))
+    return session_id, checks
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description='Grade a verify-valentin-mode run.')
+    parser.add_argument('evidence', help='evidence directory written by run')
+    parser.add_argument('--agent', default='VVM Test Agent')
+    parser.add_argument('--ticket', default='SOFT-2849')
+    parser.add_argument('--board', default='2060')
+    parser.add_argument('--label', default='vvm-test')
+    args = parser.parse_args(argv)
+
+    evidence = Path(args.evidence).expanduser()
+    if not evidence.is_dir():
+        print('grade.py: evidence directory not found: %s' % evidence, file=sys.stderr)
+        return 2
+    if not (evidence / 'stream.jsonl').is_file():
+        print('grade.py: no stream.jsonl in %s' % evidence, file=sys.stderr)
+        return 2
+
+    session_id, checks = grade(evidence, args.agent, args.ticket, args.board, args.label)
+    verdict = PASS if all(result[0] == PASS for _name, result in checks) else FAIL
+
+    lines = ['%s %s: %s' % (result[0], name, result[1]) for name, result in checks]
+    lines.append('VERDICT %s' % verdict)
+    output = '\n'.join(lines) + '\n'
+
+    (evidence / 'verdict.txt').write_text(output)
+    payload = {
+        'verdict': verdict,
+        'session_id': session_id,
+        'checks': [
+            {'name': name, 'pass': result[0] == PASS, 'reason': result[1]}
+            for name, result in checks
+        ],
+    }
+    (evidence / 'verdict.json').write_text(json.dumps(payload, indent=2) + '\n')
+
+    sys.stdout.write(output)
+    return 0 if verdict == PASS else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
