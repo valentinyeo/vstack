@@ -24,7 +24,7 @@ jobs:
     needs: regression
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: write
@@ -116,18 +116,29 @@ jobs:
           Keep prose sentences within eight words. Preserve command output verbatim.
           BRIEF
           printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
-      - name: Pick verifier model
-        run: |
-          model=$(python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model")
-          echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
       - name: Verifier drives the changed files
         env:
           OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
         run: |
-          test -n "$OPENCODE_API_KEY"
-          timeout 540 pi --provider opencode-go --model "$VERIFIER_MODEL" --thinking low \
-            --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
-            --tools read,bash --mode json --print "$(cat /tmp/verify.md)" > verifier.jsonl
+          if [ -z "$OPENCODE_API_KEY" ] && [ -z "$AI_GATEWAY_API_KEY" ]; then
+            echo "verifier: set OPENCODE_API_KEY or AI_GATEWAY_API_KEY" >&2
+            exit 1
+          fi
+          if [ ! -f "$GITHUB_WORKSPACE/picker-base/scripts/run-verifier" ]; then
+            echo "verifier: the base checkout has no run-verifier, running one attempt" >&2
+            model=$(python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model")
+            echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
+            timeout 540 pi --provider opencode-go --model "$model" --thinking low \
+              --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
+              --tools read,bash --mode json --print "$(cat /tmp/verify.md)" > verifier.jsonl
+            git diff --exit-code
+            exit 0
+          fi
+          python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/run-verifier" \
+            --out verifier.jsonl --prompt-file /tmp/verify.md --attempt-timeout 540 \
+            -- --thinking low --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
+            --tools read,bash
           git diff --exit-code
       - name: Read verifier verdict
         env:
