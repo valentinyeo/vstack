@@ -865,10 +865,16 @@ def prefetch(pulls, board=DEFAULT):
         load(refs[n:n + PULL_BATCH])
 
 
+def carries_label(task, name):
+    """Trimmed and case-insensitive, the same way every label on this board is read."""
+    wanted = name.strip().casefold()
+    return any((label.get('name') or '').strip().casefold() == wanted
+               for label in task.get('labels') or ())
+
+
 def is_verification(task):
     """The board marks verification work with one label; nothing else makes it verification."""
-    return any((label.get('name') or '').strip().casefold() == VERIFICATION
-               for label in task.get('labels') or ())
+    return carries_label(task, VERIFICATION)
 
 
 def collect(task, pulls, now, board=DEFAULT):
@@ -972,6 +978,7 @@ def board_run():
     parser.add_argument('--board', type=int, choices=BOARDS, default=2060)
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--section', help='Restrict the dry run to one column')
+    parser.add_argument('--label', help='Sync only tickets carrying this label')
     parser.add_argument('--self-test', action='store_true')
     parser.add_argument('--limit', type=int, default=5, help='Maximum moves per apply run; default 5')
     args = parser.parse_args()
@@ -1006,6 +1013,12 @@ def board_run():
             tasks = tickets(args.section, **options)
         with phase('sections'):
             sections = (read_sections(board) if board is DEFAULT else set()) | {t['section'] for t in tasks}
+        if args.label:
+            # Before any GitHub lookup: a session's run pays only for its own tickets.
+            kept = [t for t in tasks if carries_label(t, args.label)]
+            print(f'reconcile: label {args.label!r} kept {len(kept)} of {len(tasks)} tickets',
+                  file=sys.stderr, flush=True)
+            tasks = kept
         names = stage_names(sections=sections) if board is DEFAULT else {}
         candidates = [t for t in tasks if t['section'] in board.managed]
         created = {}
