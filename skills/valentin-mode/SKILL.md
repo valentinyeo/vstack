@@ -1,7 +1,8 @@
 ---
 name: valentin-mode
 description: >-
-  Work in Valentin's style on top of pstack. Use for /valentin-mode, "valentin mode", or any task, ticket, PR or worker on Valentin's projects (Hypertask, Multi Bot, Software Factory, Pecunia, vstack, his personal apps), even when he never says "valentin mode".
+  Work in Valentin's style on top of pstack, on his projects (Hypertask, Multi Bot, Software Factory, Pecunia, vstack, his personal apps). Starts only when invoked with /valentin-mode, never on its own.
+disable-model-invocation: true
 ---
 
 # Valentin mode

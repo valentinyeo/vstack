@@ -1,4 +1,4 @@
-{"type": "system", "subtype": "init", "session_id": "sid-not-loaded"}
+{"type": "system", "subtype": "init", "session_id": "sid-not-loaded", "slash_commands": ["valentin-mode", "pstack:poteto-mode", "house-rules"]}
 {"type": "assistant", "message": {"content": [{"type": "text", "text": "Starting the worker."}]}, "session_id": "sid-not-loaded"}
 {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "~/.local/bin/plan-pick --run brief.txt"}}]}, "session_id": "sid-not-loaded"}
 {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": false, "content": "ok"}]}, "session_id": "sid-not-loaded"}

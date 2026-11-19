@@ -8,7 +8,7 @@ description: >-
 
 Prior art: checked pstack (create-verification-skill, maintain-verification-skill), vstack (hypertask-work, do) and house-rules. None fits, because they define the tools or how to build a check, not a check that a fresh chat uses them. This skill is the `verify-<app>` skill pstack create-verification-skill asks for, with valentin mode as the app.
 
-Each tool has its own unit tests; this proves a whole chat uses them. Valentin mode is never pushed into chats; it is invoked (Valentin, 19 Nov). A chat that invokes it must use all three tools; a chat blocked from it must fail.
+Each tool has its own unit tests; this proves a whole chat uses them. Valentin mode never starts on its own; only `/valentin-mode` starts it (Valentin, 19 Nov). A chat started with it must use all three tools; a chat without it must fail and must not start it by itself.
 
 Read `features/README.md` for the map.
 
@@ -31,15 +31,15 @@ If the test login is gone, recreate it with `board-identity` steps 4 to 6: name 
 
 1. Gate: `~/.local/bin/plan-pick --claude-helper` must exit 0, because the test chat runs on Claude Sonnet. Else exit 3.
 2. Makes a scratch git repo in `/tmp/vvm-scratch.*` whose `CLAUDE.md` names board 2060, label `vvm-test`, the test login and SOFT-2849.
-3. Starts `claude -p` there with `--model sonnet --output-format stream-json --verbose --max-turns 40`, under a 25-minute timeout. The prompt starts "Use the valentin-mode skill for this job.", then asks for a worker-written hello file, a ticket note and a board sync. It never names the tools.
-4. `--break no-valentin-mode` drops that sentence and adds `--disallowedTools 'Skill(valentin-mode)'`, because a chat starts the skill unasked. Hooks and guards stay on.
+3. Starts `claude -p` there with `--model sonnet --output-format stream-json --verbose --max-turns 40`, under a 25-minute timeout. The prompt starts with `/valentin-mode`, then asks for a worker-written hello file, a ticket note and a board sync. It never names the tools.
+4. `--break no-valentin-mode` drops the command. Same flags, hooks and guards.
 5. Collects the evidence, scrubs tokens, grades, removes the scratch repo (keep it with `--keep`).
 
 A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worker.
 
 ## Doctor
 
-Read the `loaded` line first. It needs a successful Skill call for valentin-mode and the Three tools section in the chat. "never invoked" on a normal run means the chat ignored the prompt; "without the Three tools section" means the install is old.
+Read the `loaded` line first. It needs the `/valentin-mode` prompt, the command in the chat's command list, and an installed copy with the Three tools section and `disable-model-invocation: true` (saved as installed-valentin-mode.md). Any Skill call for valentin-mode fails it: the chat started it by itself.
 
 The chat reads the installed copy in ~/.local/share/vstack, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main.
 
