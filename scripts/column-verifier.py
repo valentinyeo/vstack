@@ -7,15 +7,24 @@ import subprocess
 import sys
 
 from verdict import PASSING, find_verdict
+from verifier_lanes import LANES, QUOTA, attempts, models
 
 root = Path.cwd()
 sha = os.environ['HEAD_SHA']
-model = os.environ['VERIFIER_MODEL']
 scratch = Path(os.environ['RUNNER_TEMP']) / 'column-verifier'
 scratch.mkdir(exist_ok=True)
-key = os.environ.get('OPENCODE_API_KEY')
-if not key:
-    sys.exit('Missing existing opencode-go plan login')
+secrets = [os.environ[key] for lane, key, ids in LANES if os.environ.get(key)]
+if not secrets:
+    sys.exit('Missing verifier plan login: set OPENCODE_API_KEY or AI_GATEWAY_API_KEY')
+planned = attempts(models(os.environ.get('GITHUB_WORKSPACE'), os.environ['VERIFIER_MODEL']), os.environ)
+
+
+def redacted(text):
+    for secret in secrets:
+        text = text.replace(secret, '[REDACTED]')
+    return text
+
+
 commands = json.loads(os.environ.get('VERIFY_COMMANDS', '[]'))
 command_env = {k: v for k, v in os.environ.items()
                if not any(secret in k.upper() for secret in ('TOKEN', 'SECRET', 'KEY'))}
@@ -25,7 +34,7 @@ for command in commands:
         check = subprocess.run(['bash', '-o', 'pipefail', '-c', command], cwd=root,
                                env=command_env, text=True, capture_output=True, timeout=180)
         checks.append({'command': command, 'exit_code': check.returncode,
-                       'output': (check.stdout + check.stderr).replace(key, '[REDACTED]')})
+                       'output': redacted(check.stdout + check.stderr)})
     except subprocess.TimeoutExpired:
         checks.append({'command': command, 'exit_code': None, 'output': 'Timed out after 180 seconds'})
 (scratch / 'required-commands.json').write_text(json.dumps(checks, indent=2))
@@ -54,37 +63,58 @@ Only failures introduced by this head block. Reproduce a proposed blocker on the
 Inspect comments under pstack no-comments: flag misleading or unnecessary new comments. Do not edit tracked files.
 Test the real scripts, not merely syntax. No live board credentials are available on GitHub.
 Write your final answer starting exactly VERDICT: PASS, VERDICT: PASS+NOTES or VERDICT: FAIL. State commands run and any remaining faults. A failed command or uncovered requested behavior means FAIL. A behavior PR with no proof that fits the change means FAIL. Do not merge anything.'''
-env = {'PATH': os.environ['PATH'], 'HOME': str(scratch / 'home'), 'LANG': 'C.UTF-8',
-       'OPENCODE_API_KEY': key}
+env = {'PATH': os.environ['PATH'], 'HOME': str(scratch / 'home'), 'LANG': 'C.UTF-8'}
+env.update({key: os.environ[key] for lane, key, ids in LANES if os.environ.get(key)})
 Path(env['HOME']).mkdir(exist_ok=True)
-result = subprocess.run(['npx', '-y', '@earendil-works/pi-coding-agent@1.5.2', '-p',
-                         '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates',
-                         '--no-mcp', '--tools', 'read,bash', '--mode', 'json', '--provider', 'opencode-go', '--model',
-                         model, '--thinking', 'medium', brief],
-                        env=env, text=True, capture_output=True, timeout=1200)
-trace = (result.stdout + '\n' + result.stderr).replace(key, '[REDACTED]')
-(scratch / 'trace.jsonl').write_text(trace)
-answers = []
-for line in result.stdout.splitlines():
+answer, model, result, failure = '', None, None, None
+for index, (lane, wanted) in enumerate(planned):
     try:
-        event = json.loads(line)
-    except ValueError:
+        result = subprocess.run(['npx', '-y', '@earendil-works/pi-coding-agent@1.5.2', '-p',
+                                 '--no-session', '--no-extensions', '--no-skills', '--no-prompt-templates',
+                                 '--no-mcp', '--tools', 'read,bash', '--mode', 'json', '--provider', lane,
+                                 '--model', wanted, '--thinking', 'medium', brief],
+                                env=env, text=True, capture_output=True, timeout=1200)
+    except subprocess.TimeoutExpired:
+        (scratch / f'attempt-{index}.jsonl').write_text('')
+        failure = f'Verifier timed out after 1200 seconds on {lane}/{wanted}.'
+        print(failure, flush=True)
         continue
-    message = event.get('message') or {}
-    if event.get('type') == 'message_end' and message.get('role') == 'assistant':
-        answers.append('\n'.join(c.get('text', '') for c in message.get('content', []) if c.get('type') == 'text'))
-answer = answers[-1] if answers else ''
+    trace = redacted(result.stdout + '\n' + result.stderr)
+    (scratch / f'attempt-{index}.jsonl').write_text(trace)
+    (scratch / 'trace.jsonl').write_text(trace)
+    answers = []
+    for line in result.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        message = event.get('message') or {}
+        if event.get('type') == 'message_end' and message.get('role') == 'assistant':
+            answers.append('\n'.join(c.get('text', '') for c in message.get('content', []) if c.get('type') == 'text'))
+    answer = answers[-1] if answers else ''
+    verdict, why = find_verdict(answer)
+    if result.returncode == 0 and verdict:
+        model = f'{lane}/{wanted}'
+        failure = None
+        break
+    reasons = [f'exit {result.returncode}'] if result.returncode else []
+    reasons += ['429 or quota'] if QUOTA.search(trace) else []
+    reasons += ['empty output'] if not trace.strip() else []
+    reasons += ['no verdict'] if not verdict else []
+    failure = 'Verifier gave no verdict on %s/%s (%s).' % (lane, wanted, ', '.join(reasons) or 'unusable answer')
+    print(failure, flush=True)
+model = model or os.environ['VERIFIER_MODEL']
 verdict, why = find_verdict(answer)
 missing = [check['command'] for check in checks if check['exit_code'] != 0 or not check['output'].strip()]
 clean = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--']).returncode == 0
 faults = [why] if why else []
-faults += [f'Verifier exited {result.returncode}.'] if result.returncode else []
+faults += [failure] if failure else []
 faults += ['Missing command evidence: ' + json.dumps(missing)] if missing else []
 faults += ['Verifier changed tracked files.'] if not clean else []
 if faults:
     verdict = 'FAIL'
 body = f'pstack-verifier: {verdict} @ {sha}\n\nVerifier model: {model}, GitHub-hosted.\n\n'
-body += answer.replace(key, '[REDACTED]') if answer else 'Verifier failed to return a verdict. See the command trace artifact.'
+body += redacted(answer) if answer else 'Verifier failed to return a verdict. See the command trace artifact.'
 for fault in faults:
     body += f'\n\n{fault}'
 body += f"\n\nTrace: https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n"
