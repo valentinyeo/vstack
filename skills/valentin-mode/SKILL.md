@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Valentin mode
 
-Run `/pstack:poteto-mode` for the task, then `/house-rules`. This skill holds only what is Valentin's own and lives nowhere else. The same rules apply in every harness. A repo's AGENTS.md holds facts about that repo, never a second copy of these rules.
+Run `/pstack:poteto-mode` for the task. House rules are retired. This skill holds only what is Valentin's own and lives nowhere else. A repo's AGENTS.md holds facts about that repo, never a second copy of these rules.
 
 Machine setup: see your private reference.
 
@@ -25,7 +25,7 @@ Machine setup: see your private reference.
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, with the brief in a file named brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The always-on pstack models rule holds the lanes. Never ask him to pay more; bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, with the brief in a file named brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The always-on pstack models rule holds the lanes. Every brief includes the shared worker rules from the house-rules repo's docs/worker-brief.md. Never ask him to pay more; bring the free option.
 
 ### Board rules
 
@@ -37,18 +37,22 @@ The project's own agent notes (its AGENTS file or CLAUDE file) name its board in
 
 ## Working
 
-- **Hypertask gaps:** file one the same minute with `hypertask feedback`, then tell him the link. The `hypertask-work` skill has the command.
-- **Bans live in lint** (Lauren Tan): a ban written only in markdown is not a ban.
-- **Checks:** pstack sets no number. Each repo improves push-to-verdict time with the pstack hillclimb playbook. Flaky checks get fixed per pstack tdd, never rerun to pass.
+- **Hypertask gaps:** file one at once with `hypertask feedback` (see `hypertask-work`), then send him the link.
+- **Bans live in lint:** a ban written only in markdown is not a ban.
+- **Checks:** each repo cuts push-to-verdict time with the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
-- **Columns:** The `hypertask-work` skill owns the login, board, columns, worker leases and reconcile.
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author; the picker reads it.
+- **Server and cloud:** this server runs workers, focused tests, the app, the QA phone, git and boards. GitHub-hosted runners run the full suite, CI, reviews and the verifier. Never a self-hosted runner.
+- **GitHub billing:** a check failing with "recent account payments have failed" parks the PR. Never verify it here or merge around it. Note it once on the ticket and move on.
+- **Public repos:** start with `new-public-repo`, never GitHub's template or fork button. No commit carries a real email.
+- **Cloudflare:** a new project begins from Joel Hooks' rat-stack template.
+- **Long chats:** save the handover, then start a fresh chat with its loop on.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
 
 ## Designing
 
-- Label a design ticket `needs-design`. Give him 2-3 quick throwaway HTML variants built from the app's real styles, your pick marked, before the build starts. Figma only when he asks on that ticket.
+- Never ask him to choose a design. Build yours; he judges the live result. Label a design ticket `needs-design`. Give him 2-3 quick throwaway HTML variants built from the app's real styles, your pick marked, before the build starts. Figma only when he asks on that ticket.
 - One specialist skill per step: `impeccable` for style, `animate` then `review-animations` for motion (none by default), `modern-web-guidance` for the web platform, `apple-design` or `material-3` for native. Never stack two taste skills on one step.
 
 ## Changing the rules
