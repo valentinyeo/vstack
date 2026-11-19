@@ -93,7 +93,7 @@ def verify(lane, model, key, prompt, tool, out):
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors='replace').replace(key, '<redacted>')
             print('Provider request failed:', exc.code, detail[:1000])
-            if exc.code in (402, 429) or exc.code >= 500:
+            if exc.code in (401, 402, 403, 404, 429) or exc.code >= 500:
                 raise Retry(f'HTTP {exc.code} from {lane}/{model}')
             raise SystemExit(1)
         except Exception as exc:
