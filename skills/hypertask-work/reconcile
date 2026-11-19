@@ -91,6 +91,9 @@ class BoardConfig:
     protected: frozenset
     rules: tuple
     repository: str | None = None
+    # A board read at runtime carries its real column titles; a configured board
+    # keeps None and lets each stage name resolve from the ticket's own column.
+    columns: frozenset | None = None
 
 
 PRODUCT_PROTECTED = frozenset({'UX needed', 'UX Sign-off', 'Agent Blocked (Infra)',
@@ -127,11 +130,51 @@ def read_sections(board=DEFAULT):
         return set()
 
 
+def product_board(board):
+    """Board 15 runs the product's own rules and workers; every other board uses 2060's."""
+    return board.id == 15
+
+
+def board_rules(managed, protected):
+    """2060's rule table with one board's own column sets in place of its two globals."""
+    return ((lambda f: f.column in protected, None, 'protected column'),
+            (lambda f: f.column not in managed, None, 'unknown column; kept')) + RULES[2:]
+
+
+# Read once per run, so the same board object keys the process scan and its lease.
+@lru_cache(maxsize=None)
+def board_config(board_id):
+    """Any board a project names: its own prefix and columns, 2060's safe rules.
+
+    Only columns carrying a 2060 stage name can be moved between; every other
+    column is protected, and a rule pointing at a column this board lacks keeps
+    its ticket instead of inventing one.
+    """
+    if board_id in BOARDS:
+        return BOARDS[board_id]
+    project = api('project', 'show', str(board_id)).get('project') or {}
+    prefix = (project.get('uniqueIdentifier') or '').strip().upper()
+    if not prefix:
+        raise ValueError(f'board {board_id} has no ticket prefix')
+    columns = frozenset(section['section_title'] for section in project.get('sections') or ()
+                        if section.get('section_title'))
+    names = stage_names(sections=columns)
+    managed = columns & frozenset({'Todo', 'Checks', VERIFICATION_BACKLOG,
+                                   names['Doing'], names['AI Review']})
+    protected = columns - managed
+    return BoardConfig(board_id, prefix, managed, protected, board_rules(managed, protected),
+                       columns=columns)
+
+
 def target(facts, board=DEFAULT, names=None):
-    names = names if names is not None else (stage_names(facts.column) if board is DEFAULT else {})
+    names = names if names is not None else ({} if product_board(board) else
+                                             stage_names(facts.column, board.columns or ()))
     for matches, column, reason in board.rules:
         if matches(facts):
-            return names.get(column, column) or facts.column, reason
+            column = names.get(column, column) or facts.column
+            if board.columns is not None and column not in board.columns:
+                return facts.column, 'target column missing; kept'
+            return column, reason
 
 
 def stamp(value):
@@ -252,7 +295,7 @@ def process_tickets(board=DEFAULT):
 
 def worker_alive(key, now, board=DEFAULT):
     """A lease wins; without one, a live command line that names the ticket counts."""
-    if board != DEFAULT:
+    if product_board(board):
         return live_product_worker(key, now)
     return live_lease(key, now) or key.upper() in process_tickets(board)
 
@@ -856,12 +899,13 @@ def prefetch(pulls, board=DEFAULT):
     """
     def load(batch):
         try:
-            read_pull_batch(batch) if board == DEFAULT else [read_product_pull(n) for _, n in batch]
+            [read_product_pull(n) for _, n in batch] if product_board(board) else read_pull_batch(batch)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
             pass
     PULLS.clear()
     refs = sorted({(p['repository']['nameWithOwner'], p['number'])
-                   for found in pulls.values() for p in found if board == DEFAULT or p['state'] == 'OPEN'})
+                   for found in pulls.values() for p in found
+                   if not product_board(board) or p['state'] == 'OPEN'})
     for n in range(0, len(refs), PULL_BATCH):
         load(refs[n:n + PULL_BATCH])
 
@@ -881,10 +925,10 @@ def is_verification(task):
 def collect(task, pulls, now, board=DEFAULT):
     ticket_index(task['ticketNumber'], board)
     alive = worker_alive(task['ticketNumber'], now, board)
-    if board == DEFAULT:
-        details = tuple(pull_facts(p) for p in pulls)
-    else:
+    if product_board(board):
         details = tuple(read_product_pull(p['number']) for p in pulls if p['state'] == 'OPEN')
+    else:
+        details = tuple(pull_facts(p) for p in pulls)
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
                  bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')),
                  is_verification(task))
@@ -912,7 +956,7 @@ def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
 def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
     if board.id == 15:
         limit = min(limit, 5)
-    options = {} if board == DEFAULT else {'board': board}
+    options = {} if board.id == BOARD else {'board': board}
     moves = [(task, facts) for task, facts in plans if target(facts, board, names)[0] != task['section']]
     if len(moves) > limit:
         # Moves backed by a live lease or PR go first; moves back to Todo go last.
@@ -1011,7 +1055,8 @@ def main():
 
 def board_run():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--board', type=int, choices=BOARDS, default=2060)
+    parser.add_argument('--board', type=int, default=BOARD,
+                        help='Any board a project names; 2060 and 15 keep their own rules')
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--section', help='Restrict the dry run to one column')
     parser.add_argument('--label', help='Sync only tickets carrying this label')
@@ -1020,16 +1065,19 @@ def board_run():
     args = parser.parse_args()
     if args.self_test:
         return subprocess.call([sys.executable, '-m', 'unittest', 'tests.test_hypertask_work'], cwd=Path(__file__).resolve().parents[2])
-    board = BOARDS[args.board]
-    options = {} if board == DEFAULT else {'board': board}
+    if args.board < 1:
+        parser.error('--board must be a positive board id')
     if args.apply and args.section:
         parser.error('--section is read-only')
     if args.limit < 1:
         parser.error('--limit must be positive')
+    # Before any board read: a board read at runtime asks the CLI for its prefix.
     os.environ['PATH'] = f'{Path.home()}/.local/bin:' + os.environ.get('PATH', '')
+    board = board_config(args.board)
+    options = {} if board.id == BOARD else {'board': board}
     if args.apply and board.id == 15:
         require_board15_agent()
-    if args.apply and board.id == 2060 and (not os.environ.get('SHIP_SESSION_NAME') or os.environ['SHIP_SESSION_NAME'] == 'Valentins Claude Code'):
+    if args.apply and not product_board(board) and (not os.environ.get('SHIP_SESSION_NAME') or os.environ['SHIP_SESSION_NAME'] == 'Valentins Claude Code'):
         parser.error('--apply requires SHIP_SESSION_NAME for an agent login')
     # Prevent two timer/manual runs from racing the same board. Two different
     # labels may sync at once; the same label, or any whole-board run, may not.
@@ -1049,14 +1097,19 @@ def board_run():
         with phase('tickets'):
             tasks = tickets(args.section, **options)
         with phase('sections'):
-            sections = (read_sections(board) if board is DEFAULT else set()) | {t['section'] for t in tasks}
+            sections = {t['section'] for t in tasks}
+            if board.columns is not None:
+                # A board read at runtime already listed its columns, empty ones too.
+                sections |= board.columns
+            elif not product_board(board):
+                sections |= read_sections(board)
         if args.label:
             # Before any GitHub lookup: a session's run pays only for its own tickets.
             kept = [t for t in tasks if carries_label(t, args.label)]
             print(f'reconcile: label {args.label!r} kept {len(kept)} of {len(tasks)} tickets',
                   file=sys.stderr, flush=True)
             tasks = kept
-        names = stage_names(sections=sections) if board is DEFAULT else {}
+        names = {} if product_board(board) else stage_names(sections=sections)
         candidates = [t for t in tasks if t['section'] in board.managed]
         created = {}
         for candidate in candidates:
