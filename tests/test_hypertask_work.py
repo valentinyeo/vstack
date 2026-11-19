@@ -865,6 +865,92 @@ else:
                 r.require_board15_agent()
 
 
+class AnyBoardTest(unittest.TestCase):
+    """Any board a project names: its own prefix and columns, 2060's safe rules."""
+
+    SECTIONS = ('Backlog', 'Todo', 'Doing', 'Review', 'Done')
+
+    def setUp(self):
+        clear_cache()
+        r.board_config.cache_clear()
+        self.addCleanup(r.board_config.cache_clear)
+
+    def project(self, sections=SECTIONS, prefix='TEST', board_id=9999):
+        return {'project': {'id': board_id, 'uniqueIdentifier': prefix,
+                            'sections': [{'id': n, 'section_title': name}
+                                         for n, name in enumerate(sections)]}}
+
+    def config(self, **project):
+        with patch.object(r, 'api', return_value=self.project(**project)):
+            r.board_config.cache_clear()
+            return r.board_config(9999)
+
+    def test_third_board_parses_and_plans_only_between_its_matching_columns(self):
+        tasks = [{'ticketNumber': f'TEST-{n}', 'section': column, 'projectId': 9999,
+                  'updatedAt': NOW - 8000}
+                 for n, column in enumerate(self.SECTIONS, 1)]
+        facts = {'TEST-2': r.Facts('Todo', 8000, True),
+                 'TEST-3': r.Facts('Doing', 8000, False, (pull(checks='red'),))}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(r.sys, 'argv', ['reconcile', '--board', '9999']), \
+                patch.object(r, 'api', return_value=self.project()), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'discover', return_value={'TEST-2': [], 'TEST-3': []}), \
+                patch.object(r, 'prefetch'), \
+                patch.object(r, 'collect', side_effect=lambda t, *a, **k: facts[t['ticketNumber']]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), 0)
+            board = r.board_config(9999)
+            self.assertEqual(board.prefix, 'TEST')
+            self.assertEqual(board.managed, frozenset({'Todo', 'Doing'}))
+            self.assertEqual(board.protected, frozenset({'Backlog', 'Review', 'Done'}))
+        printed = out.getvalue()
+        self.assertIn('PLAN TEST-2 Todo -> Doing | live worker: lease or process', printed)
+        self.assertIn('KEEP TEST-1 Backlog -> Backlog | protected column', printed)
+        # The board has no AI Review column, so an open PR moves nothing.
+        self.assertIn('KEEP TEST-3 Doing -> Doing | target column missing; kept', printed)
+        self.assertIn('KEEP TEST-4 Review -> Review | protected column', printed)
+        self.assertIn('KEEP TEST-5 Done -> Done | protected column', printed)
+        self.assertNotIn('AI Review', printed)
+        self.assertIn('DRY RUN board=9999 tickets=5 unknown=0', printed)
+
+    def test_third_board_keeps_a_verification_ticket_while_it_lacks_that_column(self):
+        self.assertEqual(r.target(r.Facts('Todo', 8000, verification=True),
+                                  board=self.config())[0], 'Todo')
+        self.assertEqual(r.target(r.Facts('Todo', 8000, verification=True), board=self.config(
+            sections=self.SECTIONS + ('Verification Backlog',)))[0], 'Verification Backlog')
+
+    def test_unknown_board_apply_requires_an_agent_login(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(r.sys, 'argv', ['reconcile', '--board', '9999', '--apply']), \
+                patch.object(r, 'api', return_value=self.project()), \
+                patch.dict(os.environ, {}, clear=True), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as stop:
+                r.main()
+        self.assertEqual(stop.exception.code, 2)
+        self.assertIn('SHIP_SESSION_NAME', err.getvalue())
+
+    def test_zero_board_is_refused_before_any_read(self):
+        with patch.object(r.sys, 'argv', ['reconcile', '--board', '0']), \
+                patch.object(r, 'api') as api, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as stop:
+                r.main()
+        self.assertEqual(stop.exception.code, 2)
+        api.assert_not_called()
+
+    def test_known_boards_keep_their_own_configs(self):
+        self.assertIs(r.board_config(2060), r.BOARDS[2060])
+        self.assertIs(r.board_config(15), r.BOARDS[15])
+        self.assertEqual(r.board_config(2060).rules, r.RULES)
+        self.assertEqual((r.board_config(2060).prefix, r.board_config(2060).managed),
+                         ('SOFT', frozenset(r.MANAGED)))
+        self.assertEqual((r.board_config(15).prefix, r.board_config(15).rules),
+                         ('HTPR', r.PRODUCT_RULES))
+
+
 class ProductWorkerTest(unittest.TestCase):
     def setUp(self):
         r.product_workers.cache_clear()
