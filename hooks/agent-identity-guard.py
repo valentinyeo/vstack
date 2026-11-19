@@ -50,8 +50,11 @@ def multibot_name(env=None):
 
 
 def verdict(cmd, name, has_login):
-    if not WRITE.search(cmd) or "HT_TOKEN=" in cmd or re.search(r"\s(--help|-h)\b", cmd) or not name:
+    if not WRITE.search(cmd) or "HT_TOKEN=" in cmd or re.search(r"\s(--help|-h)\b", cmd):
         return None
+    if not name:
+        return ("BLOCKED by agent-identity-guard: this chat has no name, so this write would post as Valentin. "
+                "Name the chat, run /board-identity for a login with that name, then write with its token.")
     if has_login:
         return (f"BLOCKED by agent-identity-guard: \"{name}\" has its own board login. Plain `hypertask` writes as "
                 "Valentin. Run the same command with its token (--token from your login file) instead.")
@@ -67,7 +70,8 @@ def self_test():
     assert verdict("hypertask task list --project 2060", "Poteto", False) is None, "reads pass"
     assert verdict("~/.local/bin/hypertask " + w[10:], "Poteto", False), "the full CLI path must be caught"
     assert verdict('hypertask --token "$T" ' + w[10:], "Poteto", False) is None, "a write with its own token passes"
-    assert verdict(w, "", False) is None, "a script with no chat name passes"
+    assert "no name" in verdict(w, "", False), "a chat with no name never writes as Valentin"
+    assert verdict('HT_TOKEN="$T" ' + w, "", False) is None, "a nameless chat with an agent token writes"
     assert verdict("HT_TOKEN=x " + w, "Poteto", False) is None
     print("agent-identity-guard self-test ok")
 
@@ -81,7 +85,7 @@ def main():
     except ValueError:
         return 0
     name = multibot_name() or session_name()
-    why = verdict(cmd, name, bool(name) and (SESSIONS / f"{slug(name)}-agent-token").is_file()) if name else None
+    why = verdict(cmd, name, bool(name) and (SESSIONS / f"{slug(name)}-agent-token").is_file())
     if not why:
         return 0
     print(why, file=sys.stderr)
