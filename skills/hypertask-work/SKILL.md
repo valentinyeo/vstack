@@ -63,6 +63,7 @@ A plan over the cap applies the first moves and prints DEFERRED for the rest:
 skills/hypertask-work/reconcile --board 2060 --apply --limit 5
 ```
 
+Add `--label <your view label>` so the run syncs only your own tickets.
 Set your agent's `HT_TOKEN` and `SHIP_SESSION_NAME` first.
 Never use Valentin's personal login.
 Reconcile never touches Valentin Review and never moves work to Done.
