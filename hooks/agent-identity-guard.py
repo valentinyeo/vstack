@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""PreToolUse Bash guard: a chat never writes to a Hypertask board with plain `hypertask` (Valentin's login).
+"""PreToolUse guard: a chat never writes to a Hypertask board as Valentin, with plain `hypertask`, the `ht`
+REST helper, or the claude.ai Hypertask connector.
 
 The chat's name is its Multibot name (chat-names.json via MULTIPROMPT_TAB), else its Claude session name.
 Its board login is the agent token file named after that name. Has one: use it. Has none: get one named
@@ -15,6 +16,11 @@ SESSIONS = Path.home() / ".config/hypertask-agents/credentials/sessions"
 WRITE = re.compile(
     r"(^|[;&|(\s/])hypertask\s+(--json\s+)?(task|tasks|comment|comments|page|pages|section|sections|label|labels|decision|blockers)\s+"
     r"(create|add|update|edit|move|move-board|assign|unassign|delete|archive|done|resolve|clear|set|react)\b")
+HT_WRITE = re.compile(r"(^|[;&|(\s/])ht\s+(post|patch|put|delete)\b", re.IGNORECASE)
+MCP_PREFIX = "mcp__claude_ai_Hypertask__"
+MCP_READ_ONLY = frozenset("list get search read history whoami context count export status".split())
+MCP_BLOCKED = ("BLOCKED by agent-identity-guard: the claude.ai Hypertask connector writes as Valentin. "
+               "Pass input.as_agent with your own agent id, or write with the hypertask CLI and your token.")
 
 
 def slug(name):
@@ -49,15 +55,27 @@ def multibot_name(env=None):
     return entry.get("name") or ""
 
 
+def mcp_verdict(tool_name, tool_input):
+    if not (tool_name or "").startswith(MCP_PREFIX):
+        return None
+    args = tool_input if isinstance(tool_input, dict) else {}
+    if str(args.get("action") or "").strip().lower() in MCP_READ_ONLY:
+        return None
+    inner = args.get("input")
+    if isinstance(inner, dict) and inner.get("as_agent"):
+        return None
+    return MCP_BLOCKED
+
+
 def verdict(cmd, name, has_login):
-    if not WRITE.search(cmd) or "HT_TOKEN=" in cmd or re.search(r"\s(--help|-h)\b", cmd):
+    if not (WRITE.search(cmd) or HT_WRITE.search(cmd)) or "HT_TOKEN=" in cmd or re.search(r"\s(--help|-h)\b", cmd):
         return None
     if not name:
         return ("BLOCKED by agent-identity-guard: this chat has no name, so this write would post as Valentin. "
                 "Name the chat, run /board-identity for a login with that name, then write with its token.")
     if has_login:
-        return (f"BLOCKED by agent-identity-guard: \"{name}\" has its own board login. Plain `hypertask` writes as "
-                "Valentin. Run the same command with its token (--token from your login file) instead.")
+        return (f"BLOCKED by agent-identity-guard: \"{name}\" has its own board login. Plain `hypertask` or `ht` "
+                "writes as Valentin. Run the same command with its token (--token from your login file) instead.")
     return (f"BLOCKED by agent-identity-guard: \"{name}\" has no board login, so this write would post as Valentin. "
             f"Run /board-identity first and name the login exactly \"{name}\", then link it with "
             f"`mp-agent-sync link --tmux $MULTIPROMPT_TAB --id <agent id>`. Then write with its token.")
@@ -73,6 +91,14 @@ def self_test():
     assert "no name" in verdict(w, "", False), "a chat with no name never writes as Valentin"
     assert verdict('HT_TOKEN="$T" ' + w, "", False) is None, "a nameless chat with an agent token writes"
     assert verdict("HT_TOKEN=x " + w, "Poteto", False) is None
+    assert verdict("ht POST /mcp/comments '{}'", "Poteto", False), "an `ht` POST must block"
+    assert verdict("ht GET /mcp/tasks", "Poteto", False) is None, "an `ht` read passes"
+    assert verdict("HT_TOKEN=\"$T\" ht PATCH /mcp/tasks/1 '{}'", "", False) is None, "an `ht` write with a token passes"
+    assert verdict("/usr/local/bin/ht delete /mcp/x", "Poteto", False), "the full `ht` path must be caught"
+    assert mcp_verdict(MCP_PREFIX + "hypertask_comments", {"action": "add", "input": {"body": "x"}}) == MCP_BLOCKED
+    assert mcp_verdict(MCP_PREFIX + "hypertask_comments", {"action": "add", "input": {"as_agent": "u-1"}}) is None
+    assert mcp_verdict(MCP_PREFIX + "hypertask_tasks", {"action": "list", "input": {}}) is None
+    assert mcp_verdict("Bash", {"command": w}) is None, "a non-Hypertask tool never takes the MCP path"
     print("agent-identity-guard self-test ok")
 
 
@@ -81,11 +107,19 @@ def main():
         self_test()
         return 0
     try:
-        cmd = json.load(sys.stdin).get("tool_input", {}).get("command", "")
+        hook = json.load(sys.stdin)
     except ValueError:
         return 0
-    name = multibot_name() or session_name()
-    why = verdict(cmd, name, bool(name) and (SESSIONS / f"{slug(name)}-agent-token").is_file())
+    if not isinstance(hook, dict):
+        return 0
+    tool_name = hook.get("tool_name") or ""
+    tool_input = hook.get("tool_input") or {}
+    if tool_name.startswith(MCP_PREFIX):
+        why = mcp_verdict(tool_name, tool_input)
+    else:
+        cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+        name = multibot_name() or session_name()
+        why = verdict(cmd, name, bool(name) and (SESSIONS / f"{slug(name)}-agent-token").is_file())
     if not why:
         return 0
     print(why, file=sys.stderr)
