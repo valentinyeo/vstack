@@ -28,14 +28,12 @@ It applies no move from that run and exits 0, so the timer stays green.
 Only error text counts, so a PR or comment that talks about a rate limit is not one.
 
 Every run prints its GitHub call count to stderr.
-A run keeps the calls down in four ways.
 All PR facts for a run come from batched GraphQL reads, 25 PRs per call.
 A batch GitHub refuses is split, so one repository it cannot see fails only its own tickets.
 A commit's verifier policy never changes, so it is cached in `~/.cache/vstack/reconcile`.
-A merged day that has ended cannot gain a PR, so its branch search is cached for six hours.
-The open search and today's merges are always read fresh.
-A cached answer is refreshed, never trusted for state that can still change.
+That answer, including a repository with no policy, is reused across runs.
 Set `RECONCILE_CACHE` to move that file.
+The merged branch window has its own cache, described below.
 
 ## Column rules
 
@@ -79,14 +77,23 @@ An anchored `Ticket:` line also qualifies.
 An exact Hypertask ticket URL qualifies anywhere.
 Other body mentions establish no ownership.
 Branch discovery scans both owners.
-It reads every open PR, and PRs merged in the last 30 days, one day per search.
+It reads every open PR, and PRs merged in the last 30 days.
+That is two searches per run: one for open PRs, one for the merged range.
+That merged range is kept in `~/.cache/vstack/reconcile/cache.json` (`RECONCILE_CACHE` overrides it).
+The next run searches only the days since the last run, plus one day of overlap.
+A ticket older than the cache reaches back only as far as it needs.
+A cache that cannot be read means one full search, never a failed run.
 The window starts later when the oldest candidate ticket is newer than that.
 Tickets older than the window also get a search for branches that start with their key.
 GitHub matches only the start of a branch name there.
 An older merged PR needs a title, `Ticket:` line or URL link, or a branch that starts with the key.
 Date partitions avoid GitHub search truncation.
-Independent reads run side by side; `RECONCILE_JOBS` sets how many (default 8).
-A value below 1 or not a whole number stops the run before it reads anything.
+GitHub calls run one after another, never side by side.
+An open PR and a merged PR are both read once per run, in one GraphQL call per 25 PRs.
+The batch carries the newest hundred comments of each PR.
+A PR with more comments and no PASS gets its full comment list.
+Each run prints one line to stderr, `reconcile: github calls=N (graphql=a, rest=b)`.
+A paginated read counts once.
 Each phase prints one progress line to stderr.
 `RECONCILE_TIMING=1` adds a per-phase table of seconds and external calls.
 Malformed keys report UNKNOWN without stopping other tickets.
@@ -98,7 +105,7 @@ Stale leases expire after fifteen minutes.
 
 A lease is not the only sign of a live worker.
 One run reads every local command line under `/proc` once.
-A live process counts for a ticket when its arguments hold the exact ticket URL,
+A live process counts for a ticket when it is an agent CLI (`hax`, `pi`, `codex`, `cursor-agent`, `claude`, `opencode` or `gemini`, behind any wrapper) and its arguments hold the exact ticket URL,
 `https://app.hypertask.ai/detail/project-<board>/<n>`,
 or the exact ticket key as a whole token.
 Word boundaries keep `SOFT-27` away from `SOFT-2730`, and the key `SOFT-2730b` proves nothing.
@@ -106,7 +113,7 @@ This catches workers started outside the lease wrapper: `hax -p`, `pi -p`, `code
 `cursor-agent`, and `claude -p`.
 Own board only; a URL for another board proves nothing.
 The reconcile process and its parents never count, because their brief names tickets.
-A `grep`, `ps`, `rg` or `tail` that names a ticket only reads it, so it never counts.
+Any other command that names a ticket only looks at it, so it never counts: a search, `grep`, `git`, an editor, a shell or script run in its worktree.
 Leases still win; the process fallback only adds liveness.
 Board 15 keeps its worker-service facts and does not read processes.
 `FLEET_PROC_DIR` overrides the process directory for tests.
