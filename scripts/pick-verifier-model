@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """pick-verifier-model: print an opencode-go verifier model whose family differs from every declared author.
 
-  pick-verifier-model [--event PATH]   read the PR body from a GitHub event payload (default: $GITHUB_EVENT_PATH)
+  pick-verifier-model [--event PATH]   print the first allowed verifier model
+  pick-verifier-model --all [--event PATH]   print every allowed verifier model, one per line, in the same order
   pick-verifier-model --self-test
 
 The PR body declares each author on its own line: `Author model: <provider or family>/<model>`.
@@ -9,8 +10,9 @@ A declaration counts only as a whole line, exactly `Author model: <one token wit
 code blocks (``` or ~~~). Transcripts, quotes, bullets and lines with trailing text are not declarations.
 The family comes from known model-name tokens anywhere on that line (`opencode-go/deepseek-v4.1-flash` is DeepSeek,
 `z.ai/glm-5` is GLM). A string naming two families counts as both. An unknown family exits 1.
-Order of verifiers: deepseek-v4.1-flash, glm-5.3-flash, kimi-k3. First one whose family no author uses wins.
-No declaration, or every verifier family used by an author: exit 1 with a message. Never a silent default.
+Order of verifiers: deepseek-v4.1-flash, glm-5.3-flash, kimi-k3. First one whose family no author uses wins;
+--all prints that whole run instead of only the first. No declaration, or every verifier family used by an
+author: exit 1 with a message. Never a silent default.
 """
 import argparse
 import json
@@ -83,20 +85,25 @@ def families(body):
     return found
 
 
-def pick(body):
+def allowed(body):
+    """Every verifier model whose family no author declares, in the fixed order."""
     authors = families(body)
     if not authors:
         raise SystemExit(
             "pick-verifier-model: the PR body has no `Author model: <family>/<model>` line. "
             "Add one line per author, for example `Author model: anthropic/claude-sonnet`, then push again."
         )
-    for family, model in VERIFIERS:
-        if family not in authors:
-            return model
-    raise SystemExit(
-        "pick-verifier-model: authors cover every verifier family (%s). Ask for a verifier from another family."
-        % ", ".join(sorted(authors))
-    )
+    models = [model for family, model in VERIFIERS if family not in authors]
+    if not models:
+        raise SystemExit(
+            "pick-verifier-model: authors cover every verifier family (%s). Ask for a verifier from another family."
+            % ", ".join(sorted(authors))
+        )
+    return models
+
+
+def pick(body):
+    return allowed(body)[0]
 
 
 def body_from_event(path):
@@ -128,6 +135,26 @@ def self_test():
     for body, want in cases:
         got = pick(body)
         assert got == want, (body, got, want)
+    for body, want in (("Author model: anthropic/claude-sonnet", ["deepseek-v4.1-flash", "glm-5.3-flash", "kimi-k3"]),
+                       ("Author model: deepseek/x", ["glm-5.3-flash", "kimi-k3"]),
+                       ("Author model: moonshotai/kimi-k2", ["deepseek-v4.1-flash", "glm-5.3-flash"]),
+                       ("Author model: deepseek/x\nAuthor model: z.ai/glm-5.3-flash", ["kimi-k3"])):
+        got = allowed(body)
+        assert got == want, (body, got, want)
+    for body in (None, "", "no line here"):
+        try:
+            allowed(body)
+        except SystemExit as stop:
+            assert "Author model" in str(stop), body
+        else:
+            raise AssertionError("expected refusal: %r" % body)
+    for body in ("Author model: deepseek/a\nAuthor model: glm/b\nAuthor model: kimi/c",):
+        try:
+            allowed(body)
+        except SystemExit as stop:
+            assert "every verifier family" in str(stop), body
+        else:
+            raise AssertionError("expected refusal when all families authored: %r" % body)
     for body in (None, "", "no line here", "text Author model: deepseek/x", "Author model: deepseek/x trailing", "```\nAuthor model: deepseek/x\n```"):
         try:
             pick(body)
@@ -158,11 +185,13 @@ def self_test():
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--event", default=os.environ.get("GITHUB_EVENT_PATH"))
+    parser.add_argument("--all", action="store_true", help="print every allowed verifier model")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
-    print(pick(body_from_event(args.event)))
+    body = body_from_event(args.event)
+    print("\n".join(allowed(body) if args.all else [pick(body)]))
 
 
 if __name__ == "__main__":

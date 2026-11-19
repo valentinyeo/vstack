@@ -9,6 +9,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from verdict import find_verdict, json_answer
+from verifier_lanes import LANES, attempts, models
+
+OPENCODE_URL = 'https://opencode.ai/zen/go/v1/chat/completions'
+GATEWAY_URL = 'https://ai-gateway.vercel.sh/v1/chat/completions'
+LANE_URLS = {'opencode-go': OPENCODE_URL, 'vercel-ai-gateway': GATEWAY_URL}
+LANE_KEYS = {lane: key for lane, key, ids in LANES}
 
 
 def latest_pstack():
@@ -53,33 +59,42 @@ evidence, break_attempts, notes. No invented test results.
 '''
 
 
-def main():
-    MODEL = os.environ['VERIFIER_MODEL']
-    OUT = Path('evidence')
-    OUT.mkdir(exist_ok=True)
-    prompt = build_prompt(os.environ.get('PR_TITLE', ''), os.environ.get('PR_BODY', ''),
-                          os.environ['HEAD_SHA'], os.environ.get('BASE_REF', 'main'), latest_pstack(),
-                          Path('.github/briefs/shared-worker-rules.md').read_text())
+class Retry(Exception):
+    """This lane and model gave no usable verdict, so the next attempt starts over."""
+
+    def __init__(self, reason, error=None):
+        super().__init__(reason)
+        self.error = error
+
+
+def request(lane, model, key, messages, tool, final):
+    """One chat completion on the lane's own URL, with that lane's key."""
+    body = {'model': model, 'messages': messages, 'tools': [tool], 'max_tokens': 6500}
+    if final:
+        body['tool_choice'] = 'none'
+    headers = {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json',
+               'User-Agent': 'pstack-verifier/1.0'}
+    if lane == 'opencode-go':
+        headers['x-opencode-session'] = os.environ['GITHUB_RUN_ID']
+    req = urllib.request.Request(LANE_URLS[lane], data=json.dumps(body).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=240) as response:
+        return json.load(response)
+
+
+def verify(lane, model, key, prompt, tool, out):
+    """One whole tool loop. Returns its answer, or raises Retry when the attempt is unusable."""
     messages = [{'role': 'system', 'content': 'You are an independent skeptical verification agent. Use tools to establish evidence. Never claim unrun tests.'},
                 {'role': 'user', 'content': prompt}]
-    tool = {'type': 'function', 'function': {'name': 'run_command', 'description': 'Run read-only inspection or verification on the GitHub runner. Temporary test files/worktrees allowed. Never push, merge or modify candidate checkouts.',
-            'parameters': {'type': 'object', 'properties': {'command': {'type': 'string'}}, 'required': ['command']}}}
     for iteration in range(40):
         if iteration == 39:
             messages.append({'role': 'user', 'content': 'Tool budget exhausted. Return your final JSON verdict now. Use FAIL if evidence is insufficient. Do not invent evidence.'})
-        body = {'model': MODEL, 'messages': messages, 'tools': [tool], 'max_tokens': 6500}
-        if iteration == 39:
-            body['tool_choice'] = 'none'
-        req = urllib.request.Request('https://opencode.ai/zen/go/v1/chat/completions',
-              data=json.dumps(body).encode(), headers={'Authorization': 'Bearer ' + os.environ['OPENCODE_API_KEY'],
-                        'Content-Type': 'application/json', 'User-Agent': 'pstack-verifier/1.0',
-                        'x-opencode-session': os.environ['GITHUB_RUN_ID']})
         try:
-            with urllib.request.urlopen(req, timeout=240) as response:
-                result = json.load(response)
+            result = request(lane, model, key, messages, tool, iteration == 39)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors='replace').replace(os.environ['OPENCODE_API_KEY'], '<redacted>')
+            detail = exc.read().decode(errors='replace').replace(key, '<redacted>')
             print('Provider request failed:', exc.code, detail[:1000])
+            if exc.code in (402, 429) or exc.code >= 500:
+                raise Retry(f'HTTP {exc.code} from {lane}/{model}')
             raise SystemExit(1)
         except Exception as exc:
             print('Provider request failed:', type(exc).__name__)
@@ -89,20 +104,26 @@ def main():
         calls = msg.get('tool_calls') or []
         if not calls:
             content = msg.get('content') or ''
-            (OUT / 'verdict.txt').write_text(content)
-            verdict = json_answer(content)
+            if not content.strip():
+                raise Retry(f'empty reply from {lane}/{model}')
+            (out / 'verdict.txt').write_text(content)
+            try:
+                verdict = json_answer(content)
+            except ValueError as bad:
+                raise Retry(f'answer from {lane}/{model} is not a report: {bad}', bad)
             assert iteration > 0, 'verifier must drive the code'
             assert verdict['head_sha'] == os.environ['HEAD_SHA'], 'wrong head'
             value, why = find_verdict(content)
-            assert value, why
-            assert value == verdict['verdict'], 'verdict field and answer disagree'
-            (OUT / 'verdict.json').write_text(json.dumps(verdict, indent=2))
-            (OUT / 'verdict.md').write_text(
-                f"{value}\n\nVerifier model: {MODEL}, independent pstack verifier.\n"
+            if not value:
+                raise Retry(f'no verdict in the answer from {lane}/{model}: {why}')
+            assert value == verdict['verdict'], why or 'verdict field and answer disagree'
+            (out / 'verdict.json').write_text(json.dumps(verdict, indent=2))
+            (out / 'verdict.md').write_text(
+                f"{verdict['verdict']}\n\nVerifier model: {lane}/{model}, independent pstack verifier.\n"
                 f"Head: `{verdict['head_sha']}`\n\n" + json.dumps(verdict, indent=2) + '\n')
-            (OUT / 'transcript.json').write_text(json.dumps(messages, indent=2))
+            (out / 'transcript.json').write_text(json.dumps(messages, indent=2))
             print(content)
-            break
+            return content
         for call in calls:
             command = json.loads(call['function']['arguments'])['command']
             env = {k: v for k, v in os.environ.items() if not any(s in k.upper() for s in ('TOKEN', 'SECRET', 'KEY'))}
@@ -112,12 +133,33 @@ def main():
             except subprocess.TimeoutExpired:
                 output = f'$ {command}\nTIMEOUT after 180 seconds'
             print(output[:24000], flush=True)
-            with (OUT / 'commands.log').open('a') as fh:
+            with (out / 'commands.log').open('a') as fh:
                 fh.write(output + '\n')
             messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': output[:36000]})
-        (OUT / 'transcript.json').write_text(json.dumps(messages, indent=2))
-    else:
-        raise SystemExit('Verifier reached tool-turn limit without verdict')
+        (out / 'transcript.json').write_text(json.dumps(messages, indent=2))
+    raise Retry(f'tool-turn limit without verdict from {lane}/{model}')
+
+
+def main():
+    OUT = Path('evidence')
+    OUT.mkdir(exist_ok=True)
+    prompt = build_prompt(os.environ.get('PR_TITLE', ''), os.environ.get('PR_BODY', ''),
+                          os.environ['HEAD_SHA'], os.environ.get('BASE_REF', 'main'), latest_pstack(),
+                          Path('.github/briefs/shared-worker-rules.md').read_text())
+    tool = {'type': 'function', 'function': {'name': 'run_command', 'description': 'Run read-only inspection or verification on the GitHub runner. Temporary test files/worktrees allowed. Never push, merge or modify candidate checkouts.',
+            'parameters': {'type': 'object', 'properties': {'command': {'type': 'string'}}, 'required': ['command']}}}
+    planned = attempts(models(os.environ.get('GITHUB_WORKSPACE'), os.environ['VERIFIER_MODEL']), os.environ)
+    failure = None
+    for lane, model in planned:
+        try:
+            verify(lane, model, os.environ[LANE_KEYS[lane]], prompt, tool, OUT)
+            return
+        except Retry as stop:
+            failure = stop
+            print(stop, flush=True)
+    if failure and failure.error:
+        raise failure.error
+    raise SystemExit(str(failure) if failure else 'Verifier has no lane: set OPENCODE_API_KEY or AI_GATEWAY_API_KEY')
 
 
 if __name__ == '__main__':

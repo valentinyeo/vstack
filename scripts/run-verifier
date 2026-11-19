@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""run-verifier: take the first verdict any verifier lane and model gives.
+
+  run-verifier --out verifier.jsonl --prompt-file PROMPT [--event PATH] [--attempt-timeout SECONDS] -- <extra pi args>
+  run-verifier --self-test
+
+Models come from `pick-verifier-model --all`, so every attempt is from a family no author declares.
+Lanes, in order: opencode-go with the model id, used only when OPENCODE_API_KEY is set; then
+vercel-ai-gateway with the provider id, used only when AI_GATEWAY_API_KEY is set. Every model on the
+first lane is tried before the second lane starts.
+An attempt succeeds when its JSON trace shows a bash run and the last assistant message holds a verdict,
+read through scripts/verdict.py: a bare PASS, PASS+NOTES or FAIL line, a VERDICT: <x> line, or a JSON
+verdict field. These are exactly the two things the vstack verdict step asks for.
+Non-zero exits, empty traces and 429 or quota errors fall through to the next attempt. The trace moves to --out on success, `VERIFIER_MODEL=<lane>/<id>`
+is appended to $GITHUB_ENV when set, and stderr names the lane that answered. When every attempt fails,
+the last trace is copied to --out and the exit code is 1. Never prints prompt text or keys.
+"""
+import argparse
+import contextlib
+import io
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from verdict import find_verdict
+
+LANES = (
+    ("opencode-go", "OPENCODE_API_KEY", {}),
+    ("vercel-ai-gateway", "AI_GATEWAY_API_KEY", {
+        "deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
+        "glm-5.3-flash": "zai/glm-5.3-flash",
+        "kimi-k3": "moonshotai/kimi-k3",
+    }),
+)
+QUOTA = re.compile(r"\b429\b|\bquota\b|rate.?limit|credit balance", re.I)
+FAILURE = "run-verifier: %s/%s gave no verdict (%s), trying next\n"
+
+
+def read(path):
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def models(event):
+    """The allowed verifier models, from the picker in this script's own checkout."""
+    picker = os.path.join(os.path.dirname(os.path.realpath(__file__)), "pick-verifier-model")
+    command = [sys.executable, "-I", picker, "--all"] + (["--event", event] if event else [])
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode:
+        sys.stderr.write(result.stderr)
+        raise SystemExit(result.returncode)
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def bash_evidence(trace):
+    """True when the trace shows the verifier actually ran a bash tool, the proof the verdict step asks for."""
+    for line in trace.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "tool_execution_end" and event.get("toolName") == "bash":
+            return True
+    return False
+
+
+def verdict(trace):
+    """True when the last assistant message of the trace holds the verdict scripts/verdict.py reads."""
+    answer = []
+    for line in trace.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message") or {}
+        if message.get("role") != "assistant":
+            continue
+        answer = [part.get("text", "") for part in message.get("content") or [] if part.get("type") == "text"]
+    return find_verdict("\n".join(answer))[0] is not None
+
+
+def attempt(pi, lane, model, extra, prompt, path, env, limit=None):
+    """One pi run. Returns the reason it gave no verdict, or None on success."""
+    try:
+        with open(path, "w", encoding="utf-8") as out, open(path + ".err", "w", encoding="utf-8") as err:
+            result = subprocess.run([*pi, "--provider", lane, "--model", model, *extra, "--mode", "json", "-p", prompt],
+                                    stdout=out, stderr=err, env=env, timeout=limit)
+    except OSError as problem:
+        return "cannot run %s: %s" % (pi[0], problem.strerror)
+    except subprocess.TimeoutExpired:
+        return "timed out after %ds" % limit
+    trace, noise = read(path), read(path + ".err")
+    if result.returncode == 0 and bash_evidence(trace) and verdict(trace):
+        return None
+    reasons = []
+    if result.returncode:
+        reasons.append("exit %d" % result.returncode)
+    if QUOTA.search(trace) or QUOTA.search(noise):
+        reasons.append("429 or quota")
+    if not trace.strip():
+        reasons.append("empty output")
+    elif not bash_evidence(trace):
+        reasons.append("no bash evidence")
+    elif not verdict(trace):
+        reasons.append("no verdict line")
+    return ", ".join(reasons) or None
+
+
+def run(out, prompt_file, event, extra, env, limit=None):
+    prompt = read(prompt_file)
+    pi = shlex.split(env.get("PI_BIN") or "pi")
+    wanted = models(event)
+    planned = [(lane, ids.get(model, model)) for lane, key, ids in LANES if env.get(key) for model in wanted]
+    with tempfile.TemporaryDirectory() as scratch:
+        last = None
+        for index, (lane, model) in enumerate(planned):
+            path = os.path.join(scratch, "attempt-%d.jsonl" % index)
+            last = path
+            reason = attempt(pi, lane, model, extra, prompt, path, env, limit)
+            if reason is None:
+                shutil.move(path, out)
+                if env.get("GITHUB_ENV"):
+                    with open(env["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+                        handle.write("VERIFIER_MODEL=%s/%s\n" % (lane, model))
+                sys.stderr.write("run-verifier: verdict from %s/%s\n" % (lane, model))
+                return 0
+            sys.stderr.write(FAILURE % (lane, model, reason))
+        if last:
+            shutil.copyfile(last, out)
+    sys.stderr.write("run-verifier: no lane gave a verdict\n")
+    return 1
+
+
+def self_test():
+    with tempfile.TemporaryDirectory() as scratch:
+        fake = os.path.join(scratch, "pi")
+        with open(fake, "w", encoding="utf-8") as handle:
+            handle.write(FAKE_PI)
+        os.chmod(fake, 0o755)
+        event = os.path.join(scratch, "event.json")
+        prompt = os.path.join(scratch, "prompt.txt")
+        with open(prompt, "w", encoding="utf-8") as handle:
+            handle.write("PROMPT-TEXT-NEVER-PRINTED")
+        log = os.path.join(scratch, "attempts.log")
+        verdicts = os.path.join(scratch, "env")
+        out = os.path.join(scratch, "verifier.jsonl")
+        cases = [
+            ("first lane empty, second answers",
+             {"glm-5.3-flash": "pass"}, {"OPENCODE_API_KEY": "x"},
+             "Author model: anthropic/claude-sonnet", 0, "opencode-go/glm-5.3-flash",
+             ["opencode-go deepseek-v4.1-flash", "opencode-go glm-5.3-flash"]),
+            ("429 then FAIL still counts as a verdict",
+             {"deepseek-v4.1-flash": "429", "glm-5.3-flash": "fail"}, {"OPENCODE_API_KEY": "x"},
+             "Author model: anthropic/claude-sonnet", 0, "opencode-go/glm-5.3-flash",
+             ["opencode-go deepseek-v4.1-flash", "opencode-go glm-5.3-flash"]),
+            ("every attempt empty",
+             {}, {"OPENCODE_API_KEY": "x"},
+             "Author model: anthropic/claude-sonnet", 1, None,
+             ["opencode-go deepseek-v4.1-flash", "opencode-go glm-5.3-flash", "opencode-go kimi-k3"]),
+            ("no opencode key, only the gateway",
+             {"deepseek/deepseek-v4.1-flash": "pass"}, {"AI_GATEWAY_API_KEY": "x"},
+             "Author model: anthropic/claude-sonnet", 0, "vercel-ai-gateway/deepseek/deepseek-v4.1-flash",
+             ["vercel-ai-gateway deepseek/deepseek-v4.1-flash"]),
+            ("deepseek author is never attempted",
+             {}, {"OPENCODE_API_KEY": "x"},
+             "Author model: deepseek/deepseek-v4.1-flash", 1, None,
+             ["opencode-go glm-5.3-flash", "opencode-go kimi-k3"]),
+            ("a hung model times out and the next answers",
+             {"deepseek-v4.1-flash": "hang", "glm-5.3-flash": "pass"}, {"OPENCODE_API_KEY": "x"},
+             "Author model: anthropic/claude-sonnet", 0, "opencode-go/glm-5.3-flash",
+             ["opencode-go deepseek-v4.1-flash", "opencode-go glm-5.3-flash"]),
+        ]
+        for name, plan, keys, body, code, model, attempts in cases:
+            with open(event, "w", encoding="utf-8") as handle:
+                json.dump({"pull_request": {"body": body}}, handle)
+            for path in (log, verdicts, out):
+                if os.path.exists(path):
+                    os.unlink(path)
+            env = {"PATH": os.environ.get("PATH", ""), "PI_BIN": fake, "FAKE_LOG": log,
+                   "FAKE_PLAN": json.dumps(plan), "GITHUB_ENV": verdicts}
+            env.update(keys)
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                got = run(out, prompt, event, ["--thinking", "low"], env, 2)
+            text = stderr.getvalue()
+            assert got == code, (name, got, code, text)
+            assert read(log).splitlines() == attempts, (name, read(log), attempts)
+            assert "PROMPT-TEXT-NEVER-PRINTED" not in text, name
+            if model:
+                assert "VERIFIER_MODEL=%s\n" % model in read(verdicts), (name, model, read(verdicts))
+            else:
+                assert not os.path.exists(verdicts), name
+            assert os.path.exists(out), name
+            if model:
+                assert "verdict from %s\n" % model in text, (name, text)
+            else:
+                assert "no lane gave a verdict\n" in text, (name, text)
+    print("run-verifier self-test ok")
+
+
+FAKE_PI = '''#!/usr/bin/env python3
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+lane = args[args.index("--provider") + 1]
+model = args[args.index("--model") + 1]
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
+    log.write(lane + " " + model + "\\n")
+mode = json.loads(os.environ["FAKE_PLAN"]).get(model, "empty")
+text = {"pass": "PASS", "fail": "FAIL\\nReason: broken"}.get(mode)
+if text:
+    print(json.dumps({"type": "tool_execution_end", "toolCallId": "1", "toolName": "bash",
+                      "result": {"structuredContent": {"output": "ok", "exit_code": 0}, "isError": False}}))
+    print(json.dumps({"type": "message_end", "message": {"role": "assistant",
+                                                         "content": [{"type": "text", "text": text}]}}))
+elif mode == "hang":
+    import time
+    time.sleep(30)
+elif mode == "429":
+    sys.stderr.write("429 Too Many Requests: quota used up\\n")
+    sys.exit(1)
+'''
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--out")
+    parser.add_argument("--prompt-file")
+    parser.add_argument("--event", default=os.environ.get("GITHUB_EVENT_PATH"))
+    parser.add_argument("--attempt-timeout", type=int, default=960)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("extra", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    if args.self_test:
+        return self_test()
+    if not args.out or not args.prompt_file:
+        parser.error("--out and --prompt-file are required")
+    extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
+    return run(args.out, args.prompt_file, args.event, extra, os.environ, args.attempt_timeout)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
