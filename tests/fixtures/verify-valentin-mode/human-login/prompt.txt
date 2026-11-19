@@ -1,0 +1,1 @@
+Use the valentin-mode skill for this job. Small job on ticket SOFT-2849: have a code worker create hello.txt in this folder containing exactly the line "hello from the worker". When it exists, leave a one-line note on the ticket that it is done, then sync the board. Work without asking me anything.
