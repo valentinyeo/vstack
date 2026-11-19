@@ -9,7 +9,8 @@ A verifier may answer in any of three forms, and the last one in its text wins:
   a prefixed line   VERDICT: PASS
   a JSON field      {"verdict": "PASS"}
 
-A bare line inside a fenced code block is quoted evidence, not an answer.
+A bare line inside a fenced code block is quoted evidence, not an answer, unless the
+answer has no other verdict and that fence holds the verdict alone.
 Text with none of them reads as FAIL, and the caller prints why.
 Every vstack verifier workflow reads its verdict through this file.
 """
@@ -44,9 +45,31 @@ def occurrences(text):
     return sorted(found)
 
 
+def boxed(text):
+    """Verdicts set alone in a fence, e.g. a line ``` then PASS then ```: (offset, verdict) in text order."""
+    found, offset, block, start = [], 0, None, 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if FENCE.match(stripped):
+            if block is None:
+                block, start = [], offset
+            else:
+                body = [b for b in block if b]
+                if len(body) == 1 and body[0] in VERDICTS:
+                    found.append((start, body[0]))
+                block = None
+        elif block is not None:
+            block.append(stripped)
+        offset += len(line)
+    return found
+
+
 def find_verdict(text):
-    """The last accepted verdict in text, as (verdict or None, reason when None)."""
-    found = occurrences(text or '')
+    """The last accepted verdict in text, as (verdict or None, reason when None).
+
+    Fallback (SOFT-2802): an answer with no verdict outside fences may still box its verdict alone in a fence.
+    vstack#134 head 8507974: glm wrote "Verdict below." then a fence holding only PASS."""
+    found = occurrences(text or '') or boxed(text or '')
     return (found[-1][1], '') if found else (None, MISSING)
 
 

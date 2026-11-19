@@ -10,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/verdict.py'
 PR129 = ROOT / 'tests/fixtures/verdict/pr-129-verifier-comment.md'
+PR134 = ROOT / 'tests/fixtures/verdict/pr-134-glm-boxed-verdict.md'
 
 
 def load(name, path):
@@ -62,9 +63,19 @@ class VerdictForms(unittest.TestCase):
     def test_bare_lines_inside_fenced_evidence_are_not_the_answer(self):
         text = 'Quoted log:\n\n```\nFAIL\n```\n\nEverything green.\n\nPASS\n'
         self.assertEqual(self.read(text), 'PASS')
-        self.assertEqual(self.read('Checked.\n\n```text\nPASS\n```\n'), None)
+        # A fence quoting a verdict next to other lines is evidence, never the answer.
+        self.assertEqual(self.read('Checked.\n\n```text\nran 3\nPASS\n```\n'), None)
         # A prefixed or JSON verdict inside a fence is still the answer, not evidence.
         self.assertEqual(self.read('```\nVERDICT: FAIL\n```\n'), 'FAIL')
+
+    def test_a_verdict_boxed_alone_in_a_fence_is_the_fallback_answer(self):
+        self.assertEqual(self.read('Verdict below.\n\n```\nPASS\n```\n\n## Evidence\n```\nok\n```\n'), 'PASS')
+        self.assertEqual(self.read('```text\nFAIL\n```\n'), 'FAIL')
+        # A real answer outside fences always wins over a boxed quote.
+        self.assertEqual(self.read('FAIL\n\nQuoted:\n```\nPASS\n```\n'), 'FAIL')
+
+    def test_pr_134_glm_answer_reads_pass(self):
+        self.assertEqual(self.read(PR134.read_text()), 'PASS')
 
     def test_pr_129_comment_reads_pass_notes(self):
         self.assertEqual(self.read(PR129.read_text()), 'PASS+NOTES')
