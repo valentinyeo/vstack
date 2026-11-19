@@ -14,7 +14,8 @@ from pathlib import Path
 
 PASS = 'PASS'
 FAIL = 'FAIL'
-LOADED_MARKER = 'valentin-mode is loaded'
+SKILL_NAMES = ('valentin-mode', 'vstack:valentin-mode')
+SKILL_BODY_MARKER = '## Three tools'
 NO_SESSION = 'no session id in stream'
 TASK_LINE = 'hello from the worker'
 
@@ -42,6 +43,22 @@ def read_text(path):
         return path.read_text(errors='replace')
     except OSError:
         return ''
+
+
+def read_raw_events(path):
+    """Return (line number, raw text, object) for each JSON object line."""
+    entries = []
+    for number, line in enumerate(read_text(path).splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            entries.append((number, stripped, event))
+    return entries
 
 
 def read_jsonl(path):
@@ -142,14 +159,34 @@ def find_session(events):
     return None
 
 
-def check_loaded(events):
-    for event in events:
-        if event.get('type') != 'system' or event.get('subtype') != 'hook_response':
+def skill_invoked(tool_use):
+    if tool_use.get('name') != 'Skill':
+        return False
+    tool_input = tool_use.get('input')
+    skill = tool_input.get('skill') if isinstance(tool_input, dict) else None
+    if not isinstance(skill, str):
+        return False
+    return skill in SKILL_NAMES or skill.endswith(':valentin-mode')
+
+
+def check_loaded(stream_path):
+    """PASS when the chat invoked the skill and its body reached the chat."""
+    lines = read_raw_events(stream_path)
+    invoked_at = None
+    for number, _raw, event in lines:
+        if event.get('type') != 'assistant':
             continue
-        output = event.get('output')
-        if isinstance(output, str) and LOADED_MARKER in output:
-            return PASS, 'the session hook reported valentin mode loaded'
-    return FAIL, 'valentin mode was not loaded into the chat'
+        if any(skill_invoked(block) for block in content_blocks(event, 'tool_use')):
+            invoked_at = number
+            break
+    if invoked_at is None:
+        return FAIL, 'the chat never invoked the valentin-mode skill'
+    for number, raw, event in lines:
+        if number <= invoked_at:
+            continue
+        if event.get('type') == 'user' and SKILL_BODY_MARKER in raw:
+            return PASS, 'the chat invoked the valentin-mode skill (three tools version)'
+    return FAIL, 'valentin-mode loaded without the Three tools section'
 
 
 def board_writes(evidence, started_at):
@@ -249,6 +286,9 @@ def check_board_sync(events, board, label):
         if tool_use.get('name') != 'Bash':
             continue
         command = command_of(tool_use)
+        if (command and 'reconcile' in command and bare_flag(command, 'apply')
+                and not flag_value(command, 'label', label)):
+            return FAIL, 'board sync apply without --label <label> can move real tickets'
         kind = classify_sync(command, board, label) if command else None
         if kind is None:
             continue
@@ -293,7 +333,7 @@ def grade(evidence, agent, ticket, board, label):
     session_id = find_session(events)
 
     checks = []
-    name, result = 'loaded', check_loaded(events)
+    name, result = 'loaded', check_loaded(evidence / 'stream.jsonl')
     checks.append((name, result))
 
     if session_id is None:

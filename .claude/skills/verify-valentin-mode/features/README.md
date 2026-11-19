@@ -5,14 +5,14 @@ The three tools valentin mode names, each proved by one check in `grade.py`. Rea
 ## Baseline preconditions
 
 - `~/.local/share/vstack` holds the valentin-mode under test, installed with `./install`.
-- `~/.claude/hooks/valentin-mode-load.py` runs at SessionStart.
+- No hook pushes valentin mode in. The prompt asks the chat to invoke it.
 - Test login "VVM Test Agent" and scratch ticket SOFT-2849 (label `vvm-test`) exist on board 2060.
 - `plan-pick --claude-helper` exits 0.
 
 ## Driving conventions
 
 - Only `run` starts a chat. One run at a time.
-- The prompt never names a tool. A chat that uses the tools learned them from valentin mode.
+- The prompt names valentin mode, never a tool. A chat that uses the tools learned them from valentin mode.
 
 ## Proof and skip reporting
 

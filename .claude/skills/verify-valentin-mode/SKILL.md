@@ -1,14 +1,14 @@
 ---
 name: verify-valentin-mode
 description: >-
-  Prove that a fresh Claude Code chat on this server really uses valentin mode's three tools: its own board login, the subscription pacer (plan-pick --run) and the board sync (reconcile). Starts one headless test chat with a tiny task in a scratch project, then grades the evidence PASS or FAIL per tool. Use after any change to skills/valentin-mode, skills/hypertask-work, the valentin-mode load hook, or plan-pick, and as the proof on such a PR.
+  Prove that a fresh Claude Code chat on this server really uses valentin mode's three tools: its own board login, the subscription pacer (plan-pick --run) and the board sync (reconcile). Starts one headless test chat with a tiny task in a scratch project, then grades the evidence PASS or FAIL per tool. Use after any change to skills/valentin-mode, skills/hypertask-work or plan-pick, and as the proof on such a PR.
 ---
 
 # Verify valentin mode
 
 Prior art: checked pstack (create-verification-skill, maintain-verification-skill), vstack (hypertask-work, do) and house-rules. None fits, because they define the tools or how to build a check, not a check that a fresh chat uses them. This skill is the `verify-<app>` skill pstack create-verification-skill asks for, with valentin mode as the app.
 
-The surface is a whole chat, not one script. Each tool has its own unit tests. This skill proves a fresh chat picks all three up from valentin mode alone and uses them on a real task.
+The surface is a whole chat, not one script. Each tool has its own unit tests. Valentin mode is never pushed into chats; a chat or Valentin invokes it (Valentin, 19 Nov). This skill proves that a fresh chat which invokes it uses all three tools on a real task, and that the same chat without it does not.
 
 Read `features/README.md` for the map, then the feature file for the check you are looking at.
 
@@ -31,15 +31,15 @@ If the test login is gone, recreate it with the `board-identity` skill steps 4 t
 
 1. Gate: `~/.local/bin/plan-pick --claude-helper` must exit 0. The test chat runs on Claude Sonnet, so it waits while Claude is ahead of pace (exit 3).
 2. Makes a scratch git repo in `/tmp/vvm-scratch.*` whose `CLAUDE.md` names board 2060, label `vvm-test`, the test login and SOFT-2849.
-3. Starts `claude -p` there with `--model sonnet --output-format stream-json --verbose --max-turns 40`, under a 25-minute timeout. The prompt asks for a code worker to write `hello.txt`, a note on the ticket, and a board sync. It never names the tools; valentin mode has to.
-4. `--break no-valentin-mode` adds `--setting-sources project,local`, so user hooks do not run and valentin mode never loads. That is the known-broken setup.
+3. Starts `claude -p` there with `--model sonnet --output-format stream-json --verbose --max-turns 40`, under a 25-minute timeout. The prompt starts "Use the valentin-mode skill for this job.", then asks for a code worker to write `hello.txt`, a note on the ticket, and a board sync. It never names the tools; valentin mode has to.
+4. `--break no-valentin-mode` drops only that first sentence. Same flags, same hooks, same guards. That is the known-broken setup.
 5. Collects the evidence, scrubs tokens, grades, removes the scratch repo (keep it with `--keep`).
 
 Ready means the stream has a `system/init` line. A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worker.
 
 ## Doctor
 
-Before trusting a verdict, read the `loaded` line. It checks that the SessionStart hook `~/.claude/hooks/valentin-mode-load.py` put "valentin-mode is loaded" into the chat. A FAIL there on a run without `--break` means the hook or the `~/.local/share/vstack` install is broken, not the chat.
+Before trusting a verdict, read the `loaded` line. It needs a `Skill` call for `valentin-mode` and the skill body with `## Three tools` in the chat. "never invoked" on a normal run means the chat ignored the prompt; "without the Three tools section" means `~/.local/share/vstack` holds an old copy.
 
 Also confirm the installed copy is the one under test: `diff ~/.local/share/vstack/skills/valentin-mode/SKILL.md skills/valentin-mode/SKILL.md`. A branch is only tested once installed. On a PR, install the branch first (`cd ~/.local/share/vstack && git checkout <branch> && ./install`), then restore main afterwards.
 
@@ -57,7 +57,7 @@ Every run keeps `~/.local/state/verify-valentin-mode/<run-id>/`:
 
 | File | What it proves |
 | --- | --- |
-| `stream.jsonl` | the full chat: hook output, every tool call and result (tokens scrubbed) |
+| `stream.jsonl` | the full chat: the skill load, every tool call and result (tokens scrubbed) |
 | `launches.jsonl` | pacer lines for this chat's session id |
 | `agent-log.json`, `comments.json` | who wrote on SOFT-2849 |
 | `hello.txt` | the worker's output |
@@ -73,10 +73,11 @@ For a PR or ticket, attach `verdict.txt` and a trimmed list of the tool calls, n
 
 ## When it runs
 
-Every change to `skills/valentin-mode`, `skills/hypertask-work`, the load hook or plan-pick runs it on this server, with `verdict.txt` on the PR. GitHub CI runs only the grader tests (`tests/test_verify_valentin_mode.py`), because the live run needs this server's hooks, logins and pacer, and self-hosted runners are banned.
+Every change to `skills/valentin-mode`, `skills/hypertask-work` or plan-pick runs it on this server, with `verdict.txt` on the PR. GitHub CI runs only the grader tests (`tests/test_verify_valentin_mode.py`), because the live run needs this server's hooks, logins and pacer, and self-hosted runners are banned.
 
 ## Gotchas
 
-- The broken run turns off user hooks, and with them the guard that stops writes as Valentin. `run` blocks the claude.ai Hypertask connector in that mode, because it signs in as him. The first broken run, on 19 Nov, wrote one note on SOFT-2849 as Valentin before this block existed.
+- Never run a test chat with user hooks off (`--setting-sources`). That also turns off the guard against writing as Valentin; two early broken runs on 19 Nov wrote notes on SOFT-2849 as him. The guard still misses `ht` writes and the claude.ai Hypertask connector: SOFT-2857.
+- Any `reconcile --apply` without `--label vvm-test` fails `board sync`, because it can move real board 2060 tickets.
 - Do not run two checks at once. The board sync takes a lock per board and the second run prints `SKIP`.
 - The verdict depends on the installed copies under `~/.local/share/vstack`, `~/.claude/skills` and `~/.local/bin`, not on this checkout.

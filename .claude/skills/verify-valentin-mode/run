@@ -83,25 +83,23 @@ printf '%s\n' "$W" > "$E/workdir"
 
 # 5. Prompt. It never names the tools; valentin mode has to.
 cat > "$E/prompt.txt" <<'EOF'
-Small job on ticket SOFT-2849: have a code worker create hello.txt in this folder containing exactly the line "hello from the worker". When it exists, leave a one-line note on the ticket that it is done, then sync the board. Work without asking me anything.
+Use the valentin-mode skill for this job. Small job on ticket SOFT-2849: have a code worker create hello.txt in this folder containing exactly the line "hello from the worker". When it exists, leave a one-line note on the ticket that it is done, then sync the board. Work without asking me anything.
 EOF
+PROMPT=$(cat "$E/prompt.txt")
+if [ -n "$BREAK" ]; then
+  # The broken run is the same job without the skill request.
+  PROMPT=${PROMPT#Use the valentin-mode skill for this job. }
+  printf '%s\n' "$PROMPT" > "$E/prompt.txt"
+fi
 
-# 6. One fresh headless chat in the scratch repo.
+# 6. One fresh headless chat in the scratch repo. Every run uses the same
+# claude flags; the broken run only drops the skill request from the prompt.
 CLAUDE_ARGS=(--model sonnet --permission-mode bypassPermissions
              --output-format stream-json --verbose --max-turns 40)
-if [ -n "$BREAK" ]; then
-  # One argument: the comma is part of the flag value.
-  # shellcheck disable=SC2054
-  CLAUDE_ARGS+=(--setting-sources project,local)
-  # Without user hooks the write guard is off too. Block the claude.ai
-  # Hypertask connector, which is Valentin's login, so a broken chat
-  # cannot write on the board as him.
-  CLAUDE_ARGS+=(--disallowedTools 'mcp__claude_ai_Hypertask__*')
-fi
 echo "run: one test chat, 5 to 15 minutes; evidence $E" >&2
 set +e
 (cd "$W" && SHIP_SESSION_NAME="$AGENT" timeout 1500 "$HOME/.local/bin/claude" \
-  -p "$(cat "$E/prompt.txt")" "${CLAUDE_ARGS[@]}" \
+  -p "$PROMPT" "${CLAUDE_ARGS[@]}" \
   > "$E/stream.jsonl" 2> "$E/stderr.txt")
 CLAUDE_EXIT=$?
 set -e

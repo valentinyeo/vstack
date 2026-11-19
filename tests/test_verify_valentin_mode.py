@@ -45,6 +45,8 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assert_check(output, 'PASS', 'pacer')
         self.assert_check(output, 'PASS', 'task')
         self.assert_check(output, 'PASS', 'board sync')
+        self.assertIn('PASS loaded: the chat invoked the valentin-mode skill '
+                      '(three tools version)', output)
         self.assertFalse(any(line.startswith('FAIL ') for line in output.splitlines()), output)
         verdict = json.loads((target / 'verdict.json').read_text())
         self.assertEqual(verdict['verdict'], 'PASS')
@@ -74,7 +76,22 @@ class VerifyValentinModeGrade(unittest.TestCase):
         code, output, _target = self.grade_fixture('not-loaded')
         self.assertEqual(code, 1, output)
         self.assert_check(output, 'FAIL', 'loaded')
-        self.assertIn('valentin mode was not loaded into the chat', output)
+        self.assertIn('the chat never invoked the valentin-mode skill', output)
+
+    def test_old_version_fixture_fails_loaded(self):
+        code, output, _target = self.grade_fixture('old-version')
+        self.assertEqual(code, 1, output)
+        self.assert_check(output, 'FAIL', 'loaded')
+        self.assertIn('valentin-mode loaded without the Three tools section', output)
+        self.assertFalse(any(line.startswith('FAIL loaded: the chat never')
+                             for line in output.splitlines()), output)
+
+    def test_apply_no_label_fixture_fails_board_sync(self):
+        code, output, _target = self.grade_fixture('apply-no-label')
+        self.assertEqual(code, 1, output)
+        self.assert_check(output, 'FAIL', 'board sync')
+        self.assertIn(
+            'board sync apply without --label <label> can move real tickets', output)
 
     def test_agent_worker_fixture_fails_pacer(self):
         code, output, _target = self.grade_fixture('agent-worker')
@@ -109,6 +126,11 @@ class VerifyValentinModeRunScript(unittest.TestCase):
     def test_run_script_parses(self):
         result = subprocess.run(['bash', '-n', str(RUN)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_run_script_has_no_broken_hook_mode(self):
+        text = RUN.read_text()
+        self.assertNotIn('setting-sources', text)
+        self.assertNotIn('disallowedTools', text)
 
     def test_grade_script_has_shebang(self):
         self.assertEqual(GRADE.read_text().splitlines()[0], '#!/usr/bin/env python3')
