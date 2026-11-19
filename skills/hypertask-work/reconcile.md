@@ -16,6 +16,25 @@ Any UNKNOWN also refuses every move.
 Each move writes an agent-log entry.
 Owners and assignees stay unchanged.
 
+## GitHub budget
+
+A run spends GitHub calls, and the account shares one hourly budget.
+The first response that reports a spent budget stops the run at once.
+That covers 403 and 429 errors that name a rate limit, a secondary rate limit,
+and GraphQL's own `RATE_LIMITED` error type.
+The run prints one line with the reset time from `gh api rate_limit`.
+It applies no move from that run and exits 0, so the timer stays green.
+`--apply` also checks the budget before reading anything, because that check is free.
+Only error text counts, so a PR or comment that talks about a rate limit is not one.
+
+Every run prints its GitHub call count to stderr.
+All PR facts for a run come from batched GraphQL reads, 25 PRs per call.
+A batch GitHub refuses is split, so one repository it cannot see fails only its own tickets.
+A commit's verifier policy never changes, so it is cached in `~/.cache/vstack/reconcile`.
+That answer, including a repository with no policy, is reused across runs.
+Set `RECONCILE_CACHE` to move that file.
+The merged branch window has its own cache, described below.
+
 ## Column rules
 
 Earlier rows take priority.
@@ -60,7 +79,7 @@ Other body mentions establish no ownership.
 Branch discovery scans both owners.
 It reads every open PR, and PRs merged in the last 30 days.
 That is two searches per run: one for open PRs, one for the merged range.
-Merged PRs are kept in `~/.local/state/fleet/cache` (`FLEET_CACHE_DIR` overrides it).
+That merged range is kept in `~/.cache/vstack/reconcile/cache.json` (`RECONCILE_CACHE` overrides it).
 The next run searches only the days since the last run, plus one day of overlap.
 A ticket older than the cache reaches back only as far as it needs.
 A cache that cannot be read means one full search, never a failed run.
@@ -70,9 +89,9 @@ GitHub matches only the start of a branch name there.
 An older merged PR needs a title, `Ticket:` line or URL link, or a branch that starts with the key.
 Date partitions avoid GitHub search truncation.
 GitHub calls run one after another, never side by side.
-An open PR is read every run, with one `gh pr view`.
-A merged PR is read once and kept; one without a PASS is read again after six hours.
-The PR comments and the verifier policy are read for merged PRs only, and the policy only when a verdict names the head.
+An open PR and a merged PR are both read once per run, in one GraphQL call per 25 PRs.
+The batch carries the newest hundred comments of each PR.
+A PR with more comments and no PASS gets its full comment list.
 Each run prints one line to stderr, `reconcile: github calls=N (graphql=a, rest=b)`.
 A paginated read counts once.
 Each phase prints one progress line to stderr.
