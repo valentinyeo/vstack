@@ -21,7 +21,9 @@ import time
 
 BOARD = 2060
 PROTECTED = {'Valentin Review', 'Done', 'Not now'}
-MANAGED = {'Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'}
+MANAGED = {'Todo', 'Verification Backlog', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'}
+VERIFICATION = 'verification'
+VERIFICATION_BACKLOG = 'Verification Backlog'
 WINDOW_DAYS = 30
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
 PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
@@ -61,6 +63,7 @@ class Facts:
     pulls: tuple = ()
     waiting: bool = False
     blocked: bool = False
+    verification: bool = False
 
 
 # An open or merged PR is the true stage; a live worker comes after it.
@@ -73,6 +76,10 @@ RULES = (
     (lambda f: bool(f.pulls) and all(p.state == 'MERGED' and p.passed for p in f.pulls), 'AI Review', 'merged PR with PASS; live proof pending'),
     (lambda f: any(p.state == 'MERGED' for p in f.pulls), 'AI Review', 'merged PR missing PASS on current head'),
     (lambda f: f.alive, 'Doing', 'live worker: lease or process'),
+    # A verification ticket rests in its own backlog, and only a labelled ticket belongs there.
+    (lambda f: f.column == VERIFICATION_BACKLOG and not f.verification, 'Todo', 'not a verification ticket'),
+    (lambda f: f.column == VERIFICATION_BACKLOG, None, 'verification backlog; kept'),
+    (lambda f: f.column == 'Todo' and f.verification, VERIFICATION_BACKLOG, 'verification ticket'),
     (lambda f: f.age < 7200, None, 'touched within 2h'),
     (lambda f: True, 'Todo', 'no live worker and no PR'),
 )
@@ -614,6 +621,12 @@ def prefetch(pulls, board=DEFAULT):
     parallel(load, sorted(refs))
 
 
+def is_verification(task):
+    """The board marks verification work with one label; nothing else makes it verification."""
+    return any((label.get('name') or '').strip().casefold() == VERIFICATION
+               for label in task.get('labels') or ())
+
+
 def collect(task, pulls, now, board=DEFAULT):
     ticket_index(task['ticketNumber'], board)
     alive = worker_alive(task['ticketNumber'], now, board)
@@ -622,7 +635,8 @@ def collect(task, pulls, now, board=DEFAULT):
     else:
         details = tuple(read_product_pull(p['number']) for p in pulls if p['state'] == 'OPEN')
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
-                 bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')))
+                 bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')),
+                 is_verification(task))
 
 
 def reconcile(task, facts, apply=False, board=DEFAULT, names=None):

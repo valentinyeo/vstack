@@ -246,6 +246,50 @@ class ReconcileTest(unittest.TestCase):
             with self.subTest(facts=facts):
                 self.assertEqual(r.target(facts)[0], expected)
 
+    def test_labelled_verification_ticket_moves_to_its_backlog(self):
+        for age in (60, 7199, 8000):
+            with self.subTest(age=age):
+                self.assertEqual(r.target(r.Facts('Todo', age, verification=True)),
+                                 ('Verification Backlog', 'verification ticket'))
+
+    def test_verification_backlog_without_the_label_returns_todo(self):
+        for age in (60, 7199, 8000):
+            with self.subTest(age=age):
+                self.assertEqual(r.target(r.Facts('Verification Backlog', age)),
+                                 ('Todo', 'not a verification ticket'))
+
+    def test_labelled_verification_follows_normal_rules_once_work_starts(self):
+        cases = [
+            (r.Facts('Doing', 8000, True, verification=True), 'Doing'),
+            (r.Facts('Todo', 8000, False, (pull(checks='red'),), verification=True), 'Checks'),
+            (r.Facts('Todo', 8000, True, verification=True), 'Doing'),
+            (r.Facts('Verification Backlog', 8000, False, (pull(),), verification=True), 'AI Review'),
+            (r.Facts('Verification Backlog', 8000, False, (pull('MERGED', passed=True),), verification=True), 'AI Review'),
+            (r.Facts('Verification Backlog', 8000, True, verification=True), 'Doing'),
+            (r.Facts('Todo', 8000, verification=True, waiting=True), 'Todo'),
+            (r.Facts('Verification Backlog', 8000, verification=True), 'Verification Backlog'),
+            (r.Facts('Valentin Review', 8000, verification=True), 'Valentin Review'),
+        ]
+        for facts, expected in cases:
+            with self.subTest(facts=facts):
+                self.assertEqual(r.target(facts)[0], expected)
+
+    def test_verification_label_is_read_from_the_ticket(self):
+        labelled = {**task('Todo'), 'labels': [{'id': '1', 'name': 'verification'}]}
+        miscased = {**task('Todo'), 'labels': [{'id': '1', 'name': 'Verification'}]}
+        plain = {**task('Todo'), 'labels': [{'id': '2', 'name': 'Bug'}], 'labelCount': 1}
+        with patch.object(r, 'worker_alive', return_value=False):
+            self.assertTrue(r.collect(labelled, [], NOW).verification)
+            self.assertTrue(r.collect(miscased, [], NOW).verification)
+            self.assertFalse(r.collect(plain, [], NOW).verification)
+            self.assertFalse(r.collect(task('Todo'), [], NOW).verification)
+
+    def test_board_without_the_column_keeps_verification_tickets_put(self):
+        self.assertNotIn('Verification Backlog', r.BOARDS[15].managed)
+        self.assertEqual(r.target(r.Facts('Backlog', 8000, verification=True), board=r.BOARDS[15])[0],
+                         'Backlog')
+        self.assertIn('Verification Backlog', r.BOARDS[2060].managed)
+
     def test_pr_stage_wins_over_grace_and_live_worker(self):
         self.assertEqual(r.target(r.Facts('Doing', 100, True, (pull(),)))[0], 'AI Review')
         self.assertEqual(r.target(r.Facts('Doing', 100, True, (pull(checks='red'),)))[0], 'Checks')

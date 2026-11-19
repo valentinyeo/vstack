@@ -30,8 +30,10 @@ One open Question, marked as the blocker, with your recommendation under it.
 
 ## True column
 
-Board 2060 uses Todo, Doing or Building, Checks, AI Review or Verifier, Valentin Review, Done.
+Board 2060 uses Verification Backlog, Todo, Doing or Building, Checks, AI Review or Verifier, Valentin Review, Done.
 Use the name the board shows.
+Verification tickets carry the label `verification` and start in Verification Backlog.
+The reconcile moves a labelled ticket out of Todo into that column, and an unlabelled one back to Todo.
 An open or merged PR outranks a live worker.
 
 - worker starts -> Doing or Building
