@@ -16,6 +16,27 @@ Any UNKNOWN also refuses every move.
 Each move writes an agent-log entry.
 Owners and assignees stay unchanged.
 
+## GitHub budget
+
+A run spends GitHub calls, and the account shares one hourly budget.
+The first response that reports a spent budget stops the run at once.
+That covers 403 and 429 errors that name a rate limit, a secondary rate limit,
+and GraphQL's own `RATE_LIMITED` error type.
+The run prints one line with the reset time from `gh api rate_limit`.
+It applies no move from that run and exits 0, so the timer stays green.
+`--apply` also checks the budget before reading anything, because that check is free.
+Only error text counts, so a PR or comment that talks about a rate limit is not one.
+
+Every run prints its GitHub call count to stderr.
+A run keeps the calls down in four ways.
+All PR facts for a run come from batched GraphQL reads, 25 PRs per call.
+A batch GitHub refuses is split, so one repository it cannot see fails only its own tickets.
+A commit's verifier policy never changes, so it is cached in `~/.cache/vstack/reconcile`.
+A merged day that has ended cannot gain a PR, so its branch search is cached for six hours.
+The open search and today's merges are always read fresh.
+A cached answer is refreshed, never trusted for state that can still change.
+Set `RECONCILE_CACHE` to move that file.
+
 ## Column rules
 
 Earlier rows take priority.

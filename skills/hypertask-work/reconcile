@@ -25,6 +25,12 @@ MANAGED = {'Todo', 'Verification Backlog', 'Doing', 'Building', 'Checks', 'AI Re
 VERIFICATION = 'verification'
 VERIFICATION_BACKLOG = 'Verification Backlog'
 WINDOW_DAYS = 30
+# PR reads per GitHub GraphQL call; the same 25 aliases per call for the searches.
+PULL_BATCH = 25
+# GitHub answers 1,000 search results at most, so a window over that is split.
+SEARCH_BATCH = PULL_BATCH
+# A day that has ended keeps its merged PRs; six hours bounds a late branch rename.
+WINDOW_TTL = 6 * 3600
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
 PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
 # A wrapper hides the command it runs behind the first word or two.
@@ -297,9 +303,51 @@ def require_board15_agent():
         raise ValueError('board 15 requires the vcc or HT Product Lead agent token')
 
 
+class RateLimit(Exception):
+    """GitHub's budget is spent. The run stops before it can make a wrong move."""
+
+    def __init__(self, reset='unknown'):
+        self.reset = reset
+        super().__init__(f'GitHub rate limit; reset {reset}')
+
+
+# Only an error surface counts. Prose that mentions a rate limit is not one, so a
+# ticket or PR body quoting this failure can never stop a run.
+RATE_LIMIT_TYPE = re.compile(r'"type"\s*:\s*"RATE_LIMITED"')
+RATE_LIMIT_TEXT = re.compile(r'(?:API|secondary)\s+rate\s+limit', re.I)
+
+
+def rate_limited(text):
+    return bool(RATE_LIMIT_TYPE.search(text) or RATE_LIMIT_TEXT.search(text))
+
+
+def format_reset(epoch):
+    return datetime.fromtimestamp(float(epoch), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def budget_reset():
+    """Reset time from the free rate_limit call: a failed response's headers are
+    not printed by gh. This call does not count against any limit."""
+    try:
+        resources = json.loads(subprocess.run(['gh', 'api', 'rate_limit'], capture_output=True,
+                                              text=True, timeout=60).stdout)['resources']
+        spent = [r['reset'] for r in resources.values()
+                 if isinstance(r, dict) and r.get('remaining') == 0 and r.get('reset')]
+        resets = spent or [r['reset'] for r in resources.values()
+                           if isinstance(r, dict) and r.get('reset')]
+    except (OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError):
+        return 'unknown'
+    return format_reset(min(resets)) if resets else 'unknown'
+
+
+CACHE_LOCK = threading.Lock()
 TIMING = {}
 TIMING_LOCK = threading.Lock()
 CURRENT = ['setup']
+# GitHub calls per run, printed on stderr so a budget leak is visible.
+CALLS = {'github': 0}
+# Moves this run has written, so a late rate limit never claims to have applied none.
+APPLIED = [0]
 
 
 class phase:
@@ -341,10 +389,52 @@ def parallel(function, items):
 def run(*args):
     with TIMING_LOCK:
         TIMING.setdefault(CURRENT[0], [0.0, 0])[1] += 1
+        if args[0] == 'gh':
+            CALLS['github'] += 1
     result = subprocess.run(args, capture_output=True, text=True, timeout=180)
     if result.returncode:
+        # Only gh's error channel: a failed batch still carries resolved PRs on
+        # stdout, and a comment there may quote a rate limit without being one.
+        if rate_limited(result.stderr):
+            raise RateLimit(budget_reset())
         raise RuntimeError(f'{args[0]} {args[1]} failed: {result.stderr.strip()[-250:]}')
+    if RATE_LIMIT_TYPE.search(result.stdout):
+        # GraphQL reports a spent budget in a 200 response.
+        raise RateLimit(budget_reset())
     return result.stdout
+
+
+def cache_file():
+    return Path(os.environ.get('RECONCILE_CACHE') or Path.home() / '.cache/vstack/reconcile/cache.json')
+
+
+def cache_read(key):
+    try:
+        return json.loads(cache_file().read_text()).get(key)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def cache_write(key, value):
+    """Best effort: a broken or racing cache costs calls, never correctness."""
+    path = cache_file()
+    with CACHE_LOCK:
+        try:
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, TypeError, ValueError):
+            data = {}
+        data[key] = value
+        if len(data) > 5000:
+            data = dict(list(data.items())[-2000:])
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+            temporary.write_text(json.dumps(data))
+            os.replace(temporary, path)
+        except OSError:
+            pass
 
 
 def api(*args):
@@ -401,13 +491,21 @@ def names_ticket(pull, key, board=DEFAULT):
 
 def scan_window(board, kind, field, start, end):
     """Every PR of one kind in a date range. GitHub search shows 1,000 results at
-    most, so a range over that is split until nothing can be hidden.
+    most, so a range over that is split until nothing can be hidden. A day that
+    has ended cannot gain a merged PR, so its answer is cached for a few hours.
     """
     found, windows = [], [(start, end)]
     scope = f'repo:{board.repository}' if board.repository else 'user:valentinyeo user:hypertask-ai'
+    today = datetime.now(timezone.utc).date()
     while windows:
         start, end = windows.pop()
-        cursor = None
+        key = f'window:{scope}:{kind}:{field}:{start}:{end}'
+        ttl = 0 if end >= today else WINDOW_TTL
+        cached = cache_read(key) if ttl else None
+        if isinstance(cached, dict) and cached.get('at', 0) > time.time() - ttl:
+            found += cached.get('pulls') or []
+            continue
+        window, cursor = [], None
         while True:
             query = f'is:pr {kind} {scope} {field}:{start}..{end}'
             after = ',after:' + json.dumps(cursor) if cursor else ''
@@ -423,14 +521,17 @@ def scan_window(board, kind, field, start, end):
                 middle = start + (end - start) // 2
                 windows.extend([(start, middle), (middle + timedelta(days=1), end)])
                 break
-            found += [pull for pull in page['nodes']
-                      if pull and pull['state'] != 'CLOSED' and allowed_repository(pull, board)]
+            window += [pull for pull in page['nodes']
+                       if pull and pull['state'] != 'CLOSED' and allowed_repository(pull, board)]
             if not page['pageInfo']['hasNextPage']:
                 break
             next_cursor = page['pageInfo']['endCursor']
             if not next_cursor or next_cursor == cursor:
                 raise ValueError('invalid GitHub branch cursor')
             cursor = next_cursor
+        found += window
+        if ttl and window:
+            cache_write(key, {'at': time.time(), 'pulls': window})
     return found
 
 
@@ -471,7 +572,7 @@ def head_pulls(keys, board=DEFAULT):
                 raise ValueError(f'{key}: GitHub branch search truncated')
             pulls += [p for p in page['nodes'] if p and p['state'] != 'CLOSED' and allowed_repository(p, board)]
         return pulls
-    return [pull for pulls in parallel(lookup, [keys[i:i + 12] for i in range(0, len(keys), 12)]) for pull in pulls]
+    return [pull for pulls in parallel(lookup, [keys[i:i + SEARCH_BATCH] for i in range(0, len(keys), SEARCH_BATCH)]) for pull in pulls]
 
 
 def allowed_repository(pull, board):
@@ -518,7 +619,7 @@ def discover(keys, board=DEFAULT, created=None):
                 raise ValueError(f'{key}: GitHub search truncated')
             found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
     with phase('search'):
-        parallel(search, [keys[offset:offset + 12] for offset in range(0, len(keys), 12)])
+        parallel(search, [keys[offset:offset + SEARCH_BATCH] for offset in range(0, len(keys), SEARCH_BATCH)])
     by_key = {key.upper(): key for key in keys}
     if by_key:
         since, old = scan_plan({key: (created or {}).get(key) for key in keys})
@@ -543,15 +644,22 @@ def check_state(checks):
     return 'green' if all((c.get('conclusion') in ('SUCCESS', 'NEUTRAL', 'SKIPPED') if c.get('__typename') == 'CheckRun' or 'conclusion' in c else c.get('state') == 'SUCCESS') for c in checks) else 'red'
 
 
-@lru_cache(maxsize=128)
 def verifier_policy(repo, ref):
-    result = subprocess.run(['gh', 'api', f'repos/{repo}/contents/.verify/policy.json?ref={ref}'],
-                            capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        if '(HTTP 404)' in result.stderr:
-            return {}
-        raise RuntimeError('GitHub verifier policy could not be read')
-    return json.loads(base64.b64decode(json.loads(result.stdout)['content']))
+    """The trusted base policy at one commit. A commit's policy never changes, so
+    the answer, including a repo that has no policy, is cached on disk."""
+    key = f'policy:{repo}@{ref}'
+    cached = cache_read(key)
+    if isinstance(cached, dict) and 'policy' in cached:
+        return cached['policy']
+    try:
+        result = run('gh', 'api', f'repos/{repo}/contents/.verify/policy.json?ref={ref}')
+    except RuntimeError as error:
+        if '(HTTP 404)' not in str(error):
+            raise
+        result = None
+    policy = {} if result is None else json.loads(base64.b64decode(json.loads(result)['content']))
+    cache_write(key, {'policy': policy})
+    return policy
 
 
 def pass_on_head(comments, head, author, repo, policy):
@@ -590,14 +698,115 @@ def pull_facts(pull):
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
-@lru_cache(maxsize=2048)
+PULL_FIELDS = '''url state headRefOid baseRefOid author{login}
+ statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
+ ... on CheckRun{status conclusion} ... on StatusContext{state}}}}
+ comments(last:100){totalCount nodes{databaseId body updatedAt author{login}}}'''
+# PR facts read once per run, and refilled by the batched read.
+PULLS = {}
+# A PR or repository GitHub will not describe, so it costs one call a run, not one
+# per ticket that points at it.
+FAILED = {}
+FAILED_REPOS = {}
+ROLLUP_STATE = {'SUCCESS': 'green', 'PENDING': 'running', 'EXPECTED': 'running',
+                'FAILURE': 'red', 'ERROR': 'red'}
+
+
+def pull_query(refs):
+    """One GraphQL query for many PRs, whatever repository each sits in."""
+    fields = []
+    for n, (repo, number) in enumerate(refs):
+        owner, name = repo.split('/')
+        fields.append(f'p{n}:repository(owner:{json.dumps(owner)},name:{json.dumps(name)})'
+                      f'{{pullRequest(number:{int(number)}){{{PULL_FIELDS}}}}}')
+    return 'query{' + ' '.join(fields) + '}'
+
+
+def graphql_comments(node):
+    comments = node.get('comments') or {}
+    return ([{'user': {'login': (c.get('author') or {}).get('login') or ''},
+              'body': c.get('body') or '', 'updated_at': c.get('updatedAt') or '',
+              'id': c.get('databaseId')} for c in comments.get('nodes') or []],
+            int(comments.get('totalCount') or 0))
+
+
+def pull_from_node(repo, number, node):
+    """The same facts a PR read gives, from one GraphQL node."""
+    rollup = node.get('statusCheckRollup') or {}
+    contexts = rollup.get('contexts') or {}
+    if (contexts.get('pageInfo') or {}).get('hasNextPage'):
+        # Over a hundred checks: the nodes are partial, GitHub's own summary is not.
+        checks = ROLLUP_STATE.get(rollup.get('state'), 'red')
+    else:
+        checks = check_state(contexts.get('nodes') or [])
+    comments, total = graphql_comments(node)
+    head = node['headRefOid']
+    author = (node.get('author') or {}).get('login') or ''
+    policy = verifier_policy(repo, node['baseRefOid'])
+    passed = pass_on_head(comments, head, author, repo, policy)
+    if not passed and total > len(comments):
+        # A verdict older than the newest hundred still counts; read them all.
+        passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
+    return Pull(node['url'], node['state'], checks, passed)
+
+
+def read_pull_group(refs):
+    """The one call, for a group small enough that GitHub answers every alias."""
+    result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=' + pull_query(refs)))
+    if result.get('errors') and not result.get('data'):
+        raise ValueError('GitHub pull request errors')
+    found = {}
+    for n, (repo, number) in enumerate(refs):
+        node = (result['data'].get(f'p{n}') or {}).get('pullRequest')
+        if node is not None:
+            found[(repo, number)] = node
+    if len(refs) == 1 and not found:
+        raise ValueError(f'{refs[0][0]}#{refs[0][1]} unreadable')
+    return found
+
+
+def read_pull_batch(refs):
+    """Read many PRs per call. A batch GitHub refuses is split, so one repository
+    the token cannot see never hides the twenty-four PRs beside it."""
+    refs = [ref for ref in dict.fromkeys(refs) if ref not in FAILED and ref[0] not in FAILED_REPOS]
+    if not refs:
+        return {}
+    try:
+        nodes = read_pull_group(refs)
+    except RateLimit:
+        raise
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+        if len(refs) == 1:
+            FAILED[refs[0]] = str(error)
+            FAILED_REPOS[refs[0][0]] = str(error)
+            raise
+        middle = len(refs) // 2
+        found = {}
+        for half in (refs[:middle], refs[middle:]):
+            try:
+                found.update(read_pull_batch(half))
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+                pass
+        return found
+    found = {ref: pull_from_node(*ref, nodes[ref]) for ref in nodes}
+    PULLS.update(found)
+    return found
+
+
 def read_pull(repo, number):
-    detail = json.loads(run('gh', 'pr', 'view', str(number), '--repo', repo, '--json',
-                            'url,state,headRefOid,baseRefOid,author,statusCheckRollup'))
-    comments_pages = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/issues/{number}/comments?per_page=100'))
-    comments = [comment for page in comments_pages for comment in page]
-    return Pull(detail['url'], detail['state'], check_state(detail['statusCheckRollup']),
-                pass_on_head(comments, detail['headRefOid'], detail['author']['login'], repo, verifier_policy(repo, detail['baseRefOid'])))
+    key = (repo, number)
+    if key not in PULLS:
+        if key in FAILED or repo in FAILED_REPOS:
+            raise ValueError(FAILED.get(key) or FAILED_REPOS[repo])
+        read_pull_batch([key])
+    if key not in PULLS:
+        raise ValueError(f'{repo}#{number} unreadable')
+    return PULLS[key]
+
+
+def all_comments(repo, number):
+    pages = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/issues/{number}/comments?per_page=100'))
+    return [comment for page in pages for comment in page]
 
 
 @lru_cache(maxsize=2048)
@@ -608,17 +817,18 @@ def read_product_pull(number):
 
 
 def prefetch(pulls, board=DEFAULT):
-    """Read every PR once, side by side. A failed read is retried and reported by
-    collect, so it still prints UNKNOWN for its own ticket only.
+    """Read every PR once, side by side and a batch at a time. A failed read is
+    retried and reported by collect, so it still prints UNKNOWN for its own ticket.
     """
-    def load(ref):
+    def load(batch):
         try:
-            read_pull(*ref) if board == DEFAULT else read_product_pull(ref[1])
+            read_pull_batch(batch) if board == DEFAULT else [read_product_pull(n) for _, n in batch]
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
             pass
-    refs = {(p['repository']['nameWithOwner'], p['number'])
-            for found in pulls.values() for p in found if board == DEFAULT or p['state'] == 'OPEN'}
-    parallel(load, sorted(refs))
+    PULLS.clear()
+    refs = sorted({(p['repository']['nameWithOwner'], p['number'])
+                   for found in pulls.values() for p in found if board == DEFAULT or p['state'] == 'OPEN'})
+    parallel(load, [refs[n:n + PULL_BATCH] for n in range(0, len(refs), PULL_BATCH)])
 
 
 def is_verification(task):
@@ -650,6 +860,7 @@ def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
         if board.id == 15:
             require_board15_agent()
         api('task', 'move', key, '--section', column)
+        APPLIED[0] += 1
         # Only the column changes: owner and assignees are retained.
         run('hypertask', 'activity', 'add', key, *(['--text'] if board.id == 15 else []),
             f'fleet/reconcile: {reason}; {task["section"]} -> {column}.')
@@ -678,7 +889,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
         if str(fresh['projectId']) != str(board.id) or fresh['section'] not in board.managed:
             raise ValueError('ticket no longer eligible')
         fresh_tasks.append((fresh, facts))
-    read_pull.cache_clear()
+    PULLS.clear()
     read_product_pull.cache_clear()
     ready = []
     for fresh, facts in fresh_tasks:
@@ -700,6 +911,18 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
             continue
         reconcile(current, final, apply=True, names=names, **options)
     return 0
+
+
+def probe_budget():
+    """Stop before reading anything when GitHub has nothing left to give."""
+    try:
+        resources = json.loads(run('gh', 'api', 'rate_limit'))['resources']
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+        return
+    spent = [r['reset'] for r in resources.values()
+             if isinstance(r, dict) and r.get('remaining') == 0 and r.get('reset')]
+    if any(isinstance(r, dict) and r.get('remaining') == 0 for r in resources.values()):
+        raise RateLimit(format_reset(min(spent)) if spent else 'unknown')
 
 
 def main():
@@ -736,6 +959,11 @@ def main():
         except BlockingIOError:
             print(f'SKIP board={board.id} | reconciliation already running', flush=True)
             return 0
+        if args.apply:
+            # A spent budget can only fail slowly, one 403 per ticket. The rate_limit
+            # call is free, so an --apply run checks before it reads anything.
+            with phase('budget'):
+                probe_budget()
         with phase('tickets'):
             tasks = tickets(args.section, **options)
         with phase('sections'):
@@ -770,6 +998,7 @@ def main():
                     print(f'UNKNOWN {task["ticketNumber"]} | {error}', flush=True)
         if os.environ.get('RECONCILE_TIMING'):
             print(timing_table(), file=sys.stderr, flush=True)
+        print(f'reconcile: {CALLS["github"]} GitHub calls', file=sys.stderr, flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
         if args.apply and not errors:
             return apply_plan(plans, args.limit, pulls, names=names, **options)
@@ -779,5 +1008,11 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
+    except RateLimit as stop:
+        # One line and a clean exit: a spent budget is not a failed run, and no move
+        # from it may land. The timer must not show a red unit for it.
+        moved = f'{APPLIED[0]} moves already applied before it' if APPLIED[0] else 'no moves applied'
+        print(f'reconcile: GitHub rate limit; reset {stop.reset}; {moved}', flush=True)
+        sys.exit(0)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         sys.exit(f'fleet/reconcile: {error}')

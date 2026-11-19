@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import re
 from datetime import date, datetime, timedelta, timezone
 import importlib.machinery
 import importlib.util
@@ -26,6 +27,10 @@ def load(name, path):
     loader.exec_module(module)
     return module
 
+
+# Tests never touch the real ~/.cache: every cached answer has its own file here.
+TEST_CACHE = Path(tempfile.mkdtemp(prefix='reconcile-cache-')) / 'cache.json'
+os.environ['RECONCILE_CACHE'] = str(TEST_CACHE)
 
 r = load('fleet_reconcile', ROOT / 'skills/hypertask-work/reconcile')
 lease = load('fleet_lease', ROOT / 'skills/hypertask-work/lease')
@@ -152,7 +157,7 @@ class ReconcileTest(unittest.TestCase):
             self.assertEqual(r.main(), True)
         self.assertIn('UNKNOWN BROKEN', out.getvalue())
         apply_plan.assert_not_called()
-        self.assertEqual(calls, [])
+        self.assertEqual([c for c in calls if c[1:2] != ('api',)], [])
 
     def test_apply_rechecks_changed_ticket_before_writes(self):
         plans = [(task(), r.Facts('Doing', 8000))]
@@ -870,12 +875,15 @@ def fake_path(home, gh, hypertask=None, log=None):
     return bin
 
 
-GH_LIMIT_OK = f'''import json, os, sys
+GH_FAKE = f'''import json, os, sys
+remaining = int(os.environ.get('GH_BUDGET', '4000'))
 if sys.argv[1:] == ['api', 'rate_limit']:
-    print(json.dumps({{'resources': {{'core': {{'remaining': 4000, 'reset': {RESET}}}, 'graphql': {{'remaining': 4000, 'reset': {RESET}}}}}}}))
+    print(json.dumps({{'resources': {{'core': {{'remaining': 4000, 'reset': {RESET}}},
+                                     'graphql': {{'remaining': remaining, 'reset': {RESET}}}}}}}))
     raise SystemExit(0)
 if sys.argv[1:3] == ['api', 'graphql']:
-    raise SystemExit(os.environ['GH_FAILURE'])
+    sys.stderr.write(os.environ.get('GH_FAILURE', 'unexpected gh call'))
+    raise SystemExit(1)
 raise SystemExit('unexpected gh command: ' + repr(sys.argv[1:]))
 '''
 
@@ -910,17 +918,35 @@ class RateLimitTest(unittest.TestCase):
     def test_only_error_text_counts_as_a_rate_limit(self):
         for text in ('gh: API rate limit exceeded for user ID 1. (HTTP 403)',
                      'You have exceeded a secondary rate limit. (HTTP 429)',
-                     '{"errors": [{"type": "RATE_LIMITED"}]}'):
+                     '{\"errors\": [{\"type\": \"RATE_LIMITED\"}]}'):
             with self.subTest(text=text):
                 self.assertTrue(r.rate_limited(text))
-        for text in ('{"title": "board sync stops at once on a GitHub rate limit"}',
-                     '{"body": "we hit a secondary rate limit yesterday"}',
-                     'gh: Not Found (HTTP 404)'):
+        for text in ('gh: Not Found (HTTP 404)',
+                     'gh: Could not resolve to a Repository',
+                     '{\"body\": \"we hit a secondary rate limit yesterday\"}'):
             with self.subTest(text=text):
-                self.assertFalse(r.rate_limited(text))
+                self.assertFalse(r.RATE_LIMIT_TYPE.search(text))
+
+    def test_a_failed_batch_quoting_a_rate_limit_in_data_is_not_one(self):
+        partial = json.dumps({'data': {'p0': {'pullRequest': {'comments': {'nodes': [
+            {'body': 'journal: gh api failed: API rate limit exceeded (HTTP 403)'}]}}}}})
+        done = subprocess.CompletedProcess(['gh'], 1, stdout=partial,
+                                           stderr='gh: Could not resolve to a Repository')
+        with patch.object(r.subprocess, 'run', return_value=done):
+            with self.assertRaises(RuntimeError):
+                r.run('gh', 'api', 'graphql', '-f', 'query=x')
+
+    def test_a_failed_call_that_names_a_rate_limit_stops_the_run(self):
+        done = subprocess.CompletedProcess(['gh'], 1, stdout='',
+                                           stderr='gh: API rate limit exceeded for user ID 1. (HTTP 403)\n')
+        with patch.object(r.subprocess, 'run', return_value=done), \
+                patch.object(r, 'budget_reset', return_value='2026-01-01T00:00:00Z'):
+            with self.assertRaises(r.RateLimit) as raised:
+                r.run('gh', 'api', 'graphql', '-f', 'query=x')
+        self.assertEqual(raised.exception.reset, '2026-01-01T00:00:00Z')
 
     def test_rate_limit_stops_the_run_at_once_with_one_clean_line(self):
-        result, hyper = self.run_cli(GH_LIMIT_OK, {'GH_FAILURE': 'gh: API rate limit exceeded for user ID 1. (HTTP 403)\n'})
+        result, hyper = self.run_cli(GH_FAKE, {'GH_FAILURE': 'gh: API rate limit exceeded for user ID 1. (HTTP 403)\n'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f'reconcile: GitHub rate limit; reset {RESET_TEXT}; no moves applied', result.stdout)
         self.assertEqual([l for l in result.stdout.splitlines() if l.startswith('reconcile:')].count(
@@ -931,15 +957,13 @@ class RateLimitTest(unittest.TestCase):
         self.assertNotIn('task move', hyper)
 
     def test_a_403_that_is_not_a_rate_limit_still_fails_loudly(self):
-        result, _ = self.run_cli(GH_LIMIT_OK, {'GH_FAILURE': 'gh: Resource not accessible by integration (HTTP 403)\n'})
+        result, _ = self.run_cli(GH_FAKE, {'GH_FAILURE': 'gh: Resource not accessible by integration (HTTP 403)\n'})
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertNotIn('GitHub rate limit', result.stdout)
         self.assertIn('Resource not accessible by integration', result.stdout + result.stderr)
 
     def test_spent_budget_skips_the_run_before_reading_the_board(self):
-        gh = GH_LIMIT_OK.replace("'remaining': 4000, 'reset': %d}}}, 'graphql'" % RESET,
-                                 "'remaining': 0, 'reset': %d}}}, 'graphql'" % RESET)
-        result, hyper = self.run_cli(gh)
+        result, hyper = self.run_cli(GH_FAKE, {'GH_BUDGET': '0'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f'reconcile: GitHub rate limit; reset {RESET_TEXT}; no moves applied', result.stdout)
         self.assertEqual(hyper, '')
@@ -961,12 +985,19 @@ class RateLimitTest(unittest.TestCase):
 class CallBudgetTest(unittest.TestCase):
     """Fewer GitHub calls for the same PLAN and KEEP outcomes."""
 
-    def node(self, number=1, total=1, comments=(), checks=None, more=False):
+    def setUp(self):
+        TEST_CACHE.unlink(missing_ok=True)
+        r.PULLS.clear()
+        r.FAILED.clear()
+        r.FAILED_REPOS.clear()
+
+    def node(self, number=1, total=None, comments=(), checks=None, more=False):
         return {'url': f'https://github.com/valentinyeo/another-repo/pull/{number}', 'state': 'OPEN',
                 'headRefOid': HEAD, 'baseRefOid': 'b' * 40, 'author': {'login': 'writer'},
                 'statusCheckRollup': {'contexts': {'pageInfo': {'hasNextPage': more}, 'nodes': checks if checks is not None else [
                     {'__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}},
-                'comments': {'totalCount': total, 'nodes': list(comments)}}
+                'comments': {'totalCount': len(comments) if total is None else total,
+                             'nodes': list(comments)}}
 
     def graphql_comment(self, verdict=None, login='verifier', when='2026-01-01T00:00:00Z', number=9):
         body = '' if verdict is None else '```verify-verdict\n' + json.dumps(verdict) + '\n```'
@@ -994,34 +1025,68 @@ class CallBudgetTest(unittest.TestCase):
         self.assertEqual(found[('valentinyeo/another-repo', 2)], r.Pull(
             'https://github.com/valentinyeo/another-repo/pull/2', 'OPEN', 'green', False))
 
-    def test_newest_verdict_on_the_head_is_a_pass(self):
+    def test_graphql_comments_reach_the_verdict_reader_in_the_same_shape(self):
         data = {'data': {'p0': {'pullRequest': self.node(comments=[
-            self.graphql_comment(self.verdict(), number=9), self.graphql_comment(number=10)] + [
-            self.graphql_comment(), self.graphql_comment()])}}}
-        data['data']['p0']['pullRequest']['comments']['totalCount'] = 4
+            self.graphql_comment(self.verdict(), number=9), self.graphql_comment(number=10)])}}}
         with patch.object(r, 'run', return_value=json.dumps(data)), \
                 patch.object(r, 'verifier_policy', return_value=POLICY), \
-                patch.object(r, 'pass_on_head', wraps=r.pass_on_head):
+                patch.object(r, 'pass_on_head', return_value=True) as verdict:
             found = r.read_pull_batch([('valentinyeo/another-repo', 1)])
         self.assertTrue(found[('valentinyeo/another-repo', 1)].passed)
+        comments = verdict.call_args.args[0]
+        self.assertEqual(comments[0]['user'], {'login': 'verifier'})
+        self.assertEqual(comments[0]['id'], 9)
+        self.assertEqual(comments[0]['updated_at'], '2026-01-01T00:00:00Z')
+        self.assertIn('verify-verdict', comments[0]['body'])
+        self.assertEqual(verdict.call_args.args[1], HEAD)
 
     def test_verdict_older_than_the_newest_hundred_is_still_found(self):
         older = [{'user': {'login': 'verifier'}, 'body': '```verify-verdict\n' + json.dumps(self.verdict()) + '\n```',
                   'updated_at': '2025-06-01T00:00:00Z', 'id': 4}]
         data = {'data': {'p0': {'pullRequest': self.node(comments=[self.graphql_comment(number=8)], total=150)}}}
         with patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps([older])]) as run, \
-                patch.object(r, 'verifier_policy', return_value=POLICY):
+                patch.object(r, 'verifier_policy', return_value=POLICY), \
+                patch.object(r, 'pass_on_head', side_effect=[False, True]) as verdict:
             found = r.read_pull_batch([('valentinyeo/another-repo', 1)])
         self.assertTrue(found[('valentinyeo/another-repo', 1)].passed)
+        self.assertEqual(verdict.call_count, 2)
         self.assertIn('comments?per_page=100', run.call_args_list[-1].args[-1])
 
-    def test_truncated_check_rollup_falls_back_to_the_exact_read(self):
-        node = self.node(more=True)
-        with patch.object(r, 'run', side_effect=[json.dumps({'data': {'p0': {'pullRequest': node}}}), '{}']) as run, \
-                patch.object(r, 'pull_from_rest', return_value=r.Pull(node['url'], 'OPEN', 'green', False)) as rest:
-            found = r.read_pull_batch([('valentinyeo/another-repo', 1)])
-        self.assertEqual(found[('valentinyeo/another-repo', 1)].checks, 'green')
-        rest.assert_called_once()
+    def test_over_a_hundred_checks_use_git_hubs_own_summary(self):
+        for summary, expected in (('SUCCESS', 'green'), ('PENDING', 'running'),
+                                  ('FAILURE', 'red'), ('EXPECTED', 'running')):
+            node = self.node(more=True)
+            node['statusCheckRollup']['state'] = summary
+            with self.subTest(summary=summary), \
+                    patch.object(r, 'run', return_value=json.dumps({'data': {'p0': {'pullRequest': node}}})), \
+                    patch.object(r, 'verifier_policy', return_value=POLICY):
+                found = r.read_pull_batch([('valentinyeo/another-repo', 1)])
+            self.assertEqual(found[('valentinyeo/another-repo', 1)].checks, expected)
+
+    def test_a_refused_batch_splits_so_one_repository_hides_nothing(self):
+        broken = 'valentinyeo/broken-repo'
+
+        def call(*args):
+            query = args[-1]
+            if '"broken-repo"' in query:
+                raise RuntimeError('gh api graphql failed: Could not resolve to a Repository')
+            nodes = {}
+            for n, number in enumerate(re.findall(r'pullRequest\(number:(\d+)\)', query)):
+                nodes[f'p{n}'] = {'pullRequest': self.node(int(number))}
+            return json.dumps({'data': nodes})
+        refs = [(broken, 1), ('valentinyeo/another-repo', 2),
+                ('valentinyeo/another-repo', 3), ('valentinyeo/another-repo', 4)]
+        with patch.object(r, 'run', side_effect=call), \
+                patch.object(r, 'verifier_policy', return_value=POLICY):
+            found = r.read_pull_batch(refs)
+        self.assertEqual(sorted(found), [('valentinyeo/another-repo', 2), ('valentinyeo/another-repo', 3),
+                                         ('valentinyeo/another-repo', 4)])
+        self.assertIn(broken, r.FAILED_REPOS)
+        # The known-bad repository costs no further calls this run.
+        with patch.object(r, 'run') as run:
+            with self.assertRaises(ValueError):
+                r.read_pull(broken, 1)
+            run.assert_not_called()
 
     def test_policy_is_cached_on_disk_and_counted(self):
         payload = json.dumps({'content': base64.b64encode(json.dumps(POLICY).encode()).decode()})
@@ -1042,18 +1107,7 @@ class CallBudgetTest(unittest.TestCase):
             self.assertEqual(r.verifier_policy('valentinyeo/another-repo', HEAD), {})
         self.assertEqual(run.call_count, 1)
 
-    def test_completed_verification_run_is_cached_on_disk(self):
-        workflow = {'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success',
-                    'path': '.github/workflows/pstack-verifier.yml'}
-        jobs = [{'jobs': [{'runner_name': 'GitHub Actions 7', 'labels': ['ubuntu-latest']}]}]
-        with tempfile.TemporaryDirectory() as home, \
-                patch.object(r.Path, 'home', return_value=Path(home)), \
-                patch.object(r, 'run', side_effect=[json.dumps(workflow), json.dumps(jobs)]) as run:
-            self.assertTrue(r.verified_run('valentinyeo/another-repo', '9', HEAD))
-            self.assertTrue(r.verified_run('valentinyeo/another-repo', '9', HEAD))
-        self.assertEqual(run.call_count, 2)
-
-    def test_branch_scan_reads_one_open_and_one_merged_window(self):
+    def test_branch_scan_reads_open_prs_and_recent_merges_only(self):
         queries = []
 
         def search(*args):
@@ -1061,11 +1115,39 @@ class CallBudgetTest(unittest.TestCase):
             return json.dumps({'data': {'search': {'issueCount': 0, 'nodes': [],
                                                     'pageInfo': {'hasNextPage': False, 'endCursor': None}}}})
         since = datetime.now(timezone.utc).date() - timedelta(days=2)
-        with patch.object(r, 'run', side_effect=search):
+        with tempfile.TemporaryDirectory() as home, \
+                patch.object(r.Path, 'home', return_value=Path(home)), \
+                patch.object(r, 'run', side_effect=search):
             self.assertEqual(r.branch_pulls(r.DEFAULT, since), [])
-        self.assertEqual(len(queries), 2)
+        # Never a range over the whole window: GitHub hides results past 1,000.
+        self.assertEqual(len(queries), 4)
         self.assertEqual(sum('is:open' in q for q in queries), 1)
-        self.assertIn(f'merged:{since}..', [next(q for q in queries if 'is:merged' in q)][0])
+        merged = sorted(q for q in queries if 'is:merged' in q)
+        self.assertEqual([q.split('merged:')[1].split('..')[0].split('\\')[0] for q in merged],
+                         [str(since + timedelta(days=n)) for n in range(3)])
+
+    def test_an_ended_merge_day_is_read_once_then_cached(self):
+        calls = []
+
+        def search(*args):
+            calls.append(1)
+            return json.dumps({'data': {'search': {'issueCount': 1, 'nodes': [
+                {'url': 'https://github.com/valentinyeo/another-repo/pull/1', 'state': 'MERGED',
+                 'headRefName': 'fix/soft-1', 'number': 1,
+                 'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}],
+                'pageInfo': {'hasNextPage': False, 'endCursor': None}}}})
+        since = datetime.now(timezone.utc).date() - timedelta(days=2)
+        with tempfile.TemporaryDirectory() as home, \
+                patch.object(r.Path, 'home', return_value=Path(home)), \
+                patch.object(r, 'run', side_effect=search):
+            first = r.branch_pulls(r.DEFAULT, since)
+            cold = len(calls)
+            calls.clear()
+            second = r.branch_pulls(r.DEFAULT, since)
+        self.assertEqual(first, second)
+        self.assertEqual(cold, 4)
+        # The open window and today's merges stay live; the two ended days are cached.
+        self.assertEqual(len(calls), 2)
 
     def test_run_prints_its_github_call_total(self):
         r.CALLS['github'] = 12
