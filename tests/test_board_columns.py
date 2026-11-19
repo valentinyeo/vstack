@@ -29,10 +29,15 @@ class BoardInstructionsTests(unittest.TestCase):
 
     def test_valentin_mode_points_at_the_skill(self):
         body = text('valentin-mode')
-        self.assertIn('The `hypertask-work` skill owns the ticket rules.', body)
-        self.assertIn('The `hypertask-work` skill has the command.', body)
-        self.assertIn('The `hypertask-work` skill owns the login, board, columns, worker leases and reconcile.', body)
+        self.assertGreaterEqual(body.count('hypertask-work'), 2,
+                                'valentin-mode must name the hypertask-work skill twice')
+        self.assertIn('hypertask feedback', body)
+        self.assertIn('/board-identity', body)
+        reconcile = [line for line in body.splitlines()
+                     if 'reconcile' in line and '--label' in line]
+        self.assertTrue(reconcile, 'valentin-mode must show a reconcile call with --label')
         self.assertNotIn('Board sync for orchestrators', body)
+        self.assertNotIn('/house-rules', body)
 
     def test_hypertask_work_names_the_real_columns(self):
         body = text('hypertask-work')

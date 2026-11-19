@@ -72,6 +72,13 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assert_check(output, 'FAIL', 'board sync')
         self.assertIn('apply ran before the dry run', output)
 
+    def test_one_command_fixture_grades_pass(self):
+        code, output, _target = self.grade_fixture('one-command')
+        self.assertEqual(code, 0, output)
+        self.assert_check(output, 'PASS', 'board sync')
+        self.assertIn('PASS board sync: dry run then apply, apply clean', output)
+        self.assertFalse(any(line.startswith('FAIL ') for line in output.splitlines()), output)
+
     def test_not_loaded_fixture_fails_loaded(self):
         code, output, _target = self.grade_fixture('not-loaded')
         self.assertEqual(code, 1, output)
