@@ -33,6 +33,7 @@ class AdvisorVerdict(unittest.TestCase):
             with contextlib.chdir(root), patch.dict(os.environ, env), \
                     patch('urllib.request.urlopen', side_effect=[io.BytesIO(json.dumps(r).encode()) for r in responses]), \
                     contextlib.redirect_stdout(io.StringIO()):
+                os.environ.pop('AI_GATEWAY_API_KEY', None)
                 if error:
                     with self.assertRaises(error):
                         runpy.run_path(str(SCRIPT), run_name='__main__')
