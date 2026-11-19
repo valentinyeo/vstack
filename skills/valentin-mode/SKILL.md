@@ -24,7 +24,7 @@ Machine setup: see your private reference.
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, with the brief in `brief.txt`. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. `~/.claude/rules/pstack-models.md` holds the lanes. Never ask him to pay more; bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, with the brief in a file named brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The always-on pstack models rule holds the lanes. Never ask him to pay more; bring the free option.
 
 ### Board rules
 
