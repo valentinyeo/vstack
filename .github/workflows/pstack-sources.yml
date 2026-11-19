@@ -129,24 +129,19 @@ jobs:
             --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
             --tools read,bash --mode json --print "$(cat /tmp/verify.md)" > verifier.jsonl
           git diff --exit-code
-      - name: Read verifier verdict
+      - name: Read verifier answer
         env:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 - <<'PYTHON'
-          import json, os, sys
+          import json, os
           from pathlib import Path
-          sys.path.insert(0, 'scripts')
-          from verdict import find_verdict
           events = [json.loads(line) for line in Path('verifier.jsonl').read_text().splitlines() if line.startswith('{')]
           assert any(e.get('type') == 'tool_execution_end' and e.get('toolName') == 'bash' for e in events), 'Verifier must execute checks'
           messages = [e['message'] for e in events if e.get('type') == 'message_end' and e.get('message', {}).get('role') == 'assistant']
           answer = '\n'.join(c.get('text', '') for c in messages[-1].get('content', []) if c.get('type') == 'text').strip()
-          verdict, why = find_verdict(answer)
-          assert verdict, why
+          assert answer, 'Verifier returned no answer'
           Path('verdict.md').write_text(answer + '\n\nVerifier model: ' + os.environ['VERIFIER_MODEL'] + '. Head `' + os.environ['PR_HEAD'] + '`.\n')
-          Path('verdict.value').write_text(verdict + '\n')
-          print(verdict)
           PYTHON
       - name: Post independent verdict
         env:
@@ -154,7 +149,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh pr comment "$PR_NUMBER" --body-file verdict.md
-          python3 scripts/verdict.py verdict.value
+          python3 scripts/verdict.py verdict.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -8,7 +8,7 @@ import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from verdict import find_verdict
+from verdict import find_verdict, json_answer
 
 
 def latest_pstack():
@@ -90,18 +90,15 @@ def main():
         if not calls:
             content = msg.get('content') or ''
             (OUT / 'verdict.txt').write_text(content)
-            raw = content.strip()
-            fence = raw.find('```')
-            if not raw.startswith('{') and fence != -1:
-                raw = raw[fence:].split('\n', 1)[1].rsplit('```', 1)[0].strip()
-            verdict = json.loads(raw)
+            verdict = json_answer(content)
             assert iteration > 0, 'verifier must drive the code'
             assert verdict['head_sha'] == os.environ['HEAD_SHA'], 'wrong head'
             value, why = find_verdict(content)
-            assert value == verdict['verdict'], why or 'verdict field and answer disagree'
+            assert value, why
+            assert value == verdict['verdict'], 'verdict field and answer disagree'
             (OUT / 'verdict.json').write_text(json.dumps(verdict, indent=2))
             (OUT / 'verdict.md').write_text(
-                f"{verdict['verdict']}\n\nVerifier model: {MODEL}, independent pstack verifier.\n"
+                f"{value}\n\nVerifier model: {MODEL}, independent pstack verifier.\n"
                 f"Head: `{verdict['head_sha']}`\n\n" + json.dumps(verdict, indent=2) + '\n')
             (OUT / 'transcript.json').write_text(json.dumps(messages, indent=2))
             print(content)

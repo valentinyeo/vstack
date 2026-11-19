@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/verdict.py'
 PR129 = ROOT / 'tests/fixtures/verdict/pr-129-verifier-comment.md'
 PR134 = ROOT / 'tests/fixtures/verdict/pr-134-glm-boxed-verdict.md'
+PR134_SKILL_LINT = ROOT / 'tests/fixtures/verdict/pr-134-skill-lint-answer.md'
+PR137 = ROOT / 'tests/fixtures/verdict/pr-137-column-verifier-answer.md'
 
 
 def load(name, path):
@@ -75,10 +77,33 @@ class VerdictForms(unittest.TestCase):
         self.assertEqual(self.read('FAIL\n\nQuoted:\n```\nPASS\n```\n'), 'FAIL')
 
     def test_pr_134_glm_answer_reads_pass(self):
+        # Job 135616666649 scored this answer "no verdict found"; the reviewer wrote PASS in a fence.
         self.assertEqual(self.read(PR134.read_text()), 'PASS')
+
+    def test_pr_137_answer_reads_pass_despite_a_json_verdict_in_its_prose(self):
+        # Job 135627154998 scored FAIL: the answer's pass verdict was beaten by the {"verdict": "FAIL"}
+        # it quotes while explaining the parser. A quoted JSON field is an example, not the answer.
+        text = PR137.read_text()
+        self.assertEqual(self.read(text), 'PASS')
+        self.assertIn('{"verdict": "FAIL"}', text)
+        self.assertEqual(self.read('VERDICT: PASS\n\nA quoted `{"verdict": "FAIL"}` never wins.\n'), 'PASS')
+        self.assertEqual(self.read('The JSON `{"verdict": "PASS"}` form works.\n'), None)
+        self.assertEqual(self.read('Note: a line of {"verdict": "FAIL"} is evidence.\n'), None)
+
+    def test_pr_134_skill_lint_answer_reads_pass_notes(self):
+        # Job 135616572179 read FAIL from "VERDICT: PASS+NOTES" through the missing-execution matcher.
+        self.assertEqual(self.read(PR134_SKILL_LINT.read_text()), 'PASS+NOTES')
 
     def test_pr_129_comment_reads_pass_notes(self):
         self.assertEqual(self.read(PR129.read_text()), 'PASS+NOTES')
+
+    def test_the_three_real_answers_from_19_november_2026_logs(self):
+        # One fixture per job the ticket names, each read through the parser every check uses.
+        for path, expected in ((PR137, 'PASS'), (PR134, 'PASS'), (PR134_SKILL_LINT, 'PASS+NOTES')):
+            with self.subTest(fixture=path.name):
+                result = subprocess.run([sys.executable, str(SCRIPT), str(path)],
+                                        capture_output=True, text=True, cwd=ROOT)
+                self.assertEqual((result.returncode, result.stdout), (0, expected + '\n'))
 
 
 class VerdictCommand(unittest.TestCase):
@@ -116,13 +141,21 @@ class SharedByEveryVerifier(unittest.TestCase):
         workflows = ROOT / '.github/workflows'
         self.assertIn('python3 scripts/verdict.py evidence/verdict.json',
                       (workflows / 'advisor-checks.yml').read_text())
-        sources = (workflows / 'pstack-sources.yml').read_text()
-        self.assertIn('from verdict import find_verdict', sources)
-        self.assertIn('python3 scripts/verdict.py verdict.value', sources)
+        self.assertIn('python3 scripts/verdict.py verdict.md',
+                      (workflows / 'pstack-sources.yml').read_text())
         self.assertIn('from verdict import PASSING, find_verdict',
                       (ROOT / 'scripts/column-verifier.py').read_text())
-        self.assertIn('sys.path.insert(0, str(Path(__file__).resolve().parents[1]))',
-                      (ROOT / 'scripts/verification/advisor.py').read_text())
+        advisor = (ROOT / 'scripts/verification/advisor.py').read_text()
+        self.assertIn('from verdict import find_verdict, json_answer', advisor)
+        self.assertIn('value, why = find_verdict(content)', advisor)
+
+    def test_no_workflow_parses_a_verdict_itself(self):
+        # A second inline parser is how job 135627154998 scored a PASS answer FAIL.
+        for path in sorted((ROOT / '.github/workflows').glob('*.yml')):
+            text = path.read_text()
+            with self.subTest(workflow=path.name):
+                self.assertNotIn('from verdict import', text, 'call scripts/verdict.py instead')
+                self.assertNotIn('verdict.value', text, 're-parsing a written verdict is a second read')
 
 
 if __name__ == '__main__':
