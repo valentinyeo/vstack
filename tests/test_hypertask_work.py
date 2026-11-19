@@ -1392,5 +1392,65 @@ class CallBudgetTest(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
 
+class LabelLockTest(unittest.TestCase):
+    """Two sessions sync different labels on one board at once."""
+
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        patcher = patch.object(r.Path, 'home', return_value=Path(self.home.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.held = []
+        self.addCleanup(self.release)
+
+    def release(self):
+        for handles in self.held:
+            for handle in handles:
+                handle.close()
+        self.held.clear()
+
+    def hold(self, label=None):
+        handles = r.acquire_locks(r.DEFAULT, label)
+        if handles is not None:
+            self.held.append(handles)
+        return handles
+
+    def test_two_labels_hold_the_board_at_once(self):
+        self.assertIsNotNone(self.hold('SOFT-2807'))
+        self.assertIsNotNone(self.hold('SOFT-2808'))
+
+    def test_the_same_label_twice_skips(self):
+        self.assertIsNotNone(self.hold('SOFT-2807'))
+        self.assertIsNone(self.hold('SOFT-2807'))
+
+    def test_the_same_label_in_another_case_or_spacing_skips(self):
+        self.assertIsNotNone(self.hold('Verification Backlog'))
+        self.assertIsNone(self.hold('verification  backlog'))
+
+    def test_whole_board_and_a_label_exclude_each_other(self):
+        self.assertIsNotNone(self.hold())
+        self.assertIsNone(self.hold('SOFT-2807'))
+        self.release()
+        self.assertIsNotNone(self.hold('SOFT-2807'))
+        self.assertIsNone(self.hold())
+
+    def test_the_label_lock_sits_beside_the_board_lock(self):
+        self.assertIsNotNone(self.hold('Verification Backlog'))
+        fleet = Path(self.home.name) / '.local/state/fleet'
+        self.assertEqual(r.label_lock_path(r.DEFAULT, 'Verification Backlog'),
+                         fleet / 'reconcile-label-verification-backlog.lock')
+        self.assertTrue((fleet / 'reconcile.lock').exists())
+
+    def test_a_skipped_labelled_run_names_its_label(self):
+        with patch.object(sys, 'argv', ['reconcile', '--label', 'Soft-2807']), \
+                patch.object(r.fcntl, 'flock', side_effect=BlockingIOError()), \
+                patch.object(r, 'tickets') as tickets, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), 0)
+        self.assertIn('SKIP board=2060 label=Soft-2807 | reconciliation already running', out.getvalue())
+        tickets.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
