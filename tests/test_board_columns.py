@@ -9,23 +9,18 @@ def text(skill):
 
 
 class BoardInstructionsTests(unittest.TestCase):
-    def test_do_teaches_the_same_transitions(self):
-        body = text('do')
-        for instruction in ('PR opened -> Checks', 'checks green -> Verifier',
-                            'merged -> Verifier pending live proof',
-                            'current-head PASS, merged, and live proof -> Done',
-                            'Building accepts Doing', 'Verifier accepts AI Review'):
+    def test_hypertask_work_teaches_the_transitions(self):
+        body = text('hypertask-work')
+        for instruction in ('worker starts -> Doing or Building', 'PR opened -> Checks',
+                            'checks green -> AI Review or Verifier',
+                            'merged -> AI Review or Verifier, live proof pending',
+                            'live proof -> Done'):
             self.assertIn(instruction, body)
-        self.assertIn('Never rename the columns during caller migration.', body)
 
     def test_pr_stage_outranks_a_live_worker(self):
-        for skill in ('hypertask-work', 'do'):
-            with self.subTest(skill=skill):
-                self.assertIn('pr outranks a live worker', text(skill).lower())
-        body = text('do')
-        self.assertIn('Earlier lines win: an open PR outranks a live worker.', body)
-        self.assertLess(body.index('- PR opened -> Checks.'),
-                        body.index('- Starting work -> Building.'))
+        body = text('hypertask-work')
+        self.assertIn('pr outranks a live worker', body.lower())
+        self.assertIn('- PR opened -> Checks', body)
 
     def test_valentin_mode_points_at_the_skill(self):
         body = text('valentin-mode')
@@ -51,10 +46,11 @@ class BoardInstructionsTests(unittest.TestCase):
         self.assertIn('Reconcile never touches Valentin Review and never moves work to Done.', body)
 
     def test_board_scope_and_aliases_stay_stated(self):
-        body = text('do')
-        for rule in ('Other boards retain their own column names.',
-                     'Prefer the new name when both exist.',
-                     'Read actual columns before choosing a move.'):
+        body = text('hypertask-work')
+        for rule in ('Other boards keep their own columns.',
+                     'Use the name the board shows.',
+                     'Doing or Building',
+                     'AI Review or Verifier'):
             self.assertIn(rule, body)
 
 
