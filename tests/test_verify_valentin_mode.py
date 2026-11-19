@@ -78,6 +78,16 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assert_check(output, 'FAIL', 'loaded')
         self.assertIn('the chat never invoked the valentin-mode skill', output)
 
+    def test_blocked_skill_fixture_fails_loaded(self):
+        code, output, _target = self.grade_fixture('blocked')
+        self.assertEqual(code, 1, output)
+        self.assert_check(output, 'FAIL', 'loaded')
+        self.assertIn('the valentin-mode skill call was blocked or failed', output)
+        self.assertFalse(any(line.startswith('FAIL loaded: the chat never')
+                             for line in output.splitlines()), output)
+        self.assertFalse(any(line.startswith('FAIL loaded: valentin-mode loaded')
+                             for line in output.splitlines()), output)
+
     def test_old_version_fixture_fails_loaded(self):
         code, output, _target = self.grade_fixture('old-version')
         self.assertEqual(code, 1, output)

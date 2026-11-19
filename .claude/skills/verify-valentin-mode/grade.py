@@ -169,18 +169,51 @@ def skill_invoked(tool_use):
     return skill in SKILL_NAMES or skill.endswith(':valentin-mode')
 
 
-def check_loaded(stream_path):
-    """PASS when the chat invoked the skill and its body reached the chat."""
-    lines = read_raw_events(stream_path)
-    invoked_at = None
+def skill_calls(lines):
+    """Return (line number, tool_use_id) for each valentin-mode Skill call."""
+    calls = []
     for number, _raw, event in lines:
         if event.get('type') != 'assistant':
             continue
-        if any(skill_invoked(block) for block in content_blocks(event, 'tool_use')):
+        for block in content_blocks(event, 'tool_use'):
+            if not skill_invoked(block):
+                continue
+            tool_use_id = block.get('id')
+            calls.append((number, tool_use_id if isinstance(tool_use_id, str) else ''))
+    return calls
+
+def call_results(lines):
+    """Map tool_use_id to [(line number, tool_result block)] from user lines."""
+    results = {}
+    for number, _raw, event in lines:
+        if event.get('type') != 'user':
+            continue
+        for block in content_blocks(event, 'tool_result'):
+            tool_use_id = block.get('tool_use_id')
+            if isinstance(tool_use_id, str):
+                results.setdefault(tool_use_id, []).append((number, block))
+    return results
+
+def check_loaded(stream_path):
+    """PASS when the chat invoked the skill, it ran, and its body reached the chat."""
+    lines = read_raw_events(stream_path)
+    calls = skill_calls(lines)
+    if not calls:
+        return FAIL, 'the chat never invoked the valentin-mode skill'
+    results = call_results(lines)
+    invoked_at = None
+    blocked = False
+    for number, tool_use_id in calls:
+        later = [block for at, block in results.get(tool_use_id, []) if at > number]
+        if any(block.get('is_error') is False for block in later):
             invoked_at = number
             break
+        if any(block.get('is_error') for block in later):
+            blocked = True
     if invoked_at is None:
-        return FAIL, 'the chat never invoked the valentin-mode skill'
+        if blocked:
+            return FAIL, 'the valentin-mode skill call was blocked or failed'
+        invoked_at = calls[0][0]
     for number, raw, event in lines:
         if number <= invoked_at:
             continue
