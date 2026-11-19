@@ -20,20 +20,19 @@ Machine setup: see your private reference.
 - **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat. The `hypertask-work` skill owns the ticket rules.
 - **Pace:** Answer each message within a minute. Long work runs in the background through `plan-pick --run`.
 
-## Models
+## Three tools
 
-Lanes, Valentin 19 Nov (SOFT-2812). Claude must last the whole week, and nothing runs out silently.
+### Subscription pacer
 
-- **Chats he talks to:** Claude. Orchestrator: Claude Opus at medium effort.
-- **Helpers inside a chat:** Sonnet at a small budget, only when `~/.local/bin/plan-pick --claude-helper` exits 0.
-- **Code workers:** never Claude. Write the brief to a file named brief.txt in the working folder and run `~/.local/bin/plan-pick --run`.
-- It tries lanes in this order: Vercel Token Pass (DeepSeek V4.1 Flash), DeepSeek direct, OpenCode Go, Codex, Cursor Composer 2.5, OpenRouter credit.
-- It skips a lane that is used up, ahead of pace, under its credit floor or just returned a 429.
-- `plan-pick` alone shows the pick and why. If no lane is left it says so and runs nothing.
-- **Reviews:** from another vendor than the author: `plan-pick --run --not-vendor <author vendor>`.
-- Cursor runs only Composer 2.5 or Grok 4.7. Never Baseten.
-- DeepSeek is always Flash. Fast mode stays off on every model.
-- **Free first:** never ask him to pay more. Bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, with the brief in a file named brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The always-on pstack models rule holds the lanes. Never ask him to pay more; bring the free option.
+
+### Board rules
+
+Board work follows the `hypertask-work` skill: your own login, a ticket before work, the true column. Get the login with `/board-identity`. Never write as Valentin; a guard blocks it.
+
+### Board sync
+
+The project's own agent notes (its AGENTS file or CLAUDE file) name its board in one line: `Hypertask board: <id>, label: <label>`. In your own loop, run `skills/hypertask-work/reconcile --board <id> --label <label>`, then again with `--apply --limit 5`. No central timer runs it.
 
 ## Working
 
