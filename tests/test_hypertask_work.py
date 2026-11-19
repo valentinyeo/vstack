@@ -10,7 +10,10 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import re
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -30,6 +33,17 @@ r = load('fleet_reconcile', ROOT / 'skills/hypertask-work/reconcile')
 lease = load('fleet_lease', ROOT / 'skills/hypertask-work/lease')
 NOW = 1800000000
 HEAD = 'a' * 40
+_CACHE = tempfile.TemporaryDirectory()
+
+
+def setUpModule():
+    r.CACHE = Path(_CACHE.name)
+
+
+def tearDownModule():
+    _CACHE.cleanup()
+
+
 POLICY = {'authors': {'writer': 'openai'}, 'verifiers': {'verifier': {
     'family': 'anthropic', 'workflow': '.github/workflows/pstack-verifier.yml'}}}
 
@@ -51,6 +65,15 @@ def comment(status='PASS', head=HEAD, when='2026-01-01', number=1):
 
 
 class ReconcileTest(unittest.TestCase):
+    def setUp(self):
+        for path in r.CACHE.glob('*'):
+            path.unlink()
+        r.read_pull.cache_clear()
+        r.pull_cache.cache_clear()
+        r.reset_github_count()
+        self.addCleanup(r.read_pull.cache_clear)
+        self.addCleanup(r.pull_cache.cache_clear)
+
     def test_parked_and_unknown_columns_never_move(self):
         for column in ('Not now', 'Some future column', ''):
             for age in (0, 8000):
@@ -389,20 +412,91 @@ class ReconcileTest(unittest.TestCase):
             self.assertIn('after:"next"', run.call_args_list[2].args[-1])
             self.assertEqual(run.call_count, 4)
 
-    def test_branch_scan_reads_open_prs_and_recent_merges_only(self):
+    def merged_pr(self, number, merged='2026-11-17T10:00:00Z'):
+        return {'url': f'https://github.com/valentinyeo/another-repo/pull/{number}', 'state': 'MERGED',
+                'headRefName': f'soft-{number}-work', 'number': number, 'mergedAt': merged,
+                'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+
+    def scan(self, merged=(), today=date(2026, 11, 18), since=date(2026, 11, 16), opened=()):
         queries = []
+
         def search(*args):
-            queries.append(next(a for a in args if 'search(query' in a))
-            return json.dumps({'data': {'search': {'issueCount': 0, 'nodes': [],
+            query = next(a for a in args if 'search(query' in a)
+            queries.append(query)
+            nodes = list(opened) if 'is:open' in query else list(merged)
+            return json.dumps({'data': {'search': {'issueCount': len(nodes), 'nodes': nodes,
                                                     'pageInfo': {'hasNextPage': False, 'endCursor': None}}}})
-        since = datetime.now(timezone.utc).date() - timedelta(days=2)
-        with patch.object(r, 'run', side_effect=search):
-            self.assertEqual(r.branch_pulls(r.DEFAULT, since), [])
-        self.assertEqual(len(queries), 4)
+        with patch.object(r, 'run', side_effect=search), patch.object(r, 'today', return_value=today):
+            return r.branch_pulls(r.DEFAULT, since), queries
+
+    def test_branch_scan_is_one_open_search_and_one_merged_search(self):
+        found, queries = self.scan(since=date(2026, 10, 20))
+        self.assertEqual(found, [])
+        self.assertEqual(len(queries), 2)
         self.assertEqual(sum('is:open' in q for q in queries), 1)
-        merged = sorted(q for q in queries if 'is:merged' in q)
-        self.assertEqual([q.split('merged:')[1].split('..')[0].split('\\')[0] for q in merged],
-                         [str(since + timedelta(days=n)) for n in range(3)])
+        self.assertEqual(sum('merged:2026-10-20..2026-11-18' in q.replace('\\', '') for q in queries), 1)
+
+    def test_merged_prs_are_cached_between_runs(self):
+        pr = self.merged_pr(5)
+        found, first = self.scan(merged=[pr])
+        self.assertEqual([p['url'] for p in found], [pr['url']])
+        self.assertEqual(len(first), 2)
+        found, second = self.scan(today=date(2026, 11, 18))
+        self.assertEqual([p['url'] for p in found], [pr['url']])
+        self.assertEqual(len(second), 2)
+        merged_queries = [q for q in second if 'is:merged' in q]
+        self.assertEqual(len(merged_queries), 1)
+        self.assertIn('merged:2026-11-17..2026-11-18', merged_queries[0].replace('\\', ''))
+
+    def test_cache_reaches_back_only_when_an_older_ticket_needs_it(self):
+        self.scan(since=date(2026, 11, 10))
+        found, queries = self.scan(since=date(2026, 11, 5), today=date(2026, 11, 19))
+        merged = sorted(q.split('merged:')[1].split(',')[0].split(')')[0].replace('\\', '').strip('"')
+                        for q in queries if 'is:merged' in q)
+        self.assertEqual(merged, ['2026-11-05..2026-11-10', '2026-11-17..2026-11-19'])
+
+    def test_cache_forgets_prs_that_left_the_window(self):
+        old = self.merged_pr(1, '2026-09-01T00:00:00Z')
+        self.scan(merged=[old], since=date(2026, 8, 1), today=date(2026, 11, 18))
+        found, _ = self.scan(since=date(2026, 10, 25), today=date(2026, 11, 18))
+        self.assertEqual(found, [])
+
+    def test_unreadable_cache_means_one_full_search(self):
+        self.scan()
+        (r.CACHE / 'merged-2060.json').write_text('{not json')
+        _, queries = self.scan(since=date(2026, 11, 1))
+        self.assertEqual(len(queries), 2)
+        self.assertIn('merged:2026-11-01..2026-11-18', [q for q in queries if 'is:merged' in q][0].replace('\\', ''))
+
+    def test_failed_search_keeps_the_cache(self):
+        self.scan(merged=[self.merged_pr(5)])
+        before = (r.CACHE / 'merged-2060.json').read_text()
+        with patch.object(r, 'run', side_effect=RuntimeError('rate limited')), \
+                patch.object(r, 'today', return_value=date(2026, 11, 19)), self.assertRaises(RuntimeError):
+            r.branch_pulls(r.DEFAULT, date(2026, 11, 16))
+        self.assertEqual((r.CACHE / 'merged-2060.json').read_text(), before)
+
+    def test_github_reads_run_one_after_another(self):
+        active, most, threads = [0], [0], set()
+        guard = threading.Lock()
+
+        def search(*args):
+            with guard:
+                active[0] += 1
+                most[0] = max(most[0], active[0])
+                threads.add(threading.get_ident())
+            time.sleep(0.01)
+            with guard:
+                active[0] -= 1
+            fields = [m for m in re.findall(r'q\d+:search', next(a for a in args if 'search(query' in a))]
+            data = {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': []} for n in range(len(fields))}
+            return json.dumps({'data': data})
+        keys = [f'SOFT-{n}' for n in range(1, 60)]
+        with patch.object(r, 'run', side_effect=search), patch.object(r, 'branch_pulls', return_value=[]), \
+                patch.object(r, 'head_pulls', return_value=[]):
+            r.discover(keys)
+        self.assertEqual(most[0], 1)
+        self.assertEqual(threads, {threading.get_ident()})
 
     def test_scan_window_starts_at_oldest_ticket_or_thirty_days(self):
         today = date(2026, 11, 18)
@@ -435,29 +529,6 @@ class ReconcileTest(unittest.TestCase):
             discover.assert_called_once_with(['SOFT-2', 'SOFT-1'], created={'SOFT-2': None, 'SOFT-1': None})
             self.assertIn("NOTE SOFT-2 | unparsable createdAt 'yesterday'", out.getvalue())
             self.assertIn('PLAN SOFT-1 Doing -> Todo', out.getvalue())
-
-    def test_reconcile_jobs_parses_and_validates(self):
-        with patch.dict(os.environ, {'RECONCILE_JOBS': '4'}):
-            self.assertEqual(r.jobs(), 4)
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(r.jobs(), 8)
-        for bad in ('abc', '0', '-2', '1.5', ''):
-            with self.subTest(bad=bad), \
-                    self.assertRaisesRegex(ValueError, 'RECONCILE_JOBS must be a whole number of at least 1'):
-                r.jobs(bad)
-
-    def test_bad_reconcile_jobs_stops_the_run_with_one_line(self):
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(r.Path, 'home', return_value=Path(directory)), \
-                patch.dict(os.environ, {'RECONCILE_JOBS': 'abc'}), \
-                patch.object(sys, 'argv', ['reconcile']), \
-                patch.object(r, 'tickets') as tickets, \
-                contextlib.redirect_stderr(io.StringIO()) as err, \
-                self.assertRaises(SystemExit) as raised:
-            r.main()
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("RECONCILE_JOBS must be a whole number of at least 1, not 'abc'", err.getvalue())
-        tickets.assert_not_called()
 
     def test_ticket_with_pr_merged_long_ago_still_owned(self):
         merged = {'url': 'https://github.com/valentinyeo/another-repo/pull/7', 'state': 'MERGED',
@@ -500,6 +571,125 @@ class ReconcileTest(unittest.TestCase):
             self.assertIn('--cursor', api.call_args.args)
         with patch.object(r, 'api', return_value={'tasks': [task()], 'total': 2}), self.assertRaisesRegex(ValueError, 'incomplete'):
             r.tickets()
+
+    def pr_view(self, state='MERGED', head=HEAD, checks=()):
+        return json.dumps({'url': 'https://github.com/valentinyeo/another-repo/pull/1', 'state': state,
+                           'headRefOid': head, 'baseRefOid': 'c' * 40, 'author': {'login': 'writer'},
+                           'statusCheckRollup': list(checks)})
+
+    def test_open_pr_read_is_one_call_without_comments_or_policy(self):
+        with patch.object(r, 'run', return_value=self.pr_view('OPEN', checks=[
+                {'__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}])) as run:
+            got = r.read_pull('valentinyeo/another-repo', 1)
+        run.assert_called_once()
+        self.assertEqual((got.state, got.checks, got.passed), ('OPEN', 'green', False))
+
+    def test_policy_is_read_only_when_a_verdict_names_the_head(self):
+        calls = []
+
+        def gh(*args):
+            calls.append(args)
+            if args[:2] == ('gh', 'pr'):
+                return self.pr_view()
+            if args[-1].endswith('/comments?per_page=100'):
+                return json.dumps([[{'user': {'login': 'someone'}, 'body': 'looks fine', 'updated_at': 'x', 'id': 1}]])
+            raise AssertionError(args)
+        with patch.object(r, 'run', side_effect=gh):
+            got = r.read_pull('valentinyeo/another-repo', 1)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(got.passed)
+        r.read_pull.cache_clear()
+        r.pull_cache.cache_clear()
+        policy_reads = []
+
+        def with_verdict(*args):
+            if args[-1].endswith('/comments?per_page=100'):
+                return json.dumps([[comment()]])
+            if '.verify/policy.json' in args[-1]:
+                policy_reads.append(args)
+                raise RuntimeError('gh api failed: gh: Not Found (HTTP 404)')
+            return gh(*args)
+        with patch.object(r, 'run', side_effect=with_verdict):
+            self.assertFalse(r.read_pull('valentinyeo/another-repo', 1).passed)
+        self.assertEqual(len(policy_reads), 1)
+
+    def test_broken_verdict_fence_does_not_read_policy(self):
+        calls = []
+
+        def gh(*args):
+            calls.append(args[-1] if args else '')
+            if args[:2] == ('gh', 'pr'):
+                return self.pr_view()
+            if str(args[-1]).endswith('/comments?per_page=100'):
+                return json.dumps([[{'user': {'login': 'verifier'}, 'body': '```verify-verdict\n{not json\n```',
+                                     'updated_at': '2026-01-01', 'id': 1}]])
+            raise AssertionError(args)
+        with patch.object(r, 'run', side_effect=gh):
+            self.assertFalse(r.read_pull('valentinyeo/another-repo', 9).passed)
+        self.assertEqual(len(calls), 2)
+
+    def test_merged_pr_is_read_once_then_reused_from_disk(self):
+        with patch.object(r, 'run', side_effect=[self.pr_view(), json.dumps([[]])]) as run:
+            first = r.read_pull('valentinyeo/another-repo', 1)
+            r.save_pull_cache()
+        self.assertEqual(run.call_count, 2)
+        r.read_pull.cache_clear()
+        r.pull_cache.cache_clear()
+        with patch.object(r, 'run') as run:
+            self.assertEqual(r.read_pull('valentinyeo/another-repo', 1), first)
+        run.assert_not_called()
+
+    def test_merged_pr_without_pass_is_read_again_after_six_hours(self):
+        with patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'run', side_effect=[self.pr_view(), json.dumps([[]])]):
+            r.read_pull('valentinyeo/another-repo', 1)
+            r.save_pull_cache()
+        for later, reads in ((NOW + 3600, 0), (NOW + 6 * 3600 + 1, 2)):
+            r.read_pull.cache_clear()
+            r.pull_cache.cache_clear()
+            with self.subTest(later=later), patch.object(r.time, 'time', return_value=later), \
+                    patch.object(r, 'run', side_effect=[self.pr_view(), json.dumps([[]])]) as run:
+                r.read_pull('valentinyeo/another-repo', 1)
+            self.assertEqual(run.call_count, reads)
+
+    def test_merged_pass_is_kept_for_good(self):
+        r.pull_cache()['valentinyeo/another-repo#1'] = {
+            'url': pull().url, 'state': 'MERGED', 'checks': 'green', 'passed': True, 'at': NOW - 90 * 86400, 'seen': NOW}
+        with patch.object(r.time, 'time', return_value=NOW), patch.object(r, 'run') as run:
+            self.assertTrue(r.read_pull('valentinyeo/another-repo', 1).passed)
+        run.assert_not_called()
+
+    def test_open_pr_is_never_cached(self):
+        with patch.object(r, 'run', return_value=self.pr_view('OPEN')):
+            r.read_pull('valentinyeo/another-repo', 1)
+            r.save_pull_cache()
+        self.assertEqual(r.pull_cache(), {})
+
+    def test_github_calls_are_counted_by_kind(self):
+        ok = subprocess.CompletedProcess([], 0, '{}', '')
+        with patch.object(r.subprocess, 'run', return_value=ok):
+            r.run('gh', 'api', 'graphql', '-f', 'query=x')
+            r.run('gh', 'pr', 'view', '1')
+            r.run('gh', 'api', '--paginate', 'repos/a/b/issues/1/comments')
+            r.run('hypertask', '--json', 'task', 'list')
+        self.assertEqual(r.github_calls(), (2, 1))
+        self.assertEqual(r.github_summary(), 'reconcile: github calls=3 (graphql=2, rest=1)')
+
+    def test_every_run_prints_its_github_call_count(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[task()]), \
+                patch.object(r, 'discover', side_effect=lambda *a, **k: (r.run('gh', 'api', 'graphql') and {})
+                              or {'SOFT-1': []}), \
+                patch.object(r.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '{}', '')), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(r.main(), 0)
+        self.assertIn('reconcile: github calls=1 (graphql=1, rest=0)', err.getvalue())
 
     def test_current_head_cross_family_actions_verdict(self):
         workflow = {'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success',
@@ -701,6 +891,13 @@ class ProcessLivenessTest(unittest.TestCase):
         r.process_tickets.cache_clear()
         self.addCleanup(r.process_tickets.cache_clear)
 
+    def proc_clear(self):
+        for entry in self.proc.iterdir():
+            for part in entry.iterdir():
+                part.unlink()
+            entry.rmdir()
+        r.process_tickets.cache_clear()
+
     def spawn(self, pid, argv, ppid=1):
         directory = self.proc / str(pid)
         directory.mkdir(parents=True, exist_ok=True)
@@ -747,6 +944,50 @@ class ProcessLivenessTest(unittest.TestCase):
         self.spawn(4002, ['ps', 'aux', 'SOFT-2730'])
         self.spawn(4003, ['rg', 'https://app.hypertask.ai/detail/project-2060/2730'])
         self.assertEqual(r.process_tickets(), set())
+
+    def test_commands_that_only_name_a_ticket_are_not_workers(self):
+        for argv in (['hypertask', 'task', 'search', 'SOFT-2730'],
+                     ['hypertask', '--json', 'task', 'get', 'SOFT-2730'],
+                     ['gh', 'search', 'prs', 'SOFT-2730'],
+                     ['gh', 'pr', 'list', '--search', 'SOFT-2730'],
+                     ['git', 'log', '--grep=SOFT-2730'],
+                     ['git', 'checkout', '-b', 'SOFT-2730-fix'],
+                     ['python3', '-c', 'print("SOFT-2730")'],
+                     ['python3', '-u', '/tmp/watch.py', 'SOFT-2730'],
+                     ['node', 'server.js', 'SOFT-2730'],
+                     ['vim', 'notes-SOFT-2730.md'],
+                     ['tail', '-f', '/tmp/SOFT-2730.log'],
+                     ['bash', '/home/v/wt/SOFT-2730/tools/preflight.sh', '/home/v/wt/SOFT-2730'],
+                     ['bash', '-c', 'source /tmp/snap.sh && export A=1 && gh search prs SOFT-2730'],
+                     ['/usr/bin/python3', '-u', '/home/v/.runtime/x.py', '--agent-host', 'claude', 'SOFT-2730'],
+                     ['timeout', '60', 'grep', '-rn', 'SOFT-2730', '/tmp'],
+                     ['ssh', 'host', 'hax -p SOFT-2730']):
+            with self.subTest(argv=argv):
+                self.proc_clear()
+                self.spawn(4001, argv)
+                self.assertEqual(r.process_tickets(), set())
+
+    def test_agent_clis_count_as_workers_behind_wrappers(self):
+        for argv in (['hax', '-p', '--model=gpt-6.1-sol', 'SOFT-2730 fix'],
+                     ['/home/v/.local/bin/hax', '-p', 'SOFT-2730'],
+                     ['timeout', '7200', '/home/v/.npm-global/bin/pi', '-p', '--model', 'x', 'Ticket SOFT-2730'],
+                     ['nohup', 'env', 'A=1', 'codex', 'exec', 'SOFT-2730'],
+                     ['/home/v/.local/bin/cursor-agent', '--use-system-ca', '/v/index.js', '-p', 'SOFT-2730'],
+                     ['claude', '-p', 'https://app.hypertask.ai/detail/project-2060/2730'],
+                     ['node', '/usr/lib/node_modules/pi/bin/pi', '-p', 'SOFT-2730'],
+                     ['bash', '-c', 'hax -p SOFT-2730 > /tmp/out']):
+            with self.subTest(argv=argv):
+                self.proc_clear()
+                self.spawn(4001, argv)
+                self.assertEqual(r.process_tickets(), {'SOFT-2730'})
+
+    def test_a_search_naming_a_ticket_does_not_move_it_to_doing(self):
+        self.spawn(4001, ['hypertask', 'task', 'search', 'SOFT-1'])
+        self.spawn(4002, ['gh', 'search', 'prs', 'SOFT-1'])
+        with patch.object(r, 'live_lease', return_value=False):
+            alive = r.worker_alive('SOFT-1', NOW)
+        self.assertFalse(alive)
+        self.assertEqual(r.target(r.Facts('Todo', 8000, alive)), ('Todo', 'no live worker and no PR'))
 
     def test_unreadable_proc_adds_no_liveness(self):
         with patch.object(r, 'PROC', self.proc / 'missing'):

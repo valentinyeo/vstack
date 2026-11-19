@@ -2,7 +2,6 @@
 """Reconcile configured boards from worker and GitHub facts. Default: read-only."""
 import argparse
 import base64
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from functools import lru_cache
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -26,25 +26,12 @@ VERIFICATION = 'verification'
 VERIFICATION_BACKLOG = 'Verification Backlog'
 WINDOW_DAYS = 30
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
+CACHE = Path(os.environ.get('FLEET_CACHE_DIR', Path.home() / '.local/state/fleet/cache'))
+PULL_RECHECK = 6 * 3600
 PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
-# A wrapper hides the command it runs behind the first word or two.
 WRAPPERS = {'sudo', 'env', 'nohup', 'timeout', 'exec', 'command', 'stdbuf', 'ionice', 'nice',
-            'bash', 'sh', 'dash', 'zsh', 'fish'}
-# These name a ticket only to read it.
-READERS = {'grep', 'egrep', 'fgrep', 'pgrep', 'pkill', 'rg', 'ag', 'ack', 'ps', 'top', 'htop',
-           'cat', 'head', 'tail', 'less', 'more', 'awk', 'sed', 'journalctl'}
-
-
-def jobs(value=None):
-    """RECONCILE_JOBS: how many independent reads run side by side."""
-    raw = os.environ.get('RECONCILE_JOBS', '8') if value is None else value
-    try:
-        count = int(raw)
-    except (TypeError, ValueError):
-        count = 0
-    if count < 1:
-        raise ValueError(f'RECONCILE_JOBS must be a whole number of at least 1, not {raw!r}')
-    return count
+            'bash', 'sh', 'dash', 'zsh', 'fish', 'node', 'nodejs', 'bun', 'deno', 'python', 'python3'}
+AGENTS = {'hax', 'pi', 'codex', 'cursor-agent', 'claude', 'opencode', 'gemini'}
 
 
 @dataclass(frozen=True)
@@ -193,8 +180,7 @@ def process_chain(pid=None, directory=None):
     return chain
 
 
-def reads_only(argv):
-    """A grep or ps whose arguments name a ticket only reads that ticket."""
+def is_worker(argv):
     for word in argv:
         text = word.strip().split()[0] if word.strip() else ''
         name = Path(text).name
@@ -202,16 +188,15 @@ def reads_only(argv):
             continue
         if re.fullmatch(r'\d+[smhd]?', text) or re.fullmatch(r'[A-Za-z_]\w*=.*', text):
             continue
-        return name in READERS
+        return name in AGENTS
     return False
 
 
 @lru_cache(maxsize=2)
 def process_tickets(board=DEFAULT):
-    """Fallback liveness for workers started without the lease wrapper.
+    """Fallback liveness for an agent CLI started without the lease wrapper.
 
-    hax -p, pi -p, codex exec, cursor-agent and claude -p carry their ticket in
-    their own command line. Word boundaries keep SOFT-27 out of SOFT-2730.
+    Word boundaries keep SOFT-27 out of SOFT-2730.
     """
     ignore = process_chain()
     url = re.compile(r'https://app\.hypertask\.ai/detail/project-' + str(board.id) + r'/([1-9]\d*)(?!\w)')
@@ -228,7 +213,7 @@ def process_tickets(board=DEFAULT):
             argv = [os.fsdecode(part) for part in (entry / 'cmdline').read_bytes().split(b'\0') if part]
         except OSError:
             continue
-        if not argv or reads_only(argv):
+        if not argv or not is_worker(argv):
             continue
         line = ' '.join(argv)
         found |= {board.prefix + '-' + match[1] for match in url.finditer(line)}
@@ -329,18 +314,27 @@ def timing_table():
     return '\n'.join(lines + [f'{"total":<10} {sum(row[0] for row in TIMING.values()):>8.1f} {sum(row[1] for row in TIMING.values()):>6}'])
 
 
-def parallel(function, items):
-    """Run independent reads side by side; the first failure is raised."""
-    items = list(items)
-    if not items:
-        return []
-    with ThreadPoolExecutor(min(jobs(), len(items))) as pool:
-        return list(pool.map(function, items))
+GITHUB = {'graphql': 0, 'rest': 0}
+
+
+def reset_github_count():
+    GITHUB.update(graphql=0, rest=0)
+
+
+def github_calls():
+    return GITHUB['graphql'], GITHUB['rest']
+
+
+def github_summary():
+    graphql, rest = github_calls()
+    return f'reconcile: github calls={graphql + rest} (graphql={graphql}, rest={rest})'
 
 
 def run(*args):
     with TIMING_LOCK:
         TIMING.setdefault(CURRENT[0], [0.0, 0])[1] += 1
+        if args[0] == 'gh':
+            GITHUB['graphql' if 'graphql' in args or args[1:2] == ('pr',) else 'rest'] += 1
     result = subprocess.run(args, capture_output=True, text=True, timeout=180)
     if result.returncode:
         raise RuntimeError(f'{args[0]} {args[1]} failed: {result.stderr.strip()[-250:]}')
@@ -399,6 +393,32 @@ def names_ticket(pull, key, board=DEFAULT):
                 re.search(field, body, re.I | re.M) or re.search(url, body))
 
 
+def today():
+    return datetime.now(timezone.utc).date()
+
+
+def cache_read(name):
+    try:
+        value = json.loads((CACHE / name).read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def cache_write(name, value):
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile('w', dir=CACHE, prefix=name + '.', delete=False) as temp:
+            try:
+                json.dump(value, temp)
+                temp.flush()
+                os.replace(temp.name, CACHE / name)
+            finally:
+                Path(temp.name).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def scan_window(board, kind, field, start, end):
     """Every PR of one kind in a date range. GitHub search shows 1,000 results at
     most, so a range over that is split until nothing can be hidden.
@@ -413,7 +433,7 @@ def scan_window(board, kind, field, start, end):
             after = ',after:' + json.dumps(cursor) if cursor else ''
             result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{search(query:' + json.dumps(query) +
                                     ',type:ISSUE,first:100' + after + '){issueCount pageInfo{hasNextPage endCursor} '
-                                    'nodes{... on PullRequest{url headRefName state number repository{nameWithOwner}}}}}'))
+                                    'nodes{... on PullRequest{url headRefName state number mergedAt repository{nameWithOwner}}}}}'))
             if result.get('errors'):
                 raise ValueError('GitHub branch search errors')
             page = result['data']['search']
@@ -434,19 +454,46 @@ def scan_window(board, kind, field, start, end):
     return found
 
 
+def merged_day(pull):
+    try:
+        return date.fromisoformat((pull.get('mergedAt') or '')[:10])
+    except ValueError:
+        return None
+
+
 def branch_pulls(board=DEFAULT, since=None):
-    """Search does not index branch substrings, so read branch metadata: every
-    open PR, plus PRs merged since `since`, one day per search. Older merged PRs
-    are found by title, body or link, or by head_pulls for old tickets.
-    """
-    today = datetime.now(timezone.utc).date()
-    since = since or today - timedelta(days=WINDOW_DAYS)
-    jobs = [('is:open', 'created', date(2008, 1, 1), today)]
-    jobs += [('is:merged', 'merged', since + timedelta(days=n), since + timedelta(days=n))
-             for n in range((today - since).days + 1)]
-    seen = {}
-    for pulls in parallel(lambda job: scan_window(board, *job), jobs):
-        for pull in pulls:
+    """Search does not index branch substrings, so read branch metadata."""
+    now = today()
+    floor = now - timedelta(days=WINDOW_DAYS)
+    since = since or floor
+    pulls = scan_window(board, 'is:open', 'created', date(2008, 1, 1), now)
+    name = f'merged-{board.id}.json'
+    cached = cache_read(name)
+    try:
+        have_from, have_through = date.fromisoformat(cached['from']), date.fromisoformat(cached['through'])
+        kept = {p['url']: p for p in cached['pulls']}
+        if not have_from <= have_through <= now:
+            raise ValueError('cache dates out of order')
+    except (KeyError, TypeError, ValueError):
+        have_from, have_through, kept = None, None, {}
+    if have_from is None:
+        ranges, start = [(since, now)], since
+    else:
+        # Re-read the last cached day too: search can lag a merge by a few minutes.
+        ranges, start = [(have_through - timedelta(days=1), now)], have_from
+        if since < have_from:
+            ranges.insert(0, (since, have_from))
+            start = since
+    for first, last in ranges:
+        for pull in scan_window(board, 'is:merged', 'merged', first, min(last, now)):
+            kept[pull['url']] = pull
+    if start < floor <= since:
+        start = floor
+    kept = {url: p for url, p in kept.items() if (merged_day(p) or start) >= start}
+    cache_write(name, {'from': str(start), 'through': str(now), 'pulls': list(kept.values())})
+    seen = {pull['url']: pull for pull in pulls}
+    for pull in kept.values():
+        if (merged_day(pull) or since) >= since:
             seen.setdefault(pull['url'], pull)
     return list(seen.values())
 
@@ -471,7 +518,7 @@ def head_pulls(keys, board=DEFAULT):
                 raise ValueError(f'{key}: GitHub branch search truncated')
             pulls += [p for p in page['nodes'] if p and p['state'] != 'CLOSED' and allowed_repository(p, board)]
         return pulls
-    return [pull for pulls in parallel(lookup, [keys[i:i + 12] for i in range(0, len(keys), 12)]) for pull in pulls]
+    return [pull for i in range(0, len(keys), 12) for pull in lookup(keys[i:i + 12])]
 
 
 def allowed_repository(pull, board):
@@ -518,7 +565,8 @@ def discover(keys, board=DEFAULT, created=None):
                 raise ValueError(f'{key}: GitHub search truncated')
             found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
     with phase('search'):
-        parallel(search, [keys[offset:offset + 12] for offset in range(0, len(keys), 12)])
+        for offset in range(0, len(keys), 12):
+            search(keys[offset:offset + 12])
     by_key = {key.upper(): key for key in keys}
     if by_key:
         since, old = scan_plan({key: (created or {}).get(key) for key in keys})
@@ -545,13 +593,13 @@ def check_state(checks):
 
 @lru_cache(maxsize=128)
 def verifier_policy(repo, ref):
-    result = subprocess.run(['gh', 'api', f'repos/{repo}/contents/.verify/policy.json?ref={ref}'],
-                            capture_output=True, text=True, timeout=60)
-    if result.returncode:
-        if '(HTTP 404)' in result.stderr:
+    try:
+        text = run('gh', 'api', f'repos/{repo}/contents/.verify/policy.json?ref={ref}')
+    except RuntimeError as error:
+        if '(HTTP 404)' in str(error):
             return {}
-        raise RuntimeError('GitHub verifier policy could not be read')
-    return json.loads(base64.b64decode(json.loads(result.stdout)['content']))
+        raise RuntimeError('GitHub verifier policy could not be read') from error
+    return json.loads(base64.b64decode(json.loads(text)['content']))
 
 
 def pass_on_head(comments, head, author, repo, policy):
@@ -586,18 +634,58 @@ def pass_on_head(comments, head, author, repo, policy):
                               'self-hosted' not in job.get('labels', []) for job in jobs)
 
 
+def verdict_on(comments, head):
+    for comment in comments:
+        match = re.search(r'```verify-verdict\s*\n(.*?)\n```', comment.get('body', ''), re.S)
+        if not match:
+            continue
+        try:
+            payload = json.loads(match[1])
+        except ValueError:
+            continue
+        if payload.get('head_sha') == head:
+            return True
+    return False
+
+
+@lru_cache(maxsize=1)
+def pull_cache():
+    return cache_read('pulls.json')
+
+
+def save_pull_cache():
+    cache = pull_cache()
+    if cache.get('_dirty'):
+        cache.pop('_dirty')
+        cutoff = time.time() - 45 * 86400
+        cache_write('pulls.json', {key: value for key, value in cache.items() if value['seen'] >= cutoff})
+
+
 def pull_facts(pull):
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
 @lru_cache(maxsize=2048)
 def read_pull(repo, number):
+    key, now, cache = f'{repo}#{number}', time.time(), pull_cache()
+    entry = cache.get(key)
+    if entry and (entry['passed'] or now - entry['at'] < PULL_RECHECK):
+        entry['seen'] = now
+        cache['_dirty'] = True
+        return Pull(entry['url'], entry['state'], entry['checks'], entry['passed'])
     detail = json.loads(run('gh', 'pr', 'view', str(number), '--repo', repo, '--json',
                             'url,state,headRefOid,baseRefOid,author,statusCheckRollup'))
-    comments_pages = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/issues/{number}/comments?per_page=100'))
-    comments = [comment for page in comments_pages for comment in page]
-    return Pull(detail['url'], detail['state'], check_state(detail['statusCheckRollup']),
-                pass_on_head(comments, detail['headRefOid'], detail['author']['login'], repo, verifier_policy(repo, detail['baseRefOid'])))
+    passed = False
+    if detail['state'] == 'MERGED':
+        comments_pages = json.loads(run('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/issues/{number}/comments?per_page=100'))
+        comments = [comment for page in comments_pages for comment in page]
+        if verdict_on(comments, detail['headRefOid']):
+            passed = pass_on_head(comments, detail['headRefOid'], detail['author']['login'], repo, verifier_policy(repo, detail['baseRefOid']))
+    got = Pull(detail['url'], detail['state'], check_state(detail['statusCheckRollup']), passed)
+    if got.state == 'MERGED':
+        cache[key] = dict(url=got.url, state=got.state, checks=got.checks, passed=got.passed, at=now, seen=now)
+        cache['_dirty'] = True
+    return got
 
 
 @lru_cache(maxsize=2048)
@@ -608,9 +696,7 @@ def read_product_pull(number):
 
 
 def prefetch(pulls, board=DEFAULT):
-    """Read every PR once, side by side. A failed read is retried and reported by
-    collect, so it still prints UNKNOWN for its own ticket only.
-    """
+    """A failed read is retried and reported by collect, so it still prints UNKNOWN for its own ticket only."""
     def load(ref):
         try:
             read_pull(*ref) if board == DEFAULT else read_product_pull(ref[1])
@@ -618,7 +704,9 @@ def prefetch(pulls, board=DEFAULT):
             pass
     refs = {(p['repository']['nameWithOwner'], p['number'])
             for found in pulls.values() for p in found if board == DEFAULT or p['state'] == 'OPEN'}
-    parallel(load, sorted(refs))
+    for ref in sorted(refs):
+        load(ref)
+    save_pull_cache()
 
 
 def is_verification(task):
@@ -703,6 +791,14 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
 
 
 def main():
+    reset_github_count()
+    try:
+        return board_run()
+    finally:
+        print(github_summary(), file=sys.stderr, flush=True)
+
+
+def board_run():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--board', type=int, choices=BOARDS, default=2060)
     parser.add_argument('--apply', action='store_true')
@@ -718,10 +814,6 @@ def main():
         parser.error('--section is read-only')
     if args.limit < 1:
         parser.error('--limit must be positive')
-    try:
-        jobs()
-    except ValueError as error:
-        parser.error(str(error))
     os.environ['PATH'] = f'{Path.home()}/.local/bin:' + os.environ.get('PATH', '')
     if args.apply and board.id == 15:
         require_board15_agent()
