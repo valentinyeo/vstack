@@ -14,9 +14,9 @@ Read `features/README.md` for the map.
 
 ## One-time setup (already done on this server, 19 Nov 2026)
 
-- Test login: agent "VVM Test Agent" on board 2060. Token at `~/.config/hypertask-agents/credentials/sessions/vvm-test-agent-agent-token`, chmod 600. Never print it.
+- Test login: agent "VVM Test Agent" on board 2060. Token at ~/.config/hypertask-agents/credentials/sessions/vvm-test-agent-agent-token (server only), chmod 600. Never print it.
 - Scratch ticket: SOFT-2849 on board 2060, label `vvm-test`. Test chats write there. Nobody works it.
-- Pacer log: `plan-pick --run` appends `{at, lane, session, cwd, not_vendor}` to `~/.local/state/token-ladder/launches.jsonl` (token-ladder PR 41). `session` is the chat's `CLAUDE_CODE_SESSION_ID`.
+- Pacer log: `plan-pick --run` appends `{at, lane, session, cwd, not_vendor}` to ~/.local/state/token-ladder/launches.jsonl (server only) (token-ladder PR 41). `session` is the chat's `CLAUDE_CODE_SESSION_ID`.
 
 If the test login is gone, recreate it with `board-identity` steps 4 to 6: name "VVM Test Agent", board 2060. Never reuse another agent's token.
 
@@ -41,7 +41,7 @@ A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worke
 
 Read the `loaded` line first. It needs a successful Skill call for valentin-mode and the Three tools section in the chat. "never invoked" on a normal run means the chat ignored the prompt; "without the Three tools section" means the install is old.
 
-The chat reads the installed copy in `~/.local/share/vstack`, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main.
+The chat reads the installed copy in ~/.local/share/vstack, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main.
 
 ## Drive
 
