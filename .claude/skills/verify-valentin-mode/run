@@ -93,6 +93,10 @@ if [ -n "$BREAK" ]; then
   # One argument: the comma is part of the flag value.
   # shellcheck disable=SC2054
   CLAUDE_ARGS+=(--setting-sources project,local)
+  # Without user hooks the write guard is off too. Block the claude.ai
+  # Hypertask connector, which is Valentin's login, so a broken chat
+  # cannot write on the board as him.
+  CLAUDE_ARGS+=(--disallowedTools 'mcp__claude_ai_Hypertask__*')
 fi
 echo "run: one test chat, 5 to 15 minutes; evidence $E" >&2
 set +e

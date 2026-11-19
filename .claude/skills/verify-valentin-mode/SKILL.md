@@ -77,5 +77,6 @@ Every change to `skills/valentin-mode`, `skills/hypertask-work`, the load hook o
 
 ## Gotchas
 
+- The broken run turns off user hooks, and with them the guard that stops writes as Valentin. `run` blocks the claude.ai Hypertask connector in that mode, because it signs in as him. The first broken run, on 19 Nov, wrote one note on SOFT-2849 as Valentin before this block existed.
 - Do not run two checks at once. The board sync takes a lock per board and the second run prints `SKIP`.
 - The verdict depends on the installed copies under `~/.local/share/vstack`, `~/.claude/skills` and `~/.local/bin`, not on this checkout.
