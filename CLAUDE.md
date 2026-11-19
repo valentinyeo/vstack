@@ -4,6 +4,8 @@ pstack owns workflow rules.
 vstack holds shared skills and checks.
 Product repos hold their own facts.
 
+Hypertask board: 2060, label: Vstack
+
 ## Rules and the checks that enforce them
 
 Changes land through pull requests.
