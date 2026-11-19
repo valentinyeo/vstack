@@ -1059,6 +1059,19 @@ class ProcessLivenessTest(unittest.TestCase):
         self.spawn(4001, ['bash', '-c', 'grep -rn SOFT-2730 /tmp/ft-runs'])
         self.spawn(4002, ['ps', 'aux', 'SOFT-2730'])
         self.spawn(4003, ['rg', 'https://app.hypertask.ai/detail/project-2060/2730'])
+        self.spawn(4004, ['grep', '-r', 'https://app.hypertask.ai/detail/project-2060/2730', '/tmp'])
+        self.spawn(4005, ['pgrep', '-af', 'SOFT-2730'])
+        self.assertEqual(r.process_tickets(), set())
+
+    def test_lease_wrapper_counts_as_a_worker(self):
+        self.spawn(4001, ['/usr/bin/python3', '/home/v/.local/share/vstack/skills/hypertask-work/lease',
+                          'SOFT-2730', 'run', '--', 'pi', '-p', 'fix the release gate'])
+        self.spawn(4002, ['bash', '-c', 'cd /tmp && pi -p https://app.hypertask.ai/detail/project-2060/2731'])
+        self.assertEqual(r.process_tickets(), {'SOFT-2730', 'SOFT-2731'})
+
+    def test_lease_without_a_run_does_not_count(self):
+        self.spawn(4001, ['bash', '-c', 'lease SOFT-2730 watch --pid 4001'])
+        self.spawn(4002, ['python3', '/x/skills/hypertask-work/lease', 'SOFT-2730', 'beat'])
         self.assertEqual(r.process_tickets(), set())
 
     def test_commands_that_only_name_a_ticket_are_not_workers(self):
