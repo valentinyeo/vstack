@@ -8,7 +8,7 @@ import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from verdict import find_verdict
+from verdict import find_verdict, json_answer
 from verifier_lanes import LANES, attempts, models
 
 OPENCODE_URL = 'https://opencode.ai/zen/go/v1/chat/completions'
@@ -67,15 +67,6 @@ class Retry(Exception):
         self.error = error
 
 
-def answer_of(content):
-    """The report in a final answer, from raw JSON or a fenced block."""
-    raw = content.strip()
-    fence = raw.find('```')
-    if not raw.startswith('{') and fence != -1:
-        raw = raw[fence:].split('\n', 1)[1].rsplit('```', 1)[0].strip()
-    return json.loads(raw)
-
-
 def request(lane, model, key, messages, tool, final):
     """One chat completion on the lane's own URL, with that lane's key."""
     body = {'model': model, 'messages': messages, 'tools': [tool], 'max_tokens': 6500}
@@ -117,7 +108,7 @@ def verify(lane, model, key, prompt, tool, out):
                 raise Retry(f'empty reply from {lane}/{model}')
             (out / 'verdict.txt').write_text(content)
             try:
-                verdict = answer_of(content)
+                verdict = json_answer(content)
             except ValueError as bad:
                 raise Retry(f'answer from {lane}/{model} is not a report: {bad}', bad)
             assert iteration > 0, 'verifier must drive the code'
