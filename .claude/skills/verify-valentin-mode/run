@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Start one fresh headless Claude Code chat and grade whether it used
-# valentin mode's three tools. Usage: run [--break no-valentin-mode] [--keep]
+# Start one fresh headless Claude Code chat with /valentin-mode and grade
+# whether it was started by that command, cannot start valentin mode itself,
+# and used valentin mode's three tools. Usage: run [--break no-valentin-mode] [--keep]
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -11,7 +12,6 @@ BOARD=2060
 LABEL=vvm-test
 
 BREAK=""
-BREAK_ARGS=()
 KEEP=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -82,25 +82,34 @@ git -C "$W" add CLAUDE.md
 git -C "$W" -c user.name=vvm -c user.email=vvm@invalid commit -qm init
 printf '%s\n' "$W" > "$E/workdir"
 
-# 5. Prompt. It never names the tools; valentin mode has to.
-cat > "$E/prompt.txt" <<'EOF'
-Use the valentin-mode skill for this job. Small job on ticket SOFT-2849: have a code worker create hello.txt in this folder containing exactly the line "hello from the worker". When it exists, leave a one-line note on the ticket that it is done, then sync the board. Work without asking me anything.
+# 5. Prompt. It never names the tools; valentin mode has to. Valentin mode
+# starts only from its slash command, never on its own, so the command is the
+# first word of the prompt.
+JOB=$(cat <<'EOF'
+Small job on ticket SOFT-2849: have a code worker create hello.txt in this folder containing exactly the line "hello from the worker". When it exists, leave a one-line note on the ticket that it is done, then sync the board. Work without asking me anything.
 EOF
-PROMPT=$(cat "$E/prompt.txt")
+)
 if [ -n "$BREAK" ]; then
-  # The broken run is the same job without the skill request.
-  PROMPT=${PROMPT#Use the valentin-mode skill for this job. }
-  printf '%s\n' "$PROMPT" > "$E/prompt.txt"
-  # The break blocks only the valentin-mode skill, so hooks and the write guard stay on.
-  BREAK_ARGS=(--disallowedTools 'Skill(valentin-mode)')
+  # The broken run is the same job with no slash command, so the chat is never
+  # told to start valentin mode.
+  printf '%s\n' "$JOB" > "$E/prompt.txt"
+else
+  printf '/valentin-mode %s\n' "$JOB" > "$E/prompt.txt"
+fi
+PROMPT=$(cat "$E/prompt.txt")
+
+# 5b. The installed skill as the chat sees it, so the grade can read its
+# frontmatter and its version.
+INSTALLED="$HOME/.local/share/vstack/skills/valentin-mode/SKILL.md"
+: > "$E/installed-valentin-mode.md"
+if [ -f "$INSTALLED" ]; then
+  cp "$INSTALLED" "$E/installed-valentin-mode.md"
 fi
 
-# 6. One fresh headless chat in the scratch repo. Every run uses the same
-# claude flags; the broken run only drops the skill request from the prompt
-# and blocks the valentin-mode skill itself.
+# 6. One fresh headless chat in the scratch repo. Both runs use the same
+# claude flags; the broken run only drops the slash command from the prompt.
 CLAUDE_ARGS=(--model sonnet --permission-mode bypassPermissions
-             --output-format stream-json --verbose --max-turns 40
-             "${BREAK_ARGS[@]}")
+             --output-format stream-json --verbose --max-turns 40)
 echo "run: one test chat, 5 to 15 minutes; evidence $E" >&2
 set +e
 (cd "$W" && SHIP_SESSION_NAME="$AGENT" timeout 1500 "$HOME/.local/bin/claude" \

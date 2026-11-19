@@ -16,6 +16,10 @@ PASS = 'PASS'
 FAIL = 'FAIL'
 SKILL_NAMES = ('valentin-mode', 'vstack:valentin-mode')
 SKILL_BODY_MARKER = '## Three tools'
+COMMAND = 'valentin-mode'
+PROMPT_START = '/' + COMMAND
+INSTALLED_NAME = 'installed-valentin-mode.md'
+DISABLE_LINE = 'disable-model-invocation: true'
 NO_SESSION = 'no session id in stream'
 TASK_LINE = 'hello from the worker'
 
@@ -43,22 +47,6 @@ def read_text(path):
         return path.read_text(errors='replace')
     except OSError:
         return ''
-
-
-def read_raw_events(path):
-    """Return (line number, raw text, object) for each JSON object line."""
-    entries = []
-    for number, line in enumerate(read_text(path).splitlines()):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            event = json.loads(stripped)
-        except ValueError:
-            continue
-        if isinstance(event, dict):
-            entries.append((number, stripped, event))
-    return entries
 
 
 def read_jsonl(path):
@@ -169,57 +157,46 @@ def skill_invoked(tool_use):
     return skill in SKILL_NAMES or skill.endswith(':valentin-mode')
 
 
-def skill_calls(lines):
-    """Return (line number, tool_use_id) for each valentin-mode Skill call."""
-    calls = []
-    for number, _raw, event in lines:
-        if event.get('type') != 'assistant':
+def command_installed(events):
+    """True when an init event lists valentin-mode among the slash commands."""
+    for event in events:
+        if event.get('type') != 'system' or event.get('subtype') != 'init':
             continue
-        for block in content_blocks(event, 'tool_use'):
-            if not skill_invoked(block):
-                continue
-            tool_use_id = block.get('id')
-            calls.append((number, tool_use_id if isinstance(tool_use_id, str) else ''))
-    return calls
+        commands = event.get('slash_commands')
+        if isinstance(commands, list) and COMMAND in commands:
+            return True
+    return False
 
-def call_results(lines):
-    """Map tool_use_id to [(line number, tool_result block)] from user lines."""
-    results = {}
-    for number, _raw, event in lines:
-        if event.get('type') != 'user':
-            continue
-        for block in content_blocks(event, 'tool_result'):
-            tool_use_id = block.get('tool_use_id')
-            if isinstance(tool_use_id, str):
-                results.setdefault(tool_use_id, []).append((number, block))
-    return results
 
-def check_loaded(stream_path):
-    """PASS when the chat invoked the skill, it ran, and its body reached the chat."""
-    lines = read_raw_events(stream_path)
-    calls = skill_calls(lines)
-    if not calls:
-        return FAIL, 'the chat never invoked the valentin-mode skill'
-    results = call_results(lines)
-    invoked_at = None
-    blocked = False
-    for number, tool_use_id in calls:
-        later = [block for at, block in results.get(tool_use_id, []) if at > number]
-        if any(block.get('is_error') is False for block in later):
-            invoked_at = number
-            break
-        if any(block.get('is_error') for block in later):
-            blocked = True
-    if invoked_at is None:
-        if blocked:
-            return FAIL, 'the valentin-mode skill call was blocked or failed'
-        invoked_at = calls[0][0]
-    for number, raw, event in lines:
-        if number <= invoked_at:
-            continue
-        if event.get('type') == 'user' and SKILL_BODY_MARKER in raw:
-            return PASS, 'the chat invoked the valentin-mode skill (three tools version)'
-    return FAIL, 'valentin-mode loaded without the Three tools section'
+def frontmatter_lines(text):
+    """Return the lines inside the leading --- block, else an empty list."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != '---':
+        return []
+    for index in range(1, len(lines)):
+        if lines[index].strip() == '---':
+            return lines[1:index]
+    return []
+
+
+def check_loaded(evidence):
+    """PASS when the chat was started with /valentin-mode and cannot start it alone."""
+    events = read_jsonl(evidence / 'stream.jsonl')
+    if any(skill_invoked(tool_use) for tool_use in tool_uses(events)):
+        return FAIL, 'the chat started valentin mode by itself'
+    prompt = read_text(evidence / 'prompt.txt').strip()
+    if not prompt.startswith(PROMPT_START):
+        return FAIL, 'the chat was not told /valentin-mode'
+    if not command_installed(events):
+        return FAIL, 'valentin-mode is not installed as a command'
+    installed = read_text(evidence / INSTALLED_NAME)
+    if SKILL_BODY_MARKER not in installed:
+        return FAIL, 'installed valentin-mode lacks the Three tools section'
+    frontmatter = [line.strip() for line in frontmatter_lines(installed)]
+    if DISABLE_LINE not in frontmatter:
+        return FAIL, 'installed valentin-mode can still start by itself'
+    return PASS, ('the chat was started with /valentin-mode '
+                  '(three tools version, no self-start)')
 
 
 def board_writes(evidence, started_at):
@@ -366,7 +343,7 @@ def grade(evidence, agent, ticket, board, label):
     session_id = find_session(events)
 
     checks = []
-    name, result = 'loaded', check_loaded(evidence / 'stream.jsonl')
+    name, result = 'loaded', check_loaded(evidence)
     checks.append((name, result))
 
     if session_id is None:

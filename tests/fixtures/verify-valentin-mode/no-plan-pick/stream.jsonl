@@ -1,7 +1,4 @@
-{"type": "system", "subtype": "init", "session_id": "sid-no-plan-pick"}
-{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_skill", "name": "Skill", "input": {"skill": "valentin-mode"}}]}, "session_id": "sid-no-plan-pick"}
-{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_skill", "is_error": false, "content": "Launching skill: valentin-mode"}]}, "session_id": "sid-no-plan-pick"}
-{"type": "user", "message": {"content": [{"type": "text", "text": "# Valentin mode\n\n## Three tools\n\nboard login, plan-pick --run, reconcile.\n"}]}, "session_id": "sid-no-plan-pick"}
+{"type": "system", "subtype": "init", "session_id": "sid-no-plan-pick", "slash_commands": ["valentin-mode", "pstack:poteto-mode", "house-rules"]}
 {"type": "assistant", "message": {"content": [{"type": "text", "text": "Starting the worker."}]}, "session_id": "sid-no-plan-pick"}
 {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "~/.local/bin/plan-pick --run brief.txt"}}]}, "session_id": "sid-no-plan-pick"}
 {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1", "is_error": false, "content": "ok"}]}, "session_id": "sid-no-plan-pick"}

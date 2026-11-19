@@ -1,0 +1,12 @@
+---
+name: valentin-mode
+description: >-
+  Work in Valentin's style on top of pstack, on his projects. Starts only
+  when invoked with /valentin-mode, never on its own.
+---
+
+# Valentin mode
+
+## Three tools
+
+board login, plan-pick --run, reconcile.

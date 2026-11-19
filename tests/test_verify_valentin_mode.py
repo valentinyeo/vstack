@@ -45,8 +45,8 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assert_check(output, 'PASS', 'pacer')
         self.assert_check(output, 'PASS', 'task')
         self.assert_check(output, 'PASS', 'board sync')
-        self.assertIn('PASS loaded: the chat invoked the valentin-mode skill '
-                      '(three tools version)', output)
+        self.assertIn('PASS loaded: the chat was started with /valentin-mode '
+                      '(three tools version, no self-start)', output)
         self.assertFalse(any(line.startswith('FAIL ') for line in output.splitlines()), output)
         verdict = json.loads((target / 'verdict.json').read_text())
         self.assertEqual(verdict['verdict'], 'PASS')
@@ -76,24 +76,40 @@ class VerifyValentinModeGrade(unittest.TestCase):
         code, output, _target = self.grade_fixture('not-loaded')
         self.assertEqual(code, 1, output)
         self.assert_check(output, 'FAIL', 'loaded')
-        self.assertIn('the chat never invoked the valentin-mode skill', output)
+        self.assertIn('the chat was not told /valentin-mode', output)
+        self.assertFalse(any(line.startswith('FAIL loaded: the chat started')
+                             for line in output.splitlines()), output)
 
-    def test_blocked_skill_fixture_fails_loaded(self):
-        code, output, _target = self.grade_fixture('blocked')
+    def test_self_start_fixture_fails_loaded(self):
+        code, output, _target = self.grade_fixture('self-start')
         self.assertEqual(code, 1, output)
         self.assert_check(output, 'FAIL', 'loaded')
-        self.assertIn('the valentin-mode skill call was blocked or failed', output)
-        self.assertFalse(any(line.startswith('FAIL loaded: the chat never')
+        self.assertIn('the chat started valentin mode by itself', output)
+        self.assertFalse(any(line.startswith('FAIL loaded: the chat was not told')
                              for line in output.splitlines()), output)
-        self.assertFalse(any(line.startswith('FAIL loaded: valentin-mode loaded')
+        self.assertFalse(any(line.startswith('FAIL loaded: valentin-mode is not')
+                             for line in output.splitlines()), output)
+        self.assertFalse(any(line.startswith('FAIL loaded: installed valentin-mode')
                              for line in output.splitlines()), output)
 
     def test_old_version_fixture_fails_loaded(self):
         code, output, _target = self.grade_fixture('old-version')
         self.assertEqual(code, 1, output)
         self.assert_check(output, 'FAIL', 'loaded')
-        self.assertIn('valentin-mode loaded without the Three tools section', output)
-        self.assertFalse(any(line.startswith('FAIL loaded: the chat never')
+        self.assertIn('installed valentin-mode lacks the Three tools section', output)
+        self.assertFalse(any(line.startswith('FAIL loaded: the chat started')
+                             for line in output.splitlines()), output)
+        self.assertFalse(any(line.startswith('FAIL loaded: installed valentin-mode can')
+                             for line in output.splitlines()), output)
+
+    def test_auto_start_on_fixture_fails_loaded(self):
+        code, output, _target = self.grade_fixture('auto-start-on')
+        self.assertEqual(code, 1, output)
+        self.assert_check(output, 'FAIL', 'loaded')
+        self.assertIn('installed valentin-mode can still start by itself', output)
+        self.assertFalse(any(line.startswith('FAIL loaded: the chat started')
+                             for line in output.splitlines()), output)
+        self.assertFalse(any(line.startswith('FAIL loaded: installed valentin-mode lacks')
                              for line in output.splitlines()), output)
 
     def test_apply_no_label_fixture_fails_board_sync(self):
@@ -137,21 +153,38 @@ class VerifyValentinModeRunScript(unittest.TestCase):
         result = subprocess.run(['bash', '-n', str(RUN)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_run_script_blocks_only_the_valentin_mode_skill(self):
+    def break_branch(self):
+        lines = RUN.read_text().splitlines()
+        starts = [i for i, line in enumerate(lines)
+                  if line.strip() == 'if [ -n "$BREAK" ]; then']
+        self.assertEqual(len(starts), 1, 'expected one break branch in run')
+        ends = [i for i in range(starts[0] + 1, len(lines))
+                if lines[i].strip() in ('else', 'fi')]
+        self.assertTrue(ends, 'the break branch is never closed')
+        return lines[starts[0] + 1:ends[0]]
+
+    def test_run_script_never_blocks_the_skill_or_drops_hooks(self):
         text = RUN.read_text()
-        lines = text.splitlines()
-        self.assertNotIn('setting-sources', text, 'the break must not drop user hooks')
-        self.assertEqual(
-            text.count('Skill(valentin-mode)'), 1,
-            'the only blocked tool must be the valentin-mode skill')
-        tool_lines = [i for i, line in enumerate(lines) if 'disallowedTools' in line]
-        self.assertEqual(len(tool_lines), 1, 'expected exactly one disallowedTools flag in run')
-        self.assertIn("--disallowedTools 'Skill(valentin-mode)'", lines[tool_lines[0]])
-        break_lines = [i for i, line in enumerate(lines)
-                       if line.strip() == 'if [ -n "$BREAK" ]; then']
-        self.assertEqual(len(break_lines), 1, 'expected one break branch in run')
-        self.assertGreater(tool_lines[0], break_lines[0],
-                           'the tool block must sit inside the break branch')
+        self.assertNotIn('setting-sources', text, 'a run must never drop user hooks')
+        self.assertNotIn('disallowedTools', text,
+                         'both runs must use the same claude flags')
+        self.assertNotIn('Skill(valentin-mode)', text,
+                         'the chat itself must prove it cannot start valentin mode')
+
+    def test_run_script_builds_both_prompts(self):
+        text = RUN.read_text()
+        self.assertEqual(text.count("printf '/valentin-mode %s\\n' \"$JOB\""), 1,
+                         'the normal run must start the prompt with /valentin-mode')
+        branch = '\n'.join(self.break_branch())
+        self.assertIn("printf '%s\\n' \"$JOB\"", branch,
+                      'the break must build the job-only prompt')
+        self.assertNotIn('/valentin-mode', branch,
+                         'the break must never tell the chat /valentin-mode')
+
+    def test_run_script_copies_the_installed_skill(self):
+        text = RUN.read_text()
+        self.assertIn('$HOME/.local/share/vstack/skills/valentin-mode/SKILL.md', text)
+        self.assertIn('installed-valentin-mode.md', text)
 
     def test_grade_script_has_shebang(self):
         self.assertEqual(GRADE.read_text().splitlines()[0], '#!/usr/bin/env python3')
