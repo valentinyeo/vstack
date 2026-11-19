@@ -8,9 +8,9 @@ description: >-
 
 Prior art: checked pstack (create-verification-skill, maintain-verification-skill), vstack (hypertask-work, do) and house-rules. None fits, because they define the tools or how to build a check, not a check that a fresh chat uses them. This skill is the `verify-<app>` skill pstack create-verification-skill asks for, with valentin mode as the app.
 
-The surface is a whole chat, not one script. Each tool has its own unit tests. Valentin mode is never pushed into chats; a chat or Valentin invokes it (Valentin, 19 Nov). This skill proves that a fresh chat which invokes it uses all three tools on a real task, and that the same chat without it does not.
+Each tool has its own unit tests; this proves a whole chat uses them. Valentin mode is never pushed into chats; it is invoked (Valentin, 19 Nov). A chat that invokes it must use all three tools; a chat blocked from it must fail.
 
-Read `features/README.md` for the map, then the feature file for the check you are looking at.
+Read `features/README.md` for the map.
 
 ## One-time setup (already done on this server, 19 Nov 2026)
 
@@ -18,7 +18,7 @@ Read `features/README.md` for the map, then the feature file for the check you a
 - Scratch ticket: SOFT-2849 on board 2060, label `vvm-test`. Test chats write there. Nobody works it.
 - Pacer log: `plan-pick --run` appends `{at, lane, session, cwd, not_vendor}` to `~/.local/state/token-ladder/launches.jsonl` (token-ladder PR 41). `session` is the chat's `CLAUDE_CODE_SESSION_ID`.
 
-If the test login is gone, recreate it with the `board-identity` skill steps 4 to 6, name "VVM Test Agent", board 2060, slug `vvm-test-agent` (file `vvm-test-agent-agent-token`). Never reuse another agent's token.
+If the test login is gone, recreate it with `board-identity` steps 4 to 6: name "VVM Test Agent", board 2060. Never reuse another agent's token.
 
 ## Launch
 
@@ -29,19 +29,19 @@ If the test login is gone, recreate it with the `board-identity` skill steps 4 t
 
 `run` does, in order:
 
-1. Gate: `~/.local/bin/plan-pick --claude-helper` must exit 0. The test chat runs on Claude Sonnet, so it waits while Claude is ahead of pace (exit 3).
+1. Gate: `~/.local/bin/plan-pick --claude-helper` must exit 0, because the test chat runs on Claude Sonnet. Else exit 3.
 2. Makes a scratch git repo in `/tmp/vvm-scratch.*` whose `CLAUDE.md` names board 2060, label `vvm-test`, the test login and SOFT-2849.
-3. Starts `claude -p` there with `--model sonnet --output-format stream-json --verbose --max-turns 40`, under a 25-minute timeout. The prompt starts "Use the valentin-mode skill for this job.", then asks for a code worker to write `hello.txt`, a note on the ticket, and a board sync. It never names the tools; valentin mode has to.
-4. `--break no-valentin-mode` drops only that first sentence. Same flags, same hooks, same guards. That is the known-broken setup.
+3. Starts `claude -p` there with `--model sonnet --output-format stream-json --verbose --max-turns 40`, under a 25-minute timeout. The prompt starts "Use the valentin-mode skill for this job.", then asks for a worker-written hello file, a ticket note and a board sync. It never names the tools.
+4. `--break no-valentin-mode` drops that sentence and adds `--disallowedTools 'Skill(valentin-mode)'`, because a chat starts the skill unasked. Hooks and guards stay on.
 5. Collects the evidence, scrubs tokens, grades, removes the scratch repo (keep it with `--keep`).
 
-Ready means the stream has a `system/init` line. A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worker.
+A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worker.
 
 ## Doctor
 
-Before trusting a verdict, read the `loaded` line. It needs a `Skill` call for `valentin-mode` and the skill body with `## Three tools` in the chat. "never invoked" on a normal run means the chat ignored the prompt; "without the Three tools section" means `~/.local/share/vstack` holds an old copy.
+Read the `loaded` line first. It needs a successful Skill call for valentin-mode and the Three tools section in the chat. "never invoked" on a normal run means the chat ignored the prompt; "without the Three tools section" means the install is old.
 
-Also confirm the installed copy is the one under test: `diff ~/.local/share/vstack/skills/valentin-mode/SKILL.md skills/valentin-mode/SKILL.md`. A branch is only tested once installed. On a PR, install the branch first (`cd ~/.local/share/vstack && git checkout <branch> && ./install`), then restore main afterwards.
+The chat reads the installed copy in `~/.local/share/vstack`, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main.
 
 ## Drive
 
@@ -57,27 +57,24 @@ Every run keeps `~/.local/state/verify-valentin-mode/<run-id>/`:
 
 | File | What it proves |
 | --- | --- |
-| `stream.jsonl` | the full chat: the skill load, every tool call and result (tokens scrubbed) |
-| `launches.jsonl` | pacer lines for this chat's session id |
-| `agent-log.json`, `comments.json` | who wrote on SOFT-2849 |
-| `hello.txt` | the worker's output |
-| `verdict.txt`, `verdict.json` | one PASS/FAIL line per check and the verdict |
+| stream.jsonl | the full chat, tokens scrubbed |
+| launches.jsonl | pacer lines for this chat's session id |
+| agent-log.json, comments.json | who wrote on SOFT-2849 |
+| hello.txt | the worker's output |
+| verdict.txt, verdict.json | one PASS/FAIL line per check, then the verdict |
 
-Grading reads side effects, not the chat's own claims: the pacer log, the board's author fields, the file on disk, and the reconcile results.
-
-For a PR or ticket, attach `verdict.txt` and a trimmed list of the tool calls, never the raw stream.
+Grading reads side effects, never the chat's claims. On a PR or ticket, attach both verdict.txt files, never the raw stream.
 
 ## Cleanup
 
-`run` removes only its own `/tmp/vvm-scratch.*` folder. It never deletes the evidence folder. Test notes pile up in the SOFT-2849 agent log; that is expected.
+`run` removes only its own `/tmp/vvm-scratch.*` folder, never the evidence.
 
 ## When it runs
 
-Every change to `skills/valentin-mode`, `skills/hypertask-work` or plan-pick runs it on this server, with `verdict.txt` on the PR. GitHub CI runs only the grader tests (`tests/test_verify_valentin_mode.py`), because the live run needs this server's hooks, logins and pacer, and self-hosted runners are banned.
+Every change to `skills/valentin-mode`, `skills/hypertask-work` or plan-pick runs it here, verdicts on the PR. GitHub CI runs only `tests/test_verify_valentin_mode.py`: the live run needs this server, and self-hosted runners are banned.
 
 ## Gotchas
 
-- Never run a test chat with user hooks off (`--setting-sources`). That also turns off the guard against writing as Valentin; two early broken runs on 19 Nov wrote notes on SOFT-2849 as him. The guard still misses `ht` writes and the claude.ai Hypertask connector: SOFT-2857.
-- Any `reconcile --apply` without `--label vvm-test` fails `board sync`, because it can move real board 2060 tickets.
-- Do not run two checks at once. The board sync takes a lock per board and the second run prints `SKIP`.
-- The verdict depends on the installed copies under `~/.local/share/vstack`, `~/.claude/skills` and `~/.local/bin`, not on this checkout.
+- Never run a test chat with user hooks off (`--setting-sources`): the guard against writing as Valentin goes too. Two early runs on 19 Nov wrote on SOFT-2849 as him. The guard still misses `ht` writes and the claude.ai connector (SOFT-2857).
+- A `reconcile --apply` without `--label vvm-test` fails the check: it can move real tickets.
+- One check at a time: the board sync lock is per board (SOFT-2853).
