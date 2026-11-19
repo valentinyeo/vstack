@@ -65,6 +65,7 @@ done
 
 # Claude settings call this guard at its ~/.claude/hooks path; the copy lives here (SOFT-2845).
 link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.claude/hooks"
+link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
 
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"
