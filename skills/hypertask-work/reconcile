@@ -2,6 +2,7 @@
 """Reconcile configured boards from worker and GitHub facts. Default: read-only."""
 import argparse
 import base64
+import contextlib
 from contextlib import closing
 from functools import lru_cache
 from dataclasses import dataclass
@@ -953,6 +954,41 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
     return 0
 
 
+def lock_path(board=DEFAULT):
+    name = 'reconcile.lock' if board == DEFAULT else f'reconcile-{board.id}.lock'
+    return Path.home() / '.local/state/fleet' / name
+
+
+def label_lock_path(board, label):
+    """Beside the board lock: reconcile-label-verification-backlog.lock."""
+    path = lock_path(board)
+    slug = re.sub(r'[^a-z0-9]+', '-', label.lower())
+    return path.with_name(f'{path.name[:-len(".lock")]}-label-{slug}.lock')
+
+
+def acquire_locks(board=DEFAULT, label=None):
+    """Open handles, or None when another run holds the board.
+
+    A whole-board run excludes everything on the board. A label run shares the
+    board lock and holds its own exclusive one, so two labels sync at once
+    while a whole-board run and any label run still exclude each other.
+    """
+    path = lock_path(board)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handles = []
+    try:
+        handles.append(path.open('a'))
+        fcntl.flock(handles[0], (fcntl.LOCK_SH if label else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        if label:
+            handles.append(label_lock_path(board, label).open('a'))
+            fcntl.flock(handles[1], fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handles
+    except BlockingIOError:
+        for handle in handles:
+            handle.close()
+        return None
+
+
 def probe_budget():
     """Stop before reading anything when GitHub has nothing left to give."""
     try:
@@ -995,15 +1031,16 @@ def board_run():
         require_board15_agent()
     if args.apply and board.id == 2060 and (not os.environ.get('SHIP_SESSION_NAME') or os.environ['SHIP_SESSION_NAME'] == 'Valentins Claude Code'):
         parser.error('--apply requires SHIP_SESSION_NAME for an agent login')
-    # Prevent two timer/manual apply runs from racing the same board.
-    lock = Path.home() / ('.local/state/fleet/reconcile.lock' if board == DEFAULT else f'.local/state/fleet/reconcile-{board.id}.lock')
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with lock.open('a') as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(f'SKIP board={board.id} | reconciliation already running', flush=True)
-            return 0
+    # Prevent two timer/manual runs from racing the same board. Two different
+    # labels may sync at once; the same label, or any whole-board run, may not.
+    handles = acquire_locks(board, args.label)
+    if handles is None:
+        label = f' label={args.label}' if args.label else ''
+        print(f'SKIP board={board.id}{label} | reconciliation already running', flush=True)
+        return 0
+    with contextlib.ExitStack() as stack:
+        for handle in handles:
+            stack.enter_context(handle)
         if args.apply:
             # A spent budget can only fail slowly, one 403 per ticket. The rate_limit
             # call is free, so an --apply run checks before it reads anything.
