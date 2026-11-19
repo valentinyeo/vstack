@@ -186,8 +186,9 @@ class AdvisorLanes(unittest.TestCase):
                           (GATEWAY, 'Bearer gateway-key', None, 'zai/glm-5.3-flash')])
         self.assertIn('Verifier model: vercel-ai-gateway/zai/glm-5.3-flash', md)
 
-    def test_payment_and_server_errors_restart_too(self):
-        for code in (402, 500, 503):
+    def test_payment_access_and_server_errors_restart_too(self):
+        # 403 is what OpenCode Go returns when model access is off for the account (PR 134, job 135738071372).
+        for code in (401, 402, 403, 404, 500, 503):
             with self.subTest(code=code):
                 outcome, _, _, _ = self.run_advisor([http_error(code), PROBE, final(self.report())],
                                                     models='deepseek-v4.1-flash\nglm-5.3-flash')
