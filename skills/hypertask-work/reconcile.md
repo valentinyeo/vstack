@@ -5,6 +5,8 @@ The house-rules `fleet/reconcile` path is a shim that execs this copy.
 Board 15 uses the same script with `--board 15`.
 Default runs print plans without moving tickets.
 `--section Doing` limits a dry run.
+`--label NAME` syncs only tickets carrying that label (trimmed, case-insensitive).
+Run it as `reconcile --label <your view label>` so a session never syncs the whole board.
 `--apply` previews first, then permits five moves.
 `--limit N` changes that per-run cap.
 A plan over the cap applies only the first N moves.
@@ -139,7 +141,6 @@ skills/hypertask-work/lease "$KEY" run -- worker-command worker-arguments
 The wrapper records the worker PID.
 It renews every sixty seconds.
 It removes the lease when that worker ends.
-`fleet/runner` watches each launched attempt automatically.
 Other launchers can watch an existing worker.
 
 ```sh
