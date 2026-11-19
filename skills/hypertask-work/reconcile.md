@@ -30,8 +30,17 @@ Earlier rows take priority.
 | Every matching PR merged, current-head PASS | AI Review, live proof pending |
 | Merged PR without current-head PASS | AI Review |
 | Fresh lease with a live local PID, or a live process that names the ticket | Doing |
+| In Verification Backlog without the `verification` label | Todo |
+| In Verification Backlog with the label | Keep |
+| In Todo with the `verification` label | Verification Backlog |
 | Ticket touched within two hours | Keep |
 | No live worker or matching PR | Todo |
+
+A verification ticket carries the label `verification` and starts in Verification Backlog.
+A labelled ticket in Todo moves to Verification Backlog on the next run.
+An unlabelled ticket in that column moves back to Todo.
+Once worked, a verification ticket follows the same rows as any other ticket, so a PR or a live worker still outranks the label.
+Boards without the column are unchanged.
 
 An open or merged PR outranks a live worker.
 Recent activity only delays the fallback to Todo.
