@@ -127,10 +127,21 @@ class VerifyValentinModeRunScript(unittest.TestCase):
         result = subprocess.run(['bash', '-n', str(RUN)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_run_script_has_no_broken_hook_mode(self):
+    def test_run_script_blocks_only_the_valentin_mode_skill(self):
         text = RUN.read_text()
-        self.assertNotIn('setting-sources', text)
-        self.assertNotIn('disallowedTools', text)
+        lines = text.splitlines()
+        self.assertNotIn('setting-sources', text, 'the break must not drop user hooks')
+        self.assertEqual(
+            text.count('Skill(valentin-mode)'), 1,
+            'the only blocked tool must be the valentin-mode skill')
+        tool_lines = [i for i, line in enumerate(lines) if 'disallowedTools' in line]
+        self.assertEqual(len(tool_lines), 1, 'expected exactly one disallowedTools flag in run')
+        self.assertIn("--disallowedTools 'Skill(valentin-mode)'", lines[tool_lines[0]])
+        break_lines = [i for i, line in enumerate(lines)
+                       if line.strip() == 'if [ -n "$BREAK" ]; then']
+        self.assertEqual(len(break_lines), 1, 'expected one break branch in run')
+        self.assertGreater(tool_lines[0], break_lines[0],
+                           'the tool block must sit inside the break branch')
 
     def test_grade_script_has_shebang(self):
         self.assertEqual(GRADE.read_text().splitlines()[0], '#!/usr/bin/env python3')
