@@ -153,6 +153,42 @@ class PickVerifierModelTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("every verifier family", result.stderr)
 
+    def test_all_lists_every_allowed_model_in_the_fixed_order(self):
+        result = self.run_picker("Author model: anthropic/claude-sonnet", args=["--all"])
+        self.assertEqual((result.returncode, result.stdout),
+                         (0, "deepseek-v4.1-flash\nglm-5.3-flash\nkimi-k3\n"))
+
+    def test_all_skips_every_authored_family(self):
+        cases = {
+            "Author model: deepseek/x": "glm-5.3-flash\nkimi-k3\n",
+            "Author model: z.ai/glm-5.3-flash": "deepseek-v4.1-flash\nkimi-k3\n",
+            "Author model: moonshotai/kimi-k2": "deepseek-v4.1-flash\nglm-5.3-flash\n",
+            "Author model: deepseek/x\nAuthor model: opencode-go/kimi-k3": "glm-5.3-flash\n",
+        }
+        for body, want in cases.items():
+            with self.subTest(body=body):
+                self.assertEqual(self.run_picker(body, args=["--all"]).stdout, want)
+
+    def test_all_refuses_exactly_like_the_single_pick(self):
+        cases = {
+            "no declaration": (None, "Author model: <family>/<model>"),
+            "every family authored": ("Author model: deepseek/a\nAuthor model: glm/b\nAuthor model: kimi/c",
+                                      "every verifier family"),
+            "unknown family": ("Author model: acme/mystery-1", "unknown model family"),
+        }
+        for name, (body, message) in cases.items():
+            with self.subTest(case=name):
+                single = self.run_picker(body)
+                every = self.run_picker(body, args=["--all"])
+                self.assertEqual((every.returncode, every.stdout), (single.returncode, single.stdout))
+                self.assertEqual((every.returncode, every.stdout), (1, ""))
+                self.assertIn(message, every.stderr)
+
+    def test_all_prints_every_line_for_the_same_body_the_single_pick_reads(self):
+        body = "Author model: deepseek/x"
+        self.assertEqual(self.run_picker(body).stdout, "glm-5.3-flash\n")
+        self.assertEqual(self.run_picker(body, args=["--all"]).stdout, "glm-5.3-flash\nkimi-k3\n")
+
     def test_missing_event_path_fails(self):
         result = self.run_picker("", env={"UNRELATED": "1"})
         self.assertEqual(result.returncode, 1)
