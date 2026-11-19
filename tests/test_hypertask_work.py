@@ -975,7 +975,11 @@ class ProcessLivenessTest(unittest.TestCase):
                      ['/home/v/.local/bin/cursor-agent', '--use-system-ca', '/v/index.js', '-p', 'SOFT-2730'],
                      ['claude', '-p', 'https://app.hypertask.ai/detail/project-2060/2730'],
                      ['node', '/usr/lib/node_modules/pi/bin/pi', '-p', 'SOFT-2730'],
-                     ['bash', '-c', 'hax -p SOFT-2730 > /tmp/out']):
+                     ['bash', '-c', 'hax -p SOFT-2730 > /tmp/out'],
+                     ['setsid', 'hax', '-p', 'SOFT-2730'],
+                     ['env', '-u', 'HOME', 'hax', '-p', 'SOFT-2730'],
+                     ['timeout', '-s', 'KILL', '60', 'hax', '-p', 'SOFT-2730'],
+                     ['timeout', '3h', 'hax', '-p', 'SOFT-2730']):
             with self.subTest(argv=argv):
                 self.proc_clear()
                 self.spawn(4001, argv)

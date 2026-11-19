@@ -30,7 +30,18 @@ CACHE = Path(os.environ.get('FLEET_CACHE_DIR', Path.home() / '.local/state/fleet
 PULL_RECHECK = 6 * 3600
 PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
 WRAPPERS = {'sudo', 'env', 'nohup', 'timeout', 'exec', 'command', 'stdbuf', 'ionice', 'nice',
-            'bash', 'sh', 'dash', 'zsh', 'fish', 'node', 'nodejs', 'bun', 'deno', 'python', 'python3'}
+            'setsid', 'bash', 'sh', 'dash', 'zsh', 'fish', 'node', 'nodejs', 'bun', 'deno',
+            'python', 'python3'}
+SHELLS = {'bash', 'sh', 'dash', 'zsh', 'fish'}
+VALUE_FLAGS = {
+    'env': {'-u', '--unset', '-C', '--chdir'},
+    'timeout': {'-s', '--signal', '-k', '--kill-after'},
+    'nice': {'-n', '--adjustment'},
+    'ionice': {'-c', '-n'},
+    'stdbuf': {'-i', '-o', '-e'},
+    'bash': {'-c'}, 'sh': {'-c'}, 'dash': {'-c'}, 'zsh': {'-c'}, 'fish': {'-c'},
+    'python': {'-c', '-m'}, 'python3': {'-c', '-m'},
+}
 AGENTS = {'hax', 'pi', 'codex', 'cursor-agent', 'claude', 'opencode', 'gemini'}
 
 
@@ -181,12 +192,30 @@ def process_chain(pid=None, directory=None):
 
 
 def is_worker(argv):
-    for word in argv:
-        text = word.strip().split()[0] if word.strip() else ''
+    wrapper = None
+    index = 0
+    while index < len(argv):
+        text = argv[index].strip().split()[0] if argv[index].strip() else ''
         name = Path(text).name
-        if not text or name in WRAPPERS or text.startswith('-'):
+        if not text:
+            index += 1
+            continue
+        if name in WRAPPERS and not text.startswith('-'):
+            wrapper = name
+            index += 1
+            continue
+        if text.startswith('-'):
+            flag = text.split('=', 1)[0]
+            if flag in VALUE_FLAGS.get(wrapper or '', ()) and '=' not in text and index + 1 < len(argv):
+                nxt = argv[index + 1].strip().split()[0]
+                if wrapper in SHELLS or Path(nxt).name in AGENTS:
+                    return Path(nxt).name in AGENTS
+                index += 2
+                continue
+            index += 1
             continue
         if re.fullmatch(r'\d+[smhd]?', text) or re.fullmatch(r'[A-Za-z_]\w*=.*', text):
+            index += 1
             continue
         return name in AGENTS
     return False
