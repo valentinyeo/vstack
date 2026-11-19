@@ -611,6 +611,116 @@ class ReconcileTest(unittest.TestCase):
             self.assertEqual(r.main(), 0)
         self.assertIn('reconcile: github calls=1 (graphql=1, rest=0)', err.getvalue())
 
+    def labelled_board(self):
+        return [{**task('Doing'), 'ticketNumber': 'SOFT-1', 'labels': [{'id': '1', 'name': 'SOFT-2807'}]},
+                {**task('Doing'), 'ticketNumber': 'SOFT-2', 'labels': [{'id': '2', 'name': 'Bug'}]},
+                {**task('Doing'), 'ticketNumber': 'SOFT-3', 'labels': [{'id': '3', 'name': 'soft-2807'}]},
+                {**task('Doing'), 'ticketNumber': 'SOFT-4'}]
+
+    def test_label_filters_before_any_github_lookup(self):
+        tasks = self.labelled_board()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--label', 'Soft-2807']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'discover', return_value={t['ticketNumber']: [] for t in tasks}) as discover, \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), 0)
+        self.assertEqual(discover.call_args.args[0], ['SOFT-1', 'SOFT-3'])
+        printed = out.getvalue()
+        for kept in ('SOFT-1', 'SOFT-3'):
+            self.assertIn(f'PLAN {kept}', printed)
+        for skipped in ('SOFT-2', 'SOFT-4'):
+            self.assertNotIn(skipped, printed)
+
+    def test_labelled_apply_moves_only_labelled_tickets(self):
+        tasks = {t['ticketNumber']: t for t in self.labelled_board()}
+        moved = []
+
+        def api(*args):
+            return {'tasks': [tasks[args[2]]]} if args[:2] == ('task', 'get') else moved.append(args[2]) or {}
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--apply', '--label', 'SOFT-2807']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=list(tasks.values())), \
+                patch.object(r, 'discover', return_value={key: [] for key in tasks}), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'api', api), patch.object(r, 'run', return_value=''), \
+                patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto'}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(r.main(), 0)
+        self.assertEqual(moved, ['SOFT-1', 'SOFT-3'])
+
+    def fixture_github(self, tasks):
+        """A fixture board's GitHub: one open PR per ticket, no other searches."""
+        pulls = {t['ticketNumber']: {'title': f'{t["ticketNumber"]} work', 'body': '',
+                                     'headRefName': f'{t["ticketNumber"].lower()}-work', 'state': 'OPEN',
+                                     'number': r.ticket_index(t['ticketNumber']),
+                                     'url': 'https://github.com/valentinyeo/another-repo/pull/1',
+                                     'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+                 for t in tasks}
+
+        def respond(args, **kwargs):
+            call = ' '.join(args)
+            if 'is:open' in call or 'is:merged' in call:
+                page = {'issueCount': 0, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+                body = {'data': {'search': page}}
+            elif 'repository(owner:' in call:
+                keys = list(dict.fromkeys(re.findall(r'p(\d+):repository', call)))
+                body = {'data': {f'p{n}': {'pullRequest': {
+                    'url': 'https://github.com/valentinyeo/another-repo/pull/1', 'state': 'OPEN',
+                    'headRefOid': HEAD, 'baseRefOid': 'c' * 40, 'author': {'login': 'writer'},
+                    'statusCheckRollup': {'contexts': {'pageInfo': {'hasNextPage': False}, 'nodes': [
+                        {'__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}},
+                    'comments': {'totalCount': 0, 'nodes': []}}} for n in keys}}
+            elif '/contents/.verify/policy.json' in call:
+                body = {'content': base64.b64encode(b'{}').decode()}
+            else:
+                keys = list(dict.fromkeys(re.findall(r'SOFT-\d+', call)))
+                body = {'data': {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': [pulls[key]]}
+                                 for n, key in enumerate(keys)}}
+            return subprocess.CompletedProcess([], 0, json.dumps(body), '')
+        return respond
+
+    def github_calls_for(self, tasks, argv):
+        clear_cache()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', *argv]), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r.subprocess, 'run', side_effect=self.fixture_github(tasks)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(r.main(), 0)
+        return sum(r.github_calls())
+
+    def test_a_labelled_run_costs_fewer_github_calls_on_a_fixture_board(self):
+        created = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat() + 'T10:00:00Z'
+        templates = self.labelled_board() + [dict(task('Doing'), ticketNumber=f'SOFT-{n}')
+                                            for n in range(5, 27)]
+        tasks = [{**t, 'createdAt': created} if t.get('labels') else
+                 {**t, 'createdAt': created, 'labels': [{'id': '9', 'name': 'Bug'}]} for t in templates]
+        whole = self.github_calls_for(tasks, [])
+        labelled = self.github_calls_for(tasks, ['--label', 'SOFT-2807'])
+        self.assertEqual((whole, labelled), (8, 5),
+                         'whole board: 3 searches + 2 branch scans + 2 pull batches + 1 policy; '
+                         '2 labelled tickets: 1 + 2 + 1 + 1')
+
+    def test_a_label_nobody_carries_costs_no_github_calls(self):
+        tasks = [{**t, 'createdAt': '2026-11-18T10:00:00Z'} for t in self.labelled_board()]
+        self.assertEqual(self.github_calls_for(tasks, ['--label', 'nobody-uses-this']), 0)
+
     def test_current_head_cross_family_actions_verdict(self):
         workflow = {'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success',
                     'path': '.github/workflows/pstack-verifier.yml'}
