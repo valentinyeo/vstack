@@ -27,7 +27,7 @@ All of these PRs edit `skills/hypertask-work/reconcile`. They land one at a time
 | 1 | #135 a grep is not a worker | SOFT-2799 | none |
 | 2 | board 15 catches stale, PR-first, grace on idle only | HTPR-9521 | 1 |
 | 3 | verify-reconcile skill (new files only) | SOFT-2920 | none, lands any time |
-| 4 | one rule model plus an exhaustive model check | formal ticket | 2 |
+| 4 | one rule model plus an exhaustive model check | SOFT-2921 | 2 |
 | 5 | loud failure without a user bus; under 30 GitHub calls | SOFT-2919 | 4 |
 | 6 | board 15 apply accepts the Hypertask Reconciler login | SOFT-2919 | 5 |
 | 7 | label runs do not block the board lock | SOFT-2853 | 6 |
@@ -60,7 +60,7 @@ PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN`
   - Hard evidence (open or merged PR, live worker) moves a card even inside the grace.
   - A protected or unmanaged column never moves.
   - Both boards rank PR over worker over idle the same way.
-- [ ] File the pstack `create-formal-verification-skill` ticket (valentin mode: sync work is formal). This exhaustive check is its first deliverable.
+- [ ] Ticket SOFT-2921 runs pstack `create-formal-verification-skill` (valentin mode: sync work is formal). This exhaustive check is its first deliverable.
 - [ ] Live: `verify-reconcile --board 15 --apply` then the second dry run plans no moves for the cards it moved.
 
 ## PR 5: loud on a missing bus, fewer calls (SOFT-2919)
