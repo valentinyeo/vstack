@@ -2,6 +2,10 @@
 
 A chat writes on the board under its own agent login, never under Valentin's user, the shared fallback "Valentins Claude Code CLI", or another chat's login.
 
+## Doctor grading
+
+`login` names the author of every write, so a sync by another agent passes `board sync` and fails `login`.
+
 ## Sub-features
 
 - `login.write`: the chat's note on SOFT-2849 is authored by "VVM Test Agent".
@@ -26,3 +30,4 @@ The lease and the Stop hook read `skills/hypertask-work/session_login.py`. A cha
 
 - Another session writing on SOFT-2849 during the run fails this check. Nobody else should touch that ticket.
 - The scratch `CLAUDE.md` names the login. The check proves the chat writes with it, not that it found it alone.
+- A leaked `MULTIPROMPT_TAB` makes the lease sync as the calling chat and fails `login`.

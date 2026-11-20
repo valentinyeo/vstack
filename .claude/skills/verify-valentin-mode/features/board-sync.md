@@ -2,6 +2,10 @@
 
 Valentin mode syncs a board two ways, and either one counts.
 
+## Doctor grading
+
+`board sync` passes on either way valentin mode syncs a board: a lease worker run plus one `fleet/reconcile` activity on the ticket (the current way), or a reconcile dry run then `--apply --limit 5` (the manual way). It fails when neither happened, or when a `reconcile --apply` named no label and no ticket.
+
 The current way: the lease syncs the card when its worker starts and ends, and a Stop hook runs `reconcile --label <label> --apply` after a turn. The manual way: a dry run, then `--apply --limit 5`.
 
 ## Sub-features
@@ -17,7 +21,7 @@ The current way: the lease syncs the card when its worker starts and ends, and a
 
 ## Driving it with run
 
-Preconditions: `run` names the chat, so the lease and the Stop hook find the test login (see [login.md](login.md)). A `reconcile --apply` on board 2060 also refuses without a `SHIP_SESSION_NAME` agent login.
+Preconditions: `run` sets `SHIP_SESSION_NAME="VVM Test Agent"`, so the lease and the Stop hook find the test login (see [login.md](login.md)). A `reconcile --apply` on board 2060 also refuses without a `SHIP_SESSION_NAME` agent login.
 
 - Action: `run`. Result: `stream.jsonl` holds the lease Bash call and its result, and `agent-log.json` holds the card sync.
 - Check: a dry run appears before an apply with a clean result, or a lease worker run has a `fleet/reconcile` activity on the ticket.

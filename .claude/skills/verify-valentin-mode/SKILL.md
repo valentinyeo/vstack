@@ -45,7 +45,7 @@ Read the `loaded` line first. It needs the `/valentin-mode` prompt, the command 
 
 `checks loaded` reads debug.log for a run of each hook the frontmatter declares: `skills/responsive-mode/reply-check.py` (PreToolUse), `skills/responsive-mode/said-started.py` (Stop). A hook that never ran leaves no line and fails it.
 
-`board sync` passes on either way valentin mode syncs a board: a lease worker run plus one `fleet/reconcile` activity on the ticket (the current way), or a reconcile dry run then `--apply --limit 5` (the manual way). It fails when neither happened, or when a `reconcile --apply` named no label and no ticket. `login` names the author of every write, so a sync by another agent passes `board sync` and fails `login`.
+`login` and `board sync` grading: [login.md](features/login.md) and [board-sync.md](features/board-sync.md).
 
 The chat reads the installed copy in ~/.local/share/vstack, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main. `VSTACK_DIR=<checkout>` grades a branch without installing, and the evidence copy comes from that tree.
 
@@ -84,6 +84,5 @@ Every change to `skills/valentin-mode`, `skills/hypertask-work` or plan-pick run
 
 - Never run a test chat with user hooks off (`--setting-sources`): the guard against writing as Valentin goes too. Two early runs on 19 Nov wrote on SOFT-2849 as him. The guard still misses `ht` writes and the claude.ai connector (SOFT-2857).
 - A `reconcile --apply` without `--label vvm-test` and without `--ticket` fails the check: it can move real tickets (see the `/hypertask` skill).
-- A leaked `MULTIPROMPT_TAB` makes the lease sync as the calling chat and fails `login`. `run` strips the caller's identity vars before the chat starts.
 - One check at a time: the board sync lock is per board (SOFT-2853).
 - A missing skill folder under `${VSTACK_DIR:-~/.local/share/vstack}/skills` stops `run` before any chat starts; the last line names the folder.
