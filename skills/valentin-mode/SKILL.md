@@ -28,6 +28,7 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, wit
 ### Board rules
 
 Board work follows the `hypertask-work` skill: your own login, a ticket before work, the true column. Get the login with `/board-identity`. Never write as Valentin; a guard blocks it.
+Run `/hypertask-checkup` on a new project and daily in your loop.
 
 ### Board sync
 
@@ -40,7 +41,7 @@ The project's agent notes name its board in one line: `Hypertask board: <id>, la
 - **Checks:** each repo cuts push-to-verdict time with the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
-- **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author; the picker reads it.
+- **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author.
 - **Server and cloud:** this server runs workers, focused tests, the app, the QA phone, git and boards. GitHub-hosted runners run the full suite, CI, reviews and the verifier. Never a self-hosted runner.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan the repo for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket.
