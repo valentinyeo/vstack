@@ -118,7 +118,7 @@ class ReconcileTest(unittest.TestCase):
                 self.assertFalse(r.names_ticket(pr, 'SOFT-1'))
 
     def test_body_url_only_counts_on_the_ticket_line(self):
-        board = r.BoardConfig(13556, 'VSTA', frozenset(), frozenset(), (), 'valentinyeo/vstack')
+        board = r.BOARDS[13556]
         pull = json.loads((ROOT / 'tests/fixtures/reconcile' / 'vstack-200.json').read_text())
         with self.subTest('a prose url in the real PR is not evidence'):
             self.assertFalse(r.names_ticket(pull, 'VSTA-53', board=board))
@@ -235,6 +235,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r, 'discover', return_value={'BROKEN': [], 'SOFT-1': []}), \
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 1)
             self.assertIn('UNKNOWN BROKEN | invalid board-2060 ticket key', out.getvalue())
@@ -547,6 +548,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r, 'discover', return_value={'SOFT-2': [], 'SOFT-1': []}) as discover, \
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
             discover.assert_called_once_with(['SOFT-2', 'SOFT-1'], created={'SOFT-2': None, 'SOFT-1': None})
