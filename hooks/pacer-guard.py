@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: a chat Valentin talks to never writes code, and stays off heavy Bash while Claude is ahead of pace.
+"""PreToolUse guard: a chat Valentin talks to never writes code, and stays off heavy Bash.
 
 MULTIPROMPT_TAB set means this is a Valentin-facing Multibot chat, so code-write blocking applies.
 Unset means a headless fleet run, so workers stay untouched. In a valentin-mode chat, Bash that runs tests,
-builds, linters, installs, git merges, or long loops is blocked while Claude pace_ratio is above 1.1x; reads,
-hypertask, plan-pick, vps-state and board-drain scripts always pass. Pace is cached five minutes under
-~/.cache/pacer-guard/pace.json. Any pace read error allows the call. PACER_GUARD_PACE=off disables pace blocking.
+builds, linters, installs, git merges, or long loops is blocked; reads, hypertask, plan-pick, vps-state and
+board-drain scripts always pass. PACER_GUARD_INLINE=off disables heavy-Bash blocking.
 
 pacer-guard.py --self-test"""
 import importlib.util
@@ -14,13 +13,14 @@ import os
 from pathlib import Path
 import re
 import shlex
-import subprocess
 import sys
 import tempfile
-import time
 
 MESSAGE = ("BLOCKED by pacer-guard: this chat talks to Valentin, so it never writes code. "
            "Put the change in brief.txt and run ~/.local/bin/plan-pick --run.")
+WORKER_MESSAGE = ("BLOCKED by pacer-guard: this chat talks to Valentin, so it hands work to workers. "
+                  "Put this work in brief.txt and run ~/.local/bin/plan-pick --run in the background "
+                  "(or a Claude helper when plan-pick --claude-helper allows).")
 CODE_EXT = frozenset(
     ".py .js .mjs .cjs .ts .tsx .jsx .sh .bash .zsh .go .rs .rb .java .kt .swift .c .h .cc .cpp "
     ".cs .php .css .scss .vue .svelte .sql .lua".split())
@@ -30,10 +30,6 @@ FILE_TOOLS = frozenset(('Edit', 'Write', 'MultiEdit', 'NotebookEdit'))
 STOP = frozenset((';', ';;', '|', '||', '&', '&&', '(', ')', '\n'))
 SCRIPT_FLAGS = frozenset(('-e', '--expression', '-f', '--file'))
 PUNCTUATION = ';&|()<>'
-PACE_LIMIT = 1.1
-PACE_TTL = 300
-PICKER = os.path.expanduser("~/.local/bin/plan-pick")
-LADDER = os.path.expanduser("~/.local/bin/token-ladder")
 NESTED = frozenset({"lease"})
 BOARD_DRAIN = frozenset({"drain-check", "loop-state", "watch", "sync", "owners"})
 READ_TOOLS = frozenset({"cat", "grep", "rg", "ls", "head", "tail", "less", "more", "wc", "find", "stat", "pwd",
@@ -55,70 +51,6 @@ _spec.loader.exec_module(ttg)
 _spec = importlib.util.spec_from_file_location("valentin_mode_loaded", _here.with_name("valentin_mode_loaded.py"))
 valentin = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(valentin)
-
-
-def pace_message(ratio):
-    shown = f"{ratio:.2f}".rstrip("0").rstrip(".")
-    return (f"BLOCKED by pacer-guard: Claude is ahead of pace ({shown}x). "
-            "Put this work in brief.txt and run ~/.local/bin/plan-pick --run in the background.")
-
-
-def cache_path():
-    override = os.environ.get("PACER_GUARD_PACE_FILE")
-    return Path(override) if override else Path.home() / ".cache/pacer-guard/pace.json"
-
-
-def read_cache():
-    path = cache_path()
-    try:
-        data = json.loads(path.read_text())
-        age = time.time() - float(data.get("fetched_at", 0))
-        if age < PACE_TTL and "pace_ratio" in data:
-            return float(data["pace_ratio"])
-    except (OSError, ValueError, TypeError):
-        pass
-    return None
-
-
-def write_cache(ratio):
-    path = cache_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"pace_ratio": ratio, "fetched_at": time.time()}))
-    except OSError:
-        pass
-
-
-def fetch_pace():
-    picker = os.environ.get("PLAN_PICK_BIN") or PICKER
-    try:
-        done = subprocess.run([picker, "--loop-interval", "--json"], capture_output=True, text=True, timeout=5)
-        if done.returncode == 0:
-            ratio = json.loads(done.stdout).get("pace_ratio")
-            if ratio is not None:
-                return float(ratio)
-    except (OSError, ValueError, subprocess.SubprocessError, TypeError):
-        pass
-    ladder = os.environ.get("TOKEN_LADDER_BIN") or LADDER
-    try:
-        done = subprocess.run([ladder, "pools", "--json"], capture_output=True, text=True, timeout=5)
-        if done.returncode == 0:
-            ratio = (json.loads(done.stdout).get("claude") or {}).get("pace_ratio")
-            if ratio is not None:
-                return float(ratio)
-    except (OSError, ValueError, subprocess.SubprocessError, TypeError):
-        pass
-    return None
-
-
-def pace_ratio():
-    cached = read_cache()
-    if cached is not None:
-        return cached
-    ratio = fetch_pace()
-    if ratio is not None:
-        write_cache(ratio)
-    return ratio
 
 
 def clean(path):
@@ -380,7 +312,7 @@ def pace_segment_blocked(args):
     return False
 
 
-def pace_bash_verdict(command, ratio, _depth=0):
+def pace_bash_verdict(command, _depth=0):
     if not isinstance(command, str) or not command.strip():
         return None
     scrubbed = strip_heredocs(command)
@@ -390,14 +322,14 @@ def pace_bash_verdict(command, ratio, _depth=0):
             continue
         text = shlex.join(args)
         if loop_segment_blocked(args):
-            return pace_message(ratio)
+            return WORKER_MESSAGE
         if pace_segment_allowed(text, args):
             continue
         if pace_segment_blocked(args):
-            return pace_message(ratio)
+            return WORKER_MESSAGE
         if _depth < 4:
             for inner in shell_c_strings(args):
-                why = pace_bash_verdict(inner, ratio, _depth + 1)
+                why = pace_bash_verdict(inner, _depth + 1)
                 if why:
                     return why
     return None
@@ -414,11 +346,11 @@ def verdict_code(tool_name, tool_input):
     return None
 
 
-def verdict_pace(tool_name, tool_input, ratio):
+def verdict_worker_bash(tool_name, tool_input):
     if tool_name != "Bash":
         return None
     command = tool_input.get("command")
-    return pace_bash_verdict(command if isinstance(command, str) else "", ratio)
+    return pace_bash_verdict(command if isinstance(command, str) else "")
 
 
 def gate(payload):
@@ -430,14 +362,11 @@ def gate(payload):
         why = verdict_code(tool_name, tool_input)
         if why:
             return why
-    if os.environ.get("PACER_GUARD_PACE", "").lower() == "off":
+    if os.environ.get("PACER_GUARD_INLINE", "").lower() == "off":
         return None
     if not valentin.loaded(payload.get("transcript_path")):
         return None
-    ratio = pace_ratio()
-    if ratio is None or ratio <= PACE_LIMIT:
-        return None
-    return verdict_pace(tool_name, tool_input, ratio)
+    return verdict_worker_bash(tool_name, tool_input)
 
 
 def self_test():
@@ -466,7 +395,6 @@ def self_test():
     assert verdict_code('Bash', {'command': "sed -i 's/a/b/' run.py"}) == MESSAGE, "an in-place edit of code is blocked"
     assert verdict_code('Bash', {'command': "sed -n 's/a/b/p' run.py"}) is None, "a plain sed read passes"
     assert verdict_code('Bash', {'command': 'python3 hooks/pacer-guard.py --self-test'}) is None, "running code passes"
-    ahead = 1.21
     blocked_cmds = [
         'python3 -m unittest discover -s tests',
         'npm test',
@@ -494,47 +422,31 @@ def self_test():
         'until [ -f done ]; do sleep 1; done',
     ]
     for cmd in blocked_cmds:
-        assert pace_bash_verdict(cmd, ahead), f"ahead must block: {cmd}"
+        assert pace_bash_verdict(cmd), f"valentin-mode must block: {cmd}"
     for cmd in allowed_cmds:
-        assert pace_bash_verdict(cmd, ahead) is None, f"ahead must allow: {cmd}"
+        assert pace_bash_verdict(cmd) is None, f"valentin-mode must allow: {cmd}"
     with tempfile.TemporaryDirectory() as where:
-        pace_file = Path(where, "pace.json")
-        pace_file.write_text(json.dumps({"pace_ratio": ahead, "fetched_at": time.time()}))
         loaded = Path(where, "loaded.jsonl")
         loaded.write_text('{"type":"user","message":{"content":'
                           '"<command-name>/valentin-mode</command-name>"}}\n')
         plain = Path(where, "plain.jsonl")
         plain.write_text('{"type":"user","message":{"content":"hello"}}\n')
-        os.environ["PACER_GUARD_PACE_FILE"] = str(pace_file)
         try:
             body = {"tool_name": "Bash", "transcript_path": str(loaded),
                     "tool_input": {"command": "python3 -m unittest discover -s tests"}}
-            assert gate(body) and "ahead of pace" in gate(body), "valentin-mode ahead blocks tests"
+            assert gate(body) and "hands work to workers" in gate(body), "valentin-mode blocks tests"
             body["tool_input"] = {"command": "git status"}
-            assert gate(body) is None, "reads pass ahead"
+            assert gate(body) is None, "reads pass"
             body["transcript_path"] = str(plain)
             body["tool_input"] = {"command": "python3 -m unittest discover -s tests"}
-            assert gate(body) is None, "plain chat is not pace-gated"
-            pace_file.write_text(json.dumps({"pace_ratio": 0.8, "fetched_at": time.time()}))
+            assert gate(body) is None, "plain chat is not worker-gated"
             body["transcript_path"] = str(loaded)
             body["tool_input"] = {"command": "npm test"}
-            assert gate(body) is None, "on-pace allows tests"
-            os.environ["PACER_GUARD_PACE"] = "off"
-            pace_file.write_text(json.dumps({"pace_ratio": ahead, "fetched_at": time.time()}))
-            assert gate(body) is None, "override allows ahead"
-            del os.environ["PACER_GUARD_PACE"]
-            pace_file.write_text("not json")
-            broken = Path(where, "broken-pick")
-            broken.write_text("#!/bin/sh\nexit 1\n")
-            broken.chmod(0o755)
-            os.environ["PLAN_PICK_BIN"] = str(broken)
-            os.environ["TOKEN_LADDER_BIN"] = str(broken)
-            assert gate(body) is None, "unreadable pace allows"
+            os.environ["PACER_GUARD_INLINE"] = "off"
+            assert gate(body) is None, "override allows heavy bash"
+            del os.environ["PACER_GUARD_INLINE"]
         finally:
-            os.environ.pop("PACER_GUARD_PACE_FILE", None)
-            os.environ.pop("PACER_GUARD_PACE", None)
-            os.environ.pop("PLAN_PICK_BIN", None)
-            os.environ.pop("TOKEN_LADDER_BIN", None)
+            os.environ.pop("PACER_GUARD_INLINE", None)
     print('pacer-guard self-test ok')
 
 
