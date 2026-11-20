@@ -76,7 +76,7 @@ Design work follows [designing.md](designing.md).
 ## Changing the rules
 
 - **pstack first, write last:** look for the rule in pstack, then in the domain's stack. Add only the gap; name what you checked in the commit message.
-- **Where a correction lands:** a correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in vstack.
+- **Where a correction lands:** product rules stay in that repo; agent-wide rules land here (vstack). A check for either goes in vstack.
 
 ## Skill index
 
@@ -93,3 +93,4 @@ Hidden skills: read the path shown, since the Skill tool refuses them. Slash com
 - put a lead session in Slack #fleet -> read ../join-slack/SKILL.md
 - a task he wants done deeper -> /deeper
 - a big task to run alone, one report at the end -> /deep-work
+- move an app onto Rat Stack -> /ratstack-transition
