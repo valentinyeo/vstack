@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# repo-tidy-stop: Claude Stop hook. When a turn ends, tidy this repo's shipped
+# worktrees and branches in the background. At most once per 30 minutes per
+# repo, keyed by a stamp file. Prints nothing and always exits 0, so it can
+# never hold up a session.
+#
+# Registered by the orchestrator. Never edit ~/.claude/settings.json from here.
+set -u
+
+cwd=${CLAUDE_PROJECT_DIR:-$PWD}
+[ -d "$cwd" ] || exit 0
+
+repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$repo" ] || exit 0
+
+tidy=$(command -v repo-tidy 2>/dev/null || true)
+[ -n "$tidy" ] || tidy="$HOME/.local/bin/repo-tidy"
+[ -x "$tidy" ] || exit 0
+
+state="$HOME/.local/state/repo-tidy"
+mkdir -p "$state" 2>/dev/null || exit 0
+
+stamp="$state/stop-$(printf '%s' "$repo" | cksum | cut -d' ' -f1).stamp"
+now=$(date +%s)
+if [ -f "$stamp" ]; then
+  last=$(cat "$stamp" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt 1800 ]; then
+    exit 0
+  fi
+fi
+printf '%s\n' "$now" > "$stamp" 2>/dev/null || exit 0
+
+# Detach fully: no output, no stdin, no terminal, so the hook returns at once.
+setsid nohup "$tidy" --apply --mine "$repo" --max-remove 20 \
+  >> "$state/stop.log" 2>&1 < /dev/null &
+exit 0

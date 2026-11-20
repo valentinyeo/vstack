@@ -1,0 +1,990 @@
+#!/usr/bin/env python3
+"""repo-tidy: remove shipped git worktrees and branches across many repos.
+
+Dry run by default: it prints the plan and changes nothing. --apply does the
+removals, behind four gates on every item:
+
+  shipped      its work landed: tip is an ancestor of the base branch, or a
+               merged PR carries exactly this tip, or its PR closed unmerged
+               more than 14 days ago and the commit is on the remote
+  clean        no tracked edit and no untracked file that is not gitignored
+  not in use   no live process cwd or open file under it, no tmux pane, no
+               file touched in the last 2 hours, no lease file naming it
+  restorable   not a detached HEAD holding commits on no remote ref
+
+A repo mid-rebase or mid-merge is skipped whole. Nothing is deleted under
+~/.local/state/vcc-evidence, and nothing outside a registered worktree under
+the projects root. --max-remove caps one run so a bug cannot empty a repo.
+
+Usage:
+  repo-tidy [--apply] [--all | REPO_PATH...] [--json] [--mine SESSION_CWD]
+            [--max-remove N] [--projects-root DIR]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+STALE_CLOSED_DAYS = 14
+STALE_UNMERGED_PR_DAYS = 30
+RECENT_SECONDS = 2 * 60 * 60
+FETCH_TIMEOUT = 60
+GIT_TIMEOUT = 180
+GH_TIMEOUT = 300
+PR_LIMIT = 2000
+DEFAULT_MAX_REMOVE = 200
+OWNERS_THAT_ALLOW_THE_SETTING = {"valentinyeo", "hypertask-ai"}
+SHARE_REPOS = [".local/share/vstack", ".local/share/house-rules"]
+FORBIDDEN = ".local/state/vcc-evidence"
+GH_FIELDS = {
+    "merged": "headRefName,headRefOid,number,mergedAt",
+    "open": "headRefName,headRefOid,number",
+    "closed": "headRefName,headRefOid,number,mergedAt,closedAt",
+}
+SKIP_DIRS = {".git", "node_modules"}
+
+
+def utc_stamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def git(args, cwd=None, timeout=GIT_TIMEOUT):
+    command = ["git"] + [str(a) for a in args]
+    try:
+        done = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 1, "", "timeout after %ss" % timeout
+    except OSError as exc:
+        return 1, "", str(exc)
+    return done.returncode, done.stdout, done.stderr
+
+
+def gh(args, timeout=GH_TIMEOUT):
+    try:
+        done = subprocess.run(["gh"] + [str(a) for a in args], capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 1, "", "timeout after %ss" % timeout
+    except OSError as exc:
+        return 1, "", str(exc)
+    return done.returncode, done.stdout, done.stderr
+
+
+def free_bytes(path):
+    try:
+        stats = os.statvfs(str(path))
+    except OSError:
+        return 0
+    return stats.f_bavail * stats.f_frsize
+
+
+# -- discovery -----------------------------------------------------------
+
+def is_repo(path):
+    """A normal checkout or a linked worktree, which has .git as a file."""
+    dot = Path(path) / ".git"
+    if dot.is_dir():
+        return True
+    if not dot.is_file():
+        return False
+    try:
+        text = dot.read_text(errors="replace").strip()
+    except OSError:
+        return False
+    if not text.startswith("gitdir:"):
+        return False
+    target = Path(text[len("gitdir:"):].strip())
+    if not target.is_absolute():
+        target = Path(path) / target
+    return target.exists()
+
+
+def is_main_checkout(path):
+    """Directory discovery: a worktree is not a repo of its own."""
+    return (Path(path) / ".git").is_dir()
+
+
+def session_repo(session_cwd):
+    """The main checkout of the repo the session works in, or None."""
+    code, out, _ = git(["-C", session_cwd, "rev-parse", "--git-common-dir"])
+    if code != 0:
+        return None
+    common = Path(out.strip())
+    if not common.is_absolute():
+        common = (Path(session_cwd) / common).resolve()
+    if common.name != ".git":
+        return None
+    return common.parent
+
+
+def discover_repos(projects_root):
+    repos = []
+    if projects_root.is_dir():
+        for child in sorted(projects_root.iterdir()):
+            if child.is_dir() and is_main_checkout(child):
+                repos.append(child.resolve())
+    for share in SHARE_REPOS:
+        path = Path.home() / share
+        if is_main_checkout(path):
+            repos.append(path.resolve())
+    seen = set()
+    unique = []
+    for repo in repos:
+        key = str(repo)
+        if key not in seen:
+            seen.add(key)
+            unique.append(repo)
+    return unique
+
+
+# -- git reads -----------------------------------------------------------
+
+def parse_worktrees(repo):
+    code, out, _ = git(["-C", str(repo), "worktree", "list", "--porcelain"])
+    if code != 0:
+        return []
+    entries = []
+    current = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current = {"path": line[len("worktree "):], "head": None, "branch": None}
+            entries.append(current)
+        elif current is None:
+            continue
+        elif line.startswith("HEAD "):
+            current["head"] = line[len("HEAD "):]
+        elif line.startswith("branch "):
+            current["branch"] = line[len("branch "):].replace("refs/heads/", "", 1)
+        elif line == "detached":
+            current["branch"] = None
+    return entries
+
+
+def base_ref(repo):
+    candidates = []
+    code, out, _ = git(["-C", str(repo), "symbolic-ref", "--short",
+                        "refs/remotes/origin/HEAD"])
+    if code == 0 and out.strip():
+        candidates.append(out.strip())
+    candidates += ["origin/main", "origin/master", "origin/production"]
+    for candidate in candidates:
+        if git(["-C", str(repo), "rev-parse", "--verify", "--quiet",
+                candidate + "^{commit}"])[0] == 0:
+            return candidate
+    return None
+
+
+def commit_set(repo, *args):
+    code, out, _ = git(["-C", str(repo), "rev-list", *args], timeout=600)
+    return set(out.split()) if code == 0 else set()
+
+
+def local_branches(repo):
+    code, out, _ = git(["-C", str(repo), "for-each-ref",
+                        "--format=%(refname:short) %(objectname)",
+                        "refs/heads"])
+    branches = {}
+    if code == 0:
+        for line in out.splitlines():
+            name, _, sha = line.partition(" ")
+            if name:
+                branches[name] = sha
+    return branches
+
+
+def remote_branches(repo):
+    """origin/<name> -> tip, with committer date, minus origin/HEAD."""
+    code, out, _ = git(["-C", str(repo), "for-each-ref",
+                        "--format=%(refname:short)%09%(committerdate:unix)%09%(objectname)",
+                        "refs/remotes/origin"])
+    branches = {}
+    if code == 0:
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or parts[0] == "origin/HEAD":
+                continue
+            name = parts[0][len("origin/"):]
+            if not name or name == "HEAD":
+                continue
+            try:
+                date = int(parts[1])
+            except ValueError:
+                date = 0
+            branches[name] = {"sha": parts[2], "date": date}
+    return branches
+
+
+def repo_slug(repo):
+    # git config, not `remote get-url`: a url.<base>.insteadOf rewrite would
+    # turn the GitHub URL into the local path it fetches from.
+    code, out, _ = git(["-C", str(repo), "config", "--get", "remote.origin.url"])
+    if code != 0:
+        return None
+    match = re.search(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$", out.strip())
+    if not match:
+        return None
+    return "%s/%s" % (match.group(1), match.group(2))
+
+
+# -- github --------------------------------------------------------------
+
+class Github:
+    """PR and setting reads for one repo, cached for the run."""
+
+    def __init__(self, repo):
+        self.repo = repo
+        self.slug = repo_slug(repo)
+        self.ok = False
+        self.merged = {}
+        self.open = set()
+        self.closed = {}
+        self.protected = None
+        self.setting = None
+
+    def load(self):
+        if not self.slug:
+            return False
+        prs = {}
+        for state, fields in GH_FIELDS.items():
+            code, out, err = gh(["pr", "list", "-R", self.slug, "--state", state,
+                                 "--limit", str(PR_LIMIT), "--json", fields])
+            if code != 0:
+                self.error = err.strip().splitlines()[-1] if err.strip() else "gh failed"
+                return False
+            try:
+                prs[state] = json.loads(out or "[]")
+            except ValueError:
+                self.error = "gh returned unreadable JSON"
+                return False
+        for pr in prs["merged"]:
+            self.merged.setdefault(pr.get("headRefName"), []).append(pr)
+        self.open = {pr.get("headRefName") for pr in prs["open"]}
+        for pr in prs["closed"]:
+            if pr.get("mergedAt"):
+                continue
+            self.closed.setdefault(pr.get("headRefName"), []).append(pr)
+        self.ok = True
+        return True
+
+    # -- queries --
+    def merged_tip(self, branch, sha):
+        return any(pr.get("headRefOid") == sha for pr in self.merged.get(branch, []))
+
+    def closed_pr(self, branch):
+        rows = self.closed.get(branch) or []
+        return rows[0] if rows else None
+
+    def age_days(self, pr):
+        stamp = pr.get("closedAt") or pr.get("updatedAt")
+        if not stamp:
+            return None
+        try:
+            closed = time.mktime(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            return None
+        return (time.time() - closed) / 86400.0
+
+    def read_protected(self):
+        if self.protected is not None:
+            return self.protected
+        self.protected = set()
+        code, out, _ = gh(["api", "repos/%s/branches?protected=true&per_page=100" % self.slug,
+                           "--jq", ".[].name"])
+        if code == 0:
+            self.protected = {name.strip() for name in out.splitlines() if name.strip()}
+        return self.protected
+
+    def read_setting(self):
+        code, out, _ = gh(["api", "repos/%s" % self.slug, "--jq",
+                           ".delete_branch_on_merge"])
+        if code != 0:
+            return None
+        return out.strip() == "true"
+
+
+# -- live use ------------------------------------------------------------
+
+class Live:
+    """One scan of processes, tmux panes and lease files for the whole run."""
+
+    def __init__(self, roots):
+        self.roots = [str(Path(root).resolve()) + os.sep for root in roots if root]
+        self.cwds = set()
+        self.files = []
+        self.panes = set()
+        self.leases = ""
+        self.scan_processes()
+        self.scan_tmux()
+        self.scan_leases()
+
+    def scan_processes(self):
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            return
+        for name in names:
+            if not name.isdigit():
+                continue
+            base = "/proc/" + name
+            try:
+                self.cwds.add(os.path.realpath(os.readlink(base + "/cwd")))
+            except OSError:
+                pass
+            try:
+                fds = os.listdir(base + "/fd")
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    target = os.readlink(base + "/fd/" + fd)
+                except OSError:
+                    continue
+                if target.startswith("/") and any(target.startswith(r) for r in self.roots):
+                    self.files.append(target)
+
+    def scan_tmux(self):
+        # Only real sockets: the tmux dir collects hundreds of dead files from
+        # tests, and asking tmux about each one costs a process and a timeout.
+        import stat as stat_module
+        sockets = []
+        tmp = os.environ.get("TMUX_TMPDIR") or "/tmp/tmux-%d" % os.getuid()
+        cutoff = time.time() - RECENT_SECONDS
+        try:
+            for entry in Path(tmp).iterdir():
+                try:
+                    info = entry.lstat()
+                except OSError:
+                    continue
+                # Dead test sockets pile up by the hundred; a socket only needs
+                # probing when something wrote to its server recently.
+                if stat_module.S_ISSOCK(info.st_mode) and info.st_mtime > cutoff:
+                    sockets.append(str(entry))
+        except OSError:
+            pass
+        sockets = sockets[:20]
+        commands = [["tmux", "list-panes", "-a", "-F", "#{pane_current_path}"]]
+        commands += [["tmux", "-S", sock, "list-panes", "-a", "-F",
+                      "#{pane_current_path}"] for sock in sockets]
+        for command in commands:
+            try:
+                done = subprocess.run(command, capture_output=True, text=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if done.returncode == 0:
+                self.panes.update(line.strip() for line in done.stdout.splitlines()
+                                  if line.strip())
+
+    def scan_leases(self):
+        state = Path.home() / ".local/state"
+        if not state.is_dir():
+            return
+        chunks = []
+        for entry in state.glob("*lease*"):
+            try:
+                if entry.is_file() and entry.stat().st_size <= 500_000:
+                    chunks.append(entry.read_text(errors="replace"))
+            except OSError:
+                continue
+        self.leases = "\n".join(chunks)
+
+    def in_use(self, path):
+        target = str(Path(path).resolve())
+        prefix = target + os.sep
+        for cwd in self.cwds:
+            if cwd == target or cwd.startswith(prefix):
+                return "process cwd %s" % cwd
+        for name in self.panes:
+            resolved = os.path.realpath(name)
+            if resolved == target or resolved.startswith(prefix):
+                return "tmux pane %s" % name
+        for filename in self.files:
+            if filename.startswith(prefix):
+                return "open file %s" % filename
+        if target in self.leases:
+            return "lease file names it"
+        return None
+
+
+def recently_touched(path, cutoff):
+    """The newest file in the top two levels, or None."""
+    try:
+        for dirpath, dirnames, filenames in os.walk(str(path)):
+            rel = os.path.relpath(dirpath, str(path))
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth >= 1:
+                dirnames[:] = []
+            else:
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for name in filenames:
+                if name in SKIP_DIRS:
+                    continue
+                filename = os.path.join(dirpath, name)
+                try:
+                    if os.lstat(filename).st_mtime > cutoff:
+                        return filename
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return None
+
+
+# -- per-repo work -------------------------------------------------------
+
+def audit_in_progress(git_dir):
+    git_dir = Path(git_dir)
+    return any((git_dir / marker).exists()
+               for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD"))
+
+
+def worktree_status(path):
+    code, out, err = git(["--no-optional-locks", "-C", str(path), "status",
+                          "--porcelain", "--untracked-files=all"], timeout=GIT_TIMEOUT)
+    if code != 0:
+        return None, err
+    tracked = []
+    untracked = []
+    for line in out.splitlines():
+        if line.startswith("?? "):
+            untracked.append(line[3:].strip())
+        elif line.strip():
+            tracked.append(line)
+    return (tracked, untracked), ""
+
+
+def under(path, root):
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+class RepoRun:
+    def __init__(self, repo, opts, live):
+        self.repo = Path(repo)
+        self.opts = opts
+        self.live = live
+        self.plan = []
+        self.result = {
+            "repo": str(self.repo),
+            "skipped": None,
+            "base": None,
+            "slug": None,
+            "fetch_ok": False,
+            "remote_decisions": False,
+            "worktrees": {"removed": [], "held": [], "deferred": 0, "pruned": []},
+            "branches": {"deleted": [], "kept": [], "deferred": 0},
+            "remote": {"deleted": [], "kept": [], "stale": [], "deferred": 0},
+            "setting": {"before": None, "set": False, "changed": False},
+            "freed_bytes": 0,
+        }
+
+    # action logging ----------------------------------------------------
+    def note(self, verb, kind, target, detail):
+        self.plan.append("%s %s %s (%s)" % (verb, kind, target, detail))
+
+    def run(self):
+        before = free_bytes(self.opts.projects_root)
+        result = self.result
+        if not is_repo(self.repo):
+            result["skipped"] = "not a repo"
+            self.note("SKIP", "repo", self.repo, result["skipped"])
+            return result
+        # Given a linked worktree, work from the main checkout instead.
+        entries = parse_worktrees(self.repo)
+        if entries:
+            self.repo = Path(entries[0]["path"]).resolve()
+            result["repo"] = str(self.repo)
+        code, out, _ = git(["-C", str(self.repo), "rev-parse", "--absolute-git-dir"])
+        if code != 0:
+            result["skipped"] = "git cannot read it"
+            self.note("SKIP", "repo", self.repo, result["skipped"])
+            return result
+        if audit_in_progress(out.strip()):
+            result["skipped"] = "mid-rebase or mid-merge, left alone"
+            self.note("SKIP", "repo", self.repo, result["skipped"])
+            return result
+
+        self.budget = self.opts.max_remove
+        base = base_ref(self.repo)
+        result["base"] = base
+        slug = repo_slug(self.repo)
+        result["slug"] = slug
+
+        fetch_ok = git(["-C", str(self.repo), "fetch", "--prune", "--quiet", "origin"],
+                       timeout=FETCH_TIMEOUT)[0] == 0
+        result["fetch_ok"] = fetch_ok
+        if not fetch_ok:
+            self.note("WARN", "repo", self.repo,
+                      "fetch failed, remote-dependent decisions skipped")
+
+        github = Github(self.repo)
+        remote_ok = fetch_ok and github.load()
+        result["remote_decisions"] = remote_ok
+        if fetch_ok and not remote_ok:
+            reason = getattr(github, "error", "no GitHub slug") or "no GitHub slug"
+            self.note("WARN", "repo", self.repo,
+                      "gh failed (%s), remote decisions skipped" % reason)
+
+        base_set = commit_set(self.repo, base) if base else set()
+        remote_set = commit_set(self.repo, "--remotes") if fetch_ok else set()
+        cutoff = time.time() - RECENT_SECONDS
+
+        self.tidy_worktrees(base, base_set, remote_set, github, remote_ok, cutoff)
+        self.tidy_local_branches(base, base_set, github, remote_ok)
+        if remote_ok:
+            self.tidy_remote_branches(base, base_set, github)
+            self.tidy_setting(github)
+        result["freed_bytes"] = max(0, free_bytes(self.opts.projects_root) - before)
+        return result
+
+    # worktrees ---------------------------------------------------------
+    def tidy_worktrees(self, base, base_set, remote_set, github, remote_ok, cutoff):
+        entries = parse_worktrees(self.repo)
+        if not entries:
+            return
+        main_path = str(Path(entries[0]["path"]).resolve())
+
+        missing = [e for e in entries[1:] if not Path(e["path"]).exists()]
+        for entry in missing:
+            if self.opts.apply:
+                git(["-C", str(self.repo), "worktree", "prune"])
+            self.result["worktrees"]["pruned"].append(entry["path"])
+            self.note("PRUNE", "worktree", entry["path"], "directory is gone")
+
+        candidates = [e for e in entries[1:] if Path(e["path"]).exists()]
+        verdicts = self.inspect_worktrees(
+            candidates, base, base_set, remote_set, github, remote_ok, cutoff)
+
+        for entry, verdict in verdicts:
+            kind, reason = verdict
+            path = entry["path"]
+            if kind != "remove":
+                self.result["worktrees"]["held"].append(
+                    {"path": path, "reason": reason[0], "detail": reason[1]})
+                self.note("HOLD", "worktree", path, "%s: %s" % reason)
+                continue
+            if self.budget <= 0:
+                self.result["worktrees"]["deferred"] += 1
+                self.note("DEFER", "worktree", path, "over --max-remove")
+                continue
+            if not self.opts.apply:
+                self.budget -= 1
+                self.result["worktrees"]["removed"].append({"path": path, "why": reason[1]})
+                self.note("REMOVE", "worktree", path, reason[1])
+                continue
+            removed, detail = self.remove_worktree(path, main_path)
+            if removed:
+                self.budget -= 1
+                self.result["worktrees"]["removed"].append({"path": path, "why": reason[1]})
+                self.note("REMOVE", "worktree", path, reason[1])
+            else:
+                self.result["worktrees"]["held"].append(
+                    {"path": path, "reason": "remove-failed", "detail": detail})
+                self.note("HOLD", "worktree", path, "remove failed: " + detail)
+
+    def inspect_worktrees(self, entries, base, base_set, remote_set, github,
+                          remote_ok, cutoff):
+        def one(entry):
+            return entry, self.verdict_for(entry, base, base_set, remote_set,
+                                           github, remote_ok, cutoff)
+
+        workers = min(8, (os.cpu_count() or 2))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(one, entries))
+
+    def verdict_for(self, entry, base, base_set, remote_set, github, remote_ok, cutoff):
+        path = Path(entry["path"])
+        head = entry.get("head")
+        branch = entry.get("branch")
+        if not under(path, self.opts.projects_root):
+            return "hold", ("outside", "outside the projects root, reported only")
+
+        status, err = worktree_status(path)
+        if status is None:
+            return "hold", ("unreadable", "git status failed: " + (err or "").strip())
+        tracked, untracked = status
+        if tracked:
+            return "hold", ("wip", "%d tracked file(s) edited" % len(tracked))
+        if untracked:
+            shown = ", ".join(untracked[:5])
+            more = "" if len(untracked) <= 5 else " (+%d more)" % (len(untracked) - 5)
+            return "hold", ("scratch", "untracked: %s%s" % (shown, more))
+
+        shipped = None
+        if head and head in base_set:
+            shipped = "tip is in %s" % base
+        elif branch and remote_ok and github.merged_tip(branch, head):
+            shipped = "merged PR carries this tip"
+        elif branch and remote_ok:
+            pr = github.closed_pr(branch)
+            age = github.age_days(pr) if pr else None
+            if (pr and age is not None and age > STALE_CLOSED_DAYS
+                    and (head in remote_set or pr.get("headRefOid") == head)):
+                shipped = "PR closed %d days ago, commit is on the remote" % age
+        if not shipped:
+            if branch is None:
+                return "hold", ("unshipped",
+                                "detached HEAD, commit is on no remote ref")
+            return "hold", ("unshipped", "no merged PR and not in %s" % (base or "base"))
+
+        use = self.live.in_use(path)
+        if use:
+            return "hold", ("in use", use)
+        touched = recently_touched(path, cutoff)
+        if touched:
+            return "hold", ("in use", "touched in the last 2 hours: %s" % touched)
+        return "remove", ("shipped", shipped)
+
+    def remove_worktree(self, path, main_path):
+        target = Path(path)
+        if str(target.resolve()) == main_path:
+            return False, "refused: main worktree"
+        if not self.is_registered(str(target)):
+            return False, "refused: not a registered worktree"
+        if not under(target, self.opts.projects_root):
+            return False, "refused: outside the projects root"
+        if str(target.resolve()) == str(Path(self.opts.projects_root).resolve()):
+            return False, "refused: that is the projects root itself"
+        if str(Path.home() / FORBIDDEN) in str(target.resolve()):
+            return False, "refused: vcc evidence"
+        git(["-C", str(self.repo), "worktree", "remove", "--force", str(target)])
+        if target.exists():
+            if self.is_registered(str(target)):
+                return False, "git kept it registered"
+            if not under(target, self.opts.projects_root):
+                return False, "refused: outside the projects root"
+            try:
+                shutil.rmtree(str(target))
+            except OSError as exc:
+                return False, "rm -rf failed: %s" % exc
+        git(["-C", str(self.repo), "worktree", "prune"])
+        return True, "removed"
+
+    def is_registered(self, path):
+        target = str(Path(path).resolve())
+        return any(str(Path(entry["path"]).resolve()) == target
+                   for entry in parse_worktrees(self.repo))
+
+    # local branches ----------------------------------------------------
+    def tidy_local_branches(self, base, base_set, github, remote_ok):
+        branches = local_branches(self.repo)
+        if not branches:
+            return
+        expected = self.expected_base(base)
+        removed = {str(Path(row["path"]).resolve())
+                   for row in self.result["worktrees"]["removed"]}
+        worktree_branches = set()
+        for entry in parse_worktrees(self.repo):
+            path = Path(entry["path"])
+            if not path.exists():
+                continue
+            # A dry run has not removed anything yet, so count a worktree this
+            # run plans to remove as already gone, and its branch as free.
+            if str(path.resolve()) in removed:
+                continue
+            if entry.get("branch"):
+                worktree_branches.add(entry["branch"])
+        code, out, _ = git(["-C", str(self.repo), "symbolic-ref", "--short", "HEAD"])
+        current = out.strip() if code == 0 else None
+        remote = remote_branches(self.repo)
+
+        for name, sha in sorted(branches.items()):
+            if name == expected:
+                continue
+            if name in worktree_branches or name == current:
+                self.result["branches"]["kept"].append(
+                    {"name": name, "reason": "in use", "detail": "checked out"})
+                continue
+            why = None
+            if sha in base_set:
+                why = "tip is in %s" % base
+            elif remote_ok and github.merged_tip(name, sha):
+                why = "merged PR carries this tip"
+            elif remote_ok and name in github.open:
+                self.result["branches"]["kept"].append(
+                    {"name": name, "reason": "open PR", "detail": "PR still open"})
+                self.note("KEEP", "branch", name, "open PR")
+                continue
+            elif remote_ok:
+                pr = github.closed_pr(name)
+                age = github.age_days(pr) if pr else None
+                local_tip = remote.get(name, {}).get("sha")
+                if pr and age is not None and age > STALE_UNMERGED_PR_DAYS and local_tip == sha:
+                    why = "PR closed unmerged %d days ago, tip is on the remote" % age
+                elif pr and age is not None:
+                    detail = "closed-unmerged PR %d days old, under %d" % (
+                        age, STALE_UNMERGED_PR_DAYS)
+                    self.result["branches"]["kept"].append(
+                        {"name": name, "reason": "unshipped", "detail": detail})
+                    self.note("KEEP", "branch", name, detail)
+                    continue
+            if not why:
+                ahead = git(["-C", str(self.repo), "rev-list", "--count", sha,
+                             "--not", "--remotes"])
+                count = ahead[1].strip() if ahead[0] == 0 else "?"
+                detail = "unpushed: %s commits" % count
+                self.result["branches"]["kept"].append(
+                    {"name": name, "reason": "unpushed", "detail": detail})
+                self.note("KEEP", "branch", name, detail)
+                continue
+            if self.budget <= 0:
+                self.result["branches"]["deferred"] += 1
+                self.note("DEFER", "branch", name, "over --max-remove")
+                continue
+            if self.opts.apply:
+                code, _, err = git(["-C", str(self.repo), "branch", "-D", name])
+                if code != 0:
+                    self.result["branches"]["kept"].append(
+                        {"name": name, "reason": "delete-failed", "detail": err.strip()})
+                    self.note("HOLD", "branch", name, "delete failed: " + err.strip())
+                    continue
+            self.budget -= 1
+            self.result["branches"]["deleted"].append({"name": name, "why": why})
+            self.note("DELETE", "branch", name, why)
+
+    def expected_base(self, base):
+        if not base:
+            return None
+        return base[len("origin/"):] if base.startswith("origin/") else base
+
+    # remote branches ---------------------------------------------------
+    def tidy_remote_branches(self, base, base_set, github):
+        remote = remote_branches(self.repo)
+        if not remote:
+            return
+        default = self.expected_base(base)
+        protected = github.read_protected()
+        candidates = []
+        for name, info in sorted(remote.items()):
+            if name == default:
+                continue
+            if name in github.open:
+                self.result["remote"]["kept"].append(
+                    {"name": name, "reason": "open PR"})
+                self.note("KEEP", "remote", "origin/" + name, "open PR")
+                continue
+            if name in protected:
+                self.result["remote"]["kept"].append(
+                    {"name": name, "reason": "protected"})
+                self.note("KEEP", "remote", "origin/" + name, "protected branch")
+                continue
+            sha = info["sha"]
+            if sha in base_set:
+                candidates.append((name, "tip is in %s" % base))
+            elif github.merged_tip(name, sha):
+                candidates.append((name, "merged PR carries this tip"))
+            elif github.merged.get(name):
+                self.result["remote"]["kept"].append(
+                    {"name": name, "reason": "merged PR, different tip"})
+                self.note("KEEP", "remote", "origin/" + name,
+                          "merged PR does not carry this tip, commits after the merge")
+            else:
+                pr = github.closed_pr(name)
+                if pr:
+                    age = github.age_days(pr)
+                    detail = "PR closed unmerged %s days ago" % (
+                        "?" if age is None else int(age))
+                    self.result["remote"]["kept"].append(
+                        {"name": name, "reason": "closed PR", "detail": detail})
+                    self.note("KEEP", "remote", "origin/" + name, detail)
+                    continue
+                age = int((time.time() - info["date"]) / 86400)
+                self.result["remote"]["stale"].append({"name": name, "age_days": age})
+        self.result["remote"]["stale"].sort(key=lambda row: -row["age_days"])
+        for row in self.result["remote"]["stale"][:10]:
+            self.note("STALE", "remote", "origin/" + row["name"],
+                      "%d days old, no merged PR, left alone" % row["age_days"])
+        for name, why in candidates:
+            if self.budget <= 0:
+                self.result["remote"]["deferred"] += 1
+                self.note("DEFER", "remote", "origin/" + name, "over --max-remove")
+                continue
+            if self.opts.apply:
+                code, _, err = git(["-C", str(self.repo), "push", "origin", "--delete", name])
+                if code != 0:
+                    self.result["remote"]["kept"].append(
+                        {"name": name, "reason": "delete-failed", "detail": err.strip()})
+                    self.note("HOLD", "remote", "origin/" + name,
+                              "delete failed: " + err.strip())
+                    continue
+            self.budget -= 1
+            self.result["remote"]["deleted"].append({"name": name, "why": why})
+            self.note("DELETE", "remote", "origin/" + name, why)
+
+    # github setting ----------------------------------------------------
+    def tidy_setting(self, github):
+        if not github.slug:
+            return
+        owner = github.slug.split("/")[0]
+        if owner not in OWNERS_THAT_ALLOW_THE_SETTING:
+            return
+        before = github.read_setting()
+        self.result["setting"]["before"] = before
+        if before is None or before:
+            return
+        self.result["setting"]["changed"] = True
+        if not self.opts.apply:
+            self.note("SET", "setting", github.slug, "delete_branch_on_merge=true")
+            return
+        code, _, err = gh(["api", "-X", "PATCH", "repos/%s" % github.slug,
+                           "-F", "delete_branch_on_merge=true"])
+        if code == 0:
+            self.result["setting"]["set"] = True
+            self.note("SET", "setting", github.slug, "delete_branch_on_merge=true")
+        else:
+            self.note("HOLD", "setting", github.slug, "PATCH failed: " + err.strip())
+
+
+# -- reporting -----------------------------------------------------------
+
+def summarise(result, apply):
+    work = result["worktrees"]
+    branches = result["branches"]
+    remote = result["remote"]
+    counts = {"wip": 0, "in use": 0, "unshipped": 0}
+    for row in work["held"]:
+        reason = row["reason"]
+        if reason in ("wip", "scratch"):
+            counts["wip"] += 1
+        elif reason in ("in use", "unreadable", "remove-failed"):
+            counts["in use"] += 1
+        else:
+            counts["unshipped"] += 1
+    verb = "removed" if apply else "would-remove"
+    freed = result["freed_bytes"] / 1e9
+    stale = len(remote["stale"])
+    return ("%s: worktrees %s %d held %d (wip %d, in-use %d, unshipped %d) | "
+            "local branches deleted %d kept %d | remote deleted %d stale-unPR'd %d "
+            "| freed ~%.1f GB" % (
+                Path(result["repo"]).name, verb, len(work["removed"]),
+                len(work["held"]) + work["deferred"], counts["wip"], counts["in use"],
+                counts["unshipped"], len(branches["deleted"]), len(branches["kept"]),
+                len(remote["deleted"]), stale, freed))
+
+
+def deferred_line(result):
+    work = result["worktrees"]["deferred"]
+    branches = result["branches"]["deferred"]
+    remote = result["remote"]["deferred"]
+    if not (work or branches or remote):
+        return None
+    return ("DEFERRED %d worktree removals, %d branch deletions, %d remote deletions "
+            "(--max-remove %d)" % (work, branches, remote, result["max_remove"]))
+
+
+def write_run_log(payload, stamp):
+    directory = Path.home() / ".local/state/repo-tidy"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / ("%s.json" % stamp.replace(":", ""))
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        return path
+    except OSError as exc:
+        sys.stderr.write("repo-tidy: cannot write run log: %s\n" % exc)
+        return None
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="repo-tidy", add_help=True,
+                                     description="Remove shipped worktrees and "
+                                                 "branches, gated. Dry run by default.")
+    parser.add_argument("--apply", action="store_true",
+                        help="actually remove; without it this is a dry run")
+    parser.add_argument("--all", action="store_true",
+                        help="every repo under the projects root plus the two shares")
+    parser.add_argument("--json", action="store_true", help="print full detail")
+    parser.add_argument("--mine", metavar="SESSION_CWD",
+                        help="only the repo this session works in")
+    parser.add_argument("--max-remove", type=int, default=DEFAULT_MAX_REMOVE,
+                        help="cap deletions per repo per run (default %d)" % DEFAULT_MAX_REMOVE)
+    parser.add_argument("--projects-root", default=None,
+                        help="where worktrees may be deleted (default ~/projects)")
+    parser.add_argument("paths", nargs="*", help="repo paths")
+    opts = parser.parse_args(argv)
+
+    if opts.max_remove < 0:
+        parser.error("--max-remove must be 0 or more")
+    opts.projects_root = Path(opts.projects_root or (Path.home() / "projects")).resolve()
+
+    repos = []
+    if opts.mine:
+        repo = session_repo(opts.mine)
+        if repo is None:
+            return 0
+        repos = [repo]
+    elif opts.all:
+        repos = discover_repos(opts.projects_root)
+    elif opts.paths:
+        repos = [Path(p).resolve() for p in opts.paths]
+    else:
+        repo = session_repo(Path.cwd())
+        if repo is None:
+            sys.stderr.write("repo-tidy: not in a git repo; pass --all or a path\n")
+            return 2
+        repos = [repo]
+
+    live = Live([opts.projects_root] + repos)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    started = time.time()
+    results = []
+    if not opts.json and not opts.apply:
+        print("DRY RUN: nothing is removed; pass --apply to do it")
+    for repo in repos:
+        runner = RepoRun(repo, opts, live)
+        try:
+            result = runner.run()
+        except Exception as exc:  # one bad repo must not stop the sweep
+            result = runner.result
+            result["error"] = "%s: %s" % (type(exc).__name__, exc)
+            runner.note("ERROR", "repo", repo, result["error"])
+        result["max_remove"] = opts.max_remove
+        results.append(result)
+        if opts.json:
+            continue
+        for line in runner.plan:
+            print(line)
+        print(summarise(result, opts.apply))
+        deferred = deferred_line(result)
+        if deferred:
+            print(deferred)
+
+    payload = {
+        "run_id": stamp,
+        "apply": opts.apply,
+        "mine": opts.mine,
+        "all": opts.all,
+        "projects_root": str(opts.projects_root),
+        "max_remove": opts.max_remove,
+        "duration_seconds": round(time.time() - started, 2),
+        "repos": results,
+        "totals": {
+            "repos": len(results),
+            "worktrees_removed": sum(len(r["worktrees"]["removed"]) for r in results),
+            "worktrees_held": sum(len(r["worktrees"]["held"]) for r in results),
+            "branches_deleted": sum(len(r["branches"]["deleted"]) for r in results),
+            "remote_deleted": sum(len(r["remote"]["deleted"]) for r in results),
+            "freed_bytes": sum(r["freed_bytes"] for r in results),
+        },
+    }
+    log = write_run_log(payload, stamp)
+    if opts.json:
+        print(json.dumps(payload, indent=2))
+    elif log and not opts.mine:
+        print("log: %s" % log)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
