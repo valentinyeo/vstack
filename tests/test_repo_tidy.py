@@ -11,6 +11,7 @@ Run: python3 -m unittest discover -s tests -p 'test_*.py'
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -157,6 +158,18 @@ class TestDryRunOnly(SandboxCase):
         self.assertIn("DRY RUN", result.stdout)
         self.assertIn("REMOVE worktree", result.stdout)
 
+    def test_dry_run_prints_the_setting_it_would_change(self):
+        """features/github-setting.md: on a dry run it prints SET, writes nothing.
+
+        The fitting item are the notes, but the SET line is the user-visible part.
+        """
+        result = tidy(self.world, "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SET setting valentinyeo/sandbox (delete_branch_on_merge=true)",
+                      result.stdout)
+        calls = sandbox.snapshot(self.world.root)["gh_calls"]
+        self.assertFalse([c for c in calls if c.startswith("PATCH ")], calls)
+
 
 class TestCap(SandboxCase):
     def test_max_remove_caps_and_reports_deferred(self):
@@ -238,6 +251,203 @@ class TestScale(unittest.TestCase):
         self.assertIn("worktrees", result.stdout)
         self.assertGreaterEqual(len(sandbox.snapshot(root)["worktrees"]), 801)
         self.assertGreaterEqual(len(sandbox.snapshot(root)["branches"]), 1300)
+
+
+class TestGhPrListOnce(SandboxCase):
+    def test_one_pr_list_call_per_repo(self):
+        result = tidy(self.world, "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = sandbox.snapshot(self.world.root)["gh_calls"]
+        lists = [c for c in calls if c.startswith("PR_LIST")]
+        self.assertEqual(lists, ["PR_LIST -R valentinyeo/sandbox --state all"], lists)
+
+
+class TestRepoTimeout(SandboxCase):
+    def test_per_repo_cap_skips_hung_repo(self):
+        result = tidy(self.world, "--all", "--repo-timeout", "1",
+                      extra_env={"GH_PR_DELAY": "5"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("exceeded 1s per-repo cap", result.stdout)
+
+
+def newest_log(result):
+    """The run log repo-tidy names on stdout, parsed."""
+    match = re.search(r"^log: (.+)$", result.stdout, re.M)
+    assert match, result.stdout
+    return json.loads(Path(match.group(1)).read_text())
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+VPS_STATE_STUB = """#!/bin/sh
+echo "$*" >> "{log}"
+exit "${{VPS_STATE_EXIT:-0}}"
+"""
+
+
+class TestJobs(SandboxCase):
+    """Twelve repos at once is what overloaded this shared server."""
+
+    # Two repos, so the sweep size is the number under test, not the repo count.
+    neighbour = True
+
+    @classmethod
+    def build(cls):
+        world, expect = super().build()
+        cls.write_stub(world)
+        return world, expect
+
+    @staticmethod
+    def write_stub(world):
+        stub = world.home / ".local/bin/vps-state"
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(VPS_STATE_STUB.format(log=world.root / "vps-state-calls.log"))
+        stub.chmod(0o755)
+
+    def probe_calls(self):
+        log = self.world.root / "vps-state-calls.log"
+        return log.read_text().splitlines() if log.exists() else []
+
+    def run_and_log(self, *args, probe_exit=None):
+        (self.world.root / "vps-state-calls.log").write_text("")
+        env = {} if probe_exit is None else {"VPS_STATE_EXIT": str(probe_exit)}
+        result = tidy(self.world, *args, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result, newest_log(result)
+
+    def test_default_is_four_jobs_and_the_probe_runs_once(self):
+        result, payload = self.run_and_log("--all")
+        self.assertEqual(payload["jobs"], 4, result.stdout)
+        self.assertEqual(self.probe_calls(), ["--can-launch worker --no-write"])
+
+    def test_hold_drops_to_one_job(self):
+        result, payload = self.run_and_log("--all", probe_exit=2)
+        self.assertEqual(payload["jobs"], 1, result.stdout)
+        self.assertIn("jobs: 1", result.stdout)
+
+    def test_careful_drops_to_two_jobs(self):
+        result, payload = self.run_and_log("--all", probe_exit=1)
+        self.assertEqual(payload["jobs"], 2, result.stdout)
+
+    def test_missing_probe_means_one_job(self):
+        stub = self.world.home / ".local/bin/vps-state"
+        stub.unlink()
+        self.addCleanup(self.write_stub, self.world)
+        result, payload = self.run_and_log("--all")
+        self.assertEqual(payload["jobs"], 1, result.stdout)
+
+    def test_jobs_flag_sets_the_number(self):
+        result, payload = self.run_and_log("--all", "--jobs", "3")
+        self.assertEqual(payload["jobs"], 3, result.stdout)
+
+    def test_jobs_flag_refuses_out_of_range(self):
+        for value in ("0", "9", "-1"):
+            result = tidy(self.world, "--all", "--jobs", value)
+            self.assertNotEqual(result.returncode, 0, value)
+            self.assertIn("--jobs", result.stderr)
+
+
+class TestChildProcesses(unittest.TestCase):
+    """A hung git must die at the cap, and every child must run niced."""
+
+    GIT_SHIM = """#!/bin/sh
+echo "pid $$" >> "$FAKE_GIT_LOG"
+echo "nice $(ps -o ni= -p $$ | tr -d ' ')" >> "$FAKE_GIT_LOG"
+sleep 300 &
+echo "pid $!" >> "$FAKE_GIT_LOG"
+wait
+"""
+
+    def build(self):
+        root = Path(tempfile.mkdtemp(prefix="repo-tidy-child-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        home = root / "home"
+        repo = home / "projects/hung"
+        repo.mkdir(parents=True)
+        (home / ".gitconfig").write_text(
+            "[user]\n\tname = t\n\temail = t@example.com\n[init]\n\tdefaultBranch = main\n")
+        env = dict(os.environ, HOME=str(home), GIT_CONFIG_NOSYSTEM="1",
+                   GIT_CONFIG_GLOBAL=str(home / ".gitconfig"))
+        for args in (["init", "-q", str(repo)],
+                     ["-C", str(repo), "add", "f"],
+                     ["-C", str(repo), "commit", "-qm", "init"]):
+            if args[0] == "init":
+                (repo / "f").write_text("x\n")
+            subprocess.run(["git"] + args, check=True, env=env)
+        fake = root / "fakebin"
+        fake.mkdir()
+        (fake / "git").write_text(self.GIT_SHIM)
+        (fake / "git").chmod(0o755)
+        log = root / "fake-git.log"
+        env.update({"PATH": str(fake) + os.pathsep + env["PATH"],
+                    "FAKE_GIT_LOG": str(log)})
+        return root, env, log
+
+    def test_hung_git_dies_at_the_repo_cap_and_runs_niced(self):
+        root, env, log = self.build()
+        started = time.time()
+        result = subprocess.run([sys.executable, str(TIDY), "--all", "--repo-timeout", "2"],
+                                capture_output=True, text=True, env=env, timeout=120)
+        elapsed = time.time() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("exceeded 2s per-repo cap", result.stdout)
+        self.assertLess(elapsed, 30, "the run waited %.1fs on a child that sleeps 300s" % elapsed)
+        rows = [line.split(" ", 1) for line in log.read_text().splitlines() if line.strip()]
+        self.assertTrue(rows, "the fake git never ran")
+        niceness = [int(value) for key, value in rows if key == "nice"]
+        self.assertTrue(niceness)
+        self.assertGreaterEqual(min(niceness), 10, "children of repo-tidy are not niced")
+        pids = [int(value) for key, value in rows if key == "pid"]
+        self.assertTrue(pids)
+        for _ in range(200):
+            if not any(pid_alive(pid) for pid in pids):
+                break
+            time.sleep(0.05)
+        self.assertEqual([pid for pid in pids if pid_alive(pid)], [],
+                         "a child of the capped repo outlived the run")
+
+
+class TestStreamingManyRepos(unittest.TestCase):
+    """A multi-repo dry run prints a summary before the sweep finishes."""
+
+    def test_first_summary_while_still_running(self):
+        root = Path(tempfile.mkdtemp(prefix="repo-tidy-stream-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        home = root / "home"
+        projects = home / "projects"
+        projects.mkdir(parents=True)
+        for index in range(20):
+            repo = projects / ("stream-%02d" % index)
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"],
+                           check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+            (repo / "f").write_text("x\n")
+            subprocess.run(["git", "-C", str(repo), "add", "f"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+        env = dict(os.environ, HOME=str(home))
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(TIDY), "--all", "--projects-root", str(projects)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
+        self.addCleanup(proc.kill)
+        saw = False
+        for line in proc.stdout:
+            if re.search(r": worktrees ", line):
+                saw = True
+                self.assertIsNone(proc.poll(),
+                                  "sweep ended before the first summary (no streaming)")
+                break
+        self.assertTrue(saw, "never saw a per-repo summary line")
+        proc.wait(timeout=120)
 
 
 class TestStopHook(unittest.TestCase):
