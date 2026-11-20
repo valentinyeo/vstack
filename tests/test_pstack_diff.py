@@ -247,6 +247,78 @@ class PstackDiffTest(unittest.TestCase):
         ]
         self.assertEqual(extras, [], result.stdout)
 
+    def test_yaml_comment_budget_does_not_mark_extra(self):
+        workflow = (
+            "name: ci\non:\n  pull_request:\njobs:\n"
+            "  checks:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: pnpm test\n"
+            "        # median run used 39.13% of budget.\n"
+        )
+        holder = tempfile.TemporaryDirectory(prefix="pstack-diff-comment-")
+        self.addCleanup(holder.cleanup)
+        root = Path(holder.name)
+        write(root, ".github/workflows/ci.yml", workflow)
+        write(root, ".claude/skills/verify-app/SKILL.md", "# x\n")
+        write(root, ".claude/skills/verify-app/features/README.md", "x\n")
+        write(
+            root,
+            ".github/workflows/verify.yml",
+            "name: v\non:\n  pull_request:\njobs:\n"
+            "  verify:\n    runs-on: ubuntu-latest\n    steps:\n      - run: codex exec\n",
+        )
+        result = run_diff(root)
+        self.assertNotIn("EXTRA workflow: .github/workflows/ci.yml job checks", result.stdout)
+
+    def test_real_budget_gate_still_extra(self):
+        base = clean_files()
+        root = build_repo(
+            self,
+            base,
+            {".github/workflows/ci.yml": base[".github/workflows/ci.yml"].rstrip("\n") + "\n" + BUDGET},
+        )
+        result = run_diff(root)
+        self.assertIn("EXTRA workflow: .github/workflows/ci.yml job budget", result.stdout)
+
+    def test_step_continue_on_error_does_not_drop_verifier_job(self):
+        body = (
+            "    runs-on: ubuntu-latest\n    needs: engine\n    steps:\n"
+            "      - run: echo x\n      - name: Verify with Codex\n"
+            "        continue-on-error: true\n        run: codex exec\n"
+        )
+        self.assertTrue(PSTACK_DIFF._job_fails_pr(body))
+
+    def test_job_level_continue_on_error_drops_job(self):
+        body = "    runs-on: ubuntu-latest\n    continue-on-error: true\n    steps:\n      - run: echo\n"
+        self.assertFalse(PSTACK_DIFF._job_fails_pr(body))
+
+    def test_astro_fixture_no_extra_checks_no_verifier_gap(self):
+        result = run_diff(FIXTURES / "astro-rs")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("EXTRA workflow: .github/workflows/ci.yml job checks", result.stdout)
+        self.assertNotIn("GAP verifier workflow", result.stdout)
+        self.assertIn("ASKED verifier workflow:", result.stdout)
+
+    def test_stale_checkout_warning_does_not_change_exit(self):
+        holder = tempfile.TemporaryDirectory(prefix="pstack-diff-behind-")
+        self.addCleanup(holder.cleanup)
+        root = Path(holder.name)
+        for name, text in clean_files().items():
+            write(root, name, text)
+        git(root, "init", "-q", "-b", "main")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "one")
+        git(root, "commit", "-qm", "two", "--allow-empty")
+        origin_tip = git(root, "rev-parse", "HEAD")
+        git(root, "reset", "--hard", "HEAD~1")
+        git(root, "update-ref", "refs/remotes/origin/main", origin_tip)
+        git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(
+            any(line.startswith("WARN checkout is") and "behind origin/main" in line for line in result.stdout.splitlines()),
+            result.stdout,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
