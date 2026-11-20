@@ -445,6 +445,137 @@ class LaunchGate(unittest.TestCase):
         self.gate('--install-for-project', str(project), home=home)
         self.assertEqual(path.read_text(), '{}\n')
 
+    def _old_form_project(self):
+        project = self.dir / 'proj'
+        (project / '.claude').mkdir(parents=True)
+        before = {
+            'permissions': {'allow': ['Bash(ls:*)']},
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Write', 'hooks': [
+                        {'type': 'command', 'command': '/usr/bin/python3 other-guard.py'}]},
+                    {'matcher': 'Bash', 'hooks': [
+                        {'type': 'command', 'command': 'python3 ' + OLD_COMMAND}]}],
+                'SessionStart': [{'hooks': [{'type': 'command', 'command': 'vps-state-hook'}]}],
+            },
+        }
+        path = project / '.claude/settings.local.json'
+        path.write_text(json.dumps(before, indent=2) + '\n')
+        return project, path, before
+
+    def hook_on_project(self, project, command='ls', state=None, payload_extra=None):
+        body = {'tool_name': 'Bash', 'tool_input': {'command': command},
+                'cwd': str(project)}
+        body.update(payload_extra or {})
+        environ = {'PATH': os.environ.get('PATH', ''), 'HOME': str(self.dir),
+                   'CLAUDE_PROJECT_DIR': str(project)}
+        if state:
+            environ['LAUNCH_GATE_VPS_STATE'] = state
+        return subprocess.run([sys.executable, str(GATE)], input=json.dumps(body),
+                              capture_output=True, text=True, env=environ, timeout=60)
+
+    def test_a_hook_run_heals_an_old_form_project(self):
+        project, path, before = self._old_form_project()
+        hold, _log = fake_state(self.dir, 2)
+        self.assertEqual(registered_command(project), 'python3 ' + OLD_COMMAND)
+        result = self.hook_on_project(project, state=hold)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = json.loads(path.read_text())
+        self.assertEqual(settings['permissions'], before['permissions'])
+        self.assertEqual(settings['hooks']['SessionStart'], before['hooks']['SessionStart'])
+        self.assertEqual(settings['hooks']['PreToolUse'][0], before['hooks']['PreToolUse'][0])
+        self.assertEqual(registered_command(project), REGISTERED)
+
+    def test_a_second_hook_run_does_not_rewrite_healed_settings(self):
+        project, path, _before = self._old_form_project()
+        self.hook_on_project(project)
+        first_text = path.read_text()
+        mtime = path.stat().st_mtime_ns
+        second = self.hook_on_project(project)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(path.read_text(), first_text)
+        self.assertEqual(path.stat().st_mtime_ns, mtime)
+
+    def test_heal_leaves_malformed_json_untouched(self):
+        project = self.dir / 'proj'
+        (project / '.claude').mkdir(parents=True)
+        path = project / '.claude/settings.local.json'
+        broken = '{not json but mentions launch-gate.py\n'
+        path.write_text(broken)
+        hold, _log = fake_state(self.dir, 2)
+        result = self.hook_on_project(project, 'pytest -q', hold)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(path.read_text(), broken)
+
+    def test_heal_leaves_an_unwritable_settings_file_untouched(self):
+        project = self.dir / 'proj'
+        (project / '.claude/settings.local.json').mkdir(parents=True)
+        hold, _log = fake_state(self.dir, 2)
+        result = self.hook_on_project(project, 'pytest -q', hold)
+        self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_heal_still_blocks_at_hold(self):
+        project, _path, _before = self._old_form_project()
+        hold, _log = fake_state(self.dir, 2)
+        result = self.hook_on_project(project, '~/.local/bin/plan-pick --run', hold)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('BLOCKED by launch-gate', result.stderr)
+        self.assertEqual(registered_command(project), REGISTERED)
+
+    def test_heal_follows_a_symlinked_settings_file(self):
+        project = self.dir / 'proj'
+        real = self.dir / 'real-settings'
+        real.mkdir()
+        (project / '.claude').mkdir(parents=True)
+        target = real / 'settings.local.json'
+        target.write_text(json.dumps({'hooks': {'PreToolUse': [
+            {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': OLD_COMMAND}]}]}}) + '\n')
+        link = project / '.claude/settings.local.json'
+        link.symlink_to(target)
+        self.hook_on_project(project)
+        settings = json.loads(target.read_text())
+        self.assertEqual(registered_command(project), REGISTERED)
+        self.assertEqual(len(settings['hooks']['PreToolUse']), 1)
+
+    def test_heal_does_not_touch_another_projects_settings(self):
+        project, path, _before = self._old_form_project()
+        before = path.read_text()
+        other = self.dir / 'other'
+        other.mkdir()
+        body = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 'ls'},
+                           'cwd': str(other)})
+        environ = {'PATH': os.environ.get('PATH', ''), 'HOME': str(self.dir)}
+        result = subprocess.run([sys.executable, str(GATE)], input=body, capture_output=True,
+                                text=True, env=environ, cwd=str(other), timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(path.read_text(), before)
+
+    def test_heal_is_a_no_op_without_a_settings_file(self):
+        project = self.dir / 'proj'
+        project.mkdir()
+        body = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 'ls'},
+                           'cwd': str(project)})
+        environ = {'PATH': os.environ.get('PATH', ''), 'HOME': str(self.dir),
+                   'CLAUDE_PROJECT_DIR': str(project)}
+        result = subprocess.run([sys.executable, str(GATE)], input=body, capture_output=True,
+                                text=True, env=environ, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((project / '.claude/settings.local.json').exists())
+
+    def test_heal_never_touches_project_settings_json(self):
+        project = self.dir / 'proj'
+        (project / '.claude').mkdir(parents=True)
+        global_path = project / '.claude/settings.json'
+        global_path.write_text(json.dumps({'hooks': {'PreToolUse': [
+            {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': OLD_COMMAND}]}]}}) + '\n')
+        local_path = project / '.claude/settings.local.json'
+        local_path.write_text(json.dumps({'hooks': {'PreToolUse': [
+            {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': OLD_COMMAND}]}]}}) + '\n')
+        before_global = global_path.read_text()
+        self.hook_on_project(project)
+        self.assertEqual(global_path.read_text(), before_global)
+        self.assertEqual(registered_command(project), REGISTERED)
+
 
 class VerifyLaunchGateGrade(unittest.TestCase):
     def setUp(self):
@@ -491,6 +622,14 @@ class VerifyLaunchGateGrade(unittest.TestCase):
         self.write('open.err', 'launch-gate: vps-state exited 3, so this launch was not checked\n')
         self.write('live.code', '2\n')
         self.write('live.out', BRIEF + '\n')
+        self.write('heal-before.json', json.dumps({
+            'hooks': {'PreToolUse': [
+                {'matcher': 'Bash', 'hooks': [
+                    {'type': 'command', 'command': '$HOME/.claude/hooks/launch-gate.py'}]}]}}))
+        self.write('heal-after.json', json.dumps({
+            'hooks': {'PreToolUse': [
+                {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': REGISTERED}]}]}}))
+        self.write('heal-mtime.txt', '1000\n1000\n')
         return self.dir
 
     def grade(self, directory):
@@ -503,7 +642,7 @@ class VerifyLaunchGateGrade(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn('VERDICT PASS', out)
         for check in ('install', 'idempotent', 'check-project', 'registered', 'hold', 'verdicts',
-                      'fail-open', 'live'):
+                      'fail-open', 'live', 'heal'):
             self.assertIn('PASS ' + check + ':', out)
 
     def test_a_missing_hook_registration_fails_install(self):

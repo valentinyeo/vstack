@@ -29,6 +29,7 @@ GRADE = Path(__file__).resolve().parent / 'grade.py'
 EVIDENCE_ROOT = Path.home() / '.local' / 'state' / 'verify-launch-gate'
 LAUNCH = '~/.local/bin/plan-pick --run'
 BRIEF = 'HOLD worker, HOLD chat: load5 40.10 is 2.23x 18 cores, cpu some60 92%'
+OLD_REGISTERED = '$HOME/.claude/hooks/launch-gate.py'
 RUN_TIMEOUT = 30
 FAKE = """#!/usr/bin/env python3
 import sys
@@ -155,6 +156,33 @@ def drive(hook, directory):
 
     save(directory, 'check-project', call([str(hook), '--check-project', str(project)], env))
     save(directory, 'check-empty', call([str(hook), '--check-project', str(empty)], env))
+
+    heal_project = scratch / 'heal-project'
+    heal_project.mkdir()
+    heal_settings = heal_project / '.claude/settings.local.json'
+    heal_settings.parent.mkdir(parents=True)
+    heal_before = {
+        'permissions': {'allow': ['Bash(ls:*)']},
+        'hooks': {'PreToolUse': [
+            {'matcher': 'Write', 'hooks': [
+                {'type': 'command', 'command': '/usr/bin/python3 other-guard.py'}]},
+            {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': OLD_REGISTERED}]}]},
+    }
+    heal_settings.write_text(json.dumps(heal_before, indent=2) + '\n')
+    (directory / 'heal-before.json').write_text(heal_settings.read_text())
+    read_payload = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 'ls'},
+                               'cwd': str(heal_project)})
+    heal_env = dict(env, CLAUDE_PROJECT_DIR=str(heal_project))
+    save(directory, 'heal-first', call([str(hook)], heal_env, stdin=read_payload))
+    try:
+        healed = json.loads(heal_settings.read_text())
+    except (OSError, ValueError):
+        healed = None
+    (directory / 'heal-after.json').write_text(json.dumps(healed, indent=2) + '\n')
+    mtime_first = heal_settings.stat().st_mtime_ns
+    save(directory, 'heal-second', call([str(hook)], heal_env, stdin=read_payload))
+    mtime_second = heal_settings.stat().st_mtime_ns
+    (directory / 'heal-mtime.txt').write_text('{}\n{}\n'.format(mtime_first, mtime_second))
 
     payload = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': LAUNCH}})
 

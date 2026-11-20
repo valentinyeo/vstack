@@ -13,7 +13,7 @@ from pathlib import Path
 PASS, FAIL = 'PASS', 'FAIL'
 EXIT_FOR = {'ADD': 0, 'CAREFUL': 1, 'HOLD': 2}
 CHECKS = ('doctor', 'install', 'idempotent', 'check-project', 'registered', 'hold', 'verdicts',
-          'fail-open', 'live')
+          'fail-open', 'live', 'heal')
 
 
 def text(directory, name):
@@ -161,6 +161,36 @@ def check_fail_open(directory):
     return PASS, 'a probe failure allows the launch and warns once'
 
 
+def registered_command(settings):
+    hooks = settings.get('hooks') if isinstance(settings, dict) else None
+    entries = hooks.get('PreToolUse') if isinstance(hooks, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        for item in entry.get('hooks') or []:
+            command = item.get('command') if isinstance(item, dict) else None
+            if isinstance(command, str) and 'launch-gate.py' in command:
+                return command
+    return None
+
+
+def check_heal(directory):
+    before = settings_file(directory, 'heal-before.json')
+    after = settings_file(directory, 'heal-after.json')
+    mtime = (text(directory, 'heal-mtime.txt') or '').splitlines()
+    old = '$HOME/.claude/hooks/launch-gate.py'
+    want = "sh -c 'f=\"$HOME/.claude/hooks/launch-gate.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'"
+    before_cmd = registered_command(before)
+    after_cmd = registered_command(after)
+    if before_cmd is None or old not in (before_cmd or ''):
+        return FAIL, 'heal-before does not register the old bare-path command'
+    if after_cmd != want:
+        return FAIL, 'heal-after did not upgrade to the fail-open command: {!r}'.format(after_cmd)
+    if len(mtime) != 2 or not mtime[0].strip().isdigit() or not mtime[1].strip().isdigit():
+        return FAIL, 'heal-mtime.txt does not record two mtimes'
+    if mtime[0].strip() != mtime[1].strip():
+        return FAIL, 'the second hook run rewrote an already healed settings file'
+    return PASS, 'one hook run upgrades a stale line; the second leaves the file alone'
+
+
 def check_live(directory):
     code = exit_code(directory, 'live.code')
     out = text(directory, 'live.out') or ''
@@ -180,7 +210,8 @@ def grade(directory):
                         ('idempotent', check_idempotent), ('check-project', check_project),
                         ('registered', check_registered), ('hold', check_hold),
                         ('verdicts', check_verdicts),
-                        ('fail-open', check_fail_open), ('live', check_live)):
+                        ('fail-open', check_fail_open), ('live', check_live),
+                        ('heal', check_heal)):
         verdict, detail = check(directory)
         results.append((name, verdict == PASS, detail))
     return results

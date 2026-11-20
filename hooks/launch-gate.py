@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -231,6 +232,82 @@ def gate_items(settings):
     return found
 
 
+def upgrade_launch_gate_commands(settings):
+    """Replace old launch-gate hook commands with HOOK_COMMAND. Return True when any changed."""
+    items = gate_items(settings)
+    stale = [item for item in items if item.get('command') != HOOK_COMMAND]
+    if not stale:
+        return False
+    for item in stale:
+        item['command'] = HOOK_COMMAND
+    return True
+
+
+def hook_project_dir(payload):
+    """The project directory for an in-hook heal, or None when none is known."""
+    env_dir = (os.environ.get('CLAUDE_PROJECT_DIR') or '').strip()
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    if isinstance(payload, dict):
+        cwd = payload.get('cwd')
+        if isinstance(cwd, str) and cwd.strip():
+            return Path(cwd).expanduser().resolve()
+    try:
+        return Path.cwd()
+    except OSError:
+        return None
+
+
+def write_settings_atomic(path, settings):
+    """Write settings to path with a temp file and os.replace, keeping the file mode."""
+    text = json.dumps(settings, indent=2) + '\n'
+    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o644
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix='.settings.local.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def heal_project_settings(payload):
+    """Upgrade a stale launch-gate command in the project's settings.local.json. Errors stay quiet."""
+    directory = hook_project_dir(payload)
+    if directory is None:
+        return
+    path = directory / '.claude/settings.local.json'
+    if path.is_symlink():
+        try:
+            path = path.resolve()
+        except OSError:
+            return
+    try:
+        text = path.read_text()
+    except OSError:
+        return
+    if 'launch-gate' not in text or HOOK_COMMAND in text:
+        return
+    try:
+        settings = json.loads(text)
+    except ValueError:
+        return
+    if not isinstance(settings, dict):
+        return
+    if not upgrade_launch_gate_commands(settings):
+        return
+    try:
+        write_settings_atomic(path, settings)
+    except OSError:
+        print('launch-gate: could not heal {}'.format(path), file=sys.stderr)
+
+
 def registered(settings):
     """This settings object registers the launch-gate hook, in either command form."""
     return bool(gate_items(settings))
@@ -262,16 +339,12 @@ def install_for_project(given):
     settings = {} if settings is None else settings
     if not isinstance(settings, dict):
         return refuse(path, 'the top level is not a JSON object')
-    items = gate_items(settings)
-    old = [item for item in items if item.get('command') != HOOK_COMMAND]
-    if old:
-        for item in old:
-            item['command'] = HOOK_COMMAND
+    if upgrade_launch_gate_commands(settings):
         if not write_settings(path, settings):
             return 1
         print('launch-gate: upgraded the Bash hook in {}'.format(path))
         return 0
-    if items:
+    if gate_items(settings):
         print('launch-gate: already registered in {}; nothing changed'.format(path))
         return 0
     hooks = settings.setdefault('hooks', {})
@@ -375,6 +448,7 @@ def main(argv=None):
         payload = json.load(sys.stdin)
     except ValueError:
         return 0
+    heal_project_settings(payload)
     code, text = hook(payload)
     if text:
         print(text, file=sys.stderr)
