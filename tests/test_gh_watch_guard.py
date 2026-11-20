@@ -78,8 +78,8 @@ class VerdictTests(unittest.TestCase):
         self.assertTrue(self.guard.MESSAGE.startswith("BLOCKED by gh-watch-guard:"))
 
     def test_guard_message_uses_shared_install_path_not_repo_relative(self):
-        self.assertIn("~/.local/share/vstack/tools/gh-wrapper/wait-checks", self.guard.MESSAGE)
-        self.assertNotIn("tools/gh-wrapper/wait-checks <repo>", self.guard.MESSAGE)
+        self.assertIn("~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>", self.guard.MESSAGE)
+        self.assertNotIn("instead: tools/gh-wrapper/wait-checks", self.guard.MESSAGE)
         self.assertIn("run_in_background", self.guard.MESSAGE)
 
     def test_self_test_mode_passes(self):
