@@ -77,6 +77,10 @@ CODEX_POLL_SECONDS = 30
 CURSOR_PROMPT_SECONDS = 60
 CURSOR_CLOUD_SECONDS = 60
 CURSOR_SUBMIT_SECONDS = 240
+CURSOR_PASTE_LAND_SECONDS = 10
+CURSOR_PASTE_SETTLE_SECONDS = 1
+CURSOR_ENTER_CONFIRM_SECONDS = 10
+CURSOR_ENTER_MAX = 3
 DEFAULT_CURSOR_MODEL = 'composer-2.5'
 CODEX_ENVS = HOME / '.config/cloud-agent/codex-envs.json'
 
@@ -177,6 +181,25 @@ def submitted_tail(text):
     cuts = [text.rfind(marker) for marker in SUBMITTED]
     cuts = [cut for cut in cuts if cut >= 0]
     return text[min(cuts):] if cuts else ''
+
+
+def brief_paste_landed(text, flat_brief):
+    """The cursor REPL took the typed brief, or collapsed it to a paste token."""
+    pane = text or ''
+    if '[Pasted text' in pane:
+        return True
+    tail = (flat_brief or '')[-20:]
+    return bool(tail) and tail in pane
+
+
+def cursor_enter_confirmed(text):
+    """The brief submitted: cursor is working, done, or out of quota."""
+    pane = text or ''
+    if 'Checking git status' in pane:
+        return True
+    if extract_cursor_url(pane)[0]:
+        return True
+    return cursor_limit_hit(submitted_tail(pane))
 
 
 def extract_cursor_url(text):
@@ -434,23 +457,42 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
         if 'Move to cloud agent' not in pane:
             return limit('cursor')
 
-        sent = run([tmux, 'send-keys', '-t', session, '-l', flatten(brief)], timeout=TMUX_TIMEOUT)
+        flat = flatten(brief)
+        sent = run([tmux, 'send-keys', '-t', session, '-l', flat], timeout=TMUX_TIMEOUT)
         if sent.returncode != 0:
             return failed('cursor', f'could not type the brief into the cursor prompt: {saying(sent)}')
-        entered = run([tmux, 'send-keys', '-t', session, 'Enter'], timeout=15)
-        if entered.returncode != 0:
-            return failed('cursor', f'could not press Enter in the cursor prompt: {saying(entered)}')
+
+        poll(read, lambda text: brief_paste_landed(text, flat), CURSOR_PASTE_LAND_SECONDS)
+        time.sleep(CURSOR_PASTE_SETTLE_SECONDS)
+
+        enter_count = 0
+        first_enter_at = None
+        while enter_count < CURSOR_ENTER_MAX:
+            entered = run([tmux, 'send-keys', '-t', session, 'Enter'], timeout=15)
+            if entered.returncode != 0:
+                return failed('cursor', f'could not press Enter in the cursor prompt: {saying(entered)}')
+            enter_count += 1
+            if first_enter_at is None:
+                first_enter_at = time.monotonic()
+            pane = poll(read, cursor_enter_confirmed, CURSOR_ENTER_CONFIRM_SECONDS)
+            if pane is not None:
+                break
 
         # Only the pane after cursor starts working counts as a limit: the pane still shows the
         # brief the user wrote, and a brief may say "rate limit" or "quota" in its own words.
-        pane = poll(read, lambda text: bool(extract_cursor_url(text)[0])
-                    or cursor_limit_hit(submitted_tail(text)), CURSOR_SUBMIT_SECONDS)
+        remaining = CURSOR_SUBMIT_SECONDS - (time.monotonic() - (first_enter_at or time.monotonic()))
+        if remaining <= 0:
+            pane = read()
+        else:
+            pane = poll(read, lambda text: bool(extract_cursor_url(text)[0])
+                        or cursor_limit_hit(submitted_tail(text)), remaining)
         agent_url, task_id = extract_cursor_url(pane or '')
         if not agent_url:
             if pane and cursor_limit_hit(submitted_tail(pane)):
                 return limit('cursor')
+            enters = f' ({enter_count} Enter presses sent)' if enter_count else ''
             return failed('cursor', f'no cloud agent URL in the cursor pane {CURSOR_SUBMIT_SECONDS}s '
-                                    f'after pressing Enter: {(read() or "")[-600:]}')
+                                    f'after pressing Enter{enters}: {(read() or "")[-600:]}')
         if no_wait:
             return outcome('cursor', 'started', agent_url=agent_url, task_id=task_id)
 
