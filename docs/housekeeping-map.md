@@ -4,10 +4,10 @@ VSTA-7 (was SOFT-2940). Measured on this host on 2026-11-20 between 13:00 and 14
 
 The owner's target is three tools and no central instance, no central timer:
 
-- `vps-state`, read-only: load, memory, disk, processes, and the ADD / CAREFUL / HOLD verdict. Built in `soft-2935-vps-state`.
-- `repo-tidy`: all git worktree and branch cleanup, gated on shipped + clean + not in use. Built in `soft-2937-repo-tidy`.
-- `vps-tidy`: files and processes. Not built yet.
-- No shared housekeeping instance and no shared timer. Each tool documents a "Set up your own check" step, each chat runs `vps-state`, `repo-tidy` and `vps-tidy` from its own loop or hooks, and a maintainer never runs one for another chat. The old timers still retire: disable, archive, 7-day undo.
+- `vps-state`, read-only: load, memory, disk, processes, and the ADD / CAREFUL / HOLD verdict. Built in `soft-2935-vps-state`, and it ships its own "Set up your own check" step.
+- `repo-tidy`: all git worktree and branch cleanup, gated on shipped + clean + not in use. Built in `soft-2937-repo-tidy`, and it ships its own "Set up your own check" step.
+- `vps-tidy`: files and processes. Not built yet, and its spec carries its own "Set up your own check" step.
+- No shared housekeeping instance and no shared timer. Each chat runs `vps-state`, `repo-tidy` and `vps-tidy` from its own loop or hooks, and a maintainer never runs one for another chat. The old timers still retire: disable, archive, 7-day undo.
 
 Today housekeeping runs from twelve schedules across eleven tools: five systemd user timers (`tmp-cleanup`, `disk-guard`, `evidence-prune`, `proc-watchdog`, `factory-cleanup`), three services with no timer at all (`host-disk-sweep`, `worktree-reaper`, `agent-provider-reaper`), and four lines in `valentin`'s crontab (`orphan-reaper` hourly at :25, `reap-orphan-devservers` every 15 min, `qa-browser-reaper` every 30 min, `tmp-cleanup` Sunday 04:45). `tmp-cleanup` is the one tool counted twice: its own timer runs Sunday 03:30 and the crontab runs it again Sunday 04:45.
 
