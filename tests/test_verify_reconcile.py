@@ -209,6 +209,37 @@ class VerifyReconcileGrade(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
 
 
+class VerifyReconcileDoctor(unittest.TestCase):
+    """The doctor's lock step loads the real reconcile and reads its lock path."""
+
+    RECONCILE = ROOT / 'skills/hypertask-work/reconcile'
+
+    def lock_step_source(self):
+        """The python program `run` feeds the lock step, read from `run` itself."""
+        text = RUN.read_text()
+        start = text.index('LOCK=$(python3 -')
+        body_start = text.index('\n', start) + 1
+        body_end = text.index('\nPY\n', body_start)
+        return text[body_start:body_end]
+
+    def run_lock_step(self, script, board):
+        return subprocess.run(
+            [sys.executable, '-', str(script), str(board)],
+            input=self.lock_step_source(), capture_output=True, text=True, check=False)
+
+    def test_lock_step_reads_the_lock_path_from_the_real_reconcile(self):
+        result = self.run_lock_step(self.RECONCILE, 15)
+        self.assertEqual(result.returncode, 0,
+                         'the lock step could not load reconcile:\n%s' % result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         str(Path.home() / '.local/state/fleet/reconcile-15.lock'))
+
+    def test_lock_step_fails_cleanly_when_the_script_is_missing(self):
+        result = self.run_lock_step(self.RECONCILE.with_name('no-such-script'), 15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), '')
+
+
 class VerifyReconcileSkill(unittest.TestCase):
     def test_run_script_parses(self):
         result = subprocess.run(['bash', '-n', str(RUN)], capture_output=True, text=True, check=False)
