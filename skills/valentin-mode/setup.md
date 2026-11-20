@@ -14,6 +14,7 @@ Write every registered command to fail open when its file is missing, and to blo
 | `claude-helper-gate.py` | PreToolUse, Agent and Task | A Claude helper starts only when `plan-pick --claude-helper` allows it. Acts only in a valentin-mode chat. | global, once |
 | `launch-gate.py` | PreToolUse, Bash | No worker, build or test starts while vps-state says HOLD; `LAUNCH_GATE=off` is Valentin's override. | each project |
 | `skill-update.py` | UserPromptSubmit | Keeps the shared skills current and says when valentin-mode changed, so the chat re-reads it. | each project |
+| `gh-watch-guard.py` | PreToolUse, Bash | `gh --watch` and gh poll loops sleeping under 60 s are blocked. CI waits through `~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>` as a tracked background command (Bash `run_in_background`), not `&` or nohup. | each project |
 
 Run `python3 ~/.claude/hooks/launch-gate.py --install-for-project` once per project (writes `.claude/settings.local.json`); `--check-project` exits 0 when wired.
 

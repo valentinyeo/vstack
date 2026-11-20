@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Wait for one PR's checks in the background, at most one GitHub call a minute.
+
+  tools/gh-wrapper/wait-checks <repo> <pr> [--interval 60] [--max-minutes 30]
+
+Every poll asks `gh pr checks` through the shared wrapper, so the 60 second cache makes a
+minute of waiting cost one upstream call. Prints one line and exits when no check is pending:
+0 every check passed, 1 a check failed, 2 still pending at the 30 minute cap (run it again).
+On a failed check the line names the checks that failed.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+
+INTERVAL = 60
+MAX_MINUTES = 30
+GH = os.environ.get("GH_WAIT_CHECKS_GH") or os.environ.get("GH_REAL") or "gh"
+
+
+def read_once(repo: str, pr: str):
+    """(exit code, stdout, stderr) from one `gh pr checks` through the wrapper."""
+    argv = [GH, "pr", "checks", str(pr), "--repo", repo]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    except FileNotFoundError:
+        return 127, "", "%s: command not found\n" % GH
+    except (OSError, subprocess.SubprocessError) as error:
+        return 1, "", "%s\n" % error
+    return result.returncode, result.stdout, result.stderr
+
+
+def pending(text: str) -> bool:
+    return any("\tpending\t" in line for line in (text or "").splitlines())
+
+
+def failed(text: str) -> list:
+    """The check names a `gh pr checks` table marks failed, cancelled or timed out."""
+    names = []
+    for line in (text or "").splitlines():
+        fields = line.split("\t")
+        if len(fields) > 1 and fields[1] in ("fail", "cancelled", "timed_out"):
+            names.append(fields[0])
+    return names
+
+
+def wait(repo: str, pr: str, runner=read_once, sleeper=time.sleep, clock=time.monotonic,
+         interval: int = INTERVAL, max_minutes: int = MAX_MINUTES, out=None, err=None) -> int:
+    out = out or sys.stdout
+    err = err or sys.stderr
+    every = max(60, int(interval))
+    started = clock()
+    polls = 0
+    while True:
+        polls += 1
+        code, text, message = runner(repo, pr)
+        names = failed(text)
+        if names:
+            out.write("wait-checks: %s#%s %d check(s) failed: %s\n" % (
+                repo, pr, len(names), ", ".join(names[:5])))
+            out.flush()
+            return 1
+        if code == 0 and not pending(text):
+            out.write("wait-checks: %s#%s all checks passed, after %d minute(s) and %d poll(s)\n" % (
+                repo, pr, int((clock() - started) // 60), polls))
+            out.flush()
+            return 0
+        if code not in (0, 8) and not pending(text):
+            err.write("wait-checks: %s#%s gh pr checks exited %s: %s\n" % (
+                repo, pr, code, " ".join((message or text).split())[:160]))
+            err.flush()
+            return 1
+        if clock() - started >= max_minutes * 60:
+            out.write("wait-checks: %s#%s still pending after %d minutes; run this command again\n" % (
+                repo, pr, max_minutes))
+            out.flush()
+            return 2
+        sleeper(every)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Wait for a PR's checks with one cached call a minute.")
+    parser.add_argument("repo")
+    parser.add_argument("pr")
+    parser.add_argument("--interval", type=int, default=INTERVAL)
+    parser.add_argument("--max-minutes", type=int, default=MAX_MINUTES)
+    options = parser.parse_args(argv)
+    return wait(options.repo, options.pr, interval=max(60, options.interval),
+                max_minutes=options.max_minutes)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
