@@ -37,6 +37,7 @@ BLOCKED = (
     "watch gh pr checks 12",
     "nohup bash -c 'while true; do gh pr checks 12; sleep 20; done' &",
     'bash -lc "while true; do gh pr checks 7; sleep 30; done"',
+    "bash <<'E'\nwhile true; do gh pr checks 1; sleep 30; done\nE",
     "gh run watch 4931",
     "while true; do gh pr checks 12; done",
 )

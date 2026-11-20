@@ -31,7 +31,11 @@ def ph():
     if _PROJECT_HOOKS_MODULE is not None:
         return _PROJECT_HOOKS_MODULE
     here = Path(__file__).resolve().parent
-    for candidate in (here / 'project_hooks.py', here.parent / 'hooks' / 'project_hooks.py'):
+    for candidate in (
+        here / 'project_hooks.py',
+        here.parent / 'hooks' / 'project_hooks.py',
+        Path.home() / '.claude/hooks/project_hooks.py',
+    ):
         if not candidate.is_file():
             continue
         loader = importlib.machinery.SourceFileLoader('project_hooks', str(candidate))

@@ -30,7 +30,11 @@ def ph():
     if _PROJECT_HOOKS_MODULE is not None:
         return _PROJECT_HOOKS_MODULE
     here = Path(__file__).resolve().parent
-    for candidate in (here / 'project_hooks.py', here.parent / 'hooks' / 'project_hooks.py'):
+    for candidate in (
+        here / 'project_hooks.py',
+        here.parent / 'hooks' / 'project_hooks.py',
+        Path.home() / '.claude/hooks/project_hooks.py',
+    ):
         if not candidate.is_file():
             continue
         loader = importlib.machinery.SourceFileLoader('project_hooks', str(candidate))
@@ -186,8 +190,22 @@ def nested_shell(args):
     return None
 
 
+def heredoc_is_inert(line, start):
+    """True when the heredoc only carries text into a file or message, not an executed script."""
+    prefix = line[:start].strip()
+    if not prefix:
+        return False
+    tokens = tokens_of(prefix)
+    if not tokens:
+        return False
+    names = [token.rsplit("/", 1)[-1] for token in tokens]
+    if any(name in SHELLS for name in names):
+        return False
+    return any(name in DATA_COMMANDS for name in names)
+
+
 def strip_heredocs(cmd):
-    """Drop heredoc bodies: text between a << delimiter line and its closing tag."""
+    """Drop inert heredoc bodies (cat/tee); keep executable shell heredocs for matching."""
     lines = cmd.split("\n")
     out = []
     index = 0
@@ -197,7 +215,7 @@ def strip_heredocs(cmd):
             start = line.rfind("<<")
             tail = line[start:]
             found = HEREDOC_TAIL.match(tail)
-            if found:
+            if found and heredoc_is_inert(line, start):
                 delim = found.group(1)
                 indented = tail.startswith("<<-")
                 out.append((line[:start] + tail[: found.start()]).rstrip())
@@ -309,6 +327,7 @@ def self_test():
         "nohup bash -c 'while true; do gh pr checks 12; sleep 20; done' &",
         'bash -lc "while true; do gh pr checks 7; sleep 30; done"',
         "bash -c \"gh pr checks 1 --watch\"",
+        "bash <<'E'\nwhile true; do gh pr checks 1; sleep 30; done\nE",
         "gh run watch 4931",
         "while true; do gh pr checks 12; done",
     ]
