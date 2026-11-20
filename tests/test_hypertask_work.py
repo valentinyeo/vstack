@@ -99,7 +99,7 @@ class ReconcileTest(unittest.TestCase):
     def test_structural_ownership(self):
         for pr in ({'title': 'Fix SOFT-1'}, {'headRefName': 'fix/soft-1-reconcile'},
                    {'body': 'Ticket: SOFT-1'}, {'body': '**Ticket:** [SOFT-1](https://app.hypertask.ai/detail/project-2060/1)'},
-                   {'body': 'See https://app.hypertask.ai/detail/project-2060/1'}):
+                   {'body': 'Ticket: https://app.hypertask.ai/detail/project-2060/1'}):
             with self.subTest(pr=pr):
                 self.assertTrue(r.names_ticket(pr, 'SOFT-1'))
         for pr in ({'body': 'Since SOFT-1 this works'}, {'body': 'Not Ticket: SOFT-1'},
@@ -107,9 +107,25 @@ class ReconcileTest(unittest.TestCase):
                    {'body': 'https://app.hypertask.ai/detail/project-2060/10'},
                    {'body': 'https://app.hypertask.ai/detail/project-2061/1'},
                    {'body': 'https://app.hypertask.ai/detail/project-2060/1-extra'},
+                   {'body': 'See https://app.hypertask.ai/detail/project-2060/1'},
                    {'title': 'SOFT-10', 'headRefName': 'fix/soft-10'}):
             with self.subTest(pr=pr):
                 self.assertFalse(r.names_ticket(pr, 'SOFT-1'))
+
+    def test_body_url_only_counts_on_the_ticket_line(self):
+        board = r.BoardConfig(13556, 'VSTA', frozenset(), frozenset(), (), 'valentinyeo/vstack')
+        pull = json.loads((ROOT / 'tests/fixtures/reconcile' / 'vstack-200.json').read_text())
+        with self.subTest('a prose url in the real PR is not evidence'):
+            self.assertFalse(r.names_ticket(pull, 'VSTA-53', board=board))
+        with self.subTest('the same PR owns the ticket on its own ticket line'):
+            self.assertTrue(r.names_ticket(pull, 'VSTA-42', board=board))
+        with self.subTest('a ticket line url for the mentioned ticket is evidence'):
+            self.assertTrue(r.names_ticket(
+                {'body': 'Ticket: https://app.hypertask.ai/detail/project-13556/53'}, 'VSTA-53', board=board))
+        with self.subTest('title and branch still name the ticket'):
+            for pr in ({'title': 'VSTA-53: fix'}, {'title': '- VSTA-53 fix'},
+                       {'headRefName': 'vsta-53-fix'}, {'headRefName': 'fix/vsta-53'}):
+                self.assertTrue(r.names_ticket(pr, 'VSTA-53', board=board))
 
     def test_bad_keys_do_not_crash_matching_or_search(self):
         self.assertFalse(r.names_ticket({'body': 'unrelated'}, 'BROKEN'))
@@ -379,7 +395,8 @@ class ReconcileTest(unittest.TestCase):
 
     def test_boundary_and_link_ticket_names(self):
         self.assertTrue(r.names_ticket({'title': 'fix SOFT-1', 'body': ''}, 'SOFT-1'))
-        self.assertTrue(r.names_ticket({'body': 'https://app.hypertask.ai/detail/project-2060/1'}, 'SOFT-1'))
+        self.assertTrue(r.names_ticket({'body': 'Ticket: https://app.hypertask.ai/detail/project-2060/1'}, 'SOFT-1'))
+        self.assertFalse(r.names_ticket({'body': 'https://app.hypertask.ai/detail/project-2060/1'}, 'SOFT-1'))
         self.assertFalse(r.names_ticket({'title': 'SOFT-10 SOFT-1-extra xSOFT-1'}, 'SOFT-1'))
         self.assertFalse(r.names_ticket({'body': 'project-2060/10'}, 'SOFT-1'))
 
@@ -1030,7 +1047,8 @@ else:
     def test_board15_accepts_only_its_ticket_keys_and_urls(self):
         board = r.BOARDS[15]
         self.assertEqual(r.ticket_index('HTPR-19', board=board), '19')
-        self.assertTrue(r.names_ticket({'body': 'https://app.hypertask.ai/detail/project-15/19'}, 'HTPR-19', board=board))
+        self.assertTrue(r.names_ticket({'body': 'Ticket: https://app.hypertask.ai/detail/project-15/19'}, 'HTPR-19', board=board))
+        self.assertFalse(r.names_ticket({'body': 'https://app.hypertask.ai/detail/project-15/19'}, 'HTPR-19', board=board))
         self.assertFalse(r.names_ticket({'body': 'https://app.hypertask.ai/detail/project-2060/19'}, 'HTPR-19', board=board))
         with self.assertRaises(ValueError):
             r.ticket_index('SOFT-19', board=board)
