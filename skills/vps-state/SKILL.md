@@ -10,6 +10,25 @@ Prior art: checked pstack (`create-verification-skill`, `poteto-mode/playbooks/w
 
 Run `vps-state` from any directory. It reads /proc live on every call, never a cache, and answers in about a second.
 
+## Set up your own check
+
+Nobody runs this for you. Do it once, for your own chat.
+
+1. In your own loop or launcher, run `vps-state --can-launch worker` before you start a worker, or `--can-launch chat` before a chat. Exit 0 means start. Exit 1 means start one and ask again before a second. Exit 2 means hold. Further rules are in [What HOLD obliges](#what-hold-obliges).
+2. Optional: have the answer print as your session opens. Add this to your own project's `.claude/settings.json`. `install` puts the hook file at that path. It does not register it for you.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "$HOME/.claude/hooks/vps-state-hook" } ] }
+    ]
+  }
+}
+```
+
+If that file already has a `SessionStart` list, add this entry to the list.
+
 ## When to run
 
 1. Before you start a chat, a worker, a build or a test run.
@@ -38,7 +57,7 @@ Flags: `--json` for every number, `--brief` for one line, `--can-launch chat|wor
 
 ## Housekeeping duty
 
-The last section lists what this session may clean: its own worktrees whose branch is already in origin/main, its own /tmp entries older than two days, and the tools that sweep the host (the clean-up skill, and ~/.local/bin/host-disk-sweep and ~/.local/bin/tmp-cleanup on this host).
+The last section lists what this session may clean: its own worktrees whose branch is already in origin/main, its own /tmp entries older than two days, and the clean-up skill for the rest.
 
 It reports, it never deletes. Clean only what this session made. Never touch another session's files, worktrees or /tmp entries.
 

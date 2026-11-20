@@ -2,6 +2,8 @@
 # SessionStart hook: the shared server's capacity in one line, plus a hint.
 # Prints nothing and exits 0 when the probe fails, so a session always starts.
 # Budget: under 3 seconds. VPS_STATE_BIN overrides which vps-state runs.
+# Nothing registers this hook for you: each chat adds it to its own project's
+# .claude/settings.json, as skills/vps-state/SKILL.md says.
 
 set +e
 here=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")" 2>/dev/null && pwd)
