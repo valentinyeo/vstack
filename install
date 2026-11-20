@@ -67,6 +67,13 @@ done
 link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.claude/hooks"
 link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
 
+# vps-state answers "can this server take another chat or worker" and the
+# SessionStart hook prints that answer as every session opens. The orchestrator
+# registers the hook in settings.json; this script only puts it where that
+# registration already points.
+link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
+link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
+
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"
 else

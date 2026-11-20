@@ -1,0 +1,797 @@
+#!/usr/bin/env python3
+"""vps-state: can this server take another chat or worker right now?
+
+Live reads on every call, no timer and no cache: /proc/loadavg, /proc/meminfo,
+/proc/pressure/*, os.statvfs("/"), pty and pid and file counters, and one ps.
+
+    vps-state                   short human block, verdict first
+    vps-state --brief           one line, for hooks
+    vps-state --json            everything, for scripts
+    vps-state --can-launch chat|worker
+                                exit 0 ADD, 1 CAREFUL, 2 HOLD, 3 probe failure
+
+Flags: --no-write (skip ~/.local/state/vps-load/status), --no-cleanup (skip the
+worktree and /tmp scan), --ps-file FILE, --statvfs-json FILE.
+Env: VPS_STATE_PROC (proc root, default /proc).
+
+Every probe is fenced by a timeout and a failure prints unknown for that line.
+Nothing here deletes a file: the clean-up section only reports.
+"""
+
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+
+# One place for every number the verdict uses.
+THRESHOLDS = {
+    # The fleet runner gate, house-rules/fleet/runner green(): load5/cores < 1.0
+    # and int(MemAvailable_kB / 1048576) > 24. ADD worker must equal it.
+    "gate_load_per_core": 1.0,
+    "gate_mem_avail_gb": 24,
+    # Extra gates ADD needs on top of the runner gate, so the worker answer stays
+    # safe when the load average lags a burst or the disk is filling.
+    "add_cpu_some_avg60": 25.0,
+    "add_io_full_avg60": 5.0,
+    "add_memory_full_avg60": 2.0,
+    "add_disk_free_gb": 80.0,
+    "add_disk_used_pct": 90.0,
+    # HOLD when any of these is crossed.
+    "hold_load_per_core": 1.5,
+    "hold_cpu_some_avg60": 40.0,
+    "hold_io_full_avg60": 10.0,
+    "hold_memory_full_avg60": 5.0,
+    "hold_mem_avail_gb": 12.0,
+    "hold_disk_free_gb": 30.0,
+    "hold_disk_used_pct": 95.0,
+    "hold_counter_pct": 90.0,
+    # Rooms for the headroom estimate.
+    "reserve_gb": 24.0,
+}
+
+# Used only when a kind has no process to measure.
+DEFAULT_RSS_MB = {"chat": 600.0, "worker": 800.0}
+PS_TIMEOUT = 5
+CMD_TIMEOUT = 5
+TMP_BUDGET = 5
+TMP_AGE_DAYS = 2
+STATUS_REL = os.path.join(".local", "state", "vps-load", "status")
+
+PRINT_FLAGS = ("-p", "--print")
+WORKER_NAMES = {"hax", "cursor-agent"}
+BUILD_NAMES = {"node", "bun", "cargo", "zig", "pytest", "playwright", "chrome", "chromium"}
+SHIM_RE = re.compile(r"^(?:\S*/)?(?:bash|sh|dash|zsh|fish|env)$")
+
+VERDICT_WORD = {"ADD": "add", "CAREFUL": "steady", "HOLD": "hold"}
+EXIT_CODE = {"ADD": 0, "CAREFUL": 1, "HOLD": 2}
+PROBE_FAILED = 3
+
+USAGE = ("usage: vps-state [--json | --brief] [--can-launch chat|worker] [--no-write] "
+         "[--no-cleanup] [--ps-file FILE] [--statvfs-json FILE]")
+
+
+# ---------------------------------------------------------------- reads
+
+def read_text(path, limit=65536):
+    try:
+        with open(path, "r", errors="replace") as handle:
+            return handle.read() if limit is None else handle.read(limit)
+    except OSError:
+        return None
+
+
+def read_int(path):
+    text = read_text(path)
+    if not text:
+        return None
+    head = text.strip().split()[0] if text.strip() else ""
+    return int(head) if head.isdigit() else None
+
+
+def read_load(proc):
+    text = read_text(os.path.join(proc, "loadavg"))
+    if not text:
+        return None
+    parts = text.split()
+    if len(parts) < 4:
+        return None
+    try:
+        load1, load5, load15 = (float(parts[0]), float(parts[1]), float(parts[2]))
+    except ValueError:
+        return None
+    if load5 < 0:
+        return None
+    runqueue = None
+    if "/" in parts[3]:
+        runnable, _, total = parts[3].partition("/")
+        if runnable.isdigit() and total.isdigit():
+            runqueue = {"runnable": int(runnable), "total": int(total)}
+    return {"load1": load1, "load5": load5, "load15": load15, "runqueue": runqueue}
+
+
+def read_mem(proc):
+    text = read_text(os.path.join(proc, "meminfo"))
+    if not text:
+        return None
+    values = {}
+    for line in text.splitlines():
+        key, _, rest = line.partition(":")
+        word = rest.strip().split()
+        if not key or not word:
+            continue
+        values[key.strip()] = int(word[0]) if word[0].isdigit() else None
+    total_kb, avail_kb = values.get("MemTotal"), values.get("MemAvailable")
+    if not isinstance(total_kb, int) or not isinstance(avail_kb, int):
+        return None
+    if total_kb <= 0 or avail_kb < 0:
+        return None
+    return {
+        "total_kb": total_kb,
+        "avail_kb": avail_kb,
+        "avail_gb_floor": avail_kb // 1048576,
+        "avail_gb": round(avail_kb / 1048576, 2),
+        "total_gb": round(total_kb / 1048576, 2),
+    }
+
+
+def read_pressure(proc, name):
+    text = read_text(os.path.join(proc, "pressure", name))
+    if not text:
+        return None
+    out = {"some_avg10": None, "some_avg60": None, "full_avg10": None, "full_avg60": None}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] not in ("some", "full"):
+            continue
+        for pair in parts[1:]:
+            key, _, value = pair.partition("=")
+            if key not in ("avg10", "avg60"):
+                continue
+            try:
+                out["{}_{}".format(parts[0], key)] = float(value)
+            except ValueError:
+                pass
+    if all(value is None for value in out.values()):
+        return None
+    return out
+
+
+def read_disk(statvfs_json=None):
+    if statvfs_json:
+        text = read_text(statvfs_json)
+        if not text:
+            return None
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+        total = data.get("total")
+        free = data.get("free")
+        files_total = data.get("files_total")
+        files_free = data.get("files_free")
+        if not isinstance(total, int) or not isinstance(free, int) or total <= 0:
+            return None
+    else:
+        try:
+            stat = os.statvfs("/")
+        except OSError:
+            return None
+        total = stat.f_blocks * stat.f_frsize
+        free = stat.f_bavail * stat.f_frsize
+        files_total, files_free = stat.f_files, stat.f_ffree
+    used_pct = (total - free) / total * 100
+    inode_pct = None
+    if isinstance(files_total, int) and isinstance(files_free, int) and files_total > 0:
+        inode_pct = round((files_total - files_free) / files_total * 100, 1)
+    return {
+        "path": "/",
+        "total_bytes": total,
+        "free_bytes": free,
+        "free_gb": round(free / 1073741824, 2),
+        "used_pct": round(used_pct, 1),
+        "inodes_used_pct": inode_pct,
+    }
+
+
+def read_kernel(proc):
+    pty_nr = read_int(os.path.join(proc, "sys", "kernel", "pty", "nr"))
+    pty_max = read_int(os.path.join(proc, "sys", "kernel", "pty", "max"))
+    pid_max = read_int(os.path.join(proc, "sys", "kernel", "pid_max"))
+
+    file_nr = None
+    text = read_text(os.path.join(proc, "sys", "fs", "file-nr"))
+    if text and text.split():
+        allocated, max_column = text.split()[0], text.split()[-1]
+        file_nr = int(allocated) if allocated.isdigit() else None
+        file_max = int(max_column) if max_column.isdigit() else None
+    else:
+        file_max = None
+    kernel_max = read_int(os.path.join(proc, "sys", "fs", "file-max"))
+    # A max of 9.2e18 is the kernel's own cap, not a limit anybody reaches.
+    if kernel_max is None or kernel_max > 10 ** 9:
+        kernel_max = file_max if file_max is not None and file_max < 10 ** 9 else None
+
+    def counter(used, top):
+        if used is None:
+            return None
+        pct = round(used / top * 100, 2) if isinstance(top, int) and top > 0 else None
+        return {"used": used, "max": top, "used_pct": pct}
+
+    return {
+        "pty": counter(pty_nr, pty_max),
+        "pids_max": pid_max,
+        "files": counter(file_nr, kernel_max),
+    }
+
+
+def read_ps(ps_file=None, timeout=PS_TIMEOUT):
+    if ps_file:
+        text = read_text(ps_file, limit=None)
+    else:
+        try:
+            done = subprocess.run(
+                ["ps", "-eo", "pid,ppid,rss,pcpu,etimes,stat,args"],
+                capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        text = done.stdout
+    if not text:
+        return None
+    rows = []
+    for line in text.splitlines()[1:]:
+        parts = line.split(None, 6)
+        if len(parts) < 7:
+            continue
+        try:
+            rows.append({
+                "pid": int(parts[0]),
+                "ppid": int(parts[1]),
+                "rss_kb": int(parts[2]),
+                "cpu_pct": float(parts[3]),
+                "etimes": int(parts[4]),
+                "stat": parts[5],
+                "args": parts[6].strip(),
+            })
+        except ValueError:
+            continue
+    return rows or None
+
+
+def classify(args):
+    tokens = args.split()
+    if not tokens:
+        return "other"
+    if SHIM_RE.match(tokens[0]) and "-c" in tokens:
+        return "other"  # a shell wrapper, not the chat or worker itself
+    name = tokens[0].rsplit("/", 1)[-1]
+    printing = any(token in PRINT_FLAGS for token in tokens)
+    if name in ("claude", "pi") and printing:
+        return "worker"
+    if name == "codex" and "exec" in tokens:
+        return "worker"
+    if name in WORKER_NAMES:
+        return "worker"
+    if name == "claude":
+        return "chat"
+    if name in BUILD_NAMES:
+        return "build"
+    for token in tokens[1:4]:
+        if token.rsplit("/", 1)[-1] in BUILD_NAMES:
+            return "build"
+    return "other"
+
+
+def summarise_ps(rows):
+    if not rows:
+        return None
+    me = os.getpid()
+    kept = [row for row in rows if row["pid"] != me]
+    if not kept:
+        return None
+    for row in kept:
+        row["kind"] = classify(row["args"])
+        row["rss_mb"] = round(row["rss_kb"] / 1024, 1)
+        row["zombie"] = row["stat"].startswith("Z")
+        row["args"] = row["args"][:100]
+    kinds = {}
+    for name in ("chat", "worker", "build", "other"):
+        mine = [row for row in kept if row["kind"] == name]
+        kinds[name] = {
+            "count": len(mine),
+            "rss_mb": round(sum(row["rss_kb"] for row in mine) / 1024, 1),
+            "cpu_pct": round(sum(row["cpu_pct"] for row in mine), 1),
+        }
+    medians = {}
+    for name in ("chat", "worker"):
+        rss = [row["rss_kb"] for row in kept if row["kind"] == name]
+        medians[name] = round(statistics.median(rss) / 1024, 1) if rss else None
+
+    def top(key):
+        ordered = sorted(kept, key=lambda row: row[key], reverse=True)[:8]
+        return [{k: row[k] for k in ("pid", "kind", "cpu_pct", "rss_mb", "args")}
+                for row in ordered]
+
+    return {
+        "seen": len(kept),
+        "kinds": kinds,
+        "median_rss_mb": medians,
+        "zombies": sum(1 for row in kept if row["zombie"]),
+        "top_cpu": top("cpu_pct"),
+        "top_rss": top("rss_kb"),
+    }
+
+
+def collect(proc_root=None, ps_file=None, statvfs_json=None):
+    proc = proc_root or os.environ.get("VPS_STATE_PROC") or "/proc"
+    unknown = []
+    cores = os.cpu_count() or 1
+
+    load = read_load(proc)
+    if load is None:
+        unknown.append("load")
+    else:
+        load["ratio"] = round(load["load5"] / cores, 3)
+
+    memory = read_mem(proc)
+    if memory is None:
+        unknown.append("memory")
+    pressure = {}
+    for name in ("cpu", "io", "memory"):
+        pressure[name] = read_pressure(proc, name)
+        if pressure[name] is None:
+            unknown.append("{}_pressure".format(name))
+    disk = read_disk(statvfs_json)
+    if disk is None:
+        unknown.append("disk")
+    kernel = read_kernel(proc)
+    if kernel["pty"] is None:
+        unknown.append("pty")
+    if kernel["files"] is None:
+        unknown.append("files")
+
+    processes = summarise_ps(read_ps(ps_file))
+    pid_counter = None
+    if processes is None:
+        unknown.append("processes")
+    else:
+        pids = kernel["pids_max"]
+        pid_counter = {
+            "used": processes["seen"],
+            "max": pids,
+            "used_pct": (round(processes["seen"] / pids * 100, 2)
+                         if isinstance(pids, int) and pids > 0 else None),
+        }
+
+    return {
+        "cores": cores,
+        "load": load,
+        "memory": memory,
+        "cpu_pressure": pressure["cpu"],
+        "io_pressure": pressure["io"],
+        "memory_pressure": pressure["memory"],
+        "disk": disk,
+        "pty": kernel["pty"],
+        "pids": pid_counter,
+        "files": kernel["files"],
+        "zombies": processes["zombies"] if processes else None,
+        "processes": processes,
+        "unknown": unknown,
+    }
+
+
+# ---------------------------------------------------------------- verdict
+
+def format_counter(name, counter):
+    max_text = counter["max"] if counter["max"] is not None else "?"
+    return "{} {}/{}".format(name, counter["used"], max_text)
+
+
+def evaluate(facts):
+    limits = THRESHOLDS
+    cores = facts["cores"]
+    load = facts["load"]
+    memory = facts["memory"]
+    cpu = facts["cpu_pressure"]
+    io = facts["io_pressure"]
+    mem_pressure = facts["memory_pressure"]
+    disk = facts["disk"]
+
+    holds = []
+    if load is not None and load["ratio"] > limits["hold_load_per_core"]:
+        holds.append("load5 {:.2f} is {:.2f}x {} cores".format(
+            load["load5"], load["ratio"], cores))
+    if cpu and cpu["some_avg60"] is not None and cpu["some_avg60"] > limits["hold_cpu_some_avg60"]:
+        holds.append("cpu some60 {:.0f}%".format(cpu["some_avg60"]))
+    if io and io["full_avg60"] is not None and io["full_avg60"] > limits["hold_io_full_avg60"]:
+        holds.append("io full60 {:.1f}%".format(io["full_avg60"]))
+    if memory and memory["avail_gb"] < limits["hold_mem_avail_gb"]:
+        holds.append("only {:.1f}G memory available".format(memory["avail_gb"]))
+    if (mem_pressure and mem_pressure["full_avg60"] is not None
+            and mem_pressure["full_avg60"] > limits["hold_memory_full_avg60"]):
+        holds.append("memory full60 {:.1f}%".format(mem_pressure["full_avg60"]))
+    if disk:
+        if disk["free_gb"] < limits["hold_disk_free_gb"]:
+            holds.append("only {:.0f}G disk free".format(disk["free_gb"]))
+        if disk["used_pct"] > limits["hold_disk_used_pct"]:
+            holds.append("disk {:.0f}% used".format(disk["used_pct"]))
+    for key, name in (("pty", "pty"), ("pids", "pids"), ("files", "open files")):
+        counter = facts[key]
+        if counter and counter["used_pct"] is not None and counter["used_pct"] > limits["hold_counter_pct"]:
+            holds.append(format_counter(name, counter))
+
+    disk_blocks = []
+    if disk is None:
+        disk_blocks.append("disk unknown")
+    else:
+        if disk["free_gb"] <= limits["add_disk_free_gb"]:
+            disk_blocks.append("only {:.0f}G disk free".format(disk["free_gb"]))
+        if disk["used_pct"] >= limits["add_disk_used_pct"]:
+            disk_blocks.append("disk {:.0f}% used".format(disk["used_pct"]))
+
+    worker_blocks = []
+    if load is None:
+        worker_blocks.append("load unknown")
+    elif load["ratio"] >= limits["gate_load_per_core"]:
+        worker_blocks.append("load5 {:.2f} is {:.2f}x {} cores".format(
+            load["load5"], load["ratio"], cores))
+    if memory is None:
+        worker_blocks.append("memory unknown")
+    elif memory["avail_gb_floor"] <= limits["gate_mem_avail_gb"]:
+        worker_blocks.append("only {:.1f}G memory available".format(memory["avail_gb"]))
+    if cpu is None or cpu["some_avg60"] is None:
+        worker_blocks.append("cpu pressure unknown")
+    elif cpu["some_avg60"] >= limits["add_cpu_some_avg60"]:
+        worker_blocks.append("cpu some60 {:.0f}%".format(cpu["some_avg60"]))
+    if io is None or io["full_avg60"] is None:
+        worker_blocks.append("io pressure unknown")
+    elif io["full_avg60"] >= limits["add_io_full_avg60"]:
+        worker_blocks.append("io full60 {:.1f}%".format(io["full_avg60"]))
+    worker_blocks.extend(disk_blocks)
+
+    # A chat is memory-bound: it holds a conversation in RAM and waits on the
+    # model, so CPU and IO headroom matter less than the memory it needs.
+    chat_blocks = []
+    if memory is None:
+        chat_blocks.append("memory unknown")
+    elif memory["avail_gb_floor"] <= limits["gate_mem_avail_gb"]:
+        chat_blocks.append("only {:.1f}G memory available".format(memory["avail_gb"]))
+    if mem_pressure is None or mem_pressure["full_avg60"] is None:
+        chat_blocks.append("memory pressure unknown")
+    elif mem_pressure["full_avg60"] >= limits["add_memory_full_avg60"]:
+        chat_blocks.append("memory full60 {:.1f}%".format(mem_pressure["full_avg60"]))
+    chat_blocks.extend(disk_blocks)
+
+    verdict = {}
+    reasons = {}
+    for kind, blocks in (("worker", worker_blocks), ("chat", chat_blocks)):
+        if holds:
+            verdict[kind], reasons[kind] = "HOLD", list(holds)
+        elif blocks:
+            verdict[kind], reasons[kind] = "CAREFUL", list(blocks)
+        else:
+            verdict[kind], reasons[kind] = "ADD", []
+
+    processes = facts.get("processes") or {}
+    medians = processes.get("median_rss_mb") or {}
+    headroom = {"reserve_gb": limits["reserve_gb"]}
+    avail_kb = memory["avail_kb"] if memory else None
+    reserve_kb = int(limits["reserve_gb"] * 1048576)
+    for kind in ("chat", "worker"):
+        median_mb = medians.get(kind) or DEFAULT_RSS_MB[kind]
+        room = 0
+        if avail_kb is not None and median_mb > 0:
+            room = int(max(0, avail_kb - reserve_kb) // int(median_mb * 1024))
+        if verdict[kind] == "HOLD":
+            room = 0
+        headroom[kind + "s"] = room
+        headroom[kind + "_median_mb"] = median_mb
+
+    return {"verdict": verdict, "reasons": reasons, "headroom": headroom}
+
+
+# ---------------------------------------------------------------- cleanup
+
+def run_cmd(cmd, cwd, budget):
+    try:
+        done = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                              timeout=max(1, budget))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def cleanup_worktrees(cwd, budget=CMD_TIMEOUT):
+    """This repo's worktrees whose branch is already in origin/main. Reports only."""
+    started = time.monotonic()
+    listing = run_cmd(["git", "worktree", "list", "--porcelain"], cwd, budget)
+    if listing is None:
+        return None
+    left = budget - (time.monotonic() - started)
+    merged = run_cmd(["git", "branch", "--merged", "origin/main", "--format=%(refname:short)"],
+                     cwd, left)
+    if merged is None:
+        return None
+    merged_names = {line.strip() for line in merged.splitlines() if line.strip()}
+    entries = []
+    for block in listing.strip().split("\n\n"):
+        item = {}
+        for line in block.splitlines():
+            key, _, value = line.partition(" ")
+            if key == "worktree":
+                item["path"] = value
+            elif key == "branch":
+                item["branch"] = value.rsplit("/", 1)[-1]
+        if item.get("branch") and item.get("path") and item["path"] != cwd.rstrip("/"):
+            entries.append(item)
+    # The first worktree is the main checkout. It is not scratch and never ours.
+    main_path = entries[0]["path"] if entries else None
+    merged_out = [entry for entry in entries
+                  if entry["path"] != main_path and entry.get("branch") in merged_names]
+    return {"merged": merged_out, "checked": len(entries)}
+
+
+def cleanup_tmp(root="/tmp", budget=TMP_BUDGET, age_days=TMP_AGE_DAYS):
+    """This user's top-level /tmp entries older than age_days, sizes not contents."""
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    started = time.monotonic()
+    cutoff = time.time() - age_days * 86400
+    count, total, oldest, samples = 0, 0, 0.0, []
+    me = os.getuid()
+    for name in names:
+        if time.monotonic() - started > budget:
+            break
+        path = os.path.join(root, name)
+        try:
+            stat = os.lstat(path)
+        except OSError:
+            continue
+        if stat.st_uid != me or stat.st_mtime > cutoff:
+            continue
+        count += 1
+        total += stat.st_size
+        age = (time.time() - stat.st_mtime) / 86400
+        oldest = max(oldest, age)
+        if len(samples) < 5:
+            samples.append({"name": name, "days": int(age), "bytes": stat.st_size})
+    return {"root": root, "count": count, "total_bytes": total,
+            "oldest_days": int(oldest), "samples": samples,
+            "truncated": time.monotonic() - started > budget}
+
+
+def cleanup_report(facts, scan=True):
+    cwd = os.getcwd()
+    return {
+        "worktrees": cleanup_worktrees(cwd) if scan else None,
+        "tmp": cleanup_tmp() if scan else None,
+        "scan": scan,
+        "tools": ["/clean-up skill for your own worktrees",
+                  "~/.local/bin/host-disk-sweep",
+                  "~/.local/bin/tmp-cleanup"],
+        "rule": "clean only what this session made, never another session's files",
+    }
+
+
+# ---------------------------------------------------------------- status file
+
+def status_path(home=None):
+    return os.path.join(home or os.path.expanduser("~"), STATUS_REL)
+
+
+def write_status(verdict, facts, path=None):
+    """Rewrite the line fleet/runner reads. Atomic, so a reader never sees half."""
+    path = path or status_path()
+    load = facts["load"]
+    line = "{} load5={} cores={}".format(
+        VERDICT_WORD[verdict],
+        "{:.2f}".format(load["load5"]) if load else "unknown",
+        facts["cores"])
+    directory = os.path.dirname(path)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        tmp = "{}.tmp.{}".format(path, os.getpid())
+        with open(tmp, "w") as handle:
+            handle.write(line + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        return {"path": path, "written": False, "line": line}
+    return {"path": path, "written": True, "line": line}
+
+
+# ---------------------------------------------------------------- output
+
+def verdict_line(result):
+    labels, parts = [], []
+    for kind in ("worker", "chat"):
+        labels.append(result["verdict"][kind])
+        for reason in result["reasons"][kind]:
+            if reason not in parts:
+                parts.append(reason)
+    detail = ", ".join(parts[:3]) if parts else "all gates green"
+    return "{} worker, {} chat: {}".format(labels[0], labels[1], detail)
+
+
+def facts_lines(facts, result):
+    lines = []
+    load = facts["load"]
+    if load:
+        runqueue = load["runqueue"]
+        queue = "{} running of {} pids".format(runqueue["runnable"], runqueue["total"]) if runqueue else "run queue unknown"
+        lines.append("  load    {:.2f} {:.2f} {:.2f}, {}".format(
+            load["load1"], load["load5"], load["load15"], queue))
+    else:
+        lines.append("  load    unknown")
+    cpu = facts["cpu_pressure"]
+    io = facts["io_pressure"]
+    lines.append("  cpu     pressure some {}% now, {}% over 60s".format(
+        "{:.1f}".format(cpu["some_avg10"]) if cpu and cpu["some_avg10"] is not None else "unknown",
+        "{:.1f}".format(cpu["some_avg60"]) if cpu and cpu["some_avg60"] is not None else "unknown"))
+    lines.append("  io      pressure full {}% now, {}% over 60s".format(
+        "{:.1f}".format(io["full_avg10"]) if io and io["full_avg10"] is not None else "unknown",
+        "{:.1f}".format(io["full_avg60"]) if io and io["full_avg60"] is not None else "unknown"))
+    memory = facts["memory"]
+    pressure = facts["memory_pressure"]
+    if memory:
+        lines.append("  memory  {:.1f}G of {:.1f}G available, pressure full60 {}%".format(
+            memory["avail_gb"], memory["total_gb"],
+            "{:.1f}".format(pressure["full_avg60"]) if pressure and pressure["full_avg60"] is not None else "unknown"))
+    else:
+        lines.append("  memory  unknown")
+    disk = facts["disk"]
+    if disk:
+        inodes = "" if disk["inodes_used_pct"] is None else ", inodes {:.0f}% used".format(disk["inodes_used_pct"])
+        lines.append("  disk    / {:.0f}% used, {:.0f}G free{}".format(
+            disk["used_pct"], disk["free_gb"], inodes))
+    else:
+        lines.append("  disk    unknown")
+    counters = []
+    for key, name in (("pty", "pty"), ("files", "files"), ("pids", "pids")):
+        counter = facts[key]
+        counters.append(format_counter(name, counter) if counter else "{} unknown".format(name))
+    lines.append("  limits  {}  ({} zombies)".format(
+        ", ".join(counters),
+        facts["zombies"] if facts["zombies"] is not None else "unknown"))
+    processes = facts.get("processes")
+    if processes:
+        kinds = processes["kinds"]
+        lines.append("  procs   {} chat, {} worker, {} build/test, {} other ({} seen)".format(
+            kinds["chat"]["count"], kinds["worker"]["count"],
+            kinds["build"]["count"], kinds["other"]["count"], processes["seen"]))
+        heavy = " ; ".join(
+            "{} {:.0f}% {}".format(row["pid"], row["cpu_pct"], row["kind"])
+            for row in processes["top_cpu"][:2])
+        largest = " ; ".join(
+            "{} {:.0f}M {}".format(row["pid"], row["rss_mb"], row["kind"])
+            for row in processes["top_rss"][:2])
+        lines.append("  heavy   {}  |  largest {}".format(heavy or "none", largest or "none"))
+    else:
+        lines.append("  procs   unknown")
+    headroom = result["headroom"]
+    lines.append("  room    about {} chats / {} workers by memory, keeping {:.0f}G free".format(
+        headroom["chats"], headroom["workers"], headroom["reserve_gb"]))
+    return lines
+
+
+def cleanup_lines(cleanup):
+    lines = ["Clean up your own (report only, delete nothing)"]
+    worktrees = cleanup["worktrees"]
+    if worktrees is None:
+        lines.append("  merged worktrees  unknown (not a git repo, or git timed out)")
+    elif worktrees["merged"]:
+        for entry in worktrees["merged"][:5]:
+            lines.append("  merged worktree   {} (branch {})".format(entry["path"], entry["branch"]))
+        if len(worktrees["merged"]) > 5:
+            lines.append("  merged worktree   and {} more".format(len(worktrees["merged"]) - 5))
+    else:
+        lines.append("  merged worktrees  none of the {} here are in origin/main".format(
+            worktrees["checked"]))
+    tmp = cleanup["tmp"]
+    if tmp is None:
+        lines.append("  /tmp over 2 days  unknown")
+    elif tmp["count"]:
+        lines.append("  /tmp over 2 days  {} entries, {:.1f}G at top level, oldest {} days".format(
+            tmp["count"], tmp["total_bytes"] / 1073741824, tmp["oldest_days"]))
+        for sample in tmp["samples"][:3]:
+            lines.append("    {} ({} days, {:.0f}M)".format(
+                sample["name"], sample["days"], sample["bytes"] / 1048576))
+    else:
+        lines.append("  /tmp over 2 days  none")
+    lines.append("  tools  {} ; {} ; {}".format(*cleanup["tools"]))
+    lines.append("  rule   {}".format(cleanup["rule"]))
+    return lines
+
+
+def render(result, facts, cleanup):
+    lines = [verdict_line(result)] + facts_lines(facts, result) + cleanup_lines(cleanup)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- main
+
+def parse_args(argv):
+    opts = {"json": False, "brief": False, "can_launch": None, "write": True,
+            "cleanup": True, "ps_file": None, "statvfs_json": None, "error": None}
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--json":
+            opts["json"] = True
+        elif arg == "--brief":
+            opts["brief"] = True
+        elif arg == "--no-write":
+            opts["write"] = False
+        elif arg == "--no-cleanup":
+            opts["cleanup"] = False
+        elif arg in ("--ps-file", "--statvfs-json", "--can-launch"):
+            if index + 1 >= len(argv):
+                opts["error"] = "{} needs a value".format(arg)
+                return opts
+            value = argv[index + 1]
+            index += 1
+            if arg == "--ps-file":
+                opts["ps_file"] = value
+            elif arg == "--statvfs-json":
+                opts["statvfs_json"] = value
+            elif value in ("chat", "worker"):
+                opts["can_launch"] = value
+            else:
+                opts["error"] = "--can-launch takes chat or worker, not {!r}".format(value)
+                return opts
+        elif arg in ("-h", "--help"):
+            print(USAGE)
+            sys.exit(0)
+        else:
+            opts["error"] = "unknown argument {!r}".format(arg)
+            return opts
+        index += 1
+    return opts
+
+
+def main(argv=None):
+    opts = parse_args(list(sys.argv[1:] if argv is None else argv))
+    if opts["error"]:
+        sys.stderr.write("vps-state: {}\n{}\n".format(opts["error"], USAGE))
+        return PROBE_FAILED
+
+    facts = collect(ps_file=opts["ps_file"], statvfs_json=opts["statvfs_json"])
+    result = evaluate(facts)
+
+    status = None
+    if opts["write"]:
+        status = write_status(result["verdict"]["worker"], facts)
+
+    if opts["can_launch"]:
+        if facts["load"] is None or facts["memory"] is None:
+            return PROBE_FAILED
+        return EXIT_CODE[result["verdict"][opts["can_launch"]]]
+
+    if opts["brief"]:
+        print(verdict_line(result))
+        return 0
+
+    cleanup = cleanup_report(facts, scan=opts["cleanup"])
+    if opts["json"]:
+        payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "verdict": result["verdict"],
+            "reasons": result["reasons"],
+            "headroom": result["headroom"],
+            "facts": {key: value for key, value in facts.items() if key != "processes"},
+            "processes": facts["processes"],
+            "cleanup": cleanup,
+            "status_file": status,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    print(render(result, facts, cleanup))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
