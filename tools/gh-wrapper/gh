@@ -1267,7 +1267,7 @@ def wrap_main(argv=None) -> int:
     method, path, jq, flags, fields = _api_path(argv)
     key = request_key(path, fields)
     include = "--include" in flags or "-i" in flags
-    if "api" not in argv[1:] or not path or not shares_snapshot(method, flags):
+    if "api" not in argv[1:] or not path or path == "graphql" or not shares_snapshot(method, flags):
         env = child_env(path) if path else os.environ.copy()
         bucket = "app" if env.get("GH_TOKEN") else "user"
         marker = "-"

@@ -101,5 +101,38 @@ class ScriptSessionTests(unittest.TestCase):
         self.assertEqual(count, 600)
 
 
+class GraphqlPassthroughTests(unittest.TestCase):
+    def test_graphql_reaches_upstream_unchanged(self):
+        tmp = Path(__file__).resolve().parents[1] / "tools" / "gh-wrapper" / "gh"
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+        root = P(tempfile.mkdtemp())
+        real = root / "gh.real"
+        log = root / "upstream.log"
+        real.write_text(
+            '#!/usr/bin/env python3\n'
+            'import os, sys\n'
+            'open(os.environ["FAKE_GH_LOG"], "a").write(" ".join(sys.argv[1:]) + "\\n")\n',
+            encoding="utf-8",
+        )
+        real.chmod(0o755)
+        env = {
+            "GH_REAL": str(real),
+            "GH_CALL_LOG": str(root / "calls.tsv"),
+            "FAKE_GH_LOG": str(log),
+            "HT_GH_CACHE_DIR": str(root / "cache"),
+            "HOME": str(root / "home"),
+        }
+        (root / "home").mkdir()
+        argv = [sys.executable, str(tmp), "api", "graphql", "-f", "query={a}"]
+        result = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = log.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(lines, ["api graphql -f query={a}"])
+        rows = (root / "calls.tsv").read_text(encoding="utf-8").strip().split("\t")
+        self.assertEqual(rows[3], "graphql")
+
+
 if __name__ == "__main__":
     unittest.main()
