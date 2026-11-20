@@ -30,6 +30,7 @@ def load(name, path):
 drain = load('board_drain_check', SKILL / 'drain-check')
 loop = load('board_drain_loop_state', SKILL / 'loop-state')
 sync = load('board_drain_sync', SKILL / 'sync')
+watch = load('board_drain_watch', SKILL / 'watch')
 
 
 def iso(seconds):
@@ -98,6 +99,29 @@ def agent_comment(age):
 def human_comment(age):
     return {'createdAt': iso(NOW - age), 'creatorId': 6,
             'creator': {'id': 6, 'displayName': 'Valentin Yeo'}, 'text': 'yes, go'}
+
+
+def dead_pid():
+    """The pid of a process that has already exited."""
+    process = subprocess.Popen([sys.executable, '-c', 'pass'])
+    process.wait()
+    return process.pid
+
+
+class Clock:
+    """A fake clock: time only moves when the watcher decides to sleep."""
+
+    def __init__(self, moment=NOW):
+        self.now = moment
+        self.on_sleep = None
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        if self.on_sleep:
+            self.on_sleep(int((self.now - NOW) // seconds))
 
 
 class CheckTest(unittest.TestCase):
@@ -356,6 +380,15 @@ class CheckTest(unittest.TestCase):
         code, out = self.run_check([todo('SOFT-2908', waiting_on=6)], '--state-name', 'HT Test')
         self.assertEqual(code, 1, out)
         self.assertIn('loop state: not armed', out)
+
+    def test_a_dead_watcher_fails_the_check_when_named(self):
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
+        loop.record_sync('HT Test', True, '', now=NOW)
+        loop.record_watch('HT Test', dead_pid(), now=NOW)
+        code, out = self.run_check([todo('SOFT-2929', waiting_on=6)], '--state-name', 'HT Test')
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop state: watcher dead', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
 
     def test_an_armed_loop_with_a_fresh_sync_passes(self):
         loop.arm('HT Test', every='15m', now=NOW)
@@ -624,6 +657,25 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
         self.assertEqual(loop.sync_state('HT Test'), {'at': iso(NOW), 'ok': True, 'reason': ''})
 
+    def test_a_dead_watcher_reads_watcher_dead(self):
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
+        loop.record_watch('HT Test', dead_pid(), now=NOW)
+        self.assertEqual(loop.status('HT Test', now=NOW), (2, 'watcher dead'))
+
+    def test_a_live_watcher_leaves_the_loop_armed(self):
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
+        state = loop.record_watch('HT Test', os.getpid(), now=NOW)
+        self.assertEqual(state['watch_started'], iso(NOW))
+        self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+        loop.clear_watch('HT Test')
+        self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+
+    def test_no_watcher_recorded_behaves_as_today(self):
+        loop.arm('HT Test', every='15m', job='cron-1', now=NOW)
+        self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+        loop.record_sync('HT Test', True, '', now=NOW)
+        self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+
     def test_a_file_with_no_sync_record_reads_none(self):
         loop.arm('HT Test', now=NOW)
         self.assertIsNone(loop.sync_state('HT Test'))
@@ -647,6 +699,149 @@ class LoopStateTest(unittest.TestCase):
                                  capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(missing.returncode, 2, missing.stderr)
         self.assertEqual(missing.stdout.strip(), 'not armed')
+
+
+class WatchTest(unittest.TestCase):
+    """The watcher blocks on the chat's own view and exits the moment it changes."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.fixture = self.directory / 'view.json'
+        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def rows(self, rows):
+        self.fixture.write_text(json.dumps(rows))
+
+    def run_watch(self, rows, *extra, on_sleep=None, clock=None):
+        self.rows(rows)
+        clock = clock or Clock()
+        clock.on_sleep = on_sleep
+        argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
+                '--fixture', str(self.fixture), *extra]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = watch.main(argv, clock=clock.time, sleep=clock.sleep)
+        return code, out.getvalue() + err.getvalue(), clock
+
+    def test_once_prints_the_snapshot_and_exits(self):
+        rows = [vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-2')]
+        rows[1]['task']['waitingOnUserId'] = 6
+        rows[1]['comments'] = [dict(human_comment(600), id=12)]
+        code, out, _ = self.run_watch(rows, '--once')
+        self.assertEqual(code, 0, out)
+        snapshot = json.loads(out)
+        self.assertEqual(snapshot['tickets']['VSTA-1']['column'], 'Doing')
+        self.assertTrue(snapshot['tickets']['VSTA-1']['stalled'] is False)
+        self.assertEqual(snapshot['tickets']['VSTA-2']['waiting'], [6, None])
+        self.assertEqual(snapshot['tickets']['VSTA-2']['newest_comment'], 12)
+        # The finding kinds are drain-check's own: no second verdict lived here.
+        self.assertEqual(snapshot['findings'], ['answered', 'unassigned'])
+
+    def test_a_new_ticket_wakes_the_chat(self):
+        code, out, _ = self.run_watch(
+            [vsta('VSTA-1', section='Doing', age=300)],
+            on_sleep=lambda tick: tick >= 1 and self.rows(
+                [vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+
+    def test_a_valentin_reply_on_a_waiting_ticket_wakes_the_chat(self):
+        first = [dict(agent_comment(3600), id=11)]
+        both = first + [dict(human_comment(600), id=12)]
+        rows = [vsta('VSTA-12')]
+        rows[0]['task']['waitingOnUserId'] = 6
+        rows[0]['comments'] = first
+        code, out, _ = self.run_watch(
+            rows, on_sleep=lambda tick: tick >= 1 and self._mark_waiting(rows, both))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-12 Valentin replied', out)
+
+    def test_a_dead_worker_wakes_the_chat(self):
+        code, out, _ = self.run_watch(
+            [vsta('VSTA-9', section='Doing', age=300),
+             vsta('VSTA-1', section='Done')],
+            on_sleep=lambda tick: tick >= 1 and self.rows(
+                [vsta('VSTA-9', section='Doing', age=3 * 3600),
+                 vsta('VSTA-1', section='Done')]))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-9 worker died', out)
+
+    def test_a_column_move_wakes_the_chat(self):
+        code, out, _ = self.run_watch(
+            [vsta('VSTA-5', section='Doing', age=300)],
+            on_sleep=lambda tick: tick >= 1 and self.rows(
+                [vsta('VSTA-5', section='Done')]))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-5 Doing -> Done', out)
+
+    def test_a_quiet_view_exits_on_the_heartbeat_before_the_harness_limit(self):
+        code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip(), 'heartbeat: no change in 2h')
+        self.assertEqual(clock.now - NOW, 7020)
+        self.assertLess(clock.now - NOW, 7200)
+
+    def test_an_explicit_heartbeat_is_honoured(self):
+        code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')],
+                                          '--heartbeat', '600')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip(), 'heartbeat: no change in 10m')
+        self.assertEqual(clock.now - NOW, 600)
+
+    def test_one_api_failure_retries_on_the_next_poll(self):
+        def on_sleep(tick):
+            if tick == 1:
+                self.fixture.write_text('{not json')
+            elif tick == 2:
+                self.rows([vsta('VSTA-80')])
+
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('FAIL', out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+
+    def test_three_api_failures_in_a_row_exit_one(self):
+        self.fixture.write_text('{not json')
+        clock = Clock()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = watch.main(
+                ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
+                 '--fixture', str(self.fixture)], clock=clock.time, sleep=clock.sleep)
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn('watch: FAIL', out.getvalue())
+        self.assertEqual(clock.now - NOW, 2 * 180)  # three attempts, two waits between
+
+    def test_the_watcher_records_and_clears_its_pid(self):
+        seen = []
+
+        def on_sleep(tick):
+            state = json.loads((self.directory / 'state/watch-test.json').read_text())
+            seen.append((state.get('watch_pid'), state.get('watch_started')))
+
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen[0], (os.getpid(), iso(NOW)))
+        state = json.loads((self.directory / 'state/watch-test.json').read_text())
+        self.assertIsNone(state.get('watch_pid'))
+
+    def test_the_cli_records_the_watcher_pid(self):
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory / 'state'))
+        done = subprocess.run([sys.executable, str(SKILL / 'loop-state'), 'watch',
+                               '--name', 'Watch Test', '--pid', str(os.getpid())],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        state = json.loads((self.directory / 'state/watch-test.json').read_text())
+        self.assertEqual(state['watch_pid'], os.getpid())
+
+    def _mark_waiting(self, rows, comments):
+        rows[0]['comments'] = comments
+        self.rows(rows)
 
 
 class RelationsCliTest(unittest.TestCase):
