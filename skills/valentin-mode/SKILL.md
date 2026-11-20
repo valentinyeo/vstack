@@ -17,7 +17,7 @@ Run `/pstack:poteto-mode` for the task. This skill holds only Valentin's own rul
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
 - **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat. The `hypertask-work` skill owns the ticket rules.
-- **Pace:** Answer each message within a minute. Long work runs in the background through `plan-pick --run`.
+- **Pace:** Answer each message within a minute. Long work runs in the background.
 
 ## Three tools
 
@@ -42,16 +42,16 @@ The project's agent notes name its board in one line: `Hypertask board: <id>, la
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author.
-- **Server and cloud:** this server runs workers, focused tests, the app, the QA phone, git and boards. GitHub-hosted runners run the full suite, CI, reviews and the verifier. Never a self-hosted runner.
-- **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`. No commit carries a real email.
-- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan the repo for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket.
+- **Server and cloud:** this server runs workers, focused tests, the app, the QA phone and boards. GitHub runners run CI and the verifier. Never a self-hosted runner.
+- **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork button. No commit carries a real email.
+- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan the repo for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** a new project begins from Joel Hooks' rat-stack template.
 - **Long chats:** save the handover, then start a fresh chat with its loop on.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
 
 ## Designing
 
-- Never ask him to choose a design. Build yours; he judges the live result. Label a design ticket `needs-design`. Give him 2-3 quick throwaway HTML variants built from the app's real styles, your pick marked, before the build starts. Figma only when he asks on that ticket.
+- Never ask him to choose a design. Build yours; he judges the live result. Label a design ticket `needs-design`. Before the build, give him 2-3 throwaway HTML variants in the app's real styles, your pick marked. Figma only when he asks.
 - One specialist skill per step: `impeccable` for style, `animate` then `review-animations` for motion (none by default), `modern-web-guidance` for the web platform, `apple-design` or `material-3` for native. Never stack two taste skills on one step.
 
 ## Changing the rules
