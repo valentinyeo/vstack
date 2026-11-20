@@ -428,6 +428,8 @@ class Install(unittest.TestCase):
         env = dict(os.environ)
         env["HOME"] = str(home)
         env["VSTACK_DIR"] = str(home / ".local" / "share" / "vstack")
+        # The install guard only links from ~/.local/share/vstack (VSTA-47).
+        env["VSTACK_INSTALL_ANYWHERE"] = "1"
         proc = subprocess.run([str(ROOT / "install")], env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         link = home / ".local" / "bin" / "vps-state"
