@@ -1,0 +1,502 @@
+#!/usr/bin/env python3
+"""pr-queue: every open PR in a scope, the state it is in, and the chat that owns it.
+
+  pr-queue [--owner valentinyeo] [--repo R] [--mine NAME] [--stale-hours N] [--json PATH]
+  pr-queue --self-test
+
+One row per open PR: its ticket key, its checks, the verifier verdict at its current head,
+whether the body carries the `Author model:` and `Pacer launch:` lines, whether another open
+PR carries the same ticket, the live chat that owns it, one state, and one plain next action.
+
+  BOT            dependabot, renovate or github-actions wrote it: CI Boss looks after it
+  DUPLICATE      a second open PR for a ticket that already has an older one
+  CONFLICT       the branch conflicts with its base
+  BILLING        a failing check says recent payments failed: private repos only
+  RED            a check failed
+  VERIFIER-FAIL  the newest verdict at this head is FAIL
+  MISSING-LINES  body lacks `Author model:` or `Pacer launch:`
+  NO-OWNER       no live chat claims this repo, branch or chat name
+  STALE          no push for more than --stale-hours
+  NO-VERDICT     no verdict at this head yet
+  READY          green checks and a PASS or PASS+NOTES at this head
+  OK             nothing to do this tick
+
+Ownership comes from the live roster, branch names and repo checkouts, because this script
+has no board login: a PR whose ticket names its owner on the board can still read NO-OWNER.
+
+Read only: it reads gh and the live roster, and writes nothing to GitHub or to a board.
+
+Exit: 0 when nothing in scope is NO-OWNER or STALE, 1 when one is, 2 on a gh failure.
+"""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+import datetime
+import importlib.machinery
+import importlib.util
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+ROSTER = Path.home() / '.local/share/house-rules/fleet/roster-live'
+VIEW_FIELDS = ('number,title,url,headRefName,headRefOid,author,createdAt,updatedAt,isDraft,body,'
+               'mergeable,statusCheckRollup,comments,commits')
+SEARCH_FIELDS = 'number,title,url,repository,author,createdAt,updatedAt,isDraft'
+POOL = 8
+GH_TIMEOUT = 90
+GIT_TIMEOUT = 20
+ROSTER_TIMEOUT = 30
+
+# `gh search prs` has no headRefName, so the branch comes from one `gh pr view` per PR.
+KEY = re.compile(r'\b([A-Z][A-Z0-9]{1,9}-\d+)\b')
+# The key prefixes that are not tickets: carried from ~/.local/share/house-rules/skills/
+# hypertask-triage/scripts/pr-queue, which owns this rule. Not imported, so the two scripts
+# stay independent; one list to change in both places if it ever grows.
+NOT_KEYS = {'DEV', 'RUNNER', 'AGENT', 'CURSOR', 'CODEX', 'WORKER', 'INFRA-RUNNER'}
+BOTS = ('dependabot', 'renovate', 'github-actions')
+GENERIC_NAMES = {'claude', 'poteto', 'shell', 'live', 'term', 'session', 'unknown'}
+RED_STATES = {'FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'}
+PENDING_STATES = {'QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED', 'PENDING'}
+PASSING = ('PASS', 'PASS+NOTES')
+BILLING = re.compile(r'payments have failed', re.I)
+ROSTER_LINE = re.compile(r'^(?P<name>.+?) \((?P<tmux>[^,()]+), (?P<harness>[^,()]+)'
+                         r'(?:, (?P<cwd>[^()]*))?\)\s*$')
+REMOTE = re.compile(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$')
+
+STATES = ('BOT', 'DUPLICATE', 'CONFLICT', 'BILLING', 'RED', 'VERIFIER-FAIL', 'MISSING-LINES',
+          'NO-OWNER', 'STALE', 'NO-VERDICT', 'READY', 'OK')
+NEXT_ACTION = {
+    'BOT': 'A bot wrote this one, so CI Boss looks after it and no chat has to act.',
+    'DUPLICATE': 'Message the owner chat of the older pull request for this ticket and close this one '
+                 'with a one line reason and the ticket link.',
+    'CONFLICT': 'Rebase your own branch on its base, push it with force with lease, and let the checks run again.',
+    'BILLING': 'Billing blocks private repos only, so scan the repo history for secrets and client data, '
+               'then make the repo public and ask Valentin only when the scan finds something.',
+    'RED': 'Run Babysit in check mode, fix the failing check on your own branch, and push.',
+    'VERIFIER-FAIL': 'Fix the finding the verifier named, push it, and get a fresh verdict at the new head.',
+    'MISSING-LINES': 'Add the Author model and Pacer launch lines to the pull request body.',
+    'NO-OWNER': 'Hand this pull request to the chat that works in this repo or owns its ticket.',
+    'STALE': 'Finish this pull request or close it with a reason and note that on the ticket.',
+    'NO-VERDICT': 'Ask for a verdict at the current head and read it before merging.',
+    'READY': 'Merge it per pstack Shipping only when the verdict comes from a model family that differs '
+             'from every Author model line and it covers this head.',
+    'OK': 'Wait for CI and look again on the next tick.',
+}
+
+
+def load(name, path):
+    """Import a module by path: hooks/ and scripts/ are no package."""
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+find_verdict = load('pr_queue_verdict', ROOT / 'scripts/verdict.py').find_verdict
+_pacer = []
+
+
+def pacer():
+    """scripts/pacer-check.py owns the `Author model:` and `Pacer launch:` patterns."""
+    if not _pacer:
+        _pacer.append(load('pr_queue_pacer', ROOT / 'scripts/pacer-check.py'))
+    return _pacer[0]
+
+
+def ticket_key(title, branch):
+    """SOFT-2943 from the title, else from the upper cased branch, else None."""
+    for text in (title or '', (branch or '').upper()):
+        for key in KEY.findall(text):
+            if key.rsplit('-', 1)[0] not in NOT_KEYS:
+                return key
+    return None
+
+
+def checks_state(rollup):
+    """green | red | pending | none for a statusCheckRollup.
+
+    CANCELLED, SKIPPED, NEUTRAL and stale runs count as passing: this fleet cancels the runs it
+    supersedes on purpose. Red beats pending."""
+    if not rollup:
+        return 'none'
+    red = pending = False
+    for run in rollup:
+        status = (run.get('status') or '').upper()
+        conclusion = (run.get('conclusion') or '').upper()
+        if run.get('__typename') == 'StatusContext' or (not status and run.get('state') is not None):
+            state = (run.get('state') or '').upper()
+            red = red or state in RED_STATES
+            pending = pending or state in PENDING_STATES
+            continue
+        red = red or conclusion in RED_STATES
+        pending = pending or status in PENDING_STATES or (not conclusion and status != 'COMPLETED')
+    if red:
+        return 'red'
+    if pending:
+        return 'pending'
+    return 'green'
+
+
+def verdict_at(comments, head_sha):
+    """The newest verdict whose comment names this exact head, or 'none'."""
+    if not head_sha:
+        return 'none'
+    found = []
+    for comment in comments or ():
+        body = comment.get('body') or ''
+        if head_sha not in body:
+            continue
+        verdict, _ = find_verdict(body)
+        if verdict:
+            found.append((comment.get('createdAt') or '', verdict))
+    if not found:
+        return 'none'
+    return max(found)[1]
+
+
+def slug(name):
+    return re.sub(r'[^a-z0-9]+', '-', (name or '').lower()).strip('-')
+
+
+def owner_chat(branch, repo, chats):
+    """The one live chat that owns this PR: its checkout's branch, then its name in the branch
+    slug, then the only checkout of the repo. An ambiguous level owns nobody."""
+    live = [chat for chat in chats or () if slug(chat.get('name')) not in GENERIC_NAMES]
+    on_branch = [chat for chat in live if branch and chat.get('branch') == branch]
+    if on_branch:
+        return on_branch[0]['name'] if len(on_branch) == 1 else None
+    branch_slug = slug(branch)
+    named = [chat for chat in live if len(slug(chat.get('name'))) >= 5
+             and slug(chat.get('name')) in branch_slug]
+    if named:
+        return named[0]['name'] if len(named) == 1 else None
+    checkouts = [chat for chat in live if repo and chat.get('repo') == repo]
+    if checkouts:
+        return checkouts[0]['name'] if len(checkouts) == 1 else None
+    return None
+
+
+def parse_time(value):
+    text = (value or '').strip()
+    if not text:
+        return None
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        stamp = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=datetime.timezone.utc)
+
+
+def hours_since(value, now):
+    stamp = parse_time(value)
+    if not stamp:
+        return 0.0
+    return round((now - stamp).total_seconds() / 3600, 2)
+
+
+def newest_push(view, now):
+    stamps = [(commit.get('committedDate') or '') for commit in view.get('commits') or ()]
+    stamps = [stamp for stamp in stamps if stamp]
+    return hours_since(max(stamps), now) if stamps else hours_since(view.get('updatedAt'), now)
+
+
+def is_bot(login):
+    return any(bot in (login or '').lower() for bot in BOTS)
+
+
+def billing_blocked(runs):
+    """A failing check that says payments failed: billing blocks private repos only."""
+    for run in runs or ():
+        output = run.get('output') or {}
+        text = ' '.join(str(output.get(field) or '') for field in ('title', 'summary', 'text'))
+        if BILLING.search(text):
+            return True
+    return False
+
+
+def mark_duplicates(rows):
+    """The older open PR for the same repo and ticket, else None.
+
+    Only a strictly older PR makes a row a duplicate, so PRs a chat opened in the same second for
+    one ticket are one attempt and none of them reads DUPLICATE."""
+    groups = {}
+    for row in rows:
+        if row['bot'] or not row['ticket_key']:
+            continue
+        groups.setdefault((row['repo'], row['ticket_key']), []).append(row)
+    for group in groups.values():
+        for row in group:
+            older = [other for other in group if other['created_at'] < row['created_at']]
+            if older:
+                row['duplicate_of'] = min(older, key=lambda other: (other['created_at'], other['number']))['number']
+
+
+def classify(row, stale_hours):
+    """The first state that fits, in this order."""
+    if row['bot']:
+        return 'BOT'
+    if row['duplicate_of'] is not None:
+        return 'DUPLICATE'
+    if row['conflict']:
+        return 'CONFLICT'
+    if row['billing_blocked']:
+        return 'BILLING'
+    if row['checks'] == 'red':
+        return 'RED'
+    if row['verdict'] == 'FAIL':
+        return 'VERIFIER-FAIL'
+    if not (row['has_author_model'] and row['has_pacer_line']):
+        return 'MISSING-LINES'
+    if not row['owner_chat']:
+        return 'NO-OWNER'
+    if row['hours_since_push'] > stale_hours:
+        return 'STALE'
+    if row['verdict'] == 'none':
+        return 'NO-VERDICT'
+    if row['checks'] == 'green' and row['verdict'] in PASSING:
+        return 'READY'
+    return 'OK'
+
+
+def build_rows(views, chats, stale_hours=72, billing_probe=None):
+    """One row per view, with every field the table, the JSON dump and the counts need."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    pattern = pacer()
+    rows = []
+    for view in views or ():
+        repo = view.get('repository') or ''
+        author = (view.get('author') or {}).get('login') or ''
+        body = view.get('body') or ''
+        branch = view.get('headRefName') or ''
+        head = view.get('headRefOid') or ''
+        checks = checks_state(view.get('statusCheckRollup'))
+        billed = bool(checks == 'red' and billing_probe and billing_blocked(billing_probe(repo, head)))
+        mergeable = (view.get('mergeable') or '').upper()
+        rows.append({
+            'repo': repo,
+            'number': view.get('number'),
+            'url': view.get('url') or '',
+            'title': view.get('title') or '',
+            'branch': branch,
+            'head_sha': head,
+            'author': author,
+            'age_hours': hours_since(view.get('createdAt'), now),
+            'hours_since_push': newest_push(view, now),
+            'ticket_key': ticket_key(view.get('title'), branch),
+            'owner_chat': owner_chat(branch, repo, chats),
+            'checks': checks,
+            'billing_blocked': billed,
+            'conflict': mergeable in ('CONFLICTING', 'CONFLICT'),
+            'verdict': verdict_at(view.get('comments'), head),
+            'has_author_model': bool(pattern.AUTHOR.search(body)),
+            'has_pacer_line': bool(pattern.LAUNCH.search(body)),
+            'duplicate_of': None,
+            'state': None,
+            'next_action': None,
+            'bot': is_bot(author),
+            'created_at': view.get('createdAt') or '',
+        })
+    mark_duplicates(rows)
+    for row in rows:
+        row['state'] = classify(row, stale_hours)
+        row['next_action'] = NEXT_ACTION[row['state']]
+        row.pop('bot')
+        row.pop('created_at')
+    return rows
+
+
+def counts(rows):
+    """How many rows sit in each state that has at least one."""
+    return dict(Counter(row['state'] for row in rows))
+
+
+class GhError(Exception):
+    """A gh call that failed or answered something this script cannot read."""
+
+
+def gh_json(args):
+    try:
+        result = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
+    except FileNotFoundError:
+        raise GhError('gh is not installed')
+    except subprocess.TimeoutExpired:
+        raise GhError(f'gh timed out after {GH_TIMEOUT}s: gh {" ".join(args[:3])}')
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout or '').strip().splitlines()
+        raise GhError(lines[0] if lines else f'gh exited {result.returncode}: gh {" ".join(args[:3])}')
+    try:
+        return json.loads(result.stdout or 'null')
+    except ValueError:
+        raise GhError(f'unparseable gh output: gh {" ".join(args[:3])}')
+
+
+def search_prs(owner):
+    """[(repo, search item)] for every open PR the owner has."""
+    found = gh_json(['search', 'prs', '--owner', owner, '--state', 'open', '--limit', '200',
+                     '--json', SEARCH_FIELDS])
+    if not isinstance(found, list):
+        raise GhError('gh search prs answered no list of pull requests')
+    items = []
+    for item in found:
+        repo = (item.get('repository') or {}).get('nameWithOwner')
+        if not repo or not item.get('number'):
+            raise GhError('gh search prs answered an item without a repository or a number')
+        items.append((repo, item['number']))
+    return items
+
+
+def fetch_view(repo, number):
+    view = gh_json(['pr', 'view', str(number), '--repo', repo, '--json', VIEW_FIELDS])
+    if not isinstance(view, dict):
+        raise GhError(f'gh pr view {repo}#{number} answered no pull request')
+    view['repository'] = repo
+    view['number'] = view.get('number') or number
+    return view
+
+
+def fetch_billing(repo, sha):
+    """The check runs of one head, read only for a red PR when it needs the billing probe."""
+    answer = gh_json(['api', f'repos/{repo}/commits/{sha}/check-runs'])
+    runs = answer.get('check_runs') if isinstance(answer, dict) else None
+    return runs or []
+
+
+def pooled(work, items):
+    """Run one bounded pool of gh calls: a slow repo never stalls the whole queue."""
+    if not items:
+        return []
+    with ThreadPoolExecutor(max_workers=POOL) as pool:
+        futures = [pool.submit(work, *item) for item in items]
+        return [future.result() for future in futures]
+
+
+def repo_from_remote(url):
+    match = REMOTE.search((url or '').strip())
+    return match[1] if match else None
+
+
+def checkout(cwd):
+    """(repo, branch) for a working tree, or (None, None) when git cannot answer."""
+    def git(*args):
+        try:
+            result = subprocess.run(['git', '-C', cwd, *args], capture_output=True, text=True,
+                                    timeout=GIT_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired):
+            return ''
+        return (result.stdout or '').strip() if result.returncode == 0 else ''
+
+    repo = repo_from_remote(git('config', '--get', 'remote.origin.url'))
+    return repo, (git('rev-parse', '--abbrev-ref', 'HEAD') or None)
+
+
+def read_roster():
+    """Live chats as {name, cwd, repo, branch}: a missing roster or a failing git read owns nothing."""
+    try:
+        result = subprocess.run([str(ROSTER)], capture_output=True, text=True, timeout=ROSTER_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    home = str(Path.home())
+    chats, trees = [], {}
+    for line in (result.stdout or '').splitlines():
+        match = ROSTER_LINE.match(line.strip())
+        if not match:
+            continue
+        cwd = (match.group('cwd') or '').strip()
+        cwd = home + cwd[1:] if cwd == '~' or cwd.startswith('~/') else cwd
+        chats.append({'name': match.group('name').strip(), 'cwd': cwd, 'repo': None, 'branch': None})
+    for chat in chats:
+        cwd = chat['cwd']
+        if not cwd or not Path(cwd).is_dir():
+            continue
+        if cwd not in trees:
+            trees[cwd] = checkout(cwd)
+        chat['repo'], chat['branch'] = trees[cwd]
+    return chats
+
+
+def table(rows):
+    """A plain table: one line per PR, then the counts, then one summary line."""
+    header = ('STATE', 'OWNER', 'PR', 'TICKET', 'CHECKS', 'VERDICT', 'AGE H', 'PUSH H', 'TITLE')
+    body = [[row['state'], row['owner_chat'] or '-', f'{row["repo"]}#{row["number"]}',
+             row['ticket_key'] or '-', row['checks'], row['verdict'],
+             f'{row["age_hours"]:.1f}', f'{row["hours_since_push"]:.1f}', row['title']]
+            for row in rows]
+    widths = [max([len(header[i])] + [len(line[i]) for line in body]) for i in range(len(header))]
+    lines = ['  '.join(header[i].ljust(widths[i]) for i in range(len(header))).rstrip()]
+    for line in body:
+        lines.append('  '.join(line[i].ljust(widths[i]) for i in range(len(header))).rstrip())
+    return lines
+
+
+def render(rows, scoped_by, stale_hours):
+    """The whole report as lines of text."""
+    tally = counts(rows)
+    waiting = [row for row in rows if row['state'] in ('NO-OWNER', 'STALE')]
+    lines = table(rows)
+    lines.append('')
+    lines.append('counts: ' + (', '.join(f'{state} {tally[state]}' for state in STATES if state in tally) or 'none'))
+    lines.append(f'pr-queue: {len(rows)} open PR{"" if len(rows) == 1 else "s"} {scoped_by}, '
+                 f'{len(waiting)} waiting on an owner or a push, stale after {stale_hours}h')
+    return lines
+
+
+def self_test():
+    """The committed spec: fixtures only, no network."""
+    return subprocess.call([sys.executable, '-m', 'unittest', 'tests.test_pr_queue'], cwd=str(ROOT))
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description='every open PR, its state and its owning chat')
+    parser.add_argument('--owner', default='valentinyeo')
+    parser.add_argument('--repo', help='only this owner/name')
+    parser.add_argument('--mine', help='only PRs owned by this live chat name')
+    parser.add_argument('--stale-hours', type=int, default=72)
+    parser.add_argument('--json', dest='json_path', help='write {"owner", "mine", "rows", "counts"} here')
+    parser.add_argument('--self-test', action='store_true')
+    args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
+    try:
+        items = search_prs(args.owner)
+        if args.repo:
+            items = [item for item in items if item[0] == args.repo]
+        views = pooled(fetch_view, items)
+        red = [(view['repository'], view['headRefOid']) for view in views
+               if view.get('headRefOid') and checks_state(view.get('statusCheckRollup')) == 'red']
+        probes = dict(zip(red, pooled(fetch_billing, red)))
+    except GhError as error:
+        print(f'pr-queue: {error}', file=sys.stderr)
+        print('pr-queue: gh failed, so this tick read nothing; check `gh auth status` and rerun',
+              file=sys.stderr)
+        return 2
+    chats = read_roster()
+    if args.mine and not any(chat['name'].lower() == args.mine.lower() for chat in chats):
+        print(f'pr-queue: --mine {args.mine!r} names no live chat; '
+              f'run {ROSTER} for the live names', file=sys.stderr)
+        return 2
+    rows = build_rows(views, chats, args.stale_hours,
+                      billing_probe=lambda repo, sha: probes.get((repo, sha), []))
+    if args.mine:
+        rows = [row for row in rows if (row['owner_chat'] or '').lower() == args.mine.lower()]
+    scoped_by = 'across ' + args.owner
+    if args.repo and args.mine:
+        scoped_by = f'in {args.repo} owned by {args.mine}'
+    elif args.repo:
+        scoped_by = f'in {args.repo}'
+    elif args.mine:
+        scoped_by = f'owned by {args.mine}'
+    print('\n'.join(render(rows, scoped_by, args.stale_hours)))
+    if args.json_path:
+        Path(args.json_path).write_text(json.dumps({'owner': args.owner, 'mine': args.mine,
+                                                    'rows': rows, 'counts': counts(rows)}, indent=2) + '\n')
+    return 1 if [row for row in rows if row['state'] in ('NO-OWNER', 'STALE')] else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
