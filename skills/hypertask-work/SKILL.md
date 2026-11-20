@@ -17,8 +17,8 @@ Paths resolve from this folder; vstack `./install` links it into every harness.
 Start with `/board-identity`.
 Never ask Valentin for a login and never print a token.
 
-Own a board or view named after your repo, or after your Multibot name when you have no repo.
-Create the view when it is missing.
+One name everywhere: your Multibot name is also your board agent's name, your view's title, your view's label and your Claude Code session title (`/rename`), so the cloud list shows it too.
+Own a board or view with that name. Create the view when it is missing.
 Assign yourself to every ticket you work on.
 
 ## Ticket first
