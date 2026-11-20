@@ -13,6 +13,7 @@ GitHub calls per chat per hour, counted where a call reaches GitHub: a cache hit
 | Session id | Warn | Refuse | On refuse |
 |---|---|---|---|
 | known | 300 | 600 | no upstream call, exit 75 |
+| `script:`… | 300 | 600 | no upstream call, exit 75 |
 | unknown (`-`) | 300 | never | the call always runs |
 
 Writes (merge, create, comment, edit, ready) are never refused. Each session has one small file
@@ -314,6 +315,9 @@ def _gh_get_locked(path, run, clock, ttl, timeout, binary, allow_pause):
         raise GhError("gh api GET returned no JSON") from error
 
 
+_HTTP_VERBS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"})
+
+
 def _api_path(argv):
     skip = False
     value_flags = {"-X", "--method", "-f", "--raw-field", "--field", "-F", "-H", "--header",
@@ -324,6 +328,7 @@ def _api_path(argv):
     fields = []
     flags_seen = set()
     prev = ""
+    after_api = False
     for arg in argv[1:]:
         if skip:
             if prev in ("-X", "--method"):
@@ -343,16 +348,29 @@ def _api_path(argv):
         if arg.startswith("-"):
             flags_seen.add(arg)
             continue
-        if arg in ("api", "graphql"):
+        if arg == "api":
+            after_api = True
             flags_seen.add(arg)
+            continue
+        if arg == "graphql" and after_api and not path:
+            path = "graphql"
+            flags_seen.add(arg)
+            continue
+        if after_api and not path and arg.upper() in _HTTP_VERBS and method == "GET":
+            method = arg.upper()
             continue
         if not path:
             path = arg
         continue
+    if not path and "graphql" in flags_seen:
+        path = "graphql"
     return method, path, jq, flags_seen, fields
 
 
 def classify_caller() -> str:
+    env_caller = (os.environ.get("GH_CALLER") or "").strip()
+    if env_caller:
+        return env_caller
     names = {
         "agent-board-poll": "agent-board-poll",
         "agent-board-poll-tick": "agent-board-poll",
@@ -399,7 +417,71 @@ def classify_caller() -> str:
             pid = int(open("/proc/%s/stat" % pid).read().split()[3])
         except (OSError, IndexError, ValueError):
             break
-    return agent or os.environ.get("GH_CALLER") or "other"
+    return agent or "other"
+
+
+_SCRIPT_SKIP = frozenset({
+    "bash", "sh", "dash", "zsh", "fish", "run", "nice", "timeout", "env", "sudo", "nohup",
+    "setsid", "script", "tee", "xargs", "exec", "systemd", "python", "python3", "node", "nodejs",
+    "ruby", "perl", "lua", "deno", "bun", "gh", "git", "jq", "curl", "wget", "make", "doas",
+})
+
+
+def _proc_cmdline(pid: int) -> list:
+    try:
+        raw = open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0")
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw if part and len(part) <= 200]
+
+
+def _proc_ppid(pid: int) -> int:
+    try:
+        return int(open("/proc/%s/stat" % pid).read().split()[3])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def script_ancestor_name(pid=None) -> str:
+    """Basename of the nearest non-shell, non-interpreter script in /proc ancestry."""
+    pid = os.getppid() if pid is None else pid
+    seen = set()
+    cron = False
+    hit = ""
+    for _ in range(20):
+        if pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        parts = _proc_cmdline(pid)
+        joined = " ".join(parts).lower()
+        if "cron" in joined or any(part.endswith("/cron") for part in parts[:1]):
+            cron = True
+        if not hit:
+            for part in parts:
+                if not part or part.startswith("-"):
+                    continue
+                base = part.rsplit("/", 1)[-1]
+                if base in _SCRIPT_SKIP:
+                    continue
+                name = base
+                for suffix in (".py", ".mjs", ".cjs", ".sh", ".bash", ".pl", ".rb", ".js"):
+                    if name.endswith(suffix):
+                        name = name[: -len(suffix)]
+                        break
+                if not name or name in _SCRIPT_SKIP:
+                    continue
+                hit = name
+                break
+        if hit and cron:
+            break
+        pid = _proc_ppid(pid)
+    if not hit:
+        return ""
+    return ("cron:" + hit) if cron else hit
+
+
+def known_script_caller(caller: str) -> bool:
+    return bool(caller) and caller not in ("other",)
 
 
 # Purely local subcommands never reach GitHub, so they are not logged.
@@ -409,13 +491,27 @@ LOCAL_COMMANDS = {"", "--version", "version", "help", "-h", "--help", "completio
 _SECRET = re.compile(r"(gh[pousr]_\w+|github_pat_\w+|Bearer\s+\S+|(?i:token)\S*)")
 
 
+def _fallback_script_session() -> str:
+    caller = classify_caller()
+    if known_script_caller(caller):
+        stable = caller
+    else:
+        stable = script_ancestor_name()
+    if not stable:
+        return ""
+    return "script:" + re.sub(r"[^A-Za-z0-9_.:-]", "_", stable)[:24]
+
+
 def log_session() -> str:
     name = os.environ.get("HT_SESSION_NAME")
     if not name:
         name = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "")[:8]
     if not name:
         name = os.environ.get("CODEX_COMPANION_SESSION_ID") or ""
-    return re.sub(r"\s+", "_", name)[:32] or "-"
+    if name:
+        return re.sub(r"\s+", "_", name)[:32]
+    script = _fallback_script_session()
+    return script[:32] if script else "-"
 
 
 def _subcommand(argv):
@@ -549,7 +645,7 @@ def budget_minute(now=None) -> int:
 
 def budget_session() -> str:
     """The name the log and the budget share; `-` means this call carries no session id."""
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", log_session())[:32] or "-"
+    return re.sub(r"[^A-Za-z0-9_.:-]", "_", log_session())[:32] or "-"
 
 
 def budget_path(session: str) -> Path:
@@ -737,7 +833,10 @@ def budget_mode(real: str) -> int:
     count = budget_count(session)
     out = sys.stdout
     if session == "-":
-        out.write("gh budget: no session id, so this chat is never refused; %d GitHub calls this hour\n" % count)
+        out.write("gh budget: no session id, so this caller is never refused; %d GitHub calls this hour\n" % count)
+    elif session.startswith("script:"):
+        out.write("gh budget %s: %d of %d GitHub calls this hour, warn at %d (script)\n" % (
+            session, count, BUDGET_REFUSE, BUDGET_WARN))
     else:
         out.write("gh budget %s: %d of %d GitHub calls this hour, warn at %d\n" % (
             session, count, BUDGET_REFUSE, BUDGET_WARN))

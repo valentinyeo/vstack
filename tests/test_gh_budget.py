@@ -196,15 +196,22 @@ class BudgetRefuseTests(BudgetCase):
         self.assertIn("is over 600 GitHub calls this hour", result.stderr)
 
     def test_unknown_session_is_never_refused(self):
-        self.seed(9999, session="-")
+        mod = load_wrapper()
+        self.assertEqual(mod.budget_verdict(["pr", "checks"], now=0), ("", 0))
+        with mock.patch.object(mod, "budget_count", return_value=9999):
+            with mock.patch.object(mod, "log_session", return_value="-"):
+                self.assertEqual(mod.budget_verdict(["pr", "checks"], now=0), ("", 9999))
+
+    def test_script_session_is_refused_at_600(self):
+        self.seed(600, session="script:agent-feed")
         env = self.env()
         for name in ("HT_SESSION_NAME", "CLAUDE_CODE_SESSION_ID", "CODEX_COMPANION_SESSION_ID"):
             env.pop(name, None)
+        env["GH_CALLER"] = "agent-feed"
         result = self.run_gh("pr", "checks", "3", env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(self.upstream_calls()), 1)
-        self.assertEqual(result.stderr, "")
-        self.assertEqual([row[6] for row in self.log_rows()], ["miss"])
+        self.assertEqual(result.returncode, 75)
+        self.assertEqual(self.upstream_calls(), [])
+        self.assertEqual([row[5] for row in self.log_rows()], ["script:agent-feed"])
 
     def test_writes_are_never_refused(self):
         self.seed(600)
@@ -275,7 +282,20 @@ class BudgetCommandTests(BudgetCase):
         env.pop("HT_SESSION_NAME", None)
         result = self.run_gh("budget", env=env)
         self.assertEqual(result.returncode, 0)
-        self.assertIn("no session id, so this chat is never refused", result.stdout)
+        text = result.stdout
+        self.assertTrue(
+            "never refused" in text or "(script)" in text,
+            "expected either bare '-' or a script: budget line, got %r" % text,
+        )
+
+    def test_budget_reports_a_script_session(self):
+        env = self.env()
+        env.pop("HT_SESSION_NAME", None)
+        env["GH_CALLER"] = "shipping-report"
+        result = self.run_gh("budget", env=env)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("gh budget script:shipping-report:", result.stdout)
+        self.assertIn("(script)", result.stdout)
 
 
 class BudgetCountRuleTests(BudgetCase):
