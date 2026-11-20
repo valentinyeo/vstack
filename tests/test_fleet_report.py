@@ -220,8 +220,8 @@ sys.exit({code})
         row = rows[0]
         self.assertEqual(row["verdict"], "GAPS", row)
         self.assertEqual(row["gap_count"], 2)
-        extras, gaps, behind = mod.parse_pstack_stdout("GAP a\nGAP b\n")
-        self.assertEqual((extras, gaps, behind), (0, 2, None))
+        extras, gaps, behind, parsed = mod.parse_pstack_stdout("GAP a\nGAP b\n")
+        self.assertEqual((extras, gaps, behind, parsed), (0, 2, None, True))
 
     def test_loop_off_only_with_board_line(self):
         self.fake_version_script("valentin-mode v4 (latest)")
@@ -268,7 +268,7 @@ sys.exit({code})
             "GAP verifier workflow: no job\n"
             "EXTRA workflow: foo\n"
         )
-        self.assertEqual(mod.parse_pstack_stdout(out), (1, 1, 12))
+        self.assertEqual(mod.parse_pstack_stdout(out), (1, 1, 12, True))
         self.assertEqual(
             mod.format_self_check(1, 1, 12, upstream=True),
             "EXTRA 1 GAP 1 behind 12 (upstream)",
@@ -419,6 +419,76 @@ sys.exit({code})
     def test_script_always_exits_zero(self):
         done = subprocess.run([sys.executable, str(SCRIPT)], env=self.env, check=False)
         self.assertEqual(done.returncode, 0)
+
+    def test_html_bad_path_still_exits_zero(self):
+        bad = self.home / "no" / "such" / "dir" / "report.html"
+        done = subprocess.run(
+            [sys.executable, str(SCRIPT), "--html", str(bad)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_broken_pstack_diff_no_install_is_unknown(self):
+        """Verdict fault 1: real pstack-diff, empty PSTACK_DIFF_PSTACK, must not be OK."""
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(0)
+        empty_pstack = self.home / "empty-pstack"
+        empty_pstack.mkdir()
+        repo = self.home / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self.write_transcript(
+            str(repo),
+            "sid-nopstack",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [dict(name="Chat", harness="claude", cwd=str(repo), sid="sid-nopstack", tmux="live-nopstack")],
+            extra_env={
+                "FLEET_REPORT_PSTACK_DIFF": str(ROOT / "skills/pstack-diff/pstack-diff"),
+                "PSTACK_DIFF_PSTACK": str(empty_pstack),
+            },
+        )
+        row = rows[0]
+        self.assertEqual(row["pstack_exit"], 1, row)
+        self.assertNotEqual(row["self_check"], "EXTRA 0 GAP 0", row)
+        self.assertEqual(row["verdict"], "UNKNOWN", row)
+        self.assertIn("pstack", row["reason"].casefold(), row)
+
+    def test_pstack_diff_exit_one_empty_stdout_is_unknown(self):
+        mod = load_module()
+        trusted, reason = mod.pstack_run_trusted(1, "", "GAP pstack: no install under /tmp/x\n", False)
+        self.assertFalse(trusted)
+        self.assertIn("no install", reason)
+        script = self.home / "crash-pstack.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            'sys.stderr.write("GAP pstack: no install under /tmp/x\\n")\n'
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        repo = self.home / "repo2"
+        repo.mkdir()
+        env_patch = {**self.env, "FLEET_REPORT_PSTACK_DIFF": str(script)}
+        with patch.dict(os.environ, env_patch, clear=True):
+            _label, _code, extras, gaps, _behind, trusted2, _reason2 = mod.run_pstack_diff_at(repo)
+        self.assertFalse(trusted2)
+        self.assertIsNone(extras)
+        self.assertIsNone(gaps)
+
+    def test_pstack_diff_exit_two_no_output_is_unknown(self):
+        mod = load_module()
+        script = self.home / "exit2-pstack.py"
+        script.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
+        script.chmod(0o755)
+        trusted, reason = mod.pstack_run_trusted(2, "", "", False)
+        self.assertFalse(trusted)
+        self.assertIn("no parsed", reason)
 
     def test_missing_pstack_diff_reports_unknown(self):
         self.fake_version_script("valentin-mode v4 (latest)")

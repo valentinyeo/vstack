@@ -25,6 +25,9 @@ VERSION_BEHIND = re.compile(r"valentin-mode v(\d+), latest is v(\d+)")
 ROSTER_LINE = re.compile(r"^(.+?) \(([^,]+), ([^,)]+)(?:, (.+))?\)$")
 PSTACK_EXTRA = re.compile(r"^EXTRA ")
 PSTACK_GAP = re.compile(r"^GAP ")
+PSTACK_HOUSE = re.compile(r"^HOUSE ")
+PSTACK_ASKED = re.compile(r"^ASKED ")
+PSTACK_STDERR_BROKEN = re.compile(r"^GAP pstack:", re.I)
 PSTACK_WARN_BEHIND = re.compile(r"^WARN checkout is (\d+) commits behind")
 HYPERTASK_BOARD = re.compile(r"Hypertask board:", re.I)
 
@@ -343,14 +346,21 @@ def repo_has_hypertask_board(cwd: str) -> bool:
     return False
 
 
-def parse_pstack_stdout(stdout: str) -> tuple[int, int, int | None]:
+def parse_pstack_stdout(stdout: str) -> tuple[int, int, int | None, bool]:
     extras = gaps = 0
     behind: int | None = None
+    parsed = False
     for line in stdout.splitlines():
         if PSTACK_EXTRA.match(line):
             extras += 1
+            parsed = True
         elif PSTACK_GAP.match(line):
             gaps += 1
+            parsed = True
+        elif PSTACK_HOUSE.match(line):
+            parsed = True
+        elif PSTACK_ASKED.match(line):
+            parsed = True
         elif match := PSTACK_WARN_BEHIND.match(line):
             behind = int(match.group(1))
     if behind is None and stdout.strip():
@@ -359,25 +369,60 @@ def parse_pstack_stdout(stdout: str) -> tuple[int, int, int | None]:
             if isinstance(payload, dict):
                 if isinstance(payload.get("extras"), list):
                     extras = len(payload["extras"])
+                    if payload["extras"]:
+                        parsed = True
                 if isinstance(payload.get("gaps"), list):
                     gaps = len(payload["gaps"])
+                    if payload["gaps"]:
+                        parsed = True
+                for key in ("asked", "lines"):
+                    items = payload.get(key)
+                    if isinstance(items, list) and items:
+                        parsed = True
                 for line in payload.get("lines") or []:
                     if isinstance(line, str) and (match := PSTACK_WARN_BEHIND.match(line)):
                         behind = int(match.group(1))
         except ValueError:
             pass
-    return extras, gaps, behind
+    return extras, gaps, behind, parsed
+
+
+def pstack_stderr_failure(stderr: str) -> str:
+    for line in (stderr or "").splitlines():
+        line = line.strip()
+        if PSTACK_STDERR_BROKEN.match(line):
+            return line
+        if line.startswith("pstack-diff:"):
+            return line
+    return ""
+
+
+def pstack_run_trusted(code: int | None, stdout: str, stderr: str, parsed: bool) -> tuple[bool, str]:
+    broken = pstack_stderr_failure(stderr)
+    if broken:
+        return False, broken
+    if code is None:
+        return False, "no exit code"
+    if code == 0:
+        return True, ""
+    if code == 1 and parsed:
+        return True, ""
+    if parsed:
+        return False, f"exit {code}"
+    return False, f"exit {code} with no parsed output"
 
 
 def format_self_check(
-    extras: int,
-    gaps: int,
+    extras: int | None,
+    gaps: int | None,
     behind: int | None,
     *,
     upstream: bool = False,
     stale: bool = False,
     fetch_failed: bool = False,
 ) -> str:
+    if extras is None or gaps is None:
+        return "unparsed"
     if stale and behind is not None:
         if fetch_failed:
             return f"EXTRA {extras} GAP {gaps} stale, {behind} behind (fetch failed)"
@@ -420,14 +465,14 @@ def git_upstream_ref(repo: Path) -> str | None:
     return None
 
 
-def pstack_run_unreliable(label: str, code: int | None) -> bool:
-    return label in ("missing", "timeout", "error") or code is None
+def pstack_run_unreliable(label: str, trusted: bool) -> bool:
+    return label in ("missing", "timeout", "error") or not trusted
 
 
-def run_pstack_diff_at(root: Path) -> tuple[str, int | None, int, int, int | None]:
+def run_pstack_diff_at(root: Path) -> tuple[str, int | None, int | None, int | None, int | None, bool, str]:
     tool = tool_path("FLEET_REPORT_PSTACK_DIFF", vstack_root() / "skills/pstack-diff/pstack-diff")
     if not tool.is_file():
-        return "missing", None, 0, 0, None
+        return "missing", None, None, None, None, False, "missing"
     try:
         done = subprocess.run(
             [sys.executable, str(tool), str(root)],
@@ -437,12 +482,20 @@ def run_pstack_diff_at(root: Path) -> tuple[str, int | None, int, int, int | Non
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return "timeout", None, 0, 0, None
+        return "timeout", None, None, None, None, False, "timeout"
     except OSError:
-        return "error", None, 0, 0, None
-    extras, gaps, behind = parse_pstack_stdout(done.stdout or "")
+        return "error", None, None, None, None, False, "error"
+    stdout = done.stdout or ""
+    stderr = done.stderr or ""
+    extras, gaps, behind, parsed = parse_pstack_stdout(stdout)
+    trusted, trust_reason = pstack_run_trusted(done.returncode, stdout, stderr, parsed)
+    if not trusted:
+        counts_extras: int | None = extras if parsed else None
+        counts_gaps: int | None = gaps if parsed else None
+        label = trust_reason or format_self_check(counts_extras, counts_gaps, behind)
+        return label, done.returncode, counts_extras, counts_gaps, behind, False, trust_reason or label
     label = format_self_check(extras, gaps, behind)
-    return label, done.returncode, extras, gaps, behind
+    return label, done.returncode, extras, gaps, behind, True, ""
 
 
 FETCH_FAILED = "fetch_failed"
@@ -481,8 +534,8 @@ def run_pstack_diff_upstream(cwd: str) -> tuple[int, int, bool] | str | None:
         )
         if add.returncode != 0:
             return None
-        label, code, extras, gaps, _behind = run_pstack_diff_at(Path(tmp))
-        if pstack_run_unreliable(label, code):
+        label, code, extras, gaps, _behind, trusted, _reason = run_pstack_diff_at(Path(tmp))
+        if pstack_run_unreliable(label, trusted):
             return None
         return extras, gaps, True
     except (OSError, subprocess.TimeoutExpired):
@@ -517,8 +570,8 @@ def run_pstack_diff(cwd: str) -> dict:
             checker_reason="",
         )
     expanded = expand_cwd(cwd)
-    label, code, extras, gaps, behind = run_pstack_diff_at(Path(expanded))
-    local_unreliable = pstack_run_unreliable(label, code)
+    label, code, extras, gaps, behind, trusted, trust_reason = run_pstack_diff_at(Path(expanded))
+    local_unreliable = pstack_run_unreliable(label, trusted)
     upstream_extras = upstream_gaps = None
     upstream_ok = False
     stale = False
@@ -541,13 +594,13 @@ def run_pstack_diff(cwd: str) -> dict:
         self_check = format_self_check(
             upstream_extras, upstream_gaps, behind, upstream=True
         )
-    display_extras = upstream_extras if upstream_ok else extras
-    display_gaps = upstream_gaps if upstream_ok else gaps
+    display_extras = upstream_extras if upstream_ok else (extras if extras is not None else None)
+    display_gaps = upstream_gaps if upstream_ok else (gaps if gaps is not None else None)
     checker_unreliable = local_unreliable or (
         has_origin and upstream is None and not fetch_failed
     )
     if local_unreliable:
-        checker_reason = label
+        checker_reason = trust_reason or label
     elif checker_unreliable:
         checker_reason = "upstream check failed"
     else:
@@ -578,8 +631,8 @@ def verdict(
     latest_num: int | None,
     board_exit: int | None,
     has_board: bool,
-    extra_count: int,
-    gap_count: int,
+    extra_count: int | None,
+    gap_count: int | None,
     upstream_extras: int | None,
     upstream_gaps: int | None,
     upstream_ok: bool,
@@ -626,10 +679,10 @@ def verdict(
         effective_extras = extra_count
         effective_gaps = gap_count
 
-    if effective_extras > 0:
+    if effective_extras is not None and effective_extras > 0:
         tags.append("FIX")
         actions.append("remove the EXTRA in one PR")
-    if effective_gaps > 0:
+    if effective_gaps is not None and effective_gaps > 0:
         tags.append("GAPS")
 
     if fetch_failed:
@@ -813,7 +866,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(format_table(rows))
     if args.html:
-        write_html(Path(args.html), rows)
+        try:
+            html_path = Path(args.html)
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            write_html(html_path, rows)
+        except OSError as exc:
+            print(f"fleet-report: --html {args.html}: {exc}", file=sys.stderr)
     return 0
 
 
