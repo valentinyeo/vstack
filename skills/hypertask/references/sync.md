@@ -84,7 +84,7 @@ The lease's start sync runs `agent take` for the ticket as the chat's own login 
 
 ## GitHub budget
 
-A run spends GitHub calls, and the account shares one hourly budget. The first response that reports a spent budget stops the run at once: 403 and 429 errors that name a rate limit or a secondary rate limit, and GraphQL's `RATE_LIMITED`. The run prints one line with the reset time from `gh api rate_limit`, applies no move, and exits 0. Only error text counts, so a PR or comment that talks about a rate limit is not one. Every run prints its call count to stderr: `reconcile: github calls=N (graphql=a, rest=b)`.
+A run spends GitHub calls, and the account shares one hourly budget. The first response that reports a spent budget stops the run at once: 403 and 429 errors that name a rate limit or a secondary rate limit, and GraphQL's `RATE_LIMITED`. The run prints one line with the reset time from `gh api rate_limit`, applies no move, and exits 0. Only error text counts, so a PR or comment that talks about a rate limit is not one. Every run prints its call count to stderr: `reconcile: github calls=N (graphql=a, rest=b)`. A PR's state comes from the search the run already paid for, so no PR costs a call of its own.
 
 ## A miss
 
@@ -107,6 +107,7 @@ Never patch the card and say nothing: the next run undoes it or repeats it. The 
 - UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, QA and every Flag column stay. No Flag and unknown columns also stay.
 - Each run permits at most five moves, even with a higher `--limit`.
 - Worker facts come from the installed Hypertask workers. An active service alone proves no ticket work: its local PID must exist and its queue must name that board's ticket. Claiming, launching and running count as active. Progress expires after 15 minutes. A live lease or a process that names the ticket also counts. Unreadable worker facts refuse all moves.
+- A shell without `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS` gets `/run/user/<uid>` defaults first. If worker facts still cannot be read, the run prints one `reconcile: worker facts unreadable: ...` line, moves nothing and exits non-zero.
 - The script verifies the connected agent before a write. Missing, personal or other agent tokens fail. Never supply Valentin's personal token.
 
 ## Server timer

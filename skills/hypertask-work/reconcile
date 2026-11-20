@@ -158,6 +158,19 @@ def product_board(board):
     return board.id == 15
 
 
+def session_bus(env=None):
+    """The user session bus a headless chat does not always have.
+
+    `systemctl --user` needs both paths, so a timer or a bare shell gets the
+    usual ones filled in. The lease borrows this same helper for its card sync.
+    """
+    env = os.environ if env is None else env
+    uid = os.getuid()
+    env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{uid}')
+    env.setdefault('DBUS_SESSION_BUS_ADDRESS', f'unix:path=/run/user/{uid}/bus')
+    return env
+
+
 def board_rules(managed, protected):
     """2060's rule table with one board's own column sets in place of its two globals."""
     return ((lambda f: f.column in protected, None, 'protected column'),
@@ -823,7 +836,12 @@ def pass_on_head(comments, head, author, repo, policy):
                               'self-hosted' not in job.get('labels', []) for job in jobs)
 
 
-def pull_facts(pull):
+def pull_facts(pull, board=DEFAULT):
+    """A product board needs only the state its search already returned; every other
+    board reads checks, base and verifier verdicts in batches of its own.
+    """
+    if product_board(board):
+        return Pull(pull['url'], pull['state'], '', False)
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
@@ -938,26 +956,40 @@ def all_comments(repo, number):
     return [comment for page in pages for comment in page]
 
 
-@lru_cache(maxsize=2048)
 def read_product_pull(number):
+    """One PR's live state, for an apply preflight that must not trust a search.
+
+    Never read on a dry run: board 15 takes its PR state from the search result
+    it already paid for.
+    """
     detail = json.loads(run('gh', 'pr', 'view', str(number), '--repo', 'hypertask-ai/hypertask',
                             '--json', 'url,state'))
     return Pull(detail['url'], detail['state'], '', False)
+
+
+def refreshed(pulls, board=DEFAULT):
+    """The pulls an apply preflight acts on, re-read once each, and only when it writes."""
+    if not product_board(board):
+        return pulls
+    return [{**pull, 'state': read_product_pull(pull['number']).state} for pull in pulls]
 
 
 def prefetch(pulls, board=DEFAULT):
     """Read every PR once, a batch at a time. A failed read is retried and reported
     by collect, so it still prints UNKNOWN for its own ticket only.
     """
+    if product_board(board):
+        # The search result already carries the one fact these rules read.
+        return
+
     def load(batch):
         try:
-            [read_product_pull(n) for _, n in batch] if product_board(board) else read_pull_batch(batch)
+            read_pull_batch(batch)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
             pass
     PULLS.clear()
     refs = sorted({(p['repository']['nameWithOwner'], p['number'])
-                   for found in pulls.values() for p in found
-                   if not product_board(board) or p['state'] == 'OPEN'})
+                   for found in pulls.values() for p in found})
     for n in range(0, len(refs), PULL_BATCH):
         load(refs[n:n + PULL_BATCH])
 
@@ -977,10 +1009,7 @@ def is_verification(task):
 def collect(task, pulls, now, board=DEFAULT):
     ticket_index(task['ticketNumber'], board)
     alive = worker_alive(task['ticketNumber'], now, board)
-    if product_board(board):
-        details = tuple(read_product_pull(p['number']) for p in pulls if p['state'] == 'OPEN')
-    else:
-        details = tuple(pull_facts(p) for p in pulls)
+    details = tuple(pull_facts(p, board) for p in pulls)
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
                  bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')),
                  is_verification(task))
@@ -1027,10 +1056,9 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
             raise ValueError('ticket no longer eligible')
         fresh_tasks.append((fresh, facts))
     PULLS.clear()
-    read_product_pull.cache_clear()
     ready = []
     for fresh, facts in fresh_tasks:
-        latest = collect(fresh, pulls[fresh['ticketNumber']], time.time(), **options)
+        latest = collect(fresh, refreshed(pulls[fresh['ticketNumber']], board), time.time(), **options)
         if target(latest, board, names) != target(facts, board, names):
             print(f'SKIP {fresh["ticketNumber"]} | facts changed since preview', flush=True)
             continue
@@ -1040,9 +1068,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
         if current['section'] != task['section'] or current['updatedAt'] != task['updatedAt']:
             print(f'SKIP {task["ticketNumber"]} | ticket changed during preflight', flush=True)
             continue
-        if board.id == 15:
-            read_product_pull.cache_clear()
-        final = collect(current, pulls[current['ticketNumber']], time.time(), **options)
+        final = collect(current, refreshed(pulls[current['ticketNumber']], board), time.time(), **options)
         if target(final, board, names) != target(facts, board, names):
             print(f'SKIP {task["ticketNumber"]} | facts changed during preflight', flush=True)
             continue
@@ -1215,6 +1241,8 @@ def board_run():
         args.apply = False
     # Before any board read: a board read at runtime asks the CLI for its prefix.
     os.environ['PATH'] = f'{Path.home()}/.local/bin:' + os.environ.get('PATH', '')
+    # Before any worker fact: a timer or a bare shell has no user bus to ask.
+    session_bus()
     if args.ticket:
         # The ticket names its own board, so a card sync never needs a configured one.
         try:
@@ -1284,6 +1312,16 @@ def board_run():
         with phase('pulls'):
             prefetch(pulls, **options)
         now, errors = time.time(), 0
+        if product_board(board) and candidates:
+            # One read for the whole board, before the loop. A failure here is not
+            # per ticket, so it gets one line and no move rather than one per card.
+            try:
+                with phase('workers'):
+                    product_workers(now)
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError, sqlite3.Error,
+                    subprocess.SubprocessError) as error:
+                print(f'reconcile: worker facts unreadable: {error}; nothing moved', flush=True)
+                return 1
         plans = []
         with phase('facts'):
             for task in tasks:

@@ -130,6 +130,7 @@ from importlib.machinery import SourceFileLoader
 
 script, board = sys.argv[1], int(sys.argv[2])
 module = types.ModuleType('reconcile_under_test')
+module.__file__ = script
 SourceFileLoader(module.__name__, script).exec_module(module)
 print(module.lock_path(types.SimpleNamespace(id=board)))
 PY
