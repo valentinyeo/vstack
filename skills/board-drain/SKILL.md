@@ -51,7 +51,8 @@ Only a set waiting-on mark naming Valentin, or a blocker comment, counts. A chat
 Each line names its fix:
 
 - **loop off:** workable Todo, nothing alive in Doing. Re-arm, then give the named ticket an owner.
-- **stalled:** a Doing ticket with no live owner. Replace it with a fresh plan-pick owner.
+- **unassigned:** a ticket in a working column (Doing, Building, Checks, AI Review, Verifier) with no agent on it. Assign your own agent login: `task assign <KEY> --self`.
+- **stalled:** a Doing ticket with no live owner. Replace it with a fresh plan-pick owner. A ticket moved in from another board got a new key, and nothing on the ticket records the old one, so a worker started under the old key cannot be seen here. Check the old key's lease by hand before you restart a worker.
 - **stale:** a workable ticket idle in Todo over two hours. Give it an owner, and note the gap on your role ticket.
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.
 - **not armed:** this chat restarted or the loop expired. Arm it.

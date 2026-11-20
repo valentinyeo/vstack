@@ -25,6 +25,8 @@ state_loader.exec_module(loop_state)
 
 TODO = 'Todo'
 DOING = frozenset({'Doing', 'Building'})
+# A ticket in one of these columns has an owner, so an agent must be on it.
+WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
 FRESH = 1800
 STALE = 7200
 ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
@@ -52,6 +54,12 @@ def age(task, now):
 
 def waiting(task):
     return bool(task.get('waitingOnUserId') or task.get('blockerCommentId'))
+
+
+def agent_assigned(task):
+    """An agent on the ticket; a person alone is not an owner."""
+    return any((assignee.get('type') or '').strip().lower() == 'agent'
+               for assignee in task.get('assignees') or () if isinstance(assignee, dict))
 
 
 def is_human(comment):
@@ -197,6 +205,12 @@ def check(args, now):
         if row not in live:
             findings.append(f'stalled: {row["task"]["ticketNumber"]} in Doing with no live worker. '
                             'Start a fresh plan-pick worker.')
+    for row in rows:
+        task = row['task']
+        if task.get('section') in WORKING and not agent_assigned(task):
+            findings.append(f'unassigned: {task["ticketNumber"]} in {task["section"]} has no agent '
+                            f'assigned. Assign your own agent login to it (task assign '
+                            f'{task["ticketNumber"]} --self, with your token).')
     for row in workable:
         spent = age(row['task'], now)
         if spent is not None and spent > STALE:
