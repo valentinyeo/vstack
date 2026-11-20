@@ -36,6 +36,7 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p test_fault_routes.py -v
           python3 -m unittest discover -s tests -p test_ticket_way.py -v
+          python3 -m unittest discover -s tests -p test_plan_pick_only.py -v
           python3 -m unittest discover -s tests -p test_poteto_ticket.py -v
           python3 -m unittest discover -s tests -p test_install_ticket_claim.py -v
           python3 -m unittest discover -s tests -p test_pick_verifier_model.py -v
