@@ -61,15 +61,13 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 - **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs last. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
-- **Verifying:** every app has one `verify-<app>` skill. Every Done when names its proof. A behaviour PR carries proof that fits: screenshot or video for UI, transcript for CLI, response body for API. No proof, no PASS.
-- **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author.
+- **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. House change: one free GitHub runner, or a cloud agent when a runner cannot. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls). A corrected mistake becomes a lint or test, never a new CI gate.
+- **Self-audit on load:** run `~/.claude/skills/pstack-diff/pstack-diff .`; clear every EXTRA in one PR until it exits 0. A new CI gate needs a house-file line naming its pstack sentence; otherwise it is EXTRA.
 - **Server load:** before a worker, build or long test, run `~/.local/bin/vps-state --can-launch worker`; on HOLD start nothing and say so. Time-limit long commands.
-- **Server and cloud:** GitHub runners run CI and the verifier, never self-hosted; this server runs the rest.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there, each page included. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
 - **Long chats:** save the handover, then start a fresh chat with its loop on.
-- **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
 
 ## Designing
 
@@ -78,7 +76,7 @@ Design work follows [designing.md](designing.md).
 ## Changing the rules
 
 - **pstack first, write last:** look for the rule in pstack, then in the domain's stack. Add only the gap; name what you checked in the commit message.
-- **Where a correction lands:** a correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in vstack.
+- **Where a correction lands:** product rules stay in that repo; agent-wide rules land here (vstack). A check for either goes in vstack.
 
 ## Skill index
 
@@ -95,3 +93,4 @@ Hidden skills: read the path shown, since the Skill tool refuses them. Slash com
 - put a lead session in Slack #fleet -> read ../join-slack/SKILL.md
 - a task he wants done deeper -> /deeper
 - a big task to run alone, one report at the end -> /deep-work
+- move an app onto Rat Stack -> /ratstack-transition

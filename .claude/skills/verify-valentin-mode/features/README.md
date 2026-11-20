@@ -1,6 +1,6 @@
 # Valentin mode verification map
 
-The three tools valentin mode names, each proved by one check in `grade.py`, plus the hooks it turns on. Read this, then the file for the check.
+The three tools valentin mode names, each proved by one check in `grade.py`, plus the hooks it turns on. Read this, then the file for the check. The self-audit change has its own live proof, read by hand.
 
 ## Baseline preconditions
 
@@ -33,3 +33,4 @@ The three tools valentin mode names, each proved by one check in `grade.py`, plu
 | [pacer.md](pacer.md) | `pacer`, `task` | Subscription pacer: workers through `plan-pick --run` |
 | [board-sync.md](board-sync.md) | `board sync` | Board sync: reconcile dry run, then `--apply --limit 5` |
 | [SKILL.md](../SKILL.md) | `checks loaded` | Hooks: both hooks the frontmatter declares ran |
+| [self-audit.md](self-audit.md) | `self-audit` | pstack-diff: load removes a planted extra gate |

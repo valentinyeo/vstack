@@ -1,0 +1,13 @@
+name: pstack-verifier
+on:
+  pull_request:
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    steps:
+      - run: node .github/scripts/pstack-verifier/verifier.cjs pick
+  pstack-verifier:
+    needs: pick
+    runs-on: ubuntu-latest
+    steps:
+      - run: node .github/scripts/pstack-verifier/verifier.cjs judge
