@@ -104,6 +104,7 @@ done
 link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.claude/hooks"
 link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
 link_one reconcile-auto.py "$ROOT/hooks/reconcile-auto.py" "$HOME/.claude/hooks"
+link_one test-timeout-guard.py "$ROOT/hooks/test-timeout-guard.py" "$HOME/.claude/hooks"
 
 # vps-state answers "can this server take another chat or worker", and the
 # SessionStart hook can print that answer as a session opens. This script only

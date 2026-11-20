@@ -47,8 +47,10 @@ jobs:
           python3 -m unittest discover -s tests -p test_verifier_prompts.py -v
           python3 -m unittest discover -s tests -p test_verdict.py -v
           python3 -m unittest discover -s tests -p test_claude_helper_gate.py -v
+      - name: test timeout guard self-test
+        run: timeout 60 python3 hooks/test-timeout-guard.py --self-test
       - name: existing skill installer
-        run: bash tests/install.sh
+        run: timeout 300 bash tests/install.sh
   deepseek-verifier:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
