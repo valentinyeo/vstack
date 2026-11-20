@@ -57,6 +57,8 @@ A Bash command whose simple command starts one of these with no `timeout` before
 
 It reads the command the way a shell does, so a timeout still counts through `env`, `nice`, `nohup`, `setsid` and `cd somewhere &&`. A command that only names a runner passes: `grep pytest`, `cat tests/install.sh`, `git log --grep pytest`.
 
+Two shapes slip through on purpose: a runner hidden inside `bash -c '...'`, and one a pipe builds, such as `printf ... | xargs -I{} {}`. The guard reads the command, not the command the command would build. Do not use those shapes to dodge it; add the timeout.
+
 ## Prove the guard itself
 
 `.claude/skills/verify-test-timeout/SKILL.md` feeds the real hook real hook input and watches a real 5 second timeout kill a real 60 second sleep. Run it after any change to the hook.
