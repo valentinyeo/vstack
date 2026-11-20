@@ -757,7 +757,7 @@ def restore_pull_facts(saved):
             PULLS[(repo, int(number))] = Pull(fact['url'], fact['state'], fact['checks'], fact['passed'])
 
 
-def serialize_board_facts(board, tasks, pulls, now, probe_since=None):
+def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved_at=None):
     tickets = {}
     for task in tasks:
         key = task['ticketNumber']
@@ -775,7 +775,8 @@ def serialize_board_facts(board, tasks, pulls, now, probe_since=None):
                         'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed}
         tickets[key] = entry
     repos = sorted({pull['repository']['nameWithOwner'] for plist in pulls.values() for pull in plist})
-    return {'at': now, 'probe_since': probe_since or format_reset(now), 'repos': repos, 'tickets': tickets}
+    return {'at': saved_at if saved_at is not None else now,
+            'probe_since': probe_since or format_reset(now), 'repos': repos, 'tickets': tickets}
 
 
 def github_search_batch(keys, board=DEFAULT):
@@ -1415,6 +1416,8 @@ def probe_budget():
     """Stop before reading anything when GitHub has nothing left to give."""
     try:
         resources = json.loads(run('gh', 'api', 'rate_limit'))['resources']
+    except BudgetRefused:
+        raise
     except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
         return
     spent = [r['reset'] for r in resources.values()
@@ -1569,8 +1572,12 @@ def board_run():
         if args.apply:
             # A spent budget can only fail slowly, one 403 per ticket. The rate_limit
             # call is free, so an --apply run checks before it reads anything.
-            with phase('budget'):
-                probe_budget()
+            try:
+                with phase('budget'):
+                    probe_budget()
+            except BudgetRefused as refused:
+                print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
+                return 0
         with phase('tickets'):
             tasks = [one] if args.ticket else tickets(args.section, **options)
         with phase('sections'):
@@ -1602,6 +1609,7 @@ def board_run():
         saved = None if args.ticket else read_board_facts(board.id)
         budget_skip = False
         probe_since = None
+        facts_refreshed = True
         try:
             if saved and saved_facts_fresh(saved, time.time()) and not args.ticket and keys:
                 with phase('probe'):
@@ -1609,7 +1617,9 @@ def board_run():
                     items = probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
                 known = saved.get('tickets') or {}
                 new_keys = {key for key in keys if key not in known}
+                board_changed = board_task_changes(saved, candidates, keys)
                 pr_changed = tickets_from_probe(items, keys, board, saved) | new_keys
+                facts_refreshed = bool(pr_changed or board_changed)
                 pulls = discover_quiet(keys, created=created, saved=saved, probe_items=items,
                                        github_refresh=pr_changed, **options)
                 if pr_changed:
@@ -1646,6 +1656,16 @@ def board_run():
         with phase('facts'):
             for task in tasks:
                 try:
+                    if budget_skip:
+                        if task['section'] in board.managed:
+                            print(f'KEEP {task["ticketNumber"]} {task["section"]} -> {task["section"]} '
+                                  f'| kept saved facts; budget refused', flush=True)
+                        else:
+                            facts = Facts(task['section'], now - stamp(task['updatedAt']),
+                                          waiting=bool(task.get('waitingOnUserId')),
+                                          blocked=bool(task.get('blockerCommentId')))
+                            reconcile(task, facts, names=names, **options)
+                        continue
                     if task['section'] not in board.managed:
                         facts = Facts(task['section'], now - stamp(task['updatedAt']),
                                       waiting=bool(task.get('waitingOnUserId')),
@@ -1661,10 +1681,15 @@ def board_run():
             print(timing_table(), file=sys.stderr, flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
         if not budget_skip and not args.ticket and not errors and candidates:
+            saved_at = (saved or {}).get('at') if saved and not facts_refreshed else None
             write_board_facts(board.id, serialize_board_facts(board, candidates, pulls, time.time(),
-                                                              probe_since=probe_since))
+                                                              probe_since=probe_since, saved_at=saved_at))
         if args.apply and not errors and not budget_skip:
-            return apply_plan(plans, args.limit, pulls, names=names, **options)
+            try:
+                return apply_plan(plans, args.limit, pulls, names=names, **options)
+            except BudgetRefused as refused:
+                print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
+                return 0
         return bool(errors)
 
 

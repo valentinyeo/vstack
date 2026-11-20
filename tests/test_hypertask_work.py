@@ -2122,6 +2122,7 @@ class CallBudgetTest(unittest.TestCase):
         self.assertIn('gh budget:', text)
         self.assertIn('kept saved facts, planned nothing new', text)
         self.assertNotIn('UNKNOWN', text)
+        self.assertNotIn('PLAN ', text)
 
     def test_stale_saved_facts_force_a_full_sync(self):
         saved = {'at': NOW - r.FACTS_MAX_AGE - 1, 'probe_since': '2020-01-01T00:00:00Z', 'tickets': {}}
@@ -2224,12 +2225,47 @@ class CallBudgetTest(unittest.TestCase):
             r.PULLS.clear()
             self.assertEqual(r.main(), 0)
         self.assertEqual(written['probe_since'], r.format_reset(probe_at))
-        self.assertEqual(written['at'], write_at)
+        self.assertEqual(written['at'], saved['at'])
 
     def test_probe_search_uses_explicit_get(self):
         with patch.object(r, 'run', return_value=json.dumps({'items': []})) as run:
             r.probe_changed_prs(r.DEFAULT, '2026-01-01T00:00:00Z')
         self.assertEqual(run.call_args.args[:5], ('gh', 'api', '--method', 'GET', 'search/issues'))
+
+    def test_quiet_sync_preserves_saved_at_without_refresh(self):
+        key = 'SOFT-1'
+        t = {**task('Doing'), 'ticketNumber': key, 'updatedAt': NOW - 8000}
+        saved_at = NOW - 3600
+        saved = {'at': saved_at, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
+                 'tickets': {key: {'updated_at': t['updatedAt'], 'pulls': [], 'facts': {}}}}
+        written = {}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=saved), \
+                patch.object(r, 'run', return_value=json.dumps({'items': []})), \
+                patch.object(r, 'write_board_facts', side_effect=lambda board_id, payload: written.update(payload)), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()):
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        self.assertEqual(written['at'], saved_at)
+
+    def test_apply_refused_budget_exits_before_apply_plan(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--apply']), \
+                patch.object(r, 'probe_budget', side_effect=r.BudgetRefused('gh budget: over limit')), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), 0)
+        text = out.getvalue()
+        self.assertIn('kept saved facts, planned nothing new', text)
+        self.assertNotIn('UNKNOWN', text)
 
 
 class LabelLockTest(unittest.TestCase):
