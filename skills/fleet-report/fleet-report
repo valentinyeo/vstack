@@ -422,10 +422,13 @@ def format_self_check(
     fetch_failed: bool = False,
 ) -> str:
     if extras is None or gaps is None:
-        return "unparsed"
+        return "unparsed (fetch failed)" if fetch_failed else "unparsed"
+    if fetch_failed:
+        parts = [f"EXTRA {extras}", f"GAP {gaps}"]
+        if behind is not None:
+            return f"{' '.join(parts)} stale, {behind} behind (fetch failed)"
+        return f"{' '.join(parts)} (fetch failed)"
     if stale and behind is not None:
-        if fetch_failed:
-            return f"EXTRA {extras} GAP {gaps} stale, {behind} behind (fetch failed)"
         return f"stale, {behind} behind"
     parts = [f"EXTRA {extras}", f"GAP {gaps}"]
     if behind is not None and behind > 0:

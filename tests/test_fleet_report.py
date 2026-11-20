@@ -295,6 +295,17 @@ sys.exit({code})
         self.assertEqual(v, "GAPS")
         self.assertNotIn("FIX", v)
 
+    def test_format_self_check_fetch_failed_without_behind(self):
+        mod = load_module()
+        self.assertEqual(
+            mod.format_self_check(1, 0, None, stale=True, fetch_failed=True),
+            "EXTRA 1 GAP 0 (fetch failed)",
+        )
+        self.assertEqual(
+            mod.format_self_check(None, None, None, stale=True, fetch_failed=True),
+            "unparsed (fetch failed)",
+        )
+
     def test_verdict_fetch_failed_uses_local_extras(self):
         mod = load_module()
         v, reason, action = mod.verdict(
@@ -408,6 +419,42 @@ sys.exit({code})
         self.assertFalse(row["upstream"])
         self.assertNotEqual(row["verdict"], "OK", row)
         self.assertIn("FIX", row["verdict"])
+
+    def test_fetch_failure_self_check_without_behind_marker(self):
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(0)
+        self.fake_pstack_diff(1, 1, gaps=0, behind=None)
+        repo = self.home / "offline-nobehind"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@test"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+        (repo / "f").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "f"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "remote", "add", "origin", "http://127.0.0.1:9/no-such-repo"],
+            check=True,
+        )
+        self.write_transcript(
+            str(repo),
+            "sid-fetch-nb",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [
+                dict(
+                    name="OfflineNoBehind",
+                    harness="claude",
+                    cwd=str(repo),
+                    sid="sid-fetch-nb",
+                    tmux="live-off-nb",
+                )
+            ]
+        )
+        row = rows[0]
+        self.assertIn("(fetch failed)", row["self_check"], row)
+        self.assertNotEqual(row["verdict"], "OK", row)
 
     def test_parse_roster_line(self):
         mod = load_module()
