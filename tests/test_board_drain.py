@@ -254,6 +254,30 @@ class LoopStateTest(unittest.TestCase):
         self.assertTrue((self.directory / 'ht-test.json').exists())
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
 
+    def test_arm_records_the_board_and_label_it_drains(self):
+        state = loop.arm('Vstack Maintainer', every='15m', job='cron-1', board=13556,
+                         label='Vstack', now=NOW)
+        self.assertEqual(state['board'], 13556)
+        self.assertEqual(state['label'], 'Vstack')
+        self.assertEqual(loop.status('Vstack Maintainer', now=NOW), (0, 'armed, expires in 7d0h'))
+
+    def test_a_file_without_a_board_and_label_still_reads(self):
+        state = loop.arm('HT Test', now=NOW)
+        self.assertNotIn('board', state)
+        self.assertNotIn('label', state)
+        self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+
+    def test_the_cli_records_the_board_and_label(self):
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory))
+        result = subprocess.run([sys.executable, str(SKILL / 'loop-state'), 'arm',
+                                 '--name', 'Vstack Maintainer', '--every', '15m',
+                                 '--job', 'cron-1', '--board', '13556', '--label', 'Vstack'],
+                                capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads((self.directory / 'vstack-maintainer.json').read_text())
+        self.assertEqual(state['board'], 13556)
+        self.assertEqual(state['label'], 'Vstack')
+
     def test_expiry_within_a_day_asks_for_a_rearm(self):
         loop.arm('HT Test', expires=iso(NOW + 10 * 3600), now=NOW)
         self.assertEqual(loop.status('HT Test', now=NOW),

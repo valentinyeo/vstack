@@ -18,6 +18,7 @@ Nobody pushes to main.
 | Rule | Enforced by |
 |---|---|
 | Worker briefs name pstack and the worker kickoff | `hooks/pstack-source.py` |
+| Workers start only through plan-pick | `hooks/plan-pick-only.py` |
 | PRs name a real pstack source | `hooks/pstack-source.py` |
 | Briefs and PRs walk every book item | `hooks/book-check.py` |
 | Advice replies name their pstack source | `hooks/pstack-reply.py` |

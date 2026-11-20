@@ -1,0 +1,1 @@
+You are VBD Test Chat and just restarted after a crash. Make sure your board work keeps going. Do not start code workers or change tickets in this test; arming, syncing and checking is enough.

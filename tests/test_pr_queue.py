@@ -152,12 +152,39 @@ class ModuleTests(unittest.TestCase):
         chats = [chat('Claude', repo='o/r')]
         self.assertIsNone(self.m.owner_chat('claude-helper-gate', 'o/r', chats))
 
+    def test_owner_from_the_board_assignee(self):
+        chats = [chat('Board Drain Loop', repo='o/r'), chat('VPS Admin', repo='o/r')]
+        self.assertIsNone(self.m.owner_chat('feature-x', 'o/r', chats), 'two checkouts own nobody')
+        self.assertEqual(self.m.owner_chat('feature-x', 'o/r', chats, ['VPS Admin']), 'VPS Admin')
+        self.assertEqual(self.m.owner_chat('feature-x', 'o/r', chats, ['vps admin']), 'VPS Admin',
+                         'the board name matches without case')
+
+    def test_board_assignee_that_is_not_live_owns_nothing(self):
+        chats = [chat('Board Drain Loop', repo='o/r'), chat('VPS Admin', repo='o/r')]
+        self.assertIsNone(self.m.owner_chat('feature-x', 'o/r', chats, ['HT Vstack Lead']))
+        self.assertIsNone(self.m.owner_chat('feature-x', 'o/r', chats, ['Board Drain Loop', 'VPS Admin']),
+                          'two live assignees own nobody')
+        self.assertIsNone(self.m.owner_chat('feature-x', 'o/r', chats, ['Claude']), 'a generic name owns nobody')
+
+    def test_branch_slug_beats_the_board_assignee(self):
+        chats = [chat('PR Housekeeping', repo='o/r'), chat('VPS Admin', repo='o/r')]
+        self.assertEqual(self.m.owner_chat('vsta-12-pr-housekeeping', 'o/r', chats, ['VPS Admin']),
+                         'PR Housekeeping', 'the branch is the closest evidence')
+
+    def test_ticket_owner_names(self):
+        answer = json.dumps({'success': True, 'tasks': [
+            {'ticketNumber': 'VSTA-12', 'assignees': [{'displayName': 'PR Housekeeping'}, {'displayName': ''}]}]})
+        self.assertEqual(self.m.ticket_owner_names(answer, 'VSTA-12'), ['PR Housekeeping'])
+        self.assertEqual(self.m.ticket_owner_names('', 'VSTA-12'), [])
+        self.assertEqual(self.m.ticket_owner_names('not json', 'VSTA-12'), [])
+        self.assertEqual(self.m.ticket_owner_names(json.dumps({'tasks': []}), 'VSTA-12'), [])
+
     def test_every_state_class(self):
         passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
         failed = comment(f'VERDICT: FAIL\n\nHead `{SHA}`')
         rows = self.rows([
             view(1, author='app/dependabot'),
-            view(2, title='SOFT-2 a', age=2), view(3, title='SOFT-2 b', age=1),
+            view(2, title='SOFT-2 a', age=2, checks='none'), view(3, title='SOFT-2 b', age=1, checks='none'),
             view(4, mergeable='CONFLICTING'),
             view(5, checks='red'),
             view(6, comments=[failed]),
@@ -173,6 +200,7 @@ class ModuleTests(unittest.TestCase):
             view(16, pushed=100, body=''),
             view(17, pushed=100, comments=[passed]),
             view(18, repo='o/other', comments=[passed]),
+            view(19, repo='o/other', mergeable='CONFLICTING', checks='red', body=''),
         ])
         got = states(rows)
         self.assertEqual(got[1], 'BOT')
@@ -185,7 +213,7 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(got[8], 'NO-VERDICT')
         self.assertEqual(got[9], 'NO-VERDICT', 'no verdict is the next action before stale')
         self.assertEqual(got[10], 'READY')
-        self.assertEqual(got[11], 'NO-VERDICT', 'the ticket ladder puts no verdict before no owner')
+        self.assertEqual(got[11], 'NO-OWNER', 'no owner comes before no verdict')
         self.assertEqual(got[12], 'CONFLICT', 'conflict beats red')
         self.assertEqual(got[13], 'RED', 'red beats missing lines')
         self.assertEqual(got[14], 'VERIFIER-FAIL', 'verifier fail beats missing lines')
@@ -193,9 +221,39 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(got[16], 'MISSING-LINES', 'missing lines beats stale')
         self.assertEqual(got[17], 'STALE', 'a verified PR nobody pushed for 72h is stale')
         self.assertEqual(got[18], 'NO-OWNER', 'a verified PR no live chat claims has no owner')
+        self.assertEqual(got[19], 'NO-OWNER', 'no owner beats conflict, red and missing lines')
 
-    def test_duplicate_keeps_the_older_pr(self):
-        rows = self.rows([view(20, title='SOFT-9 new', age=1), view(21, title='SOFT-9 old', age=5)],
+    def test_duplicate_keeps_the_verified_pr_at_its_head(self):
+        passed = [comment(f'VERDICT: PASS\n\nHead `{SHA}`')]
+        rows = self.rows([view(180, title='SOFT-70 stalled', age=5, checks='none'),
+                          view(181, title='SOFT-70 verified', age=1, comments=passed)],
+                         chats=[chat('Owner', repo='o/r')])
+        got = {row['number']: row for row in rows}
+        self.assertEqual(got[181]['state'], 'READY', 'the verified PR is the one to keep')
+        self.assertEqual(got[180]['state'], 'DUPLICATE')
+        self.assertEqual(got[180]['duplicate_of'], 181)
+        self.assertIn('#181', got[180]['next_action'], 'the duplicate names the keeper')
+
+    def test_duplicate_ignores_a_verdict_from_an_older_head(self):
+        stale_verdict = [comment(f'VERDICT: PASS\n\nHead `{OLD}`')]
+        rows = self.rows([view(182, title='SOFT-71 old verdict', age=5, comments=stale_verdict),
+                          view(183, title='SOFT-71 green', age=1)],
+                         chats=[chat('Owner', repo='o/r')])
+        got = {row['number']: row for row in rows}
+        self.assertEqual(got[182]['verdict'], 'none', 'a verdict on an older head does not count')
+        self.assertEqual(got[183]['state'], 'NO-VERDICT')
+        self.assertEqual(got[182]['duplicate_of'], 183, 'the newest green one is the keeper')
+
+    def test_duplicate_keeps_the_newest_green_pr_when_none_is_verified(self):
+        rows = self.rows([view(184, title='SOFT-72 old', age=5), view(185, title='SOFT-72 new', age=1)],
+                         chats=[chat('Owner', repo='o/r')])
+        got = {row['number']: row for row in rows}
+        self.assertEqual(got[185]['state'], 'NO-VERDICT')
+        self.assertEqual(got[184]['duplicate_of'], 185)
+
+    def test_duplicate_falls_back_to_the_oldest_pr(self):
+        rows = self.rows([view(20, title='SOFT-9 new', age=1, checks='none'),
+                          view(21, title='SOFT-9 old', age=5, checks='none')],
                          chats=[chat('Owner', repo='o/r')])
         rows = {row['number']: row for row in rows}
         self.assertEqual(rows[21]['state'], 'NO-VERDICT')
@@ -203,7 +261,8 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(rows[20]['duplicate_of'], 21)
 
     def test_duplicate_breaks_a_same_second_tie_by_number(self):
-        rows = self.rows([view(30, title='SOFT-8 a', age=2), view(31, title='SOFT-8 b', age=2)],
+        rows = self.rows([view(30, title='SOFT-8 a', age=2, checks='none'),
+                          view(31, title='SOFT-8 b', age=2, checks='none')],
                          chats=[chat('Owner', repo='o/r')])
         got = {row['number']: row for row in rows}
         self.assertEqual(got[31]['state'], 'DUPLICATE')
@@ -273,7 +332,7 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(row['state'], 'OK')
 
     def test_counts(self):
-        rows = self.rows([view(70), view(71, checks='red')], chats=[])
+        rows = self.rows([view(70), view(71, checks='red')], chats=[chat('Owner', repo='o/r')])
         self.assertEqual(self.m.counts(rows), {'NO-VERDICT': 1, 'RED': 1})
 
 
@@ -281,7 +340,7 @@ class CliTests(unittest.TestCase):
     """The real exit code the loop tick sees: nonzero whenever a PR in scope is NO-OWNER or STALE."""
 
     def cli(self, views, chats=('Owner (live-x, claude, /home/valentin/projects/r)',), args=(), gh_exit=0,
-            checks=()):
+            checks=(), board=None, token=False, env_extra=None, script=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             home = root / 'home'
@@ -337,8 +396,39 @@ sys.stderr.write("gh fixture: unexpected " + " ".join(argv) + "\\n")
 sys.exit(3)
 ''')
             (bin_dir / 'gh').chmod(0o755)
+            # A fake board reader: it records every call so a test can prove the run stayed read only.
+            if board is not None:
+                (root / 'board.json').write_text(json.dumps(board))
+                (root / 'calls.txt').write_text('')
+                (bin_dir / 'hypertask').write_text(
+                    '#!/usr/bin/env python3\nimport json, sys\nfrom pathlib import Path\n'
+                    f'root = Path({str(root)!r})\n'
+                    'with (root / "calls.txt").open("a") as log:\n'
+                    '    log.write(" ".join(sys.argv[1:]) + "\\n")\n'
+                    'board = json.loads((root / "board.json").read_text())\n'
+                    'args = sys.argv[1:]\n'
+                    'if board == "fail":\n'
+                    '    sys.stderr.write("hypertask fixture: the login was rejected\\n")\n'
+                    '    sys.exit(1)\n'
+                    'if args[-3:-1] != ["task", "get"]:\n'
+                    '    sys.stderr.write("hypertask fixture: unexpected " + " ".join(args) + "\\n")\n'
+                    '    sys.exit(3)\n'
+                    'key = args[-1]\n'
+                    'print(json.dumps({"success": True, "tasks": [{"ticketNumber": key,\n'
+                    '    "assignees": board.get(key, [])}] if key in board else []}))\n')
+                (bin_dir / 'hypertask').chmod(0o755)
+            token_path = root / 'token.txt'
+            token_path.write_text('tok-fixture\n')
+            if token:
+                args = [*args, '--token-file', str(token_path)]
+            (root / 'token.txt').chmod(0o600)
             env = dict(os.environ, HOME=str(home), PATH=str(bin_dir) + ':' + os.environ['PATH'])
-            return subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True, text=True)
+            env.update(env_extra or {})
+            result = subprocess.run([sys.executable, str(script or SCRIPT), *args], env=env,
+                                    capture_output=True, text=True)
+            calls = root / 'calls.txt'
+            result.calls = calls.read_text().splitlines() if calls.exists() else []
+            return result
 
     def test_all_owned_and_fresh_exits_zero(self):
         passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
@@ -352,6 +442,92 @@ sys.exit(3)
         passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
         views = [view(1, repo='o/r', branch='nobody-here', pushed=1, comments=[passed])]
         result = self.cli(views, chats=())
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('NO-OWNER', result.stdout)
+
+    def test_runs_through_a_symlink_outside_the_repo(self):
+        """~/.claude/skills/pr-housekeeping is a symlink into the checkout: the script still finds
+        scripts/verdict.py and scripts/pacer-check.py through its real path."""
+        passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
+        views = [view(1, repo='o/r', branch='owner-thing', pushed=1, comments=[passed])]
+        with tempfile.TemporaryDirectory() as directory:
+            link = Path(directory) / 'skills'
+            link.symlink_to(ROOT / 'skills')
+            result = self.cli(views, chats=('Owner (live-x, claude, /home/valentin/projects/r)',),
+                              script=link / 'pr-housekeeping/pr-queue')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('READY', result.stdout)
+
+    def test_board_assignee_owns_the_pr(self):
+        passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing', pushed=1,
+                      comments=[passed])]
+        chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
+                 'Other Chat (live-y, claude, /home/valentin/projects/s)')
+        self.assertEqual(self.cli(views, chats=chats).returncode, 1, 'no token, so nobody owns it')
+        result = self.cli(views, chats=chats, token=True,
+                          board={'VSTA-12': [{'displayName': 'Board Owner'}]})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('READY', result.stdout)
+        self.assertIn('Board Owner', result.stdout)
+
+    def test_board_is_read_with_the_ticket_key_and_nothing_else(self):
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
+        chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
+                 'Other Chat (live-y, claude, /home/valentin/projects/s)')
+        result = self.cli(views, chats=chats, token=True,
+                          board={'VSTA-12': [{'displayName': 'Board Owner'}]})
+        self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
+        calls = result.calls
+        self.assertEqual(len(calls), 1, calls)
+        self.assertTrue(calls[0].startswith('--json --token tok-fixture '), calls)
+        self.assertTrue(calls[0].endswith(' task get VSTA-12'), calls)
+
+    def test_board_reads_one_ticket_once(self):
+        views = [view(1, repo='o/r', title='VSTA-12 a', branch='ticket-one'),
+                 view(2, repo='o/r', title='VSTA-12 b', branch='ticket-two')]
+        chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
+                 'Other Chat (live-y, claude, /home/valentin/projects/s)')
+        result = self.cli(views, chats=chats, token=True,
+                          board={'VSTA-12': [{'displayName': 'Board Owner'}]})
+        self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
+        self.assertEqual(len(result.calls), 1, result.calls)
+
+    def test_a_missing_token_file_runs_without_the_board(self):
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
+        chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
+                 'Other Chat (live-y, claude, /home/valentin/projects/s)')
+        result = self.cli(views, chats=chats, args=['--token-file', '/nonexistent/token'],
+                          board={'VSTA-12': [{'displayName': 'Board Owner'}]})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('NO-OWNER', result.stdout)
+        self.assertEqual(result.calls, [])
+        self.assertIn('cannot read --token-file', result.stderr)
+
+    def test_board_needs_a_token(self):
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
+        chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
+                 'Other Chat (live-y, claude, /home/valentin/projects/s)')
+        result = self.cli(views, chats=chats, board={'VSTA-12': [{'displayName': 'Board Owner'}]})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('NO-OWNER', result.stdout)
+        self.assertEqual(result.calls, [], 'no token means no board read')
+
+    def test_ht_token_in_the_environment_is_used(self):
+        passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing', comments=[passed])]
+        chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
+                 'Other Chat (live-y, claude, /home/valentin/projects/s)')
+        result = self.cli(views, chats=chats, board={'VSTA-12': [{'displayName': 'Board Owner'}]},
+                          env_extra={'HT_TOKEN': 'tok-env'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('READY', result.stdout)
+
+    def test_a_failing_board_read_leaves_the_pr_unowned(self):
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
+        chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
+                 'Other Chat (live-y, claude, /home/valentin/projects/s)')
+        result = self.cli(views, chats=chats, token=True, board='fail')
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('NO-OWNER', result.stdout)
 

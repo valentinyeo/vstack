@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Valentin mode
 
-If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat, or one without bypass permissions, gets no paste. Load `pstack:poteto-mode` too where your harness allows it. This skill holds only Valentin's own rules. A repo's AGENTS.md holds facts about that repo, never a copy of these rules.
+If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat, or one without bypass permissions, gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
 ## Responsive mode (pasted in when this skill loads)
 
@@ -20,7 +20,7 @@ If no rules appear under Responsive mode below, load the `responsive-mode` skill
 - **Screenshots:** One public https URL, never a file path or a second image host.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
-- **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat. The `/hypertask` skill owns the ticket rules.
+- **Ticket, not chat:** each new ask from him becomes a ticket, then a worker; status, evidence and questions go on it. The `/hypertask` skill owns the ticket rules.
 
 ## Three tools
 
@@ -32,15 +32,24 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, bri
 
 Before any board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
+### Board drain
+
+Each chat with a board runs `/board-drain` on itself: at session start, after a restart or handover, and whenever this skill loads. It keeps its own Autopilot-full loop over its own view armed and checked; `skills/board-drain/drain-check` is the pass/fail.
+
+### PR owner
+
+Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; one nobody finishes closes with a reason.
+
 ## Working
 
 - **Hypertask gaps:** file one at once with `hypertask feedback` (see the `/hypertask` skill), then send him the link.
-- **Bans live in lint:** a ban written only in markdown is not a ban.
+- **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class gets fixed in that repo at the highest level: architecture, then lint or test, docs last. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verifying:** every app has one `verify-<app>` skill. Every Done when names its proof. A behaviour PR carries proof that fits: screenshot or video for UI, transcript for CLI, response body for API. No proof, no PASS.
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author.
-- **Server and cloud:** this server runs workers, tests, the app, the QA phone and boards. GitHub runners run CI and the verifier. No self-hosted runners.
+- **Server load:** before a worker, build or long test, run `~/.local/bin/vps-state --can-launch worker`; on HOLD start nothing and say so. Time-limit long commands.
+- **Server and cloud:** GitHub runners run CI and the verifier, never self-hosted; this server runs the rest.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there, each page included. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
@@ -49,8 +58,7 @@ Before any board work, read the `/hypertask` skill in full (`skills/hypertask/SK
 
 ## Designing
 
-- Never ask him to choose a design. Build yours; he judges the live result. Label a design ticket `needs-design`. Before the build, give him 2-3 throwaway HTML variants in the app's styles, your pick marked. Figma only when he asks.
-- One specialist skill per step: `impeccable` for style, `animate` then `review-animations` for motion (none by default), `modern-web-guidance` for the web platform, `apple-design` or `material-3` for native. Never stack two taste skills on one step.
+Design work follows [designing.md](designing.md).
 
 ## Changing the rules
 
