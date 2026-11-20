@@ -18,7 +18,7 @@ the projects root. --max-remove caps one run so a bug cannot empty a repo.
 
 Usage:
   repo-tidy [--apply] [--all | REPO_PATH...] [--json] [--mine SESSION_CWD]
-            [--max-remove N] [--projects-root DIR]
+            [--max-remove N] [--projects-root DIR] [--jobs N]
 """
 
 from __future__ import annotations
@@ -28,8 +28,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
 from pathlib import Path
@@ -43,6 +45,16 @@ GH_TIMEOUT = 120
 PR_LIMIT = 2000
 DEFAULT_MAX_REMOVE = 200
 DEFAULT_REPO_TIMEOUT = 180
+DEFAULT_JOBS = 4
+MAX_JOBS = 8
+PROBE_TIMEOUT = 5
+# The load probe's verdict mapped to repos in flight. This host is shared: a
+# HOLD means one repo at a time, not twelve.
+JOBS_AT_VERDICT = {"ADD": DEFAULT_JOBS, "CAREFUL": 2, "HOLD": 1}
+NICE_INCREMENT = 10
+# Leave a slice of the per-repo cap for the summary, not the child.
+DEADLINE_MARGIN = 0.2
+KILL_WAIT = 5
 ALL_PR_FIELDS = "headRefName,headRefOid,number,mergedAt,closedAt,state"
 OWNERS_THAT_ALLOW_THE_SETTING = {"valentinyeo", "hypertask-ai"}
 SHARE_REPOS = [".local/share/vstack", ".local/share/house-rules"]
@@ -54,27 +66,68 @@ def utc_stamp():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def git(args, cwd=None, timeout=GIT_TIMEOUT):
-    command = ["git"] + [str(a) for a in args]
+class Budget(Exception):
+    """The per-repo cap ran out. Stop this repo; do not start another child."""
+
+
+_STATE = threading.local()
+
+
+def set_deadline(seconds):
+    """Give this thread, and the children it starts, a wall-clock budget."""
+    _STATE.deadline = time.monotonic() + max(0.1, float(seconds) - DEADLINE_MARGIN)
+
+
+def clear_deadline():
+    _STATE.deadline = None
+
+
+def bounded(timeout):
+    """A child's own timeout, never longer than what the repo has left."""
+    left = getattr(_STATE, "deadline", None)
+    if left is None:
+        return timeout
+    left = left - time.monotonic()
+    if left <= 0:
+        raise Budget()
+    return min(timeout, left)
+
+
+def run_command(command, timeout, cwd=None):
+    """One child in its own process group, killed whole when it overruns.
+
+    subprocess.run's timeout kills only the process it started. A git that
+    hangs on the network leaves children holding the pipe, so the caller waits
+    anyway. Here the whole group goes.
+    """
     try:
-        done = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
-                              timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return 1, "", "timeout after %ss" % timeout
+        proc = subprocess.Popen([str(part) for part in command], cwd=cwd,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
     except OSError as exc:
         return 1, "", str(exc)
-    return done.returncode, done.stdout, done.stderr
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        try:
+            out, err = proc.communicate(timeout=KILL_WAIT)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        return 1, out or "", "timeout after %ss" % round(timeout, 1)
+    return proc.returncode, out, err
+
+
+def git(args, cwd=None, timeout=GIT_TIMEOUT):
+    return run_command(["git"] + [str(a) for a in args], bounded(timeout), cwd=cwd)
 
 
 def gh(args, timeout=GH_TIMEOUT):
-    try:
-        done = subprocess.run(["gh"] + [str(a) for a in args], capture_output=True,
-                              text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return 1, "", "timeout after %ss" % timeout
-    except OSError as exc:
-        return 1, "", str(exc)
-    return done.returncode, done.stdout, done.stderr
+    return run_command(["gh"] + [str(a) for a in args], bounded(timeout))
 
 
 def free_bytes(path):
@@ -375,12 +428,9 @@ class Live:
         commands += [["tmux", "-S", sock, "list-panes", "-a", "-F",
                       "#{pane_current_path}"] for sock in sockets]
         for command in commands:
-            try:
-                done = subprocess.run(command, capture_output=True, text=True, timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                continue
-            if done.returncode == 0:
-                self.panes.update(line.strip() for line in done.stdout.splitlines()
+            code, out, _ = run_command(command, 5)
+            if code == 0:
+                self.panes.update(line.strip() for line in out.splitlines()
                                   if line.strip())
 
     def scan_leases(self):
@@ -495,6 +545,14 @@ class RepoRun:
         self.plan.append("%s %s %s (%s)" % (verb, kind, target, detail))
 
     def run(self):
+        """The repo's whole budget. Children never outlive it."""
+        set_deadline(self.opts.repo_timeout)
+        try:
+            return self.sweep()
+        finally:
+            clear_deadline()
+
+    def sweep(self):
         before = free_bytes(self.opts.projects_root)
         result = self.result
         if not is_repo(self.repo):
@@ -635,7 +693,9 @@ class RepoRun:
                                            github, remote_ok, cutoff)
 
         workers = min(8, (os.cpu_count() or 2))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        left = (getattr(_STATE, "deadline", None) or 0) - time.monotonic()
+        with ThreadPoolExecutor(max_workers=workers, initializer=set_deadline,
+                                initargs=(left,)) as pool:
             return list(pool.map(one, entries))
 
     def verdict_for(self, entry, base, base_set, remote_set, github, remote_ok, cutoff):
@@ -932,6 +992,36 @@ def write_run_log(payload, stamp):
         return None
 
 
+def lower_priority():
+    """Take less of the host than everyone else on it."""
+    try:
+        os.nice(NICE_INCREMENT)
+    except OSError as exc:
+        sys.stderr.write("repo-tidy: cannot lower its priority: %s\n" % exc)
+
+
+def load_probe():
+    """ADD, CAREFUL, HOLD, or None when the probe cannot answer."""
+    path = Path.home() / ".local/bin/vps-state"
+    if not (path.is_file() and os.access(str(path), os.X_OK)):
+        return None
+    code, _, err = run_command([str(path), "--can-launch", "worker", "--no-write"],
+                               PROBE_TIMEOUT)
+    if err.startswith("timeout after") or err.startswith("[Errno"):
+        return None
+    return {0: "ADD", 1: "CAREFUL", 2: "HOLD"}.get(code)
+
+
+def sweep_jobs(requested):
+    """Repos in flight, and the reason for that number."""
+    if requested is not None:
+        return requested, "given"
+    verdict = load_probe()
+    if verdict is None:
+        return 1, "no probe"
+    return JOBS_AT_VERDICT[verdict], verdict.lower()
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="repo-tidy", add_help=True,
                                      description="Remove shipped worktrees and "
@@ -949,6 +1039,9 @@ def main(argv):
                         help="where worktrees may be deleted (default ~/projects)")
     parser.add_argument("--repo-timeout", type=int, default=DEFAULT_REPO_TIMEOUT,
                         help="seconds per repo before SKIPPED (default %d)" % DEFAULT_REPO_TIMEOUT)
+    parser.add_argument("--jobs", type=int, default=None, metavar="N",
+                        help="repos in flight, 1..%d (default: the load probe, else %d)"
+                             % (MAX_JOBS, DEFAULT_JOBS))
     parser.add_argument("paths", nargs="*", help="repo paths")
     opts = parser.parse_args(argv)
 
@@ -956,7 +1049,10 @@ def main(argv):
         parser.error("--max-remove must be 0 or more")
     if opts.repo_timeout < 1:
         parser.error("--repo-timeout must be at least 1")
+    if opts.jobs is not None and not 1 <= opts.jobs <= MAX_JOBS:
+        parser.error("--jobs must be between 1 and %d" % MAX_JOBS)
     opts.projects_root = Path(opts.projects_root or (Path.home() / "projects")).resolve()
+    lower_priority()
 
     repos = []
     if opts.mine:
@@ -976,11 +1072,16 @@ def main(argv):
         repos = [repo]
 
     live = Live([opts.projects_root] + repos)
+    sweep_workers, probe = sweep_jobs(opts.jobs)
+    if len(repos) == 1:
+        sweep_workers = 1
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started = time.time()
     results = []
-    if not opts.json and not opts.apply:
-        print("DRY RUN: nothing is removed; pass --apply to do it", flush=True)
+    if not opts.json:
+        if not opts.apply:
+            print("DRY RUN: nothing is removed; pass --apply to do it", flush=True)
+        print("jobs: %d (load probe: %s)" % (sweep_workers, probe), flush=True)
 
     def process_one(repo):
         runner = RepoRun(repo, opts, live)
@@ -988,8 +1089,8 @@ def main(argv):
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(runner.run)
                 try:
-                    result = future.result(timeout=opts.repo_timeout)
-                except FutureTimeout:
+                    result = future.result(timeout=opts.repo_timeout + KILL_WAIT)
+                except (FutureTimeout, Budget):
                     result = runner.result
                     reason = "exceeded %ds per-repo cap" % opts.repo_timeout
                     result["skipped"] = reason
@@ -1001,9 +1102,6 @@ def main(argv):
         result["max_remove"] = opts.max_remove
         return runner, result
 
-    sweep_workers = min(12, max(2, (os.cpu_count() or 4)))
-    if len(repos) == 1:
-        sweep_workers = 1
     with ThreadPoolExecutor(max_workers=sweep_workers) as sweep:
         futures = [sweep.submit(process_one, repo) for repo in repos]
         for future in as_completed(futures):
@@ -1029,6 +1127,9 @@ def main(argv):
         "all": opts.all,
         "projects_root": str(opts.projects_root),
         "max_remove": opts.max_remove,
+        "jobs": sweep_workers,
+        "probe": probe,
+        "nice": os.nice(0),
         "duration_seconds": round(time.time() - started, 2),
         "repos": results,
         "totals": {
