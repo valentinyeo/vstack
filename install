@@ -11,6 +11,15 @@ EPOCH=$(date +%s)
 DUPES="$HOME/.local/state/skill-dupes-$EPOCH"
 moved=0
 
+# One checkout links every chat onto itself. A git worktree that runs this would
+# hand every chat an unmerged branch, so only the shared checkout may run it
+# (VSTA-47). Tests and throwaway HOMEs set VSTACK_INSTALL_ANYWHERE=1.
+SHARE_REAL=$(cd "$SHARE" 2>/dev/null && pwd -P) || SHARE_REAL=$SHARE
+if [ "$ROOT" != "$SHARE_REAL" ] && [ "${VSTACK_INSTALL_ANYWHERE:-0}" != 1 ]; then
+  echo "vstack install: refusing to link from $ROOT; run ~/.local/share/vstack/install, or set VSTACK_INSTALL_ANYWHERE=1 for a test checkout" >&2
+  exit 2
+fi
+
 if [ ! -d "$SRC" ]; then
   echo "vstack install: no skills dir at $SRC" >&2
   exit 1

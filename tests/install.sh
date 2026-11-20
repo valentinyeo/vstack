@@ -8,7 +8,7 @@ trap 'rm -rf "$TEST_HOME"' EXIT
 dests=(.claude/skills .codex/skills .cursor/skills .pi/agent/skills .agents/skills)
 
 for run in 1 2; do
-  env HOME="$TEST_HOME" VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
+  env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
   for dest in "${dests[@]}"; do
     skill="$TEST_HOME/$dest/valentin-mode"
     [ -L "$skill" ]
@@ -24,7 +24,7 @@ rm "$TEST_HOME/.claude/skills/valentin-mode"
 mkdir "$TEST_HOME/.claude/skills/valentin-mode"
 printf 'keep this copy\n' > "$TEST_HOME/.claude/skills/valentin-mode/SKILL.md"
 
-env HOME="$TEST_HOME" VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
+env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
 for dest in "${dests[@]}"; do
   skill="$TEST_HOME/$dest/valentin-mode"
   [ -L "$skill" ]
