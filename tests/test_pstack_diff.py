@@ -337,6 +337,36 @@ class PstackDiffTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ASKED verifier workflow: .github/workflows/a.yml job verifier", result.stdout)
 
+    def test_base_mode_ignores_gh_pr_comment_on_triage(self):
+        real = (
+            "name: a\non:\n  pull_request:\njobs:\n"
+            "  verifier:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: python3 scripts/run-verifier\n"
+        )
+        helper = (
+            "name: z\non:\n  pull_request:\njobs:\n"
+            "  triage:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: claude -p foo\n"
+        )
+        skill = ".claude/skills/verify-app/SKILL.md"
+        features = ".claude/skills/verify-app/features/README.md"
+        root = build_repo(
+            self,
+            {
+                ".github/workflows/a.yml": real,
+                ".github/workflows/z.yml": helper,
+                skill: "# x\n",
+                features: "x\n",
+            },
+            {
+                ".github/workflows/z.yml": helper.rstrip("\n")
+                + "\n      - run: gh pr comment 1 --body-file verdict.md\n"
+            },
+        )
+        result = run_diff(root, "--base", "HEAD~1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verifier workflow: .github/workflows/a.yml job verifier", result.stdout)
+
     def test_base_mode_ignores_yaml_comment_naming_pstack_verifier(self):
         real = (
             "name: a\non:\n  pull_request:\njobs:\n"
@@ -366,13 +396,6 @@ class PstackDiffTest(unittest.TestCase):
         result = run_diff(root, "--base", "HEAD~1")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ASKED verifier workflow: .github/workflows/a.yml job verifier", result.stdout)
-
-    def test_job_posts_verdict_requires_posting_not_name_drop(self):
-        posts = PSTACK_DIFF._job_posts_verdict
-        self.assertFalse(posts("      - run: grep pstack-verifier\n"))
-        self.assertFalse(posts("      - run: claude -p foo\n        # pstack-verifier elsewhere\n"))
-        self.assertTrue(posts("      - run: gh pr comment 1 --body-file verdict.md\n"))
-        self.assertTrue(posts("      - run: echo VERDICT: PASS\n"))
 
     def test_stale_checkout_warning_does_not_change_exit(self):
         holder = tempfile.TemporaryDirectory(prefix="pstack-diff-behind-")
