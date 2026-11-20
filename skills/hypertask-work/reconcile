@@ -590,11 +590,12 @@ def names_ticket(pull, key, board=DEFAULT):
     exact = r'(?<![\w-])' + re.escape(key) + r'(?![\w-])'
     branch = r'(?<![a-z0-9])' + re.escape(key) + r'(?![a-z0-9])'
     body = pull.get('body') or ''
-    field = r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Ticket:(?:\*\*)?[ \t]*\[?' + exact
     url = r'https://app\.hypertask\.ai/detail/project-' + str(board.id) + '/' + index + r'(?=$|[\s?#)\]>,.])'
+    field = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Ticket:(?:\*\*)?[ \t]*\[?(?:' +
+             exact + '|' + url + ')')
     return bool(re.search(exact, pull.get('title') or '', re.I) or
                 re.search(branch, pull.get('headRefName') or '', re.I) or
-                re.search(field, body, re.I | re.M) or re.search(url, body))
+                re.search(field, body, re.I | re.M))
 
 
 def today():
