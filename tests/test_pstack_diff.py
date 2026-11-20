@@ -298,6 +298,18 @@ class PstackDiffTest(unittest.TestCase):
         self.assertNotIn("GAP verifier workflow", result.stdout)
         self.assertIn("ASKED verifier workflow:", result.stdout)
 
+    def test_multiprompt_verdict_job_wins_over_comment_sicko(self):
+        result = run_diff(FIXTURES / "multiprompt-verifier-rank")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        asked = next(
+            line for line in result.stdout.splitlines() if line.startswith("ASKED verifier workflow:")
+        )
+        self.assertIn("pr-verifier.yml job verdict", asked)
+        self.assertIn(
+            "EXTRA workflow: .github/workflows/no-comments.yml job pstack-no-comments",
+            result.stdout,
+        )
+
     def test_stale_checkout_warning_does_not_change_exit(self):
         holder = tempfile.TemporaryDirectory(prefix="pstack-diff-behind-")
         self.addCleanup(holder.cleanup)

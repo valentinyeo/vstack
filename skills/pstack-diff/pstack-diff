@@ -48,6 +48,8 @@ EXTRA_JOB_HINTS = re.compile(
     re.I,
 )
 
+VERIFIER_VERDICT_POST = re.compile(r"PASS\+NOTES|VERDICT:|pstack-verifier", re.I)
+
 
 def _strip_yaml_comments(text: str) -> str:
     """Remove YAML # comments (line-start or after whitespace, outside quotes)."""
@@ -235,6 +237,27 @@ def _is_ai_judge(job_body: str) -> bool:
     return bool(AI_JUDGE.search(job_body))
 
 
+def _ai_judge_rank(label: str, body: str, file_order: int) -> tuple[int, int, int, int, int]:
+    """Higher tuple sorts first as the one ASKED verifier workflow."""
+    job_id = label.rsplit(" job ", 1)[-1]
+    wf_file = label.split(" via ", 1)[0]
+    posts_verdict = bool(VERIFIER_VERDICT_POST.search(body))
+    names_verifier = bool(re.search(r"verifier|verdict", f"{wf_file} {job_id}", re.I))
+    pstack_sources = "pstack-sources.yml" in label and label.endswith("job verifier")
+    return (
+        int(pstack_sources),
+        int(posts_verdict and names_verifier),
+        int(posts_verdict),
+        int(names_verifier),
+        -file_order,
+    )
+
+
+def _order_ai_judges(ai_judges: list[tuple[str, str, int]]) -> list[str]:
+    ranked = sorted(ai_judges, key=lambda item: _ai_judge_rank(*item), reverse=True)
+    return [label for label, _body, _order in ranked]
+
+
 def _reusable_spec(job_body: str) -> str | None:
     match = REUSABLE_USES.search(job_body)
     if not match:
@@ -278,7 +301,8 @@ def _iter_pr_jobs(
 def classify_workflows(root: Path) -> list[str]:
     lines: list[str] = []
     house = _house_entries(root)
-    ai_judges: list[str] = []
+    ai_judges: list[tuple[str, str, int]] = []
+    judge_order = 0
     saw_pr_workflow = False
 
     for path in workflow_files(root):
@@ -301,14 +325,14 @@ def classify_workflows(root: Path) -> list[str]:
             if _is_ai_judge(body):
                 if wf_file == file_label and any(n in direct_ai for n in _job_needs(body)):
                     continue
-                ai_judges.append(f"{label} job {job_id}")
+                ai_judges.append((f"{label} job {job_id}", body, judge_order))
+                judge_order += 1
             elif EXTRA_JOB_HINTS.search(_strip_yaml_comments(body)):
                 lines.append(f"EXTRA workflow: {label} job {job_id}")
             else:
                 lines.append(f"ASKED CI workflow: {label} job {job_id}")
 
-    preferred = [j for j in ai_judges if "pstack-sources.yml" in j and j.endswith("job verifier")]
-    ordered = preferred + [j for j in ai_judges if j not in preferred]
+    ordered = _order_ai_judges(ai_judges)
     if ordered:
         lines.append(f"ASKED verifier workflow: {ordered[0]}")
         for extra in ordered[1:]:
