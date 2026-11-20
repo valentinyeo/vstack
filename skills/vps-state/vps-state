@@ -27,20 +27,16 @@ import subprocess
 import sys
 import time
 
-# One place for every number the verdict uses.
 THRESHOLDS = {
     # The fleet runner gate, house-rules/fleet/runner green(): load5/cores < 1.0
     # and int(MemAvailable_kB / 1048576) > 24. ADD worker must equal it.
     "gate_load_per_core": 1.0,
     "gate_mem_avail_gb": 24,
-    # Extra gates ADD needs on top of the runner gate, so the worker answer stays
-    # safe when the load average lags a burst or the disk is filling.
     "add_cpu_some_avg60": 25.0,
     "add_io_full_avg60": 5.0,
     "add_memory_full_avg60": 2.0,
     "add_disk_free_gb": 80.0,
     "add_disk_used_pct": 90.0,
-    # HOLD when any of these is crossed.
     "hold_load_per_core": 1.5,
     "hold_cpu_some_avg60": 40.0,
     "hold_io_full_avg60": 10.0,
@@ -49,11 +45,9 @@ THRESHOLDS = {
     "hold_disk_free_gb": 30.0,
     "hold_disk_used_pct": 95.0,
     "hold_counter_pct": 90.0,
-    # Rooms for the headroom estimate.
     "reserve_gb": 24.0,
 }
 
-# Used only when a kind has no process to measure.
 DEFAULT_RSS_MB = {"chat": 600.0, "worker": 800.0}
 PS_TIMEOUT = 5
 CMD_TIMEOUT = 5
@@ -73,8 +67,6 @@ PROBE_FAILED = 3
 USAGE = ("usage: vps-state [--json | --brief] [--can-launch chat|worker] [--no-write] "
          "[--no-cleanup] [--ps-file FILE] [--statvfs-json FILE]")
 
-
-# ---------------------------------------------------------------- reads
 
 def read_text(path, limit=65536):
     try:
@@ -402,8 +394,6 @@ def collect(proc_root=None, ps_file=None, statvfs_json=None, cores=None):
     }
 
 
-# ---------------------------------------------------------------- verdict
-
 def format_counter(name, counter):
     max_text = counter["max"] if counter["max"] is not None else "?"
     return "{} {}/{}".format(name, counter["used"], max_text)
@@ -471,8 +461,6 @@ def evaluate(facts):
         worker_blocks.append("io full60 {:.1f}%".format(io["full_avg60"]))
     worker_blocks.extend(disk_blocks)
 
-    # A chat is memory-bound: it holds a conversation in RAM and waits on the
-    # model, so CPU and IO headroom matter less than the memory it needs.
     chat_blocks = []
     if memory is None:
         chat_blocks.append("memory unknown")
@@ -511,8 +499,6 @@ def evaluate(facts):
 
     return {"verdict": verdict, "reasons": reasons, "headroom": headroom}
 
-
-# ---------------------------------------------------------------- cleanup
 
 def run_cmd(cmd, cwd, budget):
     try:
@@ -601,8 +587,6 @@ def cleanup_report(facts, scan=True):
     }
 
 
-# ---------------------------------------------------------------- status file
-
 def status_path(home=None):
     return os.path.join(home or os.path.expanduser("~"), STATUS_REL)
 
@@ -626,8 +610,6 @@ def write_status(verdict, facts, path=None):
         return {"path": path, "written": False, "line": line}
     return {"path": path, "written": True, "line": line}
 
-
-# ---------------------------------------------------------------- output
 
 def verdict_line(result):
     labels, parts = [], []
@@ -734,8 +716,6 @@ def render(result, facts, cleanup):
     lines = [verdict_line(result)] + facts_lines(facts, result) + cleanup_lines(cleanup)
     return "\n".join(lines)
 
-
-# ---------------------------------------------------------------- main
 
 def parse_args(argv):
     opts = {"json": False, "brief": False, "can_launch": None, "write": True,
