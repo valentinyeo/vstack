@@ -15,11 +15,24 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 DEFAULT_TTL = 300
 MAX_WAIT = 3600
+
+# gh pr reads that cost a GraphQL request every time. Cached together below.
+PR_READ_SUBS = {"checks", "view", "list", "status"}
+PR_BYPASS_FLAGS = {"--web", "-w", "--no-cache"}
+PR_TTL = 60
+PR_TTL_ENV = "GH_WRAPPER_TTL"
+PR_NO_CACHE_ENV = "GH_WRAPPER_NO_CACHE"
+PRUNE_EVERY = 600
+PRUNE_MAX_AGE = 86400
+PRUNE_CAP = 2 * 1024 ** 3
+PRUNE_BUDGET = 2.0
+ENTRY_NAME = re.compile(r"^[0-9a-f]{64}\.(json|lock|[0-9]+\.tmp)$")
 
 
 class GhError(Exception):
@@ -391,7 +404,7 @@ def _subcommand(argv):
     return ""
 
 
-def _log_call(argv, method=None, bucket=None) -> None:
+def _log_call(argv, method=None, bucket=None, marker="-") -> None:
     if any(arg in ("api", "graphql") for arg in argv[1:]):
         parsed_method, path, _jq, _flags, _fields = _api_path(argv)
         method = method or parsed_method
@@ -412,10 +425,389 @@ def _log_call(argv, method=None, bucket=None) -> None:
     try:
         Path(log).parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as handle:
-            handle.write("%s\t%s\t%s\t%s\t%s\t%s\n" % (
-                int(time.time()), caller, method, path, bucket, log_session()))
+            handle.write("%s\t%s\t%s\t%s\t%s\t%s\t%s\n" % (
+                int(time.time()), caller, method, path, bucket, log_session(), marker))
     except OSError:
         pass
+
+
+# --- gh pr reads: one saved answer serves every chat for a minute -----------------
+#
+# `gh pr checks`, `view`, `list` and `status` are GraphQL, so the api snapshot above never
+# covered them. They were the bulk of the user token's calls. Each answer is stored whole
+# (stdout, stderr, exit code) under a key of full argv, repo and token identity, and replayed
+# byte for byte. A hash of the token file path or the env var name stands in for the token, so
+# different tokens never share a body and no token reaches the disk.
+
+
+class Outcome:
+    """What one gh.real run produced. Replayed exactly, including the exit code."""
+
+    __slots__ = ("code", "out", "err")
+
+    def __init__(self, code, out="", err=""):
+        self.code = int(code)
+        self.out = out or ""
+        self.err = err or ""
+
+
+def pr_command(argv):
+    """The pr subcommand word, or "" when this is not a `gh pr <sub>` call."""
+    for index, arg in enumerate(argv[1:], 1):
+        if arg.startswith("-"):
+            continue
+        if arg != "pr":
+            return ""
+        rest = argv[index + 1:]
+        return rest[0] if rest and not rest[0].startswith("-") else ""
+    return ""
+
+
+def token_identity() -> str:
+    """A short hash naming which credential will answer, so two tokens never share a body.
+
+    Only the digest is kept, never the token: it is one sha256 of the env value or the token
+    file, truncated to 16 hex characters, and it cannot be read back.
+    """
+    pieces = []
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            pieces.append("env:%s:%s" % (name, value))
+    if not pieces:
+        path = token_file()
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            value = ""
+        pieces.append("file:%s:%s" % (path, value))
+    return hashlib.sha256("|".join(pieces).encode("utf-8")).hexdigest()[:16]
+
+
+def normalize_repo(text: str) -> str:
+    value = (text or "").strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    if value.startswith("git@") and ":" in value:
+        value = value.split(":", 1)[1]
+    elif "://" in value:
+        value = value.split("://", 1)[1]
+        value = value.split("/", 1)[1] if "/" in value else ""
+    return value.strip("/")
+
+
+def repo_flag(argv) -> str:
+    for index, arg in enumerate(argv):
+        if arg in ("-R", "--repo") and index + 1 < len(argv):
+            return normalize_repo(argv[index + 1])
+        if arg.startswith("--repo="):
+            return normalize_repo(arg.split("=", 1)[1])
+    return ""
+
+
+def origin_repo(cwd=None) -> str:
+    try:
+        result = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd=cwd,
+                                capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return normalize_repo(result.stdout)
+
+
+def effective_repo(argv) -> str:
+    """The repo this call answers for: the flag when given, else this folder's origin."""
+    return repo_flag(argv) or origin_repo()
+
+
+def pr_key(argv, repo="", token="") -> str:
+    payload = json.dumps({"argv": [str(arg) for arg in argv[1:]], "repo": repo, "token": token}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def split_watch(argv):
+    """(argv without the watch flags, requested interval, fail_fast)."""
+    interval = 10
+    fail_fast = False
+    keep = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--watch":
+            index += 1
+            continue
+        if arg == "--fail-fast":
+            fail_fast = True
+            index += 1
+            continue
+        if arg in ("--interval", "-i") and index + 1 < len(argv):
+            try:
+                interval = int(argv[index + 1])
+            except ValueError:
+                pass
+            index += 2
+            continue
+        if arg.startswith("--interval="):
+            try:
+                interval = int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+            index += 1
+            continue
+        keep.append(arg)
+        index += 1
+    return keep, interval, fail_fast
+
+
+def pr_ttl() -> int:
+    raw = os.environ.get(PR_TTL_ENV)
+    if not raw:
+        return PR_TTL
+    try:
+        return max(0, int(float(raw)))
+    except ValueError:
+        return PR_TTL
+
+
+def pr_cache_dir() -> Path:
+    return cache_dir() / "pr"
+
+
+def pr_entry_path(key: str) -> Path:
+    return pr_cache_dir() / (key + ".json")
+
+
+def pr_lock(key: str):
+    import fcntl
+    directory = pr_cache_dir()
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    handle = open(directory / (key + ".lock"), "a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def read_pr_entry(key: str):
+    try:
+        doc = json.loads(pr_entry_path(key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if doc.get("key") != key or not isinstance(doc.get("stdout"), str):
+        return None
+    return doc
+
+
+def write_pr_entry(key: str, entry: dict) -> None:
+    """Write a temp file, then rename, so a reader never sees half an answer."""
+    target = pr_entry_path(key)
+    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    tmp = target.with_name("%s.%s.tmp" % (key, os.getpid()))
+    tmp.write_text(json.dumps(entry), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, target)
+
+
+def _fresh(entry, now: int, ttl: int) -> bool:
+    if not entry:
+        return False
+    return 0 <= now - int(entry.get("fetchedAt") or 0) < ttl
+
+
+def upstream(real: str, args, runner=None, env=None, timeout=None) -> Outcome:
+    if runner is not None:
+        return runner([real, *args], os.environ.copy() if env is None else env)
+    try:
+        result = subprocess.run([real, *args], capture_output=True, text=True, env=env, timeout=timeout)
+    except FileNotFoundError:
+        return Outcome(127, "", "%s: command not found\n" % real)
+    except (OSError, subprocess.SubprocessError) as error:
+        return Outcome(1, "", "%s: %s\n" % (real, error))
+    return Outcome(result.returncode, result.stdout, result.stderr)
+
+
+def cached_pr(argv, real, runner=None, clock=time.time, ttl=None) -> Outcome:
+    """One cacheable pr read: the saved answer inside the ttl, else one upstream call."""
+    ttl = pr_ttl() if ttl is None else ttl
+    env = child_env("")
+    repo, token = effective_repo(argv), token_identity()
+    key = pr_key(argv, repo, token)
+    entry = read_pr_entry(key)
+    now = int(clock())
+    if _fresh(entry, now, ttl):
+        _log_call(argv, bucket=_LAST_BUCKET[0], marker="hit")
+        return Outcome(entry.get("code") or 0, entry.get("stdout"), entry.get("stderr"))
+    lock = pr_lock(key)
+    try:
+        entry = read_pr_entry(key)
+        now = int(clock())
+        if _fresh(entry, now, ttl):
+            _log_call(argv, bucket=_LAST_BUCKET[0], marker="hit")
+            return Outcome(entry.get("code") or 0, entry.get("stdout"), entry.get("stderr"))
+        outcome = upstream(real, argv[1:], runner, env)
+        _log_call(argv, bucket=_LAST_BUCKET[0], marker="miss")
+        write_pr_entry(key, {
+            "key": key,
+            "argv": list(argv[1:]),
+            "repo": repo,
+            "token": token,
+            "stdout": outcome.out,
+            "stderr": outcome.err,
+            "code": outcome.code,
+            "fetchedAt": int(clock()),
+        })
+        return outcome
+    finally:
+        lock.close()
+
+
+def replay(outcome: Outcome, out=None, err=None) -> int:
+    """Print what gh.real printed, in the same streams, with the same exit code."""
+    out = out or sys.stdout
+    err = err or sys.stderr
+    if outcome.out:
+        out.write(outcome.out)
+    if outcome.err:
+        err.write(outcome.err)
+    out.flush()
+    err.flush()
+    return outcome.code
+
+
+def _pending_row(text: str) -> bool:
+    return any("\tpending\t" in line for line in (text or "").splitlines())
+
+
+def pr_checks_watch(argv, real, runner=None, sleeper=time.sleep, clock=time.time, out=None, err=None) -> int:
+    """`pr checks --watch` run as a loop over the cached read, never as a gh.real poll.
+
+    gh.real's own watch polls on its interval and every poll is a fresh GraphQL call. Here
+    each round reads the cache and only a miss reaches GitHub, so the floor is the cache ttl.
+    """
+    base, interval, fail_fast = split_watch(argv)
+    every = max(int(interval or 10), PR_TTL)
+    out = out or sys.stdout
+    err = err or sys.stderr
+    while True:
+        try:
+            out.write("Refreshing checks status every %d seconds. Press Ctrl+C to quit.\n\n" % every)
+            out.flush()
+            outcome = cached_pr(base, real, runner=runner, clock=clock)
+            replay(outcome, out, err)
+        except BrokenPipeError:
+            return 0
+        if outcome.code == 8:
+            sleeper(every)
+            continue
+        if outcome.code != 0 and not fail_fast and _pending_row(outcome.out):
+            sleeper(every)
+            continue
+        return outcome.code
+
+
+# --- keep the shared cache small -------------------------------------------------
+
+
+def prune_stamp() -> Path:
+    return cache_dir() / "prune-stamp"
+
+
+def prune_recent(now: int) -> bool:
+    try:
+        return now - int(prune_stamp().stat().st_mtime) < PRUNE_EVERY
+    except (OSError, ValueError):
+        return False
+
+
+def stamp_prune(now: int) -> None:
+    target = prune_stamp()
+    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    tmp = target.with_name("prune-stamp.%s.tmp" % os.getpid())
+    tmp.write_text(str(int(now)) + "\n", encoding="utf-8")
+    os.replace(tmp, target)
+
+
+def walk_entries(root: str, budget, clock=time.monotonic):
+    """Yield (path, mtime, size) for entry files, stopping when the time budget runs out.
+
+    A single call sees only part of a six-figure folder; the stamp spaces the calls out, so
+    the whole backlog drains over a few minutes of ordinary gh traffic.
+    """
+    deadline = float("inf") if budget is None else clock() + float(budget)
+    stack = [str(root)]
+    while stack:
+        if clock() > deadline:
+            return
+        directory = stack.pop()
+        try:
+            with os.scandir(directory) as items:
+                for item in items:
+                    if clock() > deadline:
+                        return
+                    try:
+                        if item.is_dir(follow_symlinks=False):
+                            stack.append(item.path)
+                            continue
+                        if not ENTRY_NAME.match(item.name):
+                            continue
+                        info = item.stat()
+                    except OSError:
+                        continue
+                    yield item.path, info.st_mtime, info.st_size
+        except OSError:
+            continue
+
+
+def prune_cache(now=None, max_age=PRUNE_MAX_AGE, cap_bytes=PRUNE_CAP, budget=PRUNE_BUDGET,
+                force=False) -> dict:
+    """Drop entries older than a day, then delete the oldest until the folder fits cap_bytes."""
+    current = int(time.time() if now is None else now)
+    if not force and prune_recent(current):
+        return {"skipped": True, "removed": 0, "freed": 0, "seen": 0}
+    stamp_prune(current)
+    seen = list(walk_entries(cache_dir(), None if force else budget))
+    total = sum(size for _path, _mtime, size in seen)
+    removed = freed = 0
+    keep = []
+    for path, mtime, size in seen:
+        if current - mtime > max_age and _unlink(path):
+            removed += 1
+            freed += size
+            total -= size
+            continue
+        keep.append((mtime, size, path))
+    if total > cap_bytes:
+        keep.sort()
+        while keep and total > cap_bytes:
+            _mtime, size, path = keep.pop(0)
+            if _unlink(path):
+                removed += 1
+                freed += size
+                total -= size
+    return {"skipped": False, "removed": removed, "freed": freed, "seen": len(seen)}
+
+
+def _unlink(path: str) -> bool:
+    try:
+        os.unlink(path)
+        return True
+    except OSError:
+        return False
+
+
+def prune_mode() -> int:
+    """GH_WRAPPER_PRUNE=1 gh: one unbound pass, for the orchestrator to clear the backlog."""
+    result = prune_cache(force=True)
+    sys.stdout.write("gh-wrapper prune: removed %d entries, freed %d bytes, seen %d\n" % (
+        result["removed"], result["freed"], result["seen"]))
+    return 0
+
+
+def cacheable_pr(argv) -> bool:
+    if pr_command(argv) not in PR_READ_SUBS:
+        return False
+    if os.environ.get(PR_NO_CACHE_ENV):
+        return False
+    return not (set(argv) & PR_BYPASS_FLAGS)
 
 
 def wrap_main(argv=None) -> int:
@@ -424,6 +816,18 @@ def wrap_main(argv=None) -> int:
     real = os.environ.get("GH_REAL", "/usr/bin/gh.real")
     if not os.path.isfile(real):
         real = gh_binary()
+    if os.environ.get("GH_WRAPPER_PRUNE") == "1":
+        return prune_mode()
+    try:
+        prune_cache()
+    except Exception:
+        pass
+    if pr_command(argv) == "checks" and "--watch" in argv and cacheable_pr(argv):
+        return pr_checks_watch(argv, real)
+    if cacheable_pr(argv):
+        return replay(cached_pr(argv, real))
+    if "--no-cache" in argv:
+        argv = [arg for arg in argv if arg != "--no-cache"]
     method, path, jq, flags, fields = _api_path(argv)
     key = request_key(path, fields)
     include = "--include" in flags or "-i" in flags
