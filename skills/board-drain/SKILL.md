@@ -27,7 +27,7 @@ Loops die silently. A session cron dies with the chat, and a recurring cron expi
 
 1. `./loop-state status --name "<your Multibot name>"`. Exit 0: already armed.
 2. Otherwise arm the loop prompt every 15 minutes. Claude Code: `/loop 15m <prompt>`. Codex or another harness: a recurring job the harness reports back on.
-3. Record it: `./loop-state arm --name "<name>" --every 15m --job <job id>`.
+3. Record it: `./loop-state arm --name "<name>" --every 15m --job <job id> --board <id> --label <label>`.
 
 Never delete the loop because Todo looks empty. A tick with nothing new stays quiet, per Autopilot-full.
 

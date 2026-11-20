@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """owners: open tickets whose label names no live chat, so nobody ever drains them.
 
-House rule: a chat's Multibot name equals its board label. Every open ticket in
-Todo, Doing, Building or Verification Backlog carries a label, and that label is
-the chat that owns it. A label with no live chat is owner-less: its tickets wait
-until someone relabels them to a live chat or starts that chat. Generic labels
-(brain tiers, Bug, infra, verification and friends) are not chat names and are
-skipped.
+Every open ticket in Todo, Doing, Building or Verification Backlog carries a label,
+and that label names the chat that owns it. A label with no live chat is owner-less:
+its tickets wait until someone relabels them to a live chat or starts that chat.
+Generic labels (brain tiers, Bug, infra, verification and friends) are not chat names
+and are skipped.
+
+A label does not always equal a chat name: the Vstack Maintainer chat carries the
+label Vstack, and board views do not map to chats either. So a label is owned when
+a live chat name matches it, or when an armed loop-state file records the same board
+and label. loop-state owns that record and its liveness rules; nothing is copied.
 """
 import argparse
 import importlib.machinery
@@ -26,9 +30,16 @@ reconcile = importlib.util.module_from_spec(spec)
 sys.modules[loader.name] = reconcile
 loader.exec_module(reconcile)
 
+loop_loader = importlib.machinery.SourceFileLoader('board_drain_loop_state',
+                                                   str(HERE / 'loop-state'))
+loop_spec = importlib.util.spec_from_loader(loop_loader.name, loop_loader)
+loop_state = importlib.util.module_from_spec(loop_spec)
+sys.modules[loop_loader.name] = loop_state
+loop_loader.exec_module(loop_state)
+
 SECTIONS = frozenset({'Todo', 'Doing', 'Building', 'Verification Backlog'})
 # Labels that classify work, never name a chat. brain-light and brain-medium are prefixes.
-GENERIC = frozenset({'bug', 'infra', 'verification', 'vstack', 'needs-design', 'triage', 'ci',
+GENERIC = frozenset({'bug', 'infra', 'verification', 'needs-design', 'triage', 'ci',
                      'agent feedback'})
 GENERIC_PREFIX = 'brain-'
 ROSTER = Path.home() / '.local/share/house-rules/fleet/roster-live'
@@ -60,6 +71,35 @@ def live_names(args):
         if match:
             names.add(match.group('name').strip().casefold())
     return names
+
+
+def owned_labels(board_id):
+    """Labels an armed loop claims: this board and label, recorded by a live loop-state file."""
+    owned = set()
+    try:
+        paths = sorted(loop_state.state_dir().glob('*.json'))
+    except OSError:
+        return owned
+    for path in paths:
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, TypeError, ValueError):
+            continue
+        if not isinstance(state, dict):
+            continue
+        name, label, board = state.get('name'), state.get('label'), state.get('board')
+        if not isinstance(name, str) or not name.strip() or not isinstance(label, str):
+            continue
+        if not label.strip() or str(board) != str(board_id):
+            continue
+        # status re-reads the file through its own slug, so a renamed file claims nothing.
+        try:
+            if loop_state.state_path(name) != path or loop_state.status(name)[0] != 0:
+                continue
+        except ERRORS:
+            continue
+        owned.add(label.strip().casefold())
+    return owned
 
 
 def read_fixture(path):
@@ -125,7 +165,7 @@ def labels_on(rows):
 
 def check(args):
     board, rows = rows_for(args)
-    live = live_names(args)
+    live = live_names(args) | owned_labels(args.board)
     orphans = [slot for name, slot in labels_on(rows).items() if name not in live]
     for slot in sorted(orphans, key=lambda slot: slot['name'].casefold()):
         keys = sorted(slot['keys'], key=lambda key: key_rank(board, key))[:SHOWN]
