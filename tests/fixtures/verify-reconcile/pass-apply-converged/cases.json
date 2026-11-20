@@ -1,10 +1,10 @@
 [
   {
-    "ticket": "HTPR-9514",
-    "expect": "Verification Backlog"
+    "ticket": "HTPR-9387",
+    "expect": "AI Review"
   },
   {
-    "ticket": "HTPR-9511",
+    "ticket": "HTPR-9514",
     "expect": "Verification Backlog"
   }
 ]

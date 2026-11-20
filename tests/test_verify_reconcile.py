@@ -11,7 +11,6 @@ SKILL = ROOT / '.claude/skills/verify-reconcile'
 GRADE = SKILL / 'grade.py'
 RUN = SKILL / 'run'
 FIXTURES = ROOT / 'tests/fixtures/verify-reconcile'
-CASES = SKILL / 'cases/board15.json'
 
 
 class VerifyReconcileGrade(unittest.TestCase):
@@ -134,6 +133,24 @@ class VerifyReconcileGrade(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('FAIL cases: cases.json is not a list of cases', result.stdout)
 
+    def test_cases_already_in_their_column_fail_cases(self):
+        target = self.copy_fixture('pass-dry')
+        (target / 'dry1.out').write_text(
+            'KEEP HTPR-9387 AI Review -> AI Review | open PR checks green\n'
+            'KEEP HTPR-9514 Verification Backlog -> Verification Backlog | kept\n'
+            'DRY RUN board=15 tickets=366 unknown=0\n')
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL cases: every case was already in the column it belongs in '
+                      'when the board was read, so no case proves the reconcile rule',
+                      result.stdout)
+
+    def test_cases_starting_outside_their_column_pass_cases(self):
+        _code, output, _target = self.grade_fixture('pass-dry')
+        self.assertIn('PASS cases: 2 cards in the expected columns in dry1, '
+                      '1 of them started outside', output)
+
     def test_missing_dry2_fails_settled_and_converged(self):
         target = self.copy_fixture('pass-apply-converged')
         (target / 'dry2.out').unlink()
@@ -228,12 +245,9 @@ class VerifyReconcileSkill(unittest.TestCase):
                                  '%s %s must be refused:\n%s' % (flag, value, result.stdout))
                 self.assertNotIn('dry run 1', result.stdout)
 
-    def test_cases_file_lists_live_board_15_cards(self):
-        cases = json.loads(CASES.read_text())
-        tickets = {case['ticket']: case['expect'] for case in cases}
-        self.assertEqual(tickets.get('HTPR-9514'), 'Verification Backlog')
-        self.assertEqual(tickets.get('HTPR-9511'), 'Verification Backlog')
-        self.assertEqual(tickets.get('HTPR-9387'), 'AI Review')
+    def test_no_live_cases_file_is_shipped(self):
+        self.assertFalse((SKILL / 'cases').exists(),
+                         'cases are written per report, so the skill ships none')
 
     def test_skill_has_frontmatter_naming_the_script(self):
         text = (SKILL / 'SKILL.md').read_text()

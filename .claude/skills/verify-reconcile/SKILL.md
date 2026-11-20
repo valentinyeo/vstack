@@ -15,9 +15,13 @@ Read `features/README.md` for the map.
 ## Launch
 
 ```sh
-.claude/skills/verify-reconcile/run --board 15 --cases .claude/skills/verify-reconcile/cases/board15.json
+.claude/skills/verify-reconcile/run --board 15                    # whole board, no cases
+cat > /tmp/cases.json <<< '[{"ticket": "HTPR-9387", "expect": "AI Review"}]'
+.claude/skills/verify-reconcile/run --board 15 --cases /tmp/cases.json
 .claude/skills/verify-reconcile/run --board 15 --apply --limit 5   # needs the board 15 login
 ```
+
+Cases are written per report, never shipped. A case proves something only when the card sits in a column other than its `expect` today: run the temp file on the current code, expect FAIL `cases`, then run the same file on the fix branch with `--script` and expect PASS. Paste both verdicts on the fix PR. A real-card regression that must never break again goes in `tests/test_hypertask_work.py`.
 
 `run` does, in order:
 
@@ -76,6 +80,6 @@ Every change to `skills/hypertask-work/reconcile` or its docs runs it here, with
 ## Gotchas
 
 - `calls` FAILs today. Board 15's dry run makes 80 to 140 GitHub calls against a budget of 30 until SOFT-2919 lands. That is the known baseline, not a broken check.
-- Live cards move. Update `cases/board15.json` when one legitimately changes column, and never edit it to make a run pass.
+- A case for a card already in the column it belongs in proves nothing, and `cases` FAILs on it. Write the case while the card is still in the wrong column, run it before the fix, then run it again after.
 - One run per board at a time, because both share the board lock (SOFT-2853). A held lock fails the doctor before any board read.
 - Never run `--apply` on board 15 here until the reconciler login may: `require_board15_agent` refuses any agent but the vcc or HT Product Lead token.

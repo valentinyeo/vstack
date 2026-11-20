@@ -136,7 +136,23 @@ def check_calls(runs, budget):
     return PASS, '%s made %d github calls, within budget %d' % (name, worst, budget)
 
 
-def check_cases(cases, unreadable, rows, source):
+def proving_cases(cases, read_rows):
+    """The cases whose card sat outside its expected column when the board was read.
+
+    A card already in the column it belongs in shows nothing about the rule that
+    put it there, so it cannot prove a fix.
+    """
+    started = {row['ticket']: row['from'] for row in read_rows}
+    proving = []
+    for case in cases:
+        ticket, expect = case.get('ticket'), case.get('expect')
+        column = started.get(ticket)
+        if column is not None and column != expect:
+            proving.append(case)
+    return proving
+
+
+def check_cases(cases, unreadable, rows, source, read_rows):
     if unreadable is not None:
         return FAIL, unreadable
     if not cases:
@@ -153,7 +169,12 @@ def check_cases(cases, unreadable, rows, source):
             return FAIL, '%s is not in %s, so its column cannot be read' % (ticket, source)
         if columns[ticket] != expect:
             return FAIL, '%s ended in %s, expected %s' % (ticket, columns[ticket], expect)
-    return PASS, '%d cards in the expected columns in %s' % (len(cases), source)
+    proving = proving_cases(cases, read_rows)
+    if not proving:
+        return FAIL, ('every case was already in the column it belongs in when the '
+                      'board was read, so no case proves the reconcile rule')
+    return PASS, '%d cards in the expected columns in %s, %d of them started outside' % (
+        len(cases), source, len(proving))
 
 
 def check_apply(apply_out, apply_err):
@@ -239,7 +260,8 @@ def grade(evidence):
         target_rows, target_name = dry1_rows, 'dry1'
 
     checks.append(('calls', check_calls(runs, budget)))
-    checks.append(('cases', check_cases(cases, unreadable_cases, target_rows, target_name)))
+    checks.append(('cases', check_cases(cases, unreadable_cases, target_rows, target_name,
+                                       dry1_rows)))
     if applying:
         apply_ran = summary(apply_out) is not None
         dry2_ran = summary(dry2) is not None

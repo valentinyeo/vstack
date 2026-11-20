@@ -7,7 +7,7 @@ The parts of board sync this skill proves, each one check in `grade.py`. Read th
 - `.claude/skills/verify-reconcile/run` runs on this server, where `hypertask` and `gh` are logged in.
 - GitHub graphql budget above 200, because one board 15 dry run spends most of a hundred.
 - Board 15 is free: no timer and no other session mid-reconcile (SOFT-2853).
-- The cards in `cases/board15.json` still exist and sit where the file says.
+- Any case you write names a card that sits in a column other than the one it belongs in, because an already-correct card proves nothing.
 
 ## Driving conventions
 
@@ -19,7 +19,7 @@ The parts of board sync this skill proves, each one check in `grade.py`. Read th
 
 - Each check reads reconcile's own lines: the plan lines, the summary, the github call count, the lock skip.
 - A check that could not run is reported FAIL with its reason, never PASS. That includes a card missing from the output.
-- A FAIL on `calls` or `cases` is a finding about the board or the script. Fix the script; do not soften the check.
+- A FAIL on `calls` or `cases` is a finding about the board or the script. Fix the script; do not soften the check. A case that passes on the broken code is not proof; rewrite it from a card that is out of place.
 
 ## Features
 
