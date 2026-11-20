@@ -7,9 +7,7 @@ disable-model-invocation: true
 
 # Valentin mode
 
-Run `/pstack:poteto-mode` for the task. House rules are retired. This skill holds only what is Valentin's own and lives nowhere else. A repo's AGENTS.md holds facts about that repo, never a second copy of these rules.
-
-Machine setup: see your private reference.
+Run `/pstack:poteto-mode` for the task. This skill holds only Valentin's own rules. A repo's AGENTS.md holds facts about that repo, never a copy of these rules.
 
 ## Talking to the user
 
@@ -33,7 +31,7 @@ Board work follows the `hypertask-work` skill: your own login, a ticket before w
 
 ### Board sync
 
-The project's own agent notes (its AGENTS file or CLAUDE file) name its board in one line: `Hypertask board: <id>, label: <label>`. In your own loop, run `skills/hypertask-work/reconcile --board <id> --label <label>`, then again with `--apply --limit 5`. No central timer runs it.
+The project's agent notes name its board in one line: `Hypertask board: <id>, label: <label>`. In your own loop, run `skills/hypertask-work/reconcile --board <id> --label <label>`, then again with `--apply --limit 5`. No central timer runs it.
 
 ## Working
 
@@ -44,8 +42,8 @@ The project's own agent notes (its AGENTS file or CLAUDE file) name its board in
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author; the picker reads it.
 - **Server and cloud:** this server runs workers, focused tests, the app, the QA phone, git and boards. GitHub-hosted runners run the full suite, CI, reviews and the verifier. Never a self-hosted runner.
-- **Open source by default:** every repo is public unless a strong reason keeps it private, such as client data or secrets. Start one with `new-public-repo`, never GitHub's template or fork button. No commit carries a real email.
-- **GitHub billing:** billing blocks only private repos; public repos run checks free. A check failing with "recent account payments have failed" means the repo should go public: scan its history for secrets and client data, then make it public. If something must stay private, the PR waits: note it once on the ticket, never verify it here or merge around it.
+- **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`. No commit carries a real email.
+- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan the repo for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket.
 - **Cloudflare:** a new project begins from Joel Hooks' rat-stack template.
 - **Long chats:** save the handover, then start a fresh chat with its loop on.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
