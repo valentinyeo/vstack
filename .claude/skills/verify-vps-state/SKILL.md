@@ -41,7 +41,7 @@ doctor.txt holds one line per check, and each must pass before anything is drive
 
 ## Drive
 
-Only `run` drives it. The script reads live /proc, so there is nothing to seed and nothing to reset. Never hand-edit `~/.local/state/vps-load/status` to force a verdict: the run rewrites it from what it measured, and that rewrite is one of the checks.
+Only `run` drives it. The script reads live /proc, so there is nothing to seed and nothing to reset. Never hand-edit ~/.local/state/vps-load/status to force a verdict: the run rewrites it from what it measured, and that rewrite is one of the checks.
 
 Do not run it twice in the same second; run ids are whole seconds.
 
@@ -65,7 +65,7 @@ Attach verdict.txt to the PR or ticket. CI runs only `tests/test_vps_state.py`; 
 
 ## Cleanup
 
-`run` deletes nothing and starts no long-lived process. Every evidence directory stays until a person deletes it. It does rewrite `~/.local/state/vps-load/status`, on purpose: that is the state every fleet runner reads.
+`run` deletes nothing and starts no long-lived process. Every evidence directory stays until a person deletes it. It does rewrite ~/.local/state/vps-load/status, on purpose: that is the state every fleet runner reads.
 
 ## Gotchas
 

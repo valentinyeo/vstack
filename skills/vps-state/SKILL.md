@@ -6,7 +6,7 @@ description: >-
 
 # vps-state
 
-Prior art: checked pstack (`create-verification-skill`, `poteto-mode/playbooks/worktree-cleanup.md`); neither has a host-capacity skill. house-rules `fleet/runner` has a worker gate this mirrors.
+Prior art: checked pstack (`create-verification-skill`, `poteto-mode/playbooks/worktree-cleanup.md`); neither has a host-capacity skill. house-rules fleet/runner has a worker gate this mirrors.
 
 Run `vps-state` from any directory. It reads /proc live on every call, never a cache, and answers in about a second.
 
@@ -38,7 +38,7 @@ Flags: `--json` for every number, `--brief` for one line, `--can-launch chat|wor
 
 ## Housekeeping duty
 
-The last section lists what this session may clean: its own worktrees whose branch is already in origin/main, its own /tmp entries older than two days, and the tools that sweep the host (the clean-up skill, `~/.local/bin/host-disk-sweep`, `~/.local/bin/tmp-cleanup`).
+The last section lists what this session may clean: its own worktrees whose branch is already in origin/main, its own /tmp entries older than two days, and the tools that sweep the host (the clean-up skill, and ~/.local/bin/host-disk-sweep and ~/.local/bin/tmp-cleanup on this host).
 
 It reports, it never deletes. Clean only what this session made. Never touch another session's files, worktrees or /tmp entries.
 
