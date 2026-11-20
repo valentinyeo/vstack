@@ -12,7 +12,8 @@ Live reads on every call, no timer and no cache: /proc/loadavg, /proc/meminfo,
 
 Flags: --no-write (skip ~/.local/state/vps-load/status), --no-cleanup (skip the
 worktree and /tmp scan), --ps-file FILE, --statvfs-json FILE.
-Env: VPS_STATE_PROC (proc root, default /proc).
+Env: VPS_STATE_PROC (proc root, default /proc). VPS_STATE_CORES (core count,
+for fixtures on a host with a different core count; live runs never need it).
 
 Every probe is fenced by a timeout and a failure prints unknown for that line.
 Nothing here deletes a file: the clean-up section only reports.
@@ -266,6 +267,12 @@ def classify(args):
         return "other"
     if SHIM_RE.match(tokens[0]) and "-c" in tokens:
         return "other"  # a shell wrapper, not the chat or worker itself
+    while tokens and tokens[0].rsplit("/", 1)[-1] == "env":
+        tokens = tokens[1:]
+        while tokens and "=" in tokens[0]:
+            tokens = tokens[1:]
+    if not tokens:
+        return "other"
     name = tokens[0].rsplit("/", 1)[-1]
     printing = any(token in PRINT_FLAGS for token in tokens)
     if name in ("claude", "pi") and printing:
@@ -324,10 +331,23 @@ def summarise_ps(rows):
     }
 
 
-def collect(proc_root=None, ps_file=None, statvfs_json=None):
+def resolve_cores(cores=None):
+    """The core count, with a seam so a fixture means the same thing on any host."""
+    value = cores if cores is not None else os.environ.get("VPS_STATE_CORES")
+    if value:
+        try:
+            override = int(str(value).strip())
+        except ValueError:
+            override = 0
+        if override > 0:
+            return override
+    return os.cpu_count() or 1
+
+
+def collect(proc_root=None, ps_file=None, statvfs_json=None, cores=None):
     proc = proc_root or os.environ.get("VPS_STATE_PROC") or "/proc"
     unknown = []
-    cores = os.cpu_count() or 1
+    cores = resolve_cores(cores)
 
     load = read_load(proc)
     if load is None:
@@ -516,6 +536,7 @@ def cleanup_worktrees(cwd, budget=CMD_TIMEOUT):
         return None
     merged_names = {line.strip() for line in merged.splitlines() if line.strip()}
     entries = []
+    main_path = None
     for block in listing.strip().split("\n\n"):
         item = {}
         for line in block.splitlines():
@@ -524,13 +545,16 @@ def cleanup_worktrees(cwd, budget=CMD_TIMEOUT):
                 item["path"] = value
             elif key == "branch":
                 item["branch"] = value.rsplit("/", 1)[-1]
-        if item.get("branch") and item.get("path") and item["path"] != cwd.rstrip("/"):
+        if not item.get("path"):
+            continue
+        # git lists the main checkout first. It is not scratch and never ours.
+        if main_path is None:
+            main_path = item["path"]
+        if item.get("branch") and item["path"] != cwd.rstrip("/"):
             entries.append(item)
-    # The first worktree is the main checkout. It is not scratch and never ours.
-    main_path = entries[0]["path"] if entries else None
     merged_out = [entry for entry in entries
                   if entry["path"] != main_path and entry.get("branch") in merged_names]
-    return {"merged": merged_out, "checked": len(entries)}
+    return {"merged": merged_out, "checked": len(entries), "main": main_path}
 
 
 def cleanup_tmp(root="/tmp", budget=TMP_BUDGET, age_days=TMP_AGE_DAYS):

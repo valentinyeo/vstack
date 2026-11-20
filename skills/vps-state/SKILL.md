@@ -49,4 +49,4 @@ It reports, it never deletes. Clean only what this session made. Never touch ano
 - memory needs 24G free before another worker, and the room line leaves that reserve alone.
 - disk above 90% used or under 80G free stops new builds.
 
-If a line says unknown, that probe failed. Treat it as the worse verdict, never as ADD.
+If a line says unknown, that probe failed. Answer CAREFUL at best, never ADD.

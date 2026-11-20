@@ -18,7 +18,7 @@ Two answers, `ADD`, `CAREFUL` or `HOLD` for a chat and for a worker, each with t
 
 - Action: `run`. It calls the script with `--json`, with no flags, and with `--can-launch chat` and `--can-launch worker`, saving each output and exit code.
 - Check: the five numbers and `cores` are compared with `live.json`, which is built from `nproc`, /proc/loadavg, `free -b` and `df -B1 /`. The exit codes are compared with the verdict inside the JSON.
-- Tolerance: load5 within 25% (it moves), memory and disk within 5%, disk percentages within 2%, cores exact.
+- Tolerance: load5 within 25% (it moves), memory within 5%, disk free and disk percentage within 2%, cores exact.
 
 ## Gotchas
 

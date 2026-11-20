@@ -47,6 +47,7 @@ def fixture_env(name, home):
     case = FIX / name
     env = dict(os.environ)
     env["VPS_STATE_PROC"] = str(case / "proc")
+    env["VPS_STATE_CORES"] = str(CORES)  # a fixture must mean the same on any host
     env["HOME"] = str(home)
     return env
 
@@ -72,6 +73,7 @@ def facts_of(name):
         str(case / "proc"),
         ps_file=str(case / "ps.txt"),
         statvfs_json=str(statvfs) if statvfs.exists() else None,
+        cores=CORES,
     )
     return module, facts
 
@@ -194,7 +196,7 @@ class RunnerGate(unittest.TestCase):
         for load5 in loads:
             for avail in mems:
                 proc, ps, disk = write_proc(tmp, load5, avail)
-                facts = module.collect(proc, ps_file=ps, statvfs_json=disk)
+                facts = module.collect(proc, ps_file=ps, statvfs_json=disk, cores=CORES)
                 result = module.evaluate(facts)
                 with self.subTest(load5=load5, avail_gb=round(avail / 1048576, 3)):
                     self.assertEqual(result["verdict"]["worker"] == "ADD",
@@ -208,7 +210,7 @@ class RunnerGate(unittest.TestCase):
                                  (25 * 1048576 - 1, "CAREFUL"),
                                  (25 * 1048576, "ADD")):
             proc, ps, disk = write_proc(tmp, 4.0, avail_kb)
-            got = module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk))
+            got = module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk, cores=CORES))
             with self.subTest(avail_kb=avail_kb):
                 self.assertEqual(got["verdict"]["worker"], expect)
 
@@ -218,14 +220,35 @@ class RunnerGate(unittest.TestCase):
         for kwargs in ({"cpu60": 26.0}, {"io60": 6.0},
                        {"free": 70 * GB}, {"free": 60 * GB, "total": 678 * GB}):
             proc, ps, disk = write_proc(tmp, 4.0, 70 * 1024 * MB, **kwargs)
-            got = module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk))
+            got = module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk, cores=CORES))
             with self.subTest(**kwargs):
                 self.assertNotEqual(got["verdict"]["worker"], "ADD")
         # Memory pressure binds the chat answer, not the worker one.
         proc, ps, disk = write_proc(tmp, 4.0, 70 * 1024 * MB, mem60=3.0)
-        got = module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk))
+        got = module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk, cores=CORES))
         self.assertNotEqual(got["verdict"]["chat"], "ADD")
         self.assertEqual(got["verdict"]["worker"], "ADD")
+
+
+class CoreSeam(unittest.TestCase):
+    """A fixture that says 18 cores must say 18 on a 4 core runner too."""
+
+    def test_env_override_wins(self):
+        module, facts = facts_of("add")
+        self.assertEqual(facts["cores"], CORES)
+        self.assertAlmostEqual(facts["load"]["ratio"], round(4.0 / CORES, 3), places=3)
+
+    def test_garbage_override_falls_back_to_the_live_count(self):
+        module = load_script()
+        old = os.environ.get("VPS_STATE_CORES")
+        os.environ["VPS_STATE_CORES"] = "banana"
+        try:
+            self.assertEqual(module.resolve_cores(), os.cpu_count() or 1)
+        finally:
+            if old is None:
+                os.environ.pop("VPS_STATE_CORES", None)
+            else:
+                os.environ["VPS_STATE_CORES"] = old
 
 
 class StatusFile(unittest.TestCase):

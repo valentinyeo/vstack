@@ -69,7 +69,7 @@ Attach verdict.txt to the PR or ticket. CI runs only `tests/test_vps_state.py`; 
 
 ## Gotchas
 
-- Tolerances are part of the grade: load5 within 25%, memory and disk within 5%, disk percentages within 2%, cores exact. A failing `load5` on a host under 40 load usually means the two reads landed in different minutes, not a broken script.
+- Tolerances are part of the grade: load5 within 25%, memory within 5%, disk free and disk percentage within 2%, cores exact. A failing `load5` on a host under 40 load usually means the two reads landed in different minutes, not a broken script.
 - `--can-launch` exits 3 when a core probe failed. That is a FAIL for the run, not a HOLD.
 - The hook prints nothing when vps-state is missing. That is a FAIL for the `hook` check, by design.
 - One run changes the status file other sessions read. Run it when the answer matters, not in a loop.
