@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "activities": [
+    {
+      "id": "e2e440b4-d1be-4120-936a-bf32a0d559c7",
+      "agentId": "3d604711-b5ed-421b-9533-1551975cfb3a",
+      "agentName": "VVM Test Agent",
+      "runId": "b8f3e74b-2c98-4187-909a-3e7ab20aaa69",
+      "type": "thought",
+      "text": "VVM Test Agent ran the valentin mode check. Created hello.txt in the scratch folder: one line, single trailing newline. No commit, no other file touched. Board synced next.",
+      "createdAt": "2026-11-19T18:59:30.678Z"
+    }
+  ]
+}

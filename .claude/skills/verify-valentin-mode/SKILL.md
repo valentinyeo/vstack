@@ -33,7 +33,7 @@ If the test login is gone, recreate it with the `/hypertask` skill's identity st
 
 1. Gate: `~/.local/bin/plan-pick --claude-helper` must exit 0, because the test chat runs on Claude Sonnet. Else exit 3.
 2. Makes a scratch git repo in `/tmp/vvm-scratch.*` whose `CLAUDE.md` names board 2060, label `vvm-test`, the test login and SOFT-2849.
-3. Starts `claude -p` there with `--model sonnet --output-format stream-json --verbose --max-turns 40`, under a 25-minute timeout. The prompt starts with `/valentin-mode`, then asks for a worker-written hello file, a ticket note and a board sync. It never names the tools.
+3. Starts `claude -p` there with `SHIP_SESSION_NAME="VVM Test Agent"`, after stripping the caller's `MULTIPROMPT_*`, `HT_TOKEN` and `HYPERTASK_*`, with `--model sonnet --output-format stream-json --verbose --debug-file …/debug.log --max-turns 40`, under a 25-minute timeout. The prompt starts with `/valentin-mode`, then asks for a worker-written hello file, a ticket note and a board sync. It never names the tools.
 4. `--break no-valentin-mode` drops the command. Same flags, hooks and guards.
 5. Collects the evidence, scrubs tokens, grades, removes the scratch repo (keep it with `--keep`).
 
@@ -44,6 +44,8 @@ A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worke
 Read the `loaded` line first. It needs the `/valentin-mode` prompt, the command in the chat's command list, and an installed copy with the Three tools section and `disable-model-invocation: true` (saved as installed-valentin-mode.md). Any Skill call for valentin-mode fails it: the chat started it by itself. Then read `responsive`: it passes when /valentin-mode pasted responsive mode's body in at load (a paste that stopped before the body's last sentence fails), or on a Skill call for responsive-mode, or a user prompt starting `/responsive-mode`.
 
 `checks loaded` reads debug.log for a run of each hook the frontmatter declares: `skills/responsive-mode/reply-check.py` (PreToolUse), `skills/responsive-mode/said-started.py` (Stop). A hook that never ran leaves no line and fails it.
+
+`login` and `board sync` grading: [login.md](features/login.md) and [board-sync.md](features/board-sync.md).
 
 The chat reads the installed copy in ~/.local/share/vstack, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main. `VSTACK_DIR=<checkout>` grades a branch without installing, and the evidence copy comes from that tree.
 
@@ -81,6 +83,6 @@ Every change to `skills/valentin-mode`, `skills/hypertask-work` or plan-pick run
 ## Gotchas
 
 - Never run a test chat with user hooks off (`--setting-sources`): the guard against writing as Valentin goes too. Two early runs on 19 Nov wrote on SOFT-2849 as him. The guard still misses `ht` writes and the claude.ai connector (SOFT-2857).
-- A `reconcile --apply` without `--label vvm-test` fails the check: it can move real tickets (see the `/hypertask` skill).
+- A `reconcile --apply` without `--label vvm-test` and without `--ticket` fails the check: it can move real tickets (see the `/hypertask` skill).
 - One check at a time: the board sync lock is per board (SOFT-2853).
 - A missing skill folder under `${VSTACK_DIR:-~/.local/share/vstack}/skills` stops `run` before any chat starts; the last line names the folder.

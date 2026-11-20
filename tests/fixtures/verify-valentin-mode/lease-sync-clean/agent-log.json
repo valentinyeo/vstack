@@ -1,0 +1,41 @@
+{
+  "success": true,
+  "activities": [
+    {
+      "id": "935da664-af60-46f4-acdc-f3225cbbec01",
+      "agentId": "e34b7579-d5c9-4615-adf4-bffd70a0eb6c",
+      "agentName": "VVM Test Agent",
+      "runId": "b32fb374-7a31-4ef3-a7d5-3d54de7b02f3",
+      "type": "thought",
+      "text": "fleet/reconcile: live worker: lease or process; Todo -> Doing.",
+      "createdAt": "2026-11-20T13:02:42.317Z"
+    },
+    {
+      "id": "464c7695-b8a0-41d1-8d8d-5dbab3b4f870",
+      "agentId": "3d604711-b5ed-421b-9533-1551975cfb3a",
+      "agentName": "VVM Test Agent",
+      "runId": "b8f3e74b-2c98-4187-909a-3e7ab20aaa69",
+      "type": "thought",
+      "text": "fleet/reconcile: no live worker and no PR; Doing -> Todo.",
+      "createdAt": "2026-11-20T11:48:08.222Z"
+    },
+    {
+      "id": "27673cff-f630-4ed5-b059-b1bedc7baeab",
+      "agentId": "3d604711-b5ed-421b-9533-1551975cfb3a",
+      "agentName": "VVM Test Agent",
+      "runId": "b8f3e74b-2c98-4187-909a-3e7ab20aaa69",
+      "type": "thought",
+      "text": "fleet/reconcile: live worker: lease or process; Todo -> Doing.",
+      "createdAt": "2026-11-19T19:00:32.767Z"
+    },
+    {
+      "id": "e2e440b4-d1be-4120-936a-bf32a0d559c7",
+      "agentId": "3d604711-b5ed-421b-9533-1551975cfb3a",
+      "agentName": "VVM Test Agent",
+      "runId": "b8f3e74b-2c98-4187-909a-3e7ab20aaa69",
+      "type": "thought",
+      "text": "VVM Test Agent ran the valentin mode check. Created hello.txt in the scratch folder: one line, single trailing newline. No commit, no other file touched. Board synced next.",
+      "createdAt": "2026-11-19T18:59:30.678Z"
+    }
+  ]
+}
