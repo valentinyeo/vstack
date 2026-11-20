@@ -12,4 +12,7 @@ Write every registered command to fail open when its file is missing, and to blo
 |---|---|---|
 | `plan-pick-only.py` | PreToolUse, Bash | Code workers start only through `~/.local/bin/plan-pick --run`. |
 | `claude-helper-gate.py` | PreToolUse, Agent and Task | A Claude helper starts only when `plan-pick --claude-helper` allows it. |
+| `launch-gate.py` | PreToolUse, Bash | No worker, build or test starts while vps-state says HOLD; `LAUNCH_GATE=off` is Valentin's override. |
 | `skill-update.py` | UserPromptSubmit | Keeps the shared skills current and says when valentin-mode changed, so the chat re-reads it. |
+
+Run `python3 ~/.claude/hooks/launch-gate.py --install-for-project` once per project (writes `.claude/settings.local.json`); `--check-project` exits 0 when wired.
