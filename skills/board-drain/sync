@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Sync this chat's board view as its own login, and record the result for drain-check."""
+import argparse
+import importlib.machinery
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+HERE = Path(__file__).resolve().parent
+RECONCILE = HERE.parent / 'hypertask-work' / 'reconcile'
+BAD_WORDS = ('usage:', 'error:')
+ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+
+loader = importlib.machinery.SourceFileLoader('board_drain_loop_state', str(HERE / 'loop-state'))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+loop_state = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = loop_state
+loader.exec_module(loop_state)
+
+
+def credentials_dir():
+    return Path(os.environ.get('BOARD_DRAIN_CRED_DIR')
+                or Path.home() / '.config/hypertask-agents/credentials/sessions')
+
+
+def token_path(name):
+    return credentials_dir() / (loop_state.slug(name) + '-agent-token')
+
+
+def environment(name):
+    """The reconcile runs as this chat: its token, and its own name in SHIP_SESSION_NAME."""
+    env = dict(os.environ)
+    if not env.get('HT_TOKEN'):
+        try:
+            env['HT_TOKEN'] = token_path(name).read_text().strip()
+        except OSError as error:
+            raise ValueError(f'no HT_TOKEN and no token file at {token_path(name)}') from error
+        if not env['HT_TOKEN']:
+            raise ValueError(f'the token file at {token_path(name)} is empty')
+    if not env.get('SHIP_SESSION_NAME'):
+        env['SHIP_SESSION_NAME'] = name
+    return env
+
+
+def echo(text):
+    if text and text.strip():
+        print(text.rstrip('\n'))
+
+
+def run(step, args, env):
+    """Run one reconcile step; None when it worked, else the one-line reason it did not."""
+    command = [sys.executable, str(RECONCILE), *args]
+    done = subprocess.run(command, capture_output=True, text=True, env=env)
+    echo(done.stdout)
+    echo(done.stderr)
+    lines = (done.stdout or '').splitlines() + (done.stderr or '').splitlines()
+    offending = [line.strip() for line in lines
+                 if any(bad in line.lower() for bad in BAD_WORDS)]
+    if offending:
+        return f'{step} printed: {offending[0]}'
+    if done.returncode:
+        return f'{step} exited {done.returncode}'
+    return None
+
+
+def steps(board, label, limit):
+    base = ['--board', str(board), '--label', label]
+    return ('preview', base), ('apply', [*base, '--apply', '--limit', str(limit)])
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board', type=int, required=True)
+    parser.add_argument('--label', required=True)
+    parser.add_argument('--name', required=True, help="This chat's Multibot name")
+    parser.add_argument('--limit', type=int, default=5, help='Maximum moves per apply run; default 5')
+    args = parser.parse_args(argv)
+    if args.board < 1:
+        parser.error('--board must be a positive board id')
+    reason = None
+    try:
+        env = environment(args.name)
+        for step, step_args in steps(args.board, args.label, args.limit):
+            reason = run(step, step_args, env)
+            if reason:
+                break
+    except (*ERRORS, RuntimeError) as error:
+        reason = str(error) or error.__class__.__name__
+    if not reason:
+        print('sync: ok')
+        record(args.name, True, '')
+        return 0
+    print(f'sync: FAIL {reason}')
+    record(args.name, False, reason)
+    return 1
+
+
+def record(name, ok, reason):
+    try:
+        loop_state.record_sync(name, ok, reason)
+    except ERRORS as error:
+        print(f'sync: could not record the result: {error}', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
