@@ -53,7 +53,7 @@ Each chat with a board runs `/board-drain` on itself at session start, after a r
 
 ### PR owner
 
-Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; one nobody finishes closes with a reason.
+Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; one nobody finishes closes with a reason. Your loop runs `/pr-housekeeping` on your own open PRs.
 
 ## Working
 
