@@ -43,7 +43,7 @@ Project notes name it: `Hypertask board: <id>, label: <label>`. The lease syncs 
 - **Server and cloud:** this server runs workers, tests, the app, the QA phone and boards. GitHub runners run CI and the verifier. No self-hosted runners.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
-- **Cloudflare:** new projects begin from Joel Hooks' rat-stack template.
+- **Cloudflare:** everything new runs on Cloudflare: every app, site and page. Build it on Rat Stack (https://ratstack.sh): start from Joel Hooks' rat-stack template and load the Rat Stack skills that fit. No other host or starter.
 - **Long chats:** save the handover, then start a fresh chat with its loop on.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
 
