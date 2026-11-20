@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """pr-queue: every open PR in a scope, the state it is in, and the chat that owns it.
 
-  pr-queue [--owner valentinyeo] [--repo R] [--mine NAME] [--stale-hours N] [--json PATH]
+  pr-queue [--owner valentinyeo] [--repo R] [--mine NAME] [--token-file PATH] [--stale-hours N] [--json PATH]
   pr-queue --self-test
 
 One row per open PR: its ticket key, its checks, the verifier verdict at its current head,
@@ -9,7 +9,8 @@ whether the body carries the `Author model:` and `Pacer launch:` lines, whether 
 PR carries the same ticket, the live chat that owns it, one state, and one plain next action.
 
   BOT            dependabot, renovate or github-actions wrote it: CI Boss looks after it
-  DUPLICATE      a second open PR for a ticket that already has an older one
+  DUPLICATE      a second open PR for a ticket whose keeper is another open PR
+  NO-OWNER       no live chat claims it, whatever its checks or its verdict
   CONFLICT       the branch conflicts with its base
   BILLING        a failing check says recent payments failed: private repos only
   RED            a check failed
@@ -17,14 +18,15 @@ PR carries the same ticket, the live chat that owns it, one state, and one plain
   MISSING-LINES  body lacks `Author model:` or `Pacer launch:`
   NO-VERDICT     no verdict at this head yet
   STALE          a verified PR nobody pushed for more than --stale-hours
-  NO-OWNER       a verified PR no live chat claims by repo, branch or chat name
   READY          green checks and a PASS or PASS+NOTES at this head
   OK             nothing to do this tick
 
-Ownership comes from the live roster, branch names and repo checkouts, because this script
-has no board login: a PR whose ticket names its owner on the board can still read NO-OWNER.
+Ownership comes from the live roster: the checkout's branch, then the chat name in the branch,
+then the ticket's assignee on the board, then the only checkout of the repo. The board read runs
+only with a token, from --token-file or HT_TOKEN, and it only reads the ticket. Without a token
+a PR whose ticket names its owner on the board can still read NO-OWNER.
 
-Read only: it reads gh and the live roster, and writes nothing to GitHub or to a board.
+Read only: it reads gh, the live roster and one ticket, and writes nothing to GitHub or a board.
 
 Exit: 0 when nothing in scope is NO-OWNER or STALE, 1 when one is, 2 on a gh failure.
 """
@@ -35,6 +37,7 @@ import datetime
 import importlib.machinery
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -49,6 +52,7 @@ POOL = 8
 GH_TIMEOUT = 90
 GIT_TIMEOUT = 20
 ROSTER_TIMEOUT = 30
+BOARD_TIMEOUT = 60
 
 # `gh search prs` has no headRefName, so the branch comes from one `gh pr view` per PR.
 KEY = re.compile(r'\b([A-Z][A-Z0-9]{1,9}-\d+)\b')
@@ -66,19 +70,18 @@ ROSTER_LINE = re.compile(r'^(?P<name>.+?) \((?P<tmux>[^,()]+), (?P<harness>[^,()
                          r'(?:, (?P<cwd>[^()]*))?\)\s*$')
 REMOTE = re.compile(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$')
 
-STATES = ('BOT', 'DUPLICATE', 'CONFLICT', 'BILLING', 'RED', 'VERIFIER-FAIL', 'MISSING-LINES',
-          'NO-VERDICT', 'STALE', 'NO-OWNER', 'READY', 'OK')
+STATES = ('BOT', 'DUPLICATE', 'NO-OWNER', 'CONFLICT', 'BILLING', 'RED', 'VERIFIER-FAIL',
+          'MISSING-LINES', 'NO-VERDICT', 'STALE', 'READY', 'OK')
 NEXT_ACTION = {
     'BOT': 'A bot wrote this one, so CI Boss looks after it and no chat has to act.',
-    'DUPLICATE': 'Message the other owner chat, then close the older or weaker pull request for this '
-                 'ticket with a one line reason and the ticket link.',
     'CONFLICT': 'Rebase your own branch on its base, push it with force with lease, and let the checks run again.',
     'BILLING': 'Billing blocks private repos only, so scan the repo history for secrets and client data, '
                'then make the repo public and ask Valentin only when the scan finds something.',
     'RED': 'Run Babysit in check mode, fix the failing check on your own branch, and push.',
     'VERIFIER-FAIL': 'Fix the finding the verifier named, push it, and get a fresh verdict at the new head.',
     'MISSING-LINES': 'Add the Author model and Pacer launch lines to the pull request body.',
-    'NO-OWNER': 'Hand this pull request to the chat that works in this repo or owns its ticket.',
+    'NO-OWNER': 'Hand this pull request to the chat that works in this repo or owns its ticket, and say '
+                'so on the ticket so the board names it next tick.',
     'STALE': 'Finish this pull request or close it with a reason and note that on the ticket.',
     'NO-VERDICT': 'Ask for a verdict at the current head and read it before merging.',
     'READY': 'Merge it per pstack Shipping only when the verdict comes from a model family that differs '
@@ -162,9 +165,10 @@ def slug(name):
     return re.sub(r'[^a-z0-9]+', '-', (name or '').lower()).strip('-')
 
 
-def owner_chat(branch, repo, chats):
+def owner_chat(branch, repo, chats, board_names=()):
     """The one live chat that owns this PR: its checkout's branch, then its name in the branch
-    slug, then the only checkout of the repo. An ambiguous level owns nobody."""
+    slug, then the ticket's assignee on the board, then the only checkout of the repo. An
+    ambiguous level owns nobody."""
     live = [chat for chat in chats or () if slug(chat.get('name')) not in GENERIC_NAMES]
     on_branch = [chat for chat in live if branch and chat.get('branch') == branch]
     if on_branch:
@@ -174,6 +178,10 @@ def owner_chat(branch, repo, chats):
              and slug(chat.get('name')) in branch_slug]
     if named:
         return named[0]['name'] if len(named) == 1 else None
+    wanted = {slug(name) for name in board_names or () if slug(name)}
+    from_board = [chat for chat in live if slug(chat.get('name')) in wanted]
+    if from_board:
+        return from_board[0]['name'] if len(from_board) == 1 else None
     checkouts = [chat for chat in live if repo and chat.get('repo') == repo]
     if checkouts:
         return checkouts[0]['name'] if len(checkouts) == 1 else None
@@ -220,29 +228,52 @@ def billing_blocked(runs):
     return False
 
 
-def mark_duplicates(rows):
-    """One keeper per repo and ticket: the oldest PR, the lowest number on a same second tie.
+def keeper(group):
+    """The PR to keep for one ticket: the newest one with a passing verdict at its head, else the
+    newest green one, else the oldest PR, the lowest number on a same second tie.
 
-    Every other row of that ticket is the duplicate, so two PRs a chat opened in the same second
-    still leave exactly one keeper."""
+    A newer PR that a verifier passed is the work that is furthest along, so it outranks an older
+    stalled one. With no verdict anywhere, a green newer PR beats a red or pending older one."""
+    def newest(row):
+        return row['created_at'], row['number']
+
+    verified = [row for row in group if row['verdict'] in PASSING]
+    if verified:
+        return max(verified, key=newest)
+    green = [row for row in group if row['checks'] == 'green']
+    if green:
+        return max(green, key=newest)
+    return min(group, key=newest)
+
+
+def mark_duplicates(rows):
+    """One keeper per repo and ticket; every other row of that ticket is the duplicate."""
     groups = {}
     for row in rows:
         if row['bot'] or not row['ticket_key']:
             continue
         groups.setdefault((row['repo'], row['ticket_key']), []).append(row)
     for group in groups.values():
-        keeper = min(group, key=lambda other: (other['created_at'], other['number']))
+        kept = keeper(group)
         for row in group:
-            if row is not keeper:
-                row['duplicate_of'] = keeper['number']
+            if row is not kept:
+                row['duplicate_of'] = kept['number']
+
+
+def duplicate_action(kept):
+    """The duplicate's next action names the keeper, so nobody has to work out which one lives."""
+    return (f'Message the owner chat of #{kept}, then close this pull request for the same ticket '
+            'with a one line reason and the ticket link. Never open a second PR beside a stalled one.')
 
 
 def classify(row, stale_hours):
-    """The first state that fits, in this order."""
+    """The first state that fits, in this order. No owner fails the tick whatever its verdict."""
     if row['bot']:
         return 'BOT'
     if row['duplicate_of'] is not None:
         return 'DUPLICATE'
+    if not row['owner_chat']:
+        return 'NO-OWNER'
     if row['conflict']:
         return 'CONFLICT'
     if row['billing_blocked']:
@@ -257,15 +288,16 @@ def classify(row, stale_hours):
         return 'NO-VERDICT'
     if row['hours_since_push'] > stale_hours:
         return 'STALE'
-    if not row['owner_chat']:
-        return 'NO-OWNER'
     if row['checks'] == 'green' and row['verdict'] in PASSING:
         return 'READY'
     return 'OK'
 
 
-def build_rows(views, chats, stale_hours=72, billing_probe=None):
-    """One row per view, with every field the table, the JSON dump and the counts need."""
+def build_rows(views, chats, stale_hours=72, billing_probe=None, board_lookup=None):
+    """One row per view, with every field the table, the JSON dump and the counts need.
+
+    board_lookup reads the assignee names of one ticket key, and is only supplied when a board
+    token is available."""
     now = datetime.datetime.now(datetime.timezone.utc)
     pattern = pacer()
     rows = []
@@ -278,6 +310,8 @@ def build_rows(views, chats, stale_hours=72, billing_probe=None):
         checks = checks_state(view.get('statusCheckRollup'))
         billed = bool(checks == 'red' and billing_probe and billing_blocked(billing_probe(repo, head)))
         mergeable = (view.get('mergeable') or '').upper()
+        key = ticket_key(view.get('title'), branch)
+        board_names = board_lookup(key) if (board_lookup and key) else ()
         rows.append({
             'repo': repo,
             'number': view.get('number'),
@@ -288,8 +322,8 @@ def build_rows(views, chats, stale_hours=72, billing_probe=None):
             'author': author,
             'age_hours': hours_since(view.get('createdAt'), now),
             'hours_since_push': newest_push(view, now),
-            'ticket_key': ticket_key(view.get('title'), branch),
-            'owner_chat': owner_chat(branch, repo, chats),
+            'ticket_key': key,
+            'owner_chat': owner_chat(branch, repo, chats, board_names),
             'checks': checks,
             'billing_blocked': billed,
             'conflict': mergeable in ('CONFLICTING', 'CONFLICT'),
@@ -305,7 +339,8 @@ def build_rows(views, chats, stale_hours=72, billing_probe=None):
     mark_duplicates(rows)
     for row in rows:
         row['state'] = classify(row, stale_hours)
-        row['next_action'] = NEXT_ACTION[row['state']]
+        row['next_action'] = (duplicate_action(row['duplicate_of']) if row['state'] == 'DUPLICATE'
+                              else NEXT_ACTION[row['state']])
         row.pop('bot')
         row.pop('created_at')
     return rows
@@ -395,6 +430,58 @@ def checkout(cwd):
     return repo, (git('rev-parse', '--abbrev-ref', 'HEAD') or None)
 
 
+def ticket_owner_names(payload, key):
+    """The assignee display names on one ticket, read out of `hypertask --json task get`.
+
+    An unreadable answer names nobody: ownership then comes from the roster and the branches."""
+    try:
+        answer = json.loads(payload or '')
+    except ValueError:
+        return []
+    tasks = (answer or {}).get('tasks') if isinstance(answer, dict) else None
+    names = []
+    for task in tasks or ():
+        if not isinstance(task, dict) or task.get('ticketNumber') not in (None, key):
+            continue
+        for assignee in task.get('assignees') or ():
+            name = ((assignee or {}).get('displayName') or '').strip()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+_board_warned = []
+
+
+def read_ticket(key, token):
+    """One ticket's assignee names, read only through the board login. Never writes.
+
+    A login that cannot read one ticket names nobody, and says so once per run, so a broken token
+    leaves the roster reading that worked before."""
+    try:
+        result = subprocess.run(['hypertask', '--json', '--token', token, 'task', 'get', key],
+                                capture_output=True, text=True, timeout=BOARD_TIMEOUT)
+        answer = result.stdout if result.returncode == 0 else ''
+    except (OSError, subprocess.TimeoutExpired):
+        answer = ''
+    if not answer.strip() and not _board_warned:
+        _board_warned.append(key)
+        print(f'pr-queue: could not read ticket {key}; ownership came from the roster only',
+              file=sys.stderr)
+    return ticket_owner_names(answer, key)
+
+
+def board_token(path=None):
+    """The board login from --token-file, else HT_TOKEN. Empty means read no ticket at all."""
+    if path:
+        try:
+            return Path(path).read_text().strip()
+        except OSError:
+            print(f'pr-queue: cannot read --token-file {path}; running without the board', file=sys.stderr)
+            return ''
+    return (os.environ.get('HT_TOKEN') or '').strip()
+
+
 def read_roster():
     """Live chats as {name, cwd, repo, branch}: a missing roster or a failing git read owns nothing."""
     try:
@@ -456,6 +543,7 @@ def main(argv):
     parser.add_argument('--owner', default='valentinyeo')
     parser.add_argument('--repo', help='only this owner/name')
     parser.add_argument('--mine', help='only PRs owned by this live chat name')
+    parser.add_argument('--token-file', help='read only board login, so a ticket assignee can own a PR')
     parser.add_argument('--stale-hours', type=int, default=72)
     parser.add_argument('--json', dest='json_path', help='write {"owner", "mine", "rows", "counts"} here')
     parser.add_argument('--self-test', action='store_true')
@@ -480,8 +568,13 @@ def main(argv):
         print(f'pr-queue: --mine {args.mine!r} names no live chat; '
               f'run {ROSTER} for the live names', file=sys.stderr)
         return 2
+    token = board_token(args.token_file)
+    keys = sorted({ticket_key(view.get('title'), view.get('headRefName')) for view in views
+                   if not is_bot((view.get('author') or {}).get('login') or '')} - {None})
+    tickets = dict(zip(keys, pooled(read_ticket, [(key, token) for key in keys]))) if token else {}
     rows = build_rows(views, chats, args.stale_hours,
-                      billing_probe=lambda repo, sha: probes.get((repo, sha), []))
+                      billing_probe=lambda repo, sha: probes.get((repo, sha), []),
+                      board_lookup=tickets.get if token else None)
     if args.mine:
         rows = [row for row in rows if (row['owner_chat'] or '').lower() == args.mine.lower()]
         if not rows:
