@@ -27,7 +27,7 @@ On 2026-11-20 four `python3 -m unittest discover -s scripts` runs hung for 10 to
 
 A rule in a document is not a check. The hook file is already there; registering it in a project is your step, once per project.
 
-1. The shared vstack install already linked the hook: `hooks/test-timeout-guard.py` sits at `$HOME/.claude/hooks/test-timeout-guard.py`. Never run `./install` yourself. From a worktree it repoints every chat's skills at your branch, and it now refuses to run anywhere but `~/.local/share/vstack`. If the file is missing, say so and wait; do not run `./install` to fix it.
+1. The shared vstack install already linked the hook: `hooks/test-timeout-guard.py` sits at `$HOME/.claude/hooks/test-timeout-guard.py`. Never run `./install` yourself. From a worktree it repoints every chat's skills at your branch, and it now refuses to run anywhere but `$HOME/.local/share/vstack`. If the file is missing, say so and wait; do not run `./install` to fix it.
 2. Add this to your own project's `.claude/settings.json`. Merge it into the `PreToolUse` list you already have; do not replace that list.
 
 ```json

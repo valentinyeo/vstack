@@ -306,7 +306,7 @@ class TestTimeoutSkill(unittest.TestCase):
 
     def test_the_skill_names_the_hook_the_shared_install_already_linked(self):
         self.assertIn('$HOME/.claude/hooks/test-timeout-guard.py', self.text)
-        self.assertIn('~/.local/share/vstack', self.text)
+        self.assertIn('$HOME/.local/share/vstack', self.text)
 
     def test_the_skill_still_tells_a_chat_to_register_the_hook_per_project(self):
         self.assertIn('.claude/settings.json', self.text)
