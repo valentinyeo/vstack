@@ -16,6 +16,7 @@ DETACHED = ('nohup', 'setsid', 'disown', 'tmux')
 # A single & backgrounds the command; && does not.
 BACKGROUND_AMP = re.compile(r'(?:^|[^&])&(?:[^&]|$)')
 TRACKED_AGENTS = ('Agent', 'Task')
+HOOK_FILE = re.compile(r'[^\s"\'`]+\.[a-z]{2}\b')
 
 
 def read_text(path):
@@ -78,6 +79,113 @@ def reply_to(question, events, answer):
         if wanted in (block.get('text') or '').lower():
             return at, whole_message(events, message_id, block)
     return None, None
+
+
+def skill_text(evidence):
+    """The skill under test: the folder the run saved, else the single file an
+    older run saved. Empty when the evidence holds neither."""
+    for path in (evidence / 'skill-under-test/SKILL.md', evidence / 'skill-under-test.md'):
+        text = read_text(path)
+        if text:
+            return text
+    return ''
+
+
+def hook_files(command):
+    """The script names a hook command line runs, hooks on this box being
+    python3 "$CLAUDE_PLUGIN_ROOT/reply-check.py" or a plain .sh path."""
+    return [token.rsplit('/', 1)[-1] for token in HOOK_FILE.findall(command)]
+
+
+def frontmatter(text):
+    """The lines between a SKILL.md's first two --- fences, or none."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != '---':
+        return []
+    for index, line in enumerate(lines[1:], 1):
+        if line.strip() == '---':
+            return lines[1:index]
+    return []
+
+
+def hook_commands(text):
+    """(event, file name) for every hook the skill's frontmatter turns on.
+    Only the hooks: block counts, and only its own event lines."""
+    block = []
+    inside = False
+    for line in frontmatter(text):
+        if not inside:
+            inside = line.rstrip() == 'hooks:'
+            continue
+        if line.strip() and not line[:1].isspace():
+            break
+        block.append(line)
+    found, event = [], ''
+    for line in block:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if stripped.endswith(':') and not stripped.startswith('-') and indent <= 2:
+            event = stripped[:-1]
+        elif stripped.startswith('command:'):
+            for name in hook_files(stripped):
+                found.append((event, name))
+    return found
+
+
+def attachments(value):
+    """Every attachment entry anywhere in one transcript record."""
+    if isinstance(value, dict):
+        entry = value.get('attachment')
+        if isinstance(entry, dict):
+            yield entry
+        for inner in value.values():
+            yield from attachments(inner)
+    elif isinstance(value, list):
+        for inner in value:
+            yield from attachments(inner)
+
+
+def hook_runs(evidence):
+    """(event, file name) for every hook the chat's transcript logged running.
+    The shape: a record holding attachment.type hook_*, attachment.hookEvent
+    naming the event, and the command line that ran."""
+    runs = []
+    for line in read_text(evidence / 'transcript.jsonl').splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        for entry in attachments(record):
+            kind = entry.get('type')
+            command = entry.get('command')
+            if not isinstance(kind, str) or not kind.startswith('hook'):
+                continue
+            if not isinstance(command, str):
+                continue
+            event = entry.get('hookEvent') or entry.get('hookName') or ''
+            names = hook_files(command)
+            runs.append((str(event), names[0] if names else command))
+    return runs
+
+
+def check_checks_loaded(evidence):
+    """The skill's own hooks loaded with it. A skill that turns no hooks on has
+    nothing to prove; one that does must show those hook files running in the
+    chat's transcript, never in the chat's words."""
+    text = skill_text(evidence)
+    if not text:
+        return True, 'no skill text in evidence, so no hooks block to check'
+    wanted = hook_commands(text)
+    if not wanted:
+        return True, 'the skill under test turns no hooks on'
+    ran = hook_runs(evidence)
+    missing = [f'{name} ({event})' for event, name in wanted
+               if not any(event in seen and name == found for seen, found in ran)]
+    if missing:
+        return False, ('the transcript shows no run of ' + ', '.join(missing)
+                       + '; no hook_* entry names it')
+    return True, 'the transcript shows every declared hook ran: ' + ', '.join(
+        f'{name} ({event})' for event, name in wanted)
 
 
 def check_loaded(evidence, marker):
@@ -168,7 +276,8 @@ def grade(evidence):
     if not sent:
         raise BadEvidence('no message was sent in ' + str(evidence / 'chat.jsonl'))
 
-    rows = [('loaded', *check_loaded(evidence, spec.get('skill_marker')))]
+    rows = [('loaded', *check_loaded(evidence, spec.get('skill_marker'))),
+            ('checks loaded', *check_checks_loaded(evidence))]
     rows += reply_rows(sent, events, spec.get('answers') or [])
     rows.append(('background', *check_background(events, spec.get('slow_step', 'slow-report'))))
 

@@ -12,6 +12,8 @@ Prior art: pstack create-verification-skill and maintain-verification-skill, plu
 
 Read features/README.md for the map.
 
+`checks loaded` reads the transcript's `hook_*` entries to prove the skill's hooks ran.
+
 ## Launch
 
 ```sh
@@ -25,7 +27,7 @@ The order of work:
 1. Gate: plan-pick --claude-helper must exit 0, because the test chat runs on Claude Sonnet. Else exit 3.
 2. Makes an evidence folder under ~/.local/state/verify-responsive-mode/, suffixed when the name is taken, and copies the skill under test into it.
 3. Makes a scratch repo with a bare origin on disk. It holds the slow report script, which sleeps 90 seconds and prints a random line.
-4. Copies the skill into that repo under another name, so the chat calls it /responsive-mode-under-test and your installed copy stays untouched.
+4. Copies that whole folder into the repo under another name, following symlinked hooks, so the chat calls it /responsive-mode-under-test and your installed copy stays untouched.
 5. drive.py starts one headless Sonnet chat. Job at 0s, "what is 17 + 25?" at 25s, "what is the capital of France?" at 40s. stdin stays open until the chat sits idle for 60s with no background task running, or 15 minutes pass. The job tells the chat to keep every temporary file inside its own working folder.
 6. Saves origin's REPORT.md, grades, then deletes its own scratch folders. --keep leaves them.
 
@@ -35,6 +37,7 @@ One run costs 3 to 15 minutes and one small Sonnet chat.
 
 - Exit 3: Claude is ahead of pace. Try later, never bypass the gate.
 - loaded fails: the skill body never reached the chat. Check that the skill has a name: responsive-mode line for the rename to match.
+- checks loaded fails: the skill's hooks never ran.
 - Every reply check fails and the log holds no assistant text: read the .stderr file next to chat.jsonl. Usually the login or the model name.
 
 ## Drive
@@ -55,6 +58,7 @@ Every run keeps a folder under ~/.local/state/verify-responsive-mode/ with these
 | chat.jsonl | every event and its arrival second, plus each message sent |
 | plan.json, spec.json | what was sent and what the grade expects |
 | skill-under-test.md | the exact skill text tested |
+| skill-under-test/ | the whole skill folder tested, hooks and their files included |
 | transcript.jsonl | the chat's own transcript, where the expanded skill text appears |
 | ran.txt, ran2.txt | the slow steps finished |
 | pushed-report.md, origin-log.txt | what main holds on origin |
@@ -70,5 +74,5 @@ The run script deletes only the two folders it made with mktemp, never the evide
 
 - Headless runs skip the server's reply-first guard, which watches interactive chats only. This proves the skill, not the guard.
 - A break run shows what Sonnet does without the skill. It may still pass, because the job is small. Treat it as a baseline, not a required FAIL. The grader's failure paths have their own tests.
-- Two runs at once stay out of each other's way, because the job sends every temporary file into the run's own working folder. A chat that writes to /tmp anyway can still collide, and the grade will not excuse it: a report line belonging to the other run fails pushed.
+- Two runs at once stay out of each other's way, and the grade excuses no collision: a report line belonging to the other run fails pushed.
 - --hard runs the two-step job: a second 90 second script that needs the first one's REPORT.md, plus two more side questions at 100s and 150s. Budget up to 20 minutes.

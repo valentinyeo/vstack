@@ -10,6 +10,13 @@ never from the chat's own claim.
 - The skill under test has a `name: responsive-mode` frontmatter line, so `run` can
   rename it into the scratch repo, and a `# Responsive mode` heading, which is the
   marker the `loaded` check looks for.
+- `run` copies the skill's whole folder, following symlinks, into the scratch repo and
+  into the evidence folder, so a hook file the frontmatter names is never left behind.
+- The skill's own hooks load with it. The chat transcript logs each hook run as a
+  record holding an `attachment` whose `type` starts with `hook`, its `hookEvent` and
+  the `command` that ran, so `checks loaded` matches that command's file name against
+  the frontmatter. Another hook on the box, a hook named only in chat text, and a
+  chat that never loaded the skill all count as no run.
 
 ## Driving conventions
 

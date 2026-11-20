@@ -84,6 +84,11 @@ while [ -e "$E" ]; do
 done
 mkdir -p "$E"
 cp "$SKILL" "$E/skill-under-test.md"
+# The whole folder, hooks and their files included: the skill loads its own
+# checks, so a folder missing one of them would grade the wrong thing. The
+# evidence copy is what grade.py reads for the hooks block.
+SKILL_DIR=$(dirname "$SKILL")
+cp -rL "$SKILL_DIR" "$E/skill-under-test"
 GIT_SHA=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)
 python3 -I - "$E/meta.json" "$SKILL" "$BREAK" "$HARD" "$KEEP" "$GIT_SHA" <<'PY'
 import json
@@ -127,8 +132,11 @@ SH
   chmod +x "$W/slow-publish.sh"
 fi
 printf '# Scratch project for the responsive mode check\n' > "$W/CLAUDE.md"
-mkdir -p "$W/.claude/skills/$NAME"
-sed "s/^name: responsive-mode$/name: $NAME/" "$SKILL" > "$W/.claude/skills/$NAME/SKILL.md"
+mkdir -p "$W/.claude/skills"
+cp -rL "$SKILL_DIR" "$W/.claude/skills/$NAME"
+sed "s/^name: responsive-mode$/name: $NAME/" "$W/.claude/skills/$NAME/SKILL.md" \
+  > "$W/.claude/skills/$NAME/SKILL.md.renamed"
+mv "$W/.claude/skills/$NAME/SKILL.md.renamed" "$W/.claude/skills/$NAME/SKILL.md"
 git -C "$W" add -A
 git -C "$W" -c user.name=vrm -c user.email=vrm@invalid commit -qm init
 git -C "$W" remote add origin "$O"
