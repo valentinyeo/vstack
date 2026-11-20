@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"<command-message>valentin-mode</command-message>\n<command-name>/valentin-mode</command-name>"},"uuid":"1a1","timestamp":"2026-11-20T10:00:00.000Z","sessionId":"s-command"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Valentin mode loaded. What is the task?"}]},"uuid":"1a2","timestamp":"2026-11-20T10:00:02.000Z","sessionId":"s-command"}

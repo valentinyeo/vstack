@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"should this chat load valentin-mode? the /valentin-mode skill is for his own projects"},"uuid":"4a1","timestamp":"2026-11-20T13:00:00.000Z","sessionId":"s-plain"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"Skill","input":{"skill":"responsive-mode"}}]},"uuid":"4a2","timestamp":"2026-11-20T13:00:01.000Z","sessionId":"s-plain"}

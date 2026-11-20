@@ -7,6 +7,9 @@ through plan-pick, and the direct launches drained Codex. plan-pick starts its r
 subprocesses, so no hook sees them and no marker env is needed. Help and version probes pass, and so does a
 command that only mentions the words, such as grep for "codex exec".
 
+The guard acts only in a chat that loaded valentin-mode, read from the hook input's transcript_path by
+hooks/valentin_mode_loaded.py, so it is safe to wire once in the global ~/.claude/settings.json.
+
 Launches are parsed with hooks/book-check.py's own launch_argv and worker_launch, so this guard and the book
 check agree on what a worker launch is.
 
@@ -18,6 +21,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import tempfile
 
 MESSAGE = ("BLOCKED by plan-pick-only: workers start only through plan-pick, so every chat shares one live "
            "usage pick. Put the brief in brief.txt and run ~/.local/bin/plan-pick --run (reviews add "
@@ -26,6 +30,10 @@ MESSAGE = ("BLOCKED by plan-pick-only: workers start only through plan-pick, so 
 _spec = importlib.util.spec_from_file_location("book_check", Path(__file__).resolve().with_name("book-check.py"))
 book = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(book)
+_spec = importlib.util.spec_from_file_location("valentin_mode_loaded",
+                                               Path(__file__).resolve().with_name("valentin_mode_loaded.py"))
+valentin = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(valentin)
 NESTED = frozenset({"lease"})
 PROBE = frozenset({"-h", "--help", "-V", "--version"})
 REDIRECT = re.compile(r"^\d*[<>]")
@@ -56,6 +64,20 @@ def verdict(cmd):
         if book.worker_launch(shlex.join(args)):
             return MESSAGE
     return None
+
+
+def gate(payload):
+    if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict) or not valentin.loaded(payload.get("transcript_path")):
+        return None
+    command = tool_input.get("command")
+    return verdict(command if isinstance(command, str) else "")
+
+
+def launch(transcript, command):
+    return {"tool_name": "Bash", "transcript_path": str(transcript), "tool_input": {"command": command}}
 
 
 def self_test():
@@ -93,6 +115,23 @@ def self_test():
         assert verdict(cmd) == MESSAGE, f"blocked: {cmd}"
     for cmd in allowed:
         assert verdict(cmd) is None, f"allowed: {cmd}"
+    direct = 'nohup ~/.npm-global/bin/codex exec -C /tmp/x "$(cat b)" &'
+    with tempfile.TemporaryDirectory() as where:
+        def transcript(name, text):
+            path = Path(where, name)
+            path.write_text(text)
+            return path
+
+        loaded = transcript("loaded.jsonl", '{"type":"user","message":{"content":'
+                                            '"<command-name>/valentin-mode</command-name>"}}\n')
+        plain = transcript("plain.jsonl", '{"type":"user","message":{"content":"hello"}}\n')
+        assert gate(launch(loaded, direct)) == MESSAGE, "a valentin-mode chat never launches a worker directly"
+        assert gate(launch(plain, direct)) is None, "a plain chat is not gated"
+        assert gate(launch(Path(where, "gone.jsonl"), direct)) is None, "a missing transcript allows"
+        assert gate({"tool_name": "Bash", "tool_input": {"command": direct}}) is None, \
+            "a payload with no transcript allows"
+        assert gate(launch(loaded, "~/.local/bin/plan-pick --run")) is None, \
+            "a valentin-mode chat still starts through plan-pick"
     print("plan-pick-only self-test ok")
 
 
@@ -104,13 +143,7 @@ def main():
         data = json.load(sys.stdin)
     except ValueError:
         return 0
-    if not isinstance(data, dict) or data.get("tool_name") != "Bash":
-        return 0
-    tool_input = data.get("tool_input")
-    if not isinstance(tool_input, dict):
-        return 0
-    command = tool_input.get("command")
-    why = verdict(command if isinstance(command, str) else "")
+    why = gate(data)
     if not why:
         return 0
     print(why, file=sys.stderr)

@@ -1,0 +1,1 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /home/valentin/.claude/skills/valentin-mode\n\n# Valentin mode\n\nIf no rules appear under Responsive mode below, load it first."}]},"uuid":"3a1","timestamp":"2026-11-20T12:00:00.000Z","sessionId":"s-basedir"}

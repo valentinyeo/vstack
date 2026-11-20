@@ -129,6 +129,14 @@ link_one claude-helper-gate.py "$ROOT/hooks/claude-helper-gate.py" "$HOME/.claud
 # UserPromptSubmit hook in each project's .claude/settings.json.
 link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
 
+# The two lane hooks act only in a chat that loaded valentin-mode, so they are
+# safe to register once in the global ~/.claude/settings.json (VSTA-70). They
+# import their sibling modules by path, so those are linked too.
+link_one plan-pick-only.py "$ROOT/hooks/plan-pick-only.py" "$HOME/.claude/hooks"
+link_one claude-helper-gate.py "$ROOT/hooks/claude-helper-gate.py" "$HOME/.claude/hooks"
+link_one valentin_mode_loaded.py "$ROOT/hooks/valentin_mode_loaded.py" "$HOME/.claude/hooks"
+link_one book-check.py "$ROOT/hooks/book-check.py" "$HOME/.claude/hooks"
+
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"
 else

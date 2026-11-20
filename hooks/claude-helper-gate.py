@@ -3,6 +3,8 @@
 
 MULTIPROMPT_TAB or TMUX set means this is a chat Valentin talks to, so the gate applies.
 Neither set means a headless fleet run, so every call passes.
+The gate also needs valentin-mode loaded, read from the hook input's transcript_path by
+hooks/valentin_mode_loaded.py, so it is safe to wire once in the global ~/.claude/settings.json.
 plan-pick is the only source of truth: exit 0 allows, exit 3 refuses, and any other result
 (a missing picker, a timeout, another exit) allows, so a broken picker never stops work.
 The refusal sends the work to plan-pick --run, never to a worker started directly.
@@ -10,6 +12,7 @@ PLAN_PICK_BIN overrides the picker path, so the self-test runs on stub pickers.
 
 claude-helper-gate.py --self-test
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -17,6 +20,10 @@ import subprocess
 import sys
 import tempfile
 
+_spec = importlib.util.spec_from_file_location("valentin_mode_loaded",
+                                              Path(__file__).resolve().with_name("valentin_mode_loaded.py"))
+valentin = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(valentin)
 PICKER = os.path.expanduser("~/.local/bin/plan-pick")
 TIMEOUT = 20
 MESSAGE = ("BLOCKED by claude-helper-gate: Claude is ahead of its pace, so this helper runs on another plan. "
@@ -40,6 +47,13 @@ def ask(path):
     except (OSError, subprocess.SubprocessError):
         return None
     return done if done.returncode in (0, 3) else None
+
+
+def chat(payload, env=None):
+    env = os.environ if env is None else env
+    if not (env.get("MULTIPROMPT_TAB") or env.get("TMUX")):
+        return False
+    return valentin.loaded(payload.get("transcript_path") if isinstance(payload, dict) else None)
 
 
 def verdict(in_chat, path=None):
@@ -75,6 +89,17 @@ def self_test():
         assert verdict(True, where) is None, "a picker that cannot run allows"
         assert verdict(False, refused) is None, "a headless run is not a chat"
         assert verdict(False, allowed) is None, "a headless run passes whatever the picker says"
+        loaded = Path(where, "loaded.jsonl")
+        loaded.write_text('{"type":"user","message":{"content":'
+                          '"<command-name>/valentin-mode</command-name>"}}\n')
+        plain = Path(where, "plain.jsonl")
+        plain.write_text('{"type":"user","message":{"content":"hello"}}\n')
+        tab = {"MULTIPROMPT_TAB": "tab-1"}
+        assert chat({"transcript_path": str(loaded)}, tab), "a valentin-mode chat is gated"
+        assert not chat({"transcript_path": str(plain)}, tab), "a plain chat is never gated"
+        assert not chat({"transcript_path": str(Path(where, "gone.jsonl"))}, tab), \
+            "a missing transcript allows"
+        assert not chat({"transcript_path": str(loaded)}, {}), "a headless run is not a chat"
     print("claude-helper-gate self-test ok")
 
 
@@ -82,7 +107,11 @@ def main():
     if sys.argv[1:] == ["--self-test"]:
         self_test()
         return 0
-    why = verdict(bool(os.environ.get("MULTIPROMPT_TAB") or os.environ.get("TMUX")))
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        data = None
+    why = verdict(chat(data))
     if why:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                  "permissionDecisionReason": why}}))
