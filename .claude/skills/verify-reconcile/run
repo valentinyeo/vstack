@@ -48,9 +48,11 @@ esac
 case "$LIMIT" in
   ''|*[!0-9]*) echo "run: --limit must be a number" >&2; exit 2 ;;
 esac
+if [ "$LIMIT" -lt 1 ]; then echo "run: --limit must be at least 1" >&2; exit 2; fi
 case "$CALL_BUDGET" in
   ''|*[!0-9]*) echo "run: --call-budget must be a number" >&2; exit 2 ;;
 esac
+if [ "$CALL_BUDGET" -lt 1 ]; then echo "run: --call-budget must be at least 1" >&2; exit 2; fi
 
 # The script may be a branch's copy of reconcile, so make it absolute once.
 case "$SCRIPT" in

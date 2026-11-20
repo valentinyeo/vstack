@@ -39,6 +39,20 @@ def read_json(path, default):
     return value
 
 
+def read_cases(path):
+    """The case list, and the reason it could not be read (None when it could)."""
+    text = read_text(path)
+    if not text.strip():
+        return [], None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None, 'cases.json is not valid JSON'
+    if not isinstance(value, list):
+        return None, 'cases.json is not a list of cases'
+    return value, None
+
+
 def plan_rows(text):
     """Every PLAN/KEEP/MOVE/DEFERRED line, in the order reconcile printed it."""
     rows = []
@@ -85,12 +99,14 @@ def moved(rows):
     return [row['ticket'] for row in rows if row['action'] == 'MOVE']
 
 
-def check_finished(dry1):
+def check_finished(dry1, board):
     if LOCK_SKIP.search(dry1):
         return FAIL, 'the board lock was held; another run owns this board'
     line = summary(dry1)
     if line is None:
         return FAIL, 'the dry run wrote no DRY RUN summary line'
+    if line['board'] != board:
+        return FAIL, 'the dry run read board %d, not board %d' % (line['board'], board)
     return PASS, '%s board=%d finished, %d tickets' % (line['kind'], line['board'], line['tickets'])
 
 
@@ -120,7 +136,9 @@ def check_calls(runs, budget):
     return PASS, '%s made %d github calls, within budget %d' % (name, worst, budget)
 
 
-def check_cases(cases, rows, source):
+def check_cases(cases, unreadable, rows, source):
+    if unreadable is not None:
+        return FAIL, unreadable
     if not cases:
         return PASS, 'no cases file, so no card columns to check'
     columns = final_columns(rows)
@@ -149,7 +167,11 @@ def check_apply(apply_out, apply_err):
     return PASS, 'the apply run finished its PREVIEW'
 
 
-def check_settled(apply_rows, dry2_rows):
+def check_settled(apply_ran, dry2_ran, apply_rows, dry2_rows):
+    if not apply_ran:
+        return FAIL, 'the apply run wrote no PREVIEW summary, so settling cannot be read'
+    if not dry2_ran:
+        return FAIL, 'the second dry run wrote no summary line, so settling cannot be read'
     applied = moved(apply_rows)
     if not applied:
         return PASS, 'the apply run moved nothing, so nothing can be re-planned'
@@ -160,7 +182,11 @@ def check_settled(apply_rows, dry2_rows):
     return PASS, 'none of the %d moved cards is planned again' % len(applied)
 
 
-def check_converged(dry1_rows, apply_rows, dry2_rows, limit):
+def check_converged(apply_ran, dry2_ran, dry1_rows, apply_rows, dry2_rows, limit):
+    if not apply_ran:
+        return FAIL, 'the apply run wrote no PREVIEW summary, so convergence cannot be read'
+    if not dry2_ran:
+        return FAIL, 'the second dry run wrote no summary line, so convergence cannot be read'
     before = len(planned_moves(dry1_rows))
     after = len(planned_moves(dry2_rows))
     applied = len(moved(apply_rows))
@@ -177,24 +203,22 @@ def check_converged(dry1_rows, apply_rows, dry2_rows, limit):
 
 
 def grade(evidence):
-    meta = read_json(evidence / 'meta.json', {})
-    meta = meta if isinstance(meta, dict) else {}
-    applying = meta.get('apply') is True
-    limit = meta.get('limit')
+    meta = read_json(evidence / 'meta.json', None)
+    applying = isinstance(meta, dict) and meta.get('apply') is True
+    limit = meta.get('limit') if isinstance(meta, dict) else None
     limit = limit if isinstance(limit, int) and limit > 0 else 5
-    budget = meta.get('call_budget')
+    budget = meta.get('call_budget') if isinstance(meta, dict) else None
     budget = budget if isinstance(budget, int) and budget > 0 else DEFAULT_BUDGET
-    board = meta.get('board')
+    board = meta.get('board') if isinstance(meta, dict) else None
     board = board if isinstance(board, int) else DEFAULT_BOARD
-    cases = read_json(evidence / 'cases.json', [])
-    cases = cases if isinstance(cases, list) else []
+    cases, unreadable_cases = read_cases(evidence / 'cases.json')
 
     dry1 = read_text(evidence / 'dry1.out')
     dry1_err = read_text(evidence / 'dry1.err')
     dry1_rows = plan_rows(dry1)
 
     checks = [
-        ('finished', check_finished(dry1)),
+        ('finished', check_finished(dry1, board)),
         ('bus', check_bus(dry1, dry1_err)),
         ('unknown', check_unknown(dry1)),
     ]
@@ -215,12 +239,15 @@ def grade(evidence):
         target_rows, target_name = dry1_rows, 'dry1'
 
     checks.append(('calls', check_calls(runs, budget)))
-    checks.append(('cases', check_cases(cases, target_rows, target_name)))
+    checks.append(('cases', check_cases(cases, unreadable_cases, target_rows, target_name)))
     if applying:
+        apply_ran = summary(apply_out) is not None
+        dry2_ran = summary(dry2) is not None
         checks += [
             ('apply', check_apply(apply_out, apply_err)),
-            ('settled', check_settled(apply_rows, dry2_rows)),
-            ('converged', check_converged(dry1_rows, apply_rows, dry2_rows, limit)),
+            ('settled', check_settled(apply_ran, dry2_ran, apply_rows, dry2_rows)),
+            ('converged', check_converged(apply_ran, dry2_ran, dry1_rows, apply_rows,
+                                         dry2_rows, limit)),
         ]
     return board, applying, checks
 
@@ -236,6 +263,9 @@ def main(argv):
         return 2
     if not (evidence / 'dry1.out').is_file():
         print('grade.py: no dry1.out in %s' % evidence, file=sys.stderr)
+        return 2
+    if not isinstance(read_json(evidence / 'meta.json', None), dict):
+        print('grade.py: no readable meta.json in %s' % evidence, file=sys.stderr)
         return 2
 
     board, applying, checks = grade(evidence)

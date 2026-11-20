@@ -105,6 +105,76 @@ class VerifyReconcileGrade(unittest.TestCase):
             self.assertFalse(any(line.split(':')[0].endswith(' ' + check) for line in output.splitlines()),
                              '%s must not be graded on a dry run:\n%s' % (check, output))
 
+    def copy_fixture(self, case):
+        target = self.temp_dir() / case
+        shutil.copytree(FIXTURES / case, target)
+        return target
+
+    def test_empty_cases_file_is_not_a_failure(self):
+        target = self.copy_fixture('pass-dry')
+        (target / 'cases.json').write_text('[]\n')
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('PASS cases: no cases file, so no card columns to check', result.stdout)
+
+    def test_malformed_cases_json_fails_cases(self):
+        target = self.copy_fixture('pass-dry')
+        (target / 'cases.json').write_text('[]\n[not json\n')
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL cases: cases.json is not valid JSON', result.stdout)
+
+    def test_cases_json_that_is_not_a_list_fails_cases(self):
+        target = self.copy_fixture('pass-dry')
+        (target / 'cases.json').write_text('{"ticket": "HTPR-9514", "expect": "Verification Backlog"}\n')
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL cases: cases.json is not a list of cases', result.stdout)
+
+    def test_missing_dry2_fails_settled_and_converged(self):
+        target = self.copy_fixture('pass-apply-converged')
+        (target / 'dry2.out').unlink()
+        (target / 'cases.json').write_text('[]\n')
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL settled: the second dry run wrote no summary line, '
+                      'so settling cannot be read', result.stdout)
+        self.assertIn('FAIL converged: the second dry run wrote no summary line, '
+                      'so convergence cannot be read', result.stdout)
+        self.assertNotIn('VERDICT PASS', result.stdout)
+
+    def test_missing_apply_output_fails_settled_and_converged(self):
+        target = self.copy_fixture('pass-apply-converged')
+        (target / 'apply.out').unlink()
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL settled: the apply run wrote no PREVIEW summary, '
+                      'so settling cannot be read', result.stdout)
+        self.assertIn('FAIL converged: the apply run wrote no PREVIEW summary, '
+                      'so convergence cannot be read', result.stdout)
+
+    def test_board_mismatch_fails_finished(self):
+        target = self.copy_fixture('pass-dry')
+        meta = json.loads((target / 'meta.json').read_text())
+        meta['board'] = 2060
+        (target / 'meta.json').write_text(json.dumps(meta))
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL finished: the dry run read board 15, not board 2060', result.stdout)
+
+    def test_missing_meta_exits_2(self):
+        target = self.copy_fixture('pass-dry')
+        (target / 'meta.json').unlink()
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+
     def test_missing_evidence_dir_exits_2(self):
         missing = self.temp_dir() / 'does-not-exist'
         result = subprocess.run(
@@ -147,6 +217,16 @@ class VerifyReconcileSkill(unittest.TestCase):
         text = RUN.read_text()
         self.assertNotIn('rm -rf "$E"', text, 'a run must keep its evidence')
         self.assertNotIn('rm -rf "$HOME/.local/state/verify-reconcile', text)
+
+    def test_run_script_rejects_zero_limit_and_budget(self):
+        for flag in ('--limit', '--call-budget'):
+            for value in ('0', '-1', 'x'):
+                result = subprocess.run(
+                    [str(RUN), '--board', '15', flag, value],
+                    capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 2,
+                                 '%s %s must be refused:\n%s' % (flag, value, result.stdout))
+                self.assertNotIn('dry run 1', result.stdout)
 
     def test_cases_file_lists_live_board_15_cards(self):
         cases = json.loads(CASES.read_text())
