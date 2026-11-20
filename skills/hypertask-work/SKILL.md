@@ -49,7 +49,8 @@ Other boards keep their own columns.
 
 ## Reconcile
 
-Run the reconcile yourself, on your own board, with your own agent login:
+The Stop hook reconcile-auto runs it for your board and label; you still run it by hand after you move work.
+Run it yourself, on your own board, with your own agent login:
 
 ```sh
 skills/hypertask-work/reconcile --board 2060
