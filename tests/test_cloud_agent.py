@@ -157,12 +157,26 @@ class ModuleTests(unittest.TestCase):
         for model in ('composer-2.5', 'composer-2.5-fast', 'grok-4.7-high', 'grok-4.7-xhigh-fast',
                       'cursor-grok-4.6-high'):
             self.assertTrue(self.m.cursor_model_ok(model), model)
-        for model in ('auto', 'claude-opus-5-high', 'gpt-5.3-codex', 'sonnet-4-thinking', ''):
+        for model in ('auto', 'claude-opus-5-high', 'gpt-5.3-codex', 'sonnet-4-thinking', '',
+                      'grok-', 'composer-2.5-'):
             self.assertFalse(self.m.cursor_model_ok(model), model)
 
     def test_cursor_prompt_label(self):
         self.assertEqual(self.m.model_label('composer-2.5'), 'Composer 2.5')
         self.assertEqual(self.m.model_label('grok-4.7-high'), 'Grok 4.7')
+        self.assertEqual(self.m.model_label('grok-'), 'Grok', 'an odd id must not crash the launch')
+
+    def test_a_brief_that_mentions_a_rate_limit_is_not_a_vendor_limit(self):
+        # Verified break, 2026-11-20: the pane still shows the brief the user typed, so reading the
+        # whole pane made "fix the rate limit bug" report status limit, exit 75, and skip the lane.
+        brief = "Fix the bug where the API says 'rate limit' when caching. Avoid quota errors."
+        pane = 'Composer 2.5\n' + self.m.flatten(brief)
+        self.assertFalse(self.m.cursor_limit_hit(self.m.submitted_tail(pane)))
+        real = pane + '\nChecking git status\nUsage limit reached. Resets in 3h.'
+        self.assertTrue(self.m.cursor_limit_hit(self.m.submitted_tail(real)))
+        submitted = pane + '\nChecking git status\n' + PANE
+        self.assertEqual(self.m.extract_cursor_url(self.m.submitted_tail(submitted))[0],
+                         'https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986')
 
     def test_owner_repo_from_every_remote_form(self):
         for remote in ('git@github.com:valentinyeo/vstack.git',
@@ -213,6 +227,69 @@ class ModuleTests(unittest.TestCase):
 
     def test_flatten_collapses_newlines_for_the_cursor_repl(self):
         self.assertEqual(self.m.flatten('Reply with the first heading.\n\nNo PR.\n'), 'Reply with the first heading. No PR.')
+
+
+CODEX_STUB = '''
+import pathlib, sys
+args = sys.argv[1:]
+if args[:2] == ['cloud', 'apply']:
+    pathlib.Path('applied.txt').write_text('codex changed this\\n')
+    pathlib.Path('error.log').write_text('vendor debug\\n')
+    print('applied')
+    sys.exit(0)
+print('codex stub: unexpected ' + ' '.join(args), file=sys.stderr)
+sys.exit(1)
+'''
+
+GH_STUB = '''
+import sys
+if sys.argv[1:3] == ['pr', 'create']:
+    print('https://github.com/valentinyeo/example/pull/7')
+    sys.exit(0)
+print('gh stub: unexpected ' + ' '.join(sys.argv[1:]), file=sys.stderr)
+sys.exit(1)
+'''
+
+
+class CodexPullRequestTests(unittest.TestCase):
+    """The path that cannot be proven live today: apply, commit, push and gh pr create."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load_script()
+
+    def test_a_ready_task_becomes_a_pushed_branch_and_pull_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            remote = root / 'remote.git'
+            subprocess.run(['git', 'init', '-q', '--bare', str(remote)], check=True)
+            repo = make_repo(root / 'repo', remote=str(remote))
+            git(repo, 'push', '-q', 'origin', 'main')
+            fake = root / 'bin'
+            fake.mkdir()
+            (fake / 'codex').write_text(f'#!{sys.executable}\n' + CODEX_STUB)
+            (fake / 'gh').write_text(f'#!{sys.executable}\n' + GH_STUB)
+            (fake / 'codex').chmod(0o755)
+            (fake / 'gh').chmod(0o755)
+            saved = self.m.BIN_DIRS
+            self.m.BIN_DIRS = (fake,)
+            try:
+                row = self.m.codex_pull_request(
+                    repo, 'valentinyeo/example', 'task_e_test',
+                    'https://chatgpt.com/codex/tasks/task_e_test', 'Add the thing.\n')
+            finally:
+                self.m.BIN_DIRS = saved
+            self.assertEqual(row['status'], 'done', row)
+            self.assertEqual(row['branch'], 'codex/task_e_test')
+            self.assertEqual(row['pr_url'], 'https://github.com/valentinyeo/example/pull/7')
+            git(remote, 'rev-parse', '--verify', 'codex/task_e_test')
+            self.assertEqual(git(repo, 'show', 'codex/task_e_test:applied.txt').stdout,
+                             'codex changed this\n')
+            log = subprocess.run(['git', '-C', str(repo), 'show', 'codex/task_e_test:error.log'],
+                                 capture_output=True, text=True)
+            self.assertNotEqual(log.returncode, 0, 'the codex debug log never reaches the branch')
+            trees = [line for line in git(repo, 'worktree', 'list').stdout.splitlines() if line.strip()]
+            self.assertEqual(len(trees), 1, 'the temporary worktree is removed')
 
 
 class PreflightTests(unittest.TestCase):

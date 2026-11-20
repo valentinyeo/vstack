@@ -88,7 +88,8 @@ CODEX_TASK = re.compile(r'task_e_[0-9a-z]+')
 CODEX_TASK_URL = re.compile(r'https://chatgpt\.com/codex/tasks/(task_e_[0-9a-z]+)')
 PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
 GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
-CURSOR_MODEL = re.compile(r'^(?:composer-2\.5(?:-|$)|(?:cursor-)?grok-)')
+CURSOR_MODEL = re.compile(r'^(?:composer-2\.5(?:-[a-z]+)*|(?:cursor-)?grok-\d+(?:\.\d+)?(?:-[a-z]+)*)$')
+SUBMITTED = ('Checking git status', 'Open Cloud Agent in:')
 UPSTREAM = re.compile(r'^[^/]+/(.+)$')
 
 
@@ -170,6 +171,14 @@ def cursor_limit_hit(text):
     return bool(CURSOR_LIMIT.search(text or ''))
 
 
+def submitted_tail(text):
+    """The pane from the first sign that cursor started on the brief, so the brief itself is never
+    read as a vendor error. A brief about a `rate limit` bug must not report a limit."""
+    cuts = [text.rfind(marker) for marker in SUBMITTED]
+    cuts = [cut for cut in cuts if cut >= 0]
+    return text[min(cuts):] if cuts else ''
+
+
 def extract_cursor_url(text):
     """(agent_url, task_id) from the cursor CLI pane, or (None, None). The real line is
     `  Open Cloud Agent in: https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986`."""
@@ -240,7 +249,7 @@ def cursor_model_ok(model):
 
 def model_label(model):
     """What the cursor prompt bar shows for a model id: composer-2.5 -> Composer 2.5."""
-    head = model.split('-')[:2]
+    head = [part for part in model.split('-') if part][:2]
     return ' '.join(part.capitalize() if not part[0].isdigit() else part for part in head)
 
 
@@ -432,11 +441,13 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
         if entered.returncode != 0:
             return failed('cursor', f'could not press Enter in the cursor prompt: {saying(entered)}')
 
-        pane = poll(read, lambda text: bool(extract_cursor_url(text)[0]) or cursor_limit_hit(text),
-                    CURSOR_SUBMIT_SECONDS)
+        # Only the pane after cursor starts working counts as a limit: the pane still shows the
+        # brief the user wrote, and a brief may say "rate limit" or "quota" in its own words.
+        pane = poll(read, lambda text: bool(extract_cursor_url(text)[0])
+                    or cursor_limit_hit(submitted_tail(text)), CURSOR_SUBMIT_SECONDS)
         agent_url, task_id = extract_cursor_url(pane or '')
         if not agent_url:
-            if pane and cursor_limit_hit(pane):
+            if pane and cursor_limit_hit(submitted_tail(pane)):
                 return limit('cursor')
             return failed('cursor', f'no cloud agent URL in the cursor pane {CURSOR_SUBMIT_SECONDS}s '
                                     f'after pressing Enter: {saying(read())[-600:]}')
