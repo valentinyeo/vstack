@@ -1488,6 +1488,50 @@ class LeaseTest(unittest.TestCase):
         self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.calls],
                          ['start', 'end'])
 
+    def sync_start(self, assignees, take_code=0):
+        """Run one start action with the board CLI faked; return its calls."""
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append((command, kwargs.get('env', {})))
+            if command[1:3] == ['--json', 'task']:
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    json.dumps({'tasks': [{'projectId': 2060, 'assignees': assignees}]}), '')
+            return subprocess.CompletedProcess(command, take_code, '', '')
+
+        with patch.object(lease.shutil, 'which', return_value='/bin/hypertask'), \
+                patch.object(lease.subprocess, 'run', side_effect=fake), \
+                patch.object(lease.reconcile, 'LEASES', self.directory), \
+                patch.object(lease.session, 'login_for_session', return_value=self.login()), \
+                patch.object(lease, 'spawn_card'), \
+                patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
+            self.assertEqual(lease.main(), 0)
+        return calls
+
+    def test_start_sync_takes_the_ticket_when_it_has_no_agent(self):
+        for assignees in ([], [{'id': 6, 'agent': None}]):
+            with self.subTest(assignees=assignees):
+                calls = self.sync_start(assignees)
+                take = [command for command, _env in calls
+                        if command[1:3] == ['agent', 'take']]
+                self.assertEqual(take, [['/bin/hypertask', 'agent', 'take', 'SOFT-1',
+                                         '--project', '2060']])
+                for _command, env in calls:
+                    self.assertEqual(env['SHIP_SESSION_NAME'], 'Test Chat')
+                    self.assertEqual(env['HYPERTASKS_JWT_TOKEN'], 'secret')
+
+    def test_start_sync_never_replaces_an_existing_agent(self):
+        calls = self.sync_start([{'id': 6, 'agent': {'id': 'agent-1'}}])
+        self.assertFalse([command for command, _env in calls
+                          if command[1:3] == ['agent', 'take']])
+
+    def test_a_failed_take_never_fails_the_lease(self):
+        calls = self.sync_start([], take_code=1)
+        self.assertTrue([command for command, _env in calls
+                         if command[1:3] == ['agent', 'take']])
+        self.assertTrue(self.path.is_file(), 'the lease is still written')
+
     def test_no_login_spawns_nothing_and_the_lease_still_works(self):
         with patch.object(lease.reconcile, 'LEASES', self.directory), \
                 patch.object(lease.session, 'login_for_session', return_value=None), \

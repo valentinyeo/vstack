@@ -5,21 +5,21 @@ description: "board drain;drain my board;drain loop;is my loop armed;work my vie
 
 # Board drain
 
-Prior art: pstack poteto-mode Autopilot-full runs a queue: one owner per item from build to merge, a verifier that never wrote the code, and an audit loop that judges agents by side effects and replaces stuck ones. Autonomous-run says a loop needs a check that can pass or fail. vstack hypertask-work owns columns and the reconcile. None of them says which queue a chat drains, how its loop survives a restart or expiry, or what counts as waiting on Valentin. Only those gaps are here.
+Prior art: pstack poteto-mode Autopilot-full runs a queue: one owner per item from build to merge, a verifier that never wrote the code, and an audit loop that judges agents by side effects and replaces stuck ones. Autonomous-run says a loop needs a check that can pass or fail. The `/hypertask` skill owns columns and the reconcile. None of them says which queue a chat drains, how its loop survives a restart or expiry, or what counts as waiting on Valentin. Only those gaps are here.
 
 Each chat runs this on itself. Nobody drains another chat's board.
 Paths resolve from this folder.
 
 ## The loop is Autopilot-full
 
-The queue is your own view: `Hypertask board: <id>, label: <label>` from your agent notes. Add the line when it is missing.
+The queue is your own view: `Hypertask board: <id>` in your agent notes, with the label resolved from your chat name. Add the line when it is missing.
 The loop prompt, word for word:
 
 ```text
 /pstack:poteto-mode full autopilot on this queue: every workable ticket in my view <view URL>. each item is independent. done when skills/board-drain/drain-check --board <id> --label <label> passes.
 ```
 
-Autopilot-full does the work: owners, proof, verdicts, merges, stuck agents. Two house mappings apply. Owners start through `~/.local/bin/plan-pick --run`, wrapped in `../hypertask-work/lease`, never as Claude chats. A ticket's column follows `hypertask-work`, never Valentin Review.
+Autopilot-full does the work: owners, proof, verdicts, merges, stuck agents. Two house mappings apply. Owners start through `~/.local/bin/plan-pick --run`, wrapped in `../hypertask-work/lease`, never as Claude chats. A ticket's column follows the `/hypertask` skill, references/board.md, never Valentin Review.
 
 ## Arm
 
@@ -35,12 +35,12 @@ Never delete the loop because Todo looks empty. A tick with nothing new stays qu
 
 On top of Autopilot-full's audit:
 
-1. **Sync.** `./sync --board <id> --label <label> --name "<name>"` runs the reconcile preview, then `--apply --limit 5`, as your own login. Read each reason. A usage error or non-zero exit prints `sync: FAIL`, and drain-check reports it until a sync succeeds.
+1. **Sync.** `./sync --board <id> --label <label> --name "<name>"` runs the reconcile preview, then `--apply --limit 5`, as your own login (the `/hypertask` skill, references/sync.md). Read each reason. A usage error or non-zero exit prints `sync: FAIL`, and drain-check reports it until a sync succeeds.
 2. **New tickets join the queue.** A workable Todo ticket with no owner gets one.
 3. **Waits.** Read the newest comments on each waiting ticket first. Valentin's yes makes it workable: clear the mark and give it an owner.
 4. **Check.** `./drain-check --board <id> --label <label> --state-name "<name>"`.
 5. **Re-arm.** `loop-state status` exit 3 means expiry within a day: arm a fresh loop, record it, then delete the old one.
-6. **Daily.** `/hypertask-checkup` once a day.
+6. **Daily.** `/hypertask checkup` once a day.
 
 ## What counts as waiting
 

@@ -16,7 +16,7 @@ First step, before any other tool: load the `pstack:poteto-mode` and `responsive
 - **Screenshots:** One public https URL, never a file path or a second image host.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
-- **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat.
+- **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat. The `/hypertask` skill owns the ticket rules.
 
 ## Three tools
 
@@ -24,17 +24,13 @@ First step, before any other tool: load the `pstack:poteto-mode` and `responsive
 
 Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option.
 
-### Board rules
+### Board work
 
-Board work follows the `hypertask-work` skill: own login, ticket first, true column. Get the login with `/board-identity`. Never write as Valentin; a guard blocks it. Run `/hypertask-checkup` on a new project and daily.
-
-### Board sync
-
-Project notes name it: `Hypertask board: <id>, label: <label>`. The lease syncs a card when its worker starts and ends. A Stop hook runs `reconcile --label <label> --apply` after each turn, at most every 10 minutes, as your own login named like your Multibot chat. It stops you only when your setup is missing. Tool failures go to failures.jsonl under ~/.local/state/reconcile-auto for the reconcile owner, Hypertask Reconciler. On `/valentin-mode`, read your record and fix it.
+Before any board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
 ## Working
 
-- **Hypertask gaps:** file one at once with `hypertask feedback` (see `hypertask-work`), then send him the link.
+- **Hypertask gaps:** file one at once with `hypertask feedback` (see the `/hypertask` skill), then send him the link.
 - **Bans live in lint:** a ban written only in markdown is not a ban.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.

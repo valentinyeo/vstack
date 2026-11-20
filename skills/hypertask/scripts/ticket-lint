@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Human-lane lint for Hypertask titles, descriptions and people comments.
+
+Usage: ticket-lint [--old FILE] [--shape] FILE|-
+Exit 0 = ok. Exit 1 = rejected; reasons on stderr.
+--old: only lines not already in FILE are checked (edits keep old text).
+--shape: a ticket description must have the house parts (skills/hypertask).
+"""
+import html
+import re
+import sys
+
+MAX_WORDS = 12  # hard cap; skill target stays 8. Approved model tickets run 9 to 10.
+URL = re.compile(r"https?://\S+|<https?://[^>]+>")
+QUOTE = re.compile(r"\"[^\"]+\"|“[^”]+”")  # Valentin's own words stay verbatim
+ROBOT =re.compile(r"(^|[\s.])(Next|Helpers|Branch/PR|Branch|PR|Outputs|Claimed|Claim|Released|Resume|Session|tmux|Worktree|Ledger)\s*:", re.I)
+# A gate word is only a status label when it opens the line; a heading may end in it.
+BARE_GATE = re.compile(r"^\s*(Gate|Gates)\s*:", re.I)
+MONEY = re.compile(r"\b(money|cost|costs|pay|pays|paid|paying|payment|spend|spending|price|pricing|billing|charge|charges|budget|invoice|subscription|dollars?|usd|gbp|euros?|pounds?)\b|[£$€]", re.I)
+AMOUNT = re.compile(r"[£$€]\s?\d|\b\d+(\.\d+)?\s?(k\b|dollars?|usd|gbp|pounds?|euros?|cents?|a month|a year|per month|per year)|\b(free|no cost|no charge|nothing to pay|at no cost|zero cost)\b", re.I)
+ONCE = re.compile(r"\bonce\b", re.I)
+FACT_ASK = re.compile(r"\b(can|could|would|will) you\b[^.?]{0,30}\b(share|send|tell|check|confirm|look|find|give|provide|paste|read|screenshot)\b"
+                      r"|\bwhat (version|build|number)\b|\bwhich (version|build)\b", re.I)
+ZERO_COST = re.compile(r"[£$€]\s?0(\.0+)?\b(?!\.\d*[1-9])|\b(existing|own|current) (claude |codex )?subscription\b|\bsubscription only\b|\bno extra cost\b", re.I)
+# Valentin 2026-11-08: "if i give a direct order why would that not be a YES already". His order is the yes.
+REASK = re.compile(r"\byou (already |just )?(asked|ordered|told|requested|said)\b[^?]{0,100}\b(ok|okay|confirm|go ahead|proceed|approve|still want|sure)\b"
+                   r"|\bas you (asked|ordered|requested)\b|\b(confirm|approve)\b[^.?]{0,20}\b(your|the) (order|request)\b", re.I)
+SECRET_ASK = re.compile(r"\b(paste|post|send|share)\b[^.?]{0,40}\b(key|token|secret|password)\b[^.?]{0,30}\b(here|in (this|the) (ticket|comment|chat))\b"
+                        r"|\b(paste|post|send)\b[^.?]{0,10}\b(key|it|them)\b[^.?]{0,6}\bhere\b", re.I)
+CODE = [
+    (re.compile(r"(^|\s)(~|\.{0,2})/[\w.-]+/[\w./-]*"), "file path"),
+    (re.compile(r"\b[\w-]+\.(py|sh|zig|ts|tsx|js|mjs|go|kt|json|ya?ml|toml|md|jsonl|log|html)\b"), "file name"),
+    (re.compile(r"\b[A-Za-z_][\w.]*\(\)"), "function name"),
+    (re.compile(r"\b[a-z]+(_[a-z0-9]+)+\b"), "code identifier"),
+    (re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b"), "commit hash"),
+    (re.compile(r"`[^`]+`"), "code span"),
+    (re.compile(r"\b(Traceback|stderr|stdout|exit code|stack trace|tmux|--[a-z][\w-]+)\b"), "log or command"),
+    (re.compile(r"\b(this server|this setup|the hub|messaging hub|hub checks|exception|forbids|preflight|solo-dev|CI)\b", re.I), "insider word, say what he sees in the app"),
+]
+# Valentin 2026-11-15, seven Software Factory tickets waiting on him for a look: "prevent stuff like this landing in blockers again"
+DESIGN_PICK = re.compile(r"\b(build|pick|choose|use|go with|ship)\b[^.?\n]{0,80}\b(option|look|design|variant|layout|wireframe|mockup)s?\b"
+                         r"|\boption [A-F]\b|\(([A-F])\)\s*\?|\bbuild [A-F]\s*\?|\b(which|what) (look|design|option|layout|variant)\b"
+                         r"|\badd the\b[^.?\n]{0,60}\bto the kit\b", re.I)
+
+
+def plain(text):
+    text = re.sub(r"(?i)<\s*(br|/p|/li|/h\d|/div|/tr)\s*/?>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return html.unescape(text)
+
+
+def lines_of(text):
+    out = []
+    text = re.sub(r"(?is)<blockquote\b.*?</blockquote>", "\n", text)
+    for line in plain(text).splitlines():
+        if line.lstrip().startswith(">"):
+            continue  # house rule: Valentin is quoted in a > block, verbatim
+        line = line.strip(" \t-*•>#|")
+        if line:
+            out.append(line)
+    return out
+
+
+def sentences(line):
+    bare = QUOTE.sub("LINK", URL.sub("LINK", line))
+    return [s for s in re.split(r"(?<=[.!?:;])\s+", bare) if s.strip()]
+
+
+def words(sentence):
+    return [w for w in re.findall(r"[A-Za-zÀ-ÿ0-9][\w'’/-]*", sentence) if w != "LINK"]
+
+
+def question_rules(text):
+    ours = QUOTE.sub(" ", plain(text))
+    if not re.search(r"(?im)^[\s*_-]*Question:", ours):
+        return []
+    bad = []
+    if MONEY.search(ours) and not AMOUNT.search(ours):
+        bad.append("money ask with no amount: say what it costs him")
+    if ONCE.search(ours):
+        bad.append("'once X' ask he cannot answer today: ask only what he can decide now")
+    ctx = re.search(r"What this is:(.*?)Question:", ours, re.I | re.S)
+    if not ctx:
+        bad.append('no "What this is:" part above the Question: say what it is, why it reached him, what each answer changes')
+    elif len(words(ctx.group(1))) < 25:
+        bad.append('"What this is:" too thin to decide on: name the thing as he sees it, why it reached him, what each answer changes')
+    q = re.search(r"Question:(.*)", ours, re.I | re.S)
+    if q and not re.search(r"recommendation", q.group(1), re.I):
+        bad.append('no "My recommendation:" right under the Question: say Yes or No and why in one line')
+    if q and FACT_ASK.search(q.group(1).split("\n\n")[0]):
+        bad.append("asks him for a fact, not a decision: look it up yourself (logs, updater, his PC through agent tools)")
+    if ZERO_COST.search(ours):
+        bad.append("costs nothing extra (subscription or 0): not money, not his call. Decide and act yourself")
+    if REASK.search(ours):
+        bad.append("asks him to confirm his own order: his direct order is the yes. Act on it, drop the Question")
+    if q and DESIGN_PICK.search(q.group(1).split("My recommendation")[0]) and not MONEY.search(q.group(1)):
+        bad.append("design pick: not his call. Build your own recommendation, post the pick as a plain comment, he judges the live result")
+    if SECRET_ASK.search(ours):
+        bad.append("asks him to paste a key into the ticket: keys go only in 1Password, name the item instead")
+    return bad
+
+
+SHAPE = ["Problem", "Fix", "Done when", "Risk", "Decision"]
+
+
+def shape_rules(text):
+    heads = {l.strip().strip("#*: ").lower() for l in plain(text).splitlines()}
+    missing = [s for s in SHAPE if not any(h == s.lower() or h.startswith(s.lower() + ":") for h in heads)]
+    return [f"ticket shape misses: {', '.join(missing)} (each its own heading)"] if missing else []
+
+
+QA_PASS = re.compile(r"\bQA[ -]?PASS", re.I)
+SHOT = re.compile(r"screencast2\.com/|\.(png|jpe?g|webp|gif|mp4|webm)\b|/attachments?/", re.I)
+
+
+def lint(text, old=""):
+    seen = set(lines_of(old))
+    bad = question_rules(text)
+    # Valentin 2026-11-10: "i need a screenshot of what the session does its just writes oh it passed but i can't see the improvement"
+    if QA_PASS.search(plain(text)) and not SHOT.search(text):
+        bad.append("QA PASS needs a screenshot or video link of the live app showing the change (upload it with sc2-upload)")
+    for line in lines_of(text):
+        if line in seen:
+            continue
+        if ROBOT.search(line) or BARE_GATE.search(line):
+            bad.append(f"robot status line, use the agent lane: {line[:80]}")
+            continue
+        noref = URL.sub(" ", line)
+        for rx, what in CODE:
+            m = rx.search(noref)
+            if m:
+                bad.append(f"{what} '{m.group(0).strip()}' belongs in the agent lane: {line[:80]}")
+                break
+        for s in sentences(line):
+            n = len(words(s))
+            if n > MAX_WORDS:
+                bad.append(f"{n} words, max {MAX_WORDS}: {s[:100]}")
+    # The server also counts quoted words. Keep his words verbatim, split across > lines.
+    for line in plain(text).splitlines():
+        if line.lstrip().startswith(">"):
+            for s in sentences(line.lstrip(" >")):
+                n = len(words(s))
+                if n > MAX_WORDS:
+                    bad.append(f"quote line {n} words, max {MAX_WORDS}: split his words across > lines: {s[:80]}")
+    return bad
+
+
+def main(argv):
+    old, path, shape = "", None, False
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--shape":
+            shape = True
+            i += 1
+        elif argv[i] == "--old":
+            old = open(argv[i + 1], encoding="utf-8").read()
+            i += 2
+        else:
+            path = argv[i]
+            i += 1
+    if not path:
+        sys.exit(__doc__)
+    text = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+    bad = (shape_rules(text) if shape else []) + lint(text, old)
+    if bad:
+        print("ticket-lint: rejected. Human lane is pospeak + caveman (skills/hypertask).", file=sys.stderr)
+        for b in bad[:15]:
+            print("  - " + b, file=sys.stderr)
+        if len(bad) > 15:
+            print(f"  ... {len(bad) - 15} more", file=sys.stderr)
+        print("Fix: short plain sentences. Paths, logs, status: plain comment with no --kind (agent lane).", file=sys.stderr)
+        print("     A Question states its amount when it costs money, and only what he can decide today.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

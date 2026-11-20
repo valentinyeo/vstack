@@ -2,10 +2,11 @@
 """Stop hook: after a turn, sync this chat's own board, as its own login.
 
 MULTIPROMPT_TAB set means a Valentin-facing Multibot chat. The project's notes carry one
-`Hypertask board: <id>, label: <label>` line. The hook starts `reconcile --apply --limit 5`
-for that board and label, detached, at most every 10 minutes, and writes one status record
+`Hypertask board: <id>` line. The label is the chat's own Multibot name, or the line's
+optional `, label: <label>` override. The hook starts `reconcile --apply --limit 5` for
+that board and label, detached, at most every 10 minutes, and writes one status record
 per board and label. It blocks the chat once an hour, and only for setup this chat is
-missing: the board line, or the token for its own login. A sync that fails is one line in
+missing: the board line, the chat's name, or the token for its own login. A sync that fails is one line in
 `~/.local/state/reconcile-auto/failures.jsonl` for the reconcile owner, never a block.
 No MULTIPROMPT_TAB means a headless run and the hook passes.
 
@@ -25,8 +26,8 @@ import time
 THROTTLE = 600
 BLOCK_WINDOW = 3600
 NOTES = ('AGENTS.md', 'CLAUDE.md')
-BOARD_LINE = re.compile(r'^Hypertask board:\s*(\d+),\s*label:\s*(.+?)\s*$')
-CHECKUP = '/hypertask-checkup check 5'
+BOARD_LINE = re.compile(r'^Hypertask board:\s*(\d+)(?:,\s*label:\s*(.+?))?\s*$')
+CHECKUP = '/hypertask checkup'
 
 
 def load_session():
@@ -77,7 +78,7 @@ def git_root(cwd):
 
 
 def find_board(cwd):
-    """(board, label, notes file) from the first board line at cwd or its git root."""
+    """(board, label or None, notes file) from the first board line at cwd or its git root."""
     places = [Path(cwd)]
     root = git_root(cwd)
     if root is not None and root != Path(cwd):
@@ -92,7 +93,7 @@ def find_board(cwd):
             for line in text.splitlines():
                 found = BOARD_LINE.match(line.strip())
                 if found:
-                    return int(found[1]), found[2], notes
+                    return int(found[1]), (found[2] or '').strip() or None, notes
     return None
 
 
@@ -254,7 +255,7 @@ def hook(payload, env, now=None):
     board = label = None
     login = session.login_for_session(env)
     if found is None:
-        problem = (f'no `Hypertask board: <id>, label: <label>` line in AGENTS.md '
+        problem = (f'no `Hypertask board: <id>` line in AGENTS.md '
                    f'or CLAUDE.md at {cwd}')
     elif login is None:
         problem = (f'no Multibot name for tmux {env["MULTIPROMPT_TAB"]!r} in '
@@ -262,6 +263,8 @@ def hook(payload, env, now=None):
     else:
         board, label, _notes = found
         name, token = login
+        # The label is per chat: the line's own label wins, else the Multibot name.
+        label = label or name
         if not token.is_file():
             problem = f'board login token missing at {token}'
         else:
@@ -294,7 +297,7 @@ def self_test():
     with tempfile.TemporaryDirectory() as temp:
         home = Path(temp) / 'home'
         project = Path(temp) / 'project'
-        notes(project, 'Hypertask board: 2060, label: Test\n')
+        notes(project, 'Hypertask board: 2060\n')
         roster = roster_path(home)
         roster.parent.mkdir(parents=True)
         roster.write_text(json.dumps({'rows': [
@@ -316,7 +319,7 @@ def self_test():
         notes(blank)
         answer = hook(dict(payload, cwd=str(blank), session_id='sid-blank'), env, now=1000)
         assert answer.get('decision') == 'block', 'a project note without the line blocks'
-        assert 'Hypertask board: <id>, label: <label>' in answer['reason'], 'the line is named'
+        assert 'Hypertask board: <id>' in answer['reason'], 'the line is named'
 
         real_spawn, calls = globals()['spawn'], []
 
@@ -334,8 +337,11 @@ def self_test():
             token.write_text('secret\n')
             assert hook(dict(payload, session_id='sid-stale'), env, now=1000) == {}
             assert len(calls) == 1, 'a stale status starts one run'
+            assert calls[0][1] == 'Test Chat', 'a line without a label uses the chat name'
 
             one, label = find_board(project)[:2]
+            assert label is None, 'a line without a label resolves to the chat name'
+            label = 'Test Chat'
             write_status(home, one, label, 'Test Chat', 0, 'PREVIEW board=2060 tickets=2 unknown=0\n')
             before = len(calls)
             assert hook(dict(payload, session_id='sid-fresh'), env, now=time.time()) == {}

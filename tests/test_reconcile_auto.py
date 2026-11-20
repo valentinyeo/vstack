@@ -65,8 +65,8 @@ class ReconcileAuto(unittest.TestCase):
         subprocess.run(['git', 'init', '-q', str(app)], check=True)
         answer = self.answer(cwd=app)
         self.assertEqual(answer.get('decision'), 'block')
-        self.assertIn('Hypertask board: <id>, label: <label>', answer['reason'])
-        self.assertIn('/hypertask-checkup check 5', answer['reason'])
+        self.assertIn('Hypertask board: <id>', answer['reason'])
+        self.assertIn('/hypertask checkup', answer['reason'])
         self.assertEqual(self.calls, [])
 
     def test_the_vstack_sibling_past_mistake(self):
@@ -83,7 +83,31 @@ class ReconcileAuto(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         answer = self.answer(session='sid-pecunia', cwd=sibling)
         self.assertEqual(answer.get('decision'), 'block')
-        self.assertIn('Hypertask board: <id>, label: <label>', answer['reason'])
+        self.assertIn('Hypertask board: <id>', answer['reason'])
+
+    def test_a_line_without_a_label_uses_the_chat_name(self):
+        (self.project / 'AGENTS.md').write_text('# project\n\nHypertask board: 2060\n')
+        self.assertEqual(self.answer(), {})
+        self.assertEqual(len(self.calls), 1)
+        board, label, name = self.calls[0][:3]
+        self.assertEqual((board, label, name), (2060, 'Test Chat', 'Test Chat'))
+        self.assertEqual(hook.record_path(self.home, 2060, 'Test Chat').name,
+                         '2060-test-chat.json')
+
+    def test_a_label_on_the_line_still_wins(self):
+        self.assertEqual(self.answer(), {})
+        self.assertEqual(self.calls[0][1], 'Test')
+
+    def test_two_chats_share_one_repo_with_their_own_labels(self):
+        (self.project / 'AGENTS.md').write_text('# project\n\nHypertask board: 2060\n')
+        hook.roster_path(self.home).write_text(json.dumps({'rows': [
+            {'tmux': 'live-test', 'multibot': 'Test Chat'},
+            {'tmux': 'live-reconciler', 'multibot': 'Hypertask Reconciler'}]}))
+        hook.token_path(self.home, 'Hypertask Reconciler').write_text('secret\n')
+        self.assertEqual(self.answer(session='sid-a'), {})
+        self.env['MULTIPROMPT_TAB'] = 'live-reconciler'
+        self.assertEqual(self.answer(session='sid-b'), {})
+        self.assertEqual([call[1] for call in self.calls], ['Test Chat', 'Hypertask Reconciler'])
 
     def test_a_missing_token_blocks_and_names_the_path(self):
         self.token.unlink()
