@@ -55,6 +55,15 @@ class ValentinModeLoaded(unittest.TestCase):
             self.assertTrue(valentin.loaded(str(path)), 'the streaming read keeps a carry')
             self.assertLess(path.stat().st_size, 4 * valentin.CHUNK, 'one large chunk is enough for this test')
 
+    def test_a_load_late_in_a_long_chat_is_found(self):
+        valentin = module()
+        with tempfile.TemporaryDirectory() as where:
+            path = Path(where, 'late.jsonl')
+            path.write_text('{"type":"user","message":{"content":"' + 'x' * (2 * valentin.CHUNK) +
+                            '"}}\n{"type":"user","message":{"content":'
+                            '"<command-name>/valentin-mode</command-name>"}}\n')
+            self.assertTrue(valentin.loaded(str(path)), 'a load two chunks into a chat is still found')
+
     def test_install_links_both_lane_hooks_and_their_modules(self):
         text = (ROOT / 'install').read_text()
         for name in ('plan-pick-only.py', 'claude-helper-gate.py', 'valentin_mode_loaded.py', 'book-check.py'):
