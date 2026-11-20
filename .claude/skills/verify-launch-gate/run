@@ -5,10 +5,11 @@
     .claude/skills/verify-launch-gate/run --hook PATH   # a branch's hook
     .claude/skills/verify-launch-gate/run --keep        # keep the scratch project
 
-It makes a scratch project, installs the hook into it twice, checks it, then feeds
-the real hook real PreToolUse JSON for `~/.local/bin/plan-pick --run` with a fake
-vps-state at HOLD, CAREFUL, ADD and a probe failure. One last call reads the real
-host. Everything lands in ~/.local/state/verify-launch-gate/<run-id>/ and grade.py
+It makes a scratch project, installs the hook into it twice, checks it, runs the
+registered command with the hook file missing and with it present at HOLD, then
+feeds the real hook real PreToolUse JSON for `~/.local/bin/plan-pick --run` with a
+fake vps-state at HOLD, CAREFUL, ADD and a probe failure. One last call reads the
+real host. Everything lands in ~/.local/state/verify-launch-gate/<run-id>/ and grade.py
 decides the verdict. Exit 0 PASS, 1 FAIL, 3 doctor failure.
 """
 import importlib.machinery
@@ -107,6 +108,19 @@ def write_fake(directory, code):
     return str(path)
 
 
+def installed_command(settings):
+    """The command this settings object registers for launch-gate.py, or None."""
+    hooks = settings.get('hooks') if isinstance(settings, dict) else None
+    entries = hooks.get('PreToolUse') if isinstance(hooks, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        items = entry.get('hooks') if isinstance(entry, dict) else None
+        for item in items if isinstance(items, list) else []:
+            command = item.get('command') if isinstance(item, dict) else None
+            if isinstance(command, str) and 'launch-gate.py' in command:
+                return command
+    return None
+
+
 def save(directory, name, done):
     (directory / (name + '.code')).write_text(exit_text(done) + '\n')
     (directory / (name + '.out')).write_text(done.stdout if done else '')
@@ -143,6 +157,20 @@ def drive(hook, directory):
     save(directory, 'check-empty', call([str(hook), '--check-project', str(empty)], env))
 
     payload = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': LAUNCH}})
+
+    # The command settings call, not the hook: the file is absent, then present at HOLD.
+    command = installed_command(content)
+    saved = call(['sh', '-c', command], env, stdin=payload) if command else None
+    save(directory, 'missing', saved)
+    registered = scratch / 'registered'
+    registered.mkdir()
+    linked = home / '.claude/hooks/launch-gate.py'
+    linked.parent.mkdir(parents=True, exist_ok=True)
+    linked.symlink_to(hook)
+    save(directory, 'registered-hold',
+         call(['sh', '-c', command],
+              dict(env, LAUNCH_GATE_VPS_STATE=write_fake(registered, 2)), stdin=payload)
+         if command else None)
     for name, code in (('hold', 2), ('careful', 1), ('add', 0), ('open', 3)):
         state = scratch / name
         state.mkdir()

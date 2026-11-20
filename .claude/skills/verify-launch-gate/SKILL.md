@@ -8,7 +8,7 @@ description: >-
 
 Prior art: checked pstack (`create-verification-skill`), this repo's `verify-vps-state` and `verify-reconcile`. Neither grades a hook decision, so this drives the hook the way Claude Code does.
 
-The proof bar: the real hook, real PreToolUse JSON, and a fake vps-state whose verdict the run picked. A HOLD that exits 2 with the reason, an ADD that passes silently, an install that survives a second run, and one live host reading is a PASS. A hook that only passes its own self-test is not proof.
+The proof bar: the real hook, real PreToolUse JSON, and a fake vps-state whose verdict the run picked. A HOLD that exits 2 with the reason, an ADD that passes silently, an install that survives a second run, a registered command that exits 0 when its file is missing, and one live host reading is a PASS. A hook that only passes its own self-test is not proof.
 
 Read `features/README.md` for the map.
 
@@ -25,9 +25,10 @@ Read `features/README.md` for the map.
 2. Runs the doctor into doctor.txt. Exit 3 when it fails.
 3. Makes a scratch project and runs --install-for-project on it twice.
 4. Runs --check-project on that project and on an empty directory.
-5. Feeds the real hook the incident command `~/.local/bin/plan-pick --run` as PreToolUse JSON, with a fake vps-state at HOLD, CAREFUL, ADD and a probe failure.
-6. Reads the real host with `vps-state --brief --no-write`, then --can-launch worker --no-write.
-7. Grades every check and prints one line per check, then the verdict.
+5. Runs the command those settings register through `sh -c`, once with the hook file absent and once with it linked in at HOLD.
+6. Feeds the real hook the incident command `~/.local/bin/plan-pick --run` as PreToolUse JSON, with a fake vps-state at HOLD, CAREFUL, ADD and a probe failure.
+7. Reads the real host with `vps-state --brief --no-write`, then --can-launch worker --no-write.
+8. Grades every check and prints one line per check, then the verdict.
 
 Exit codes: 0 PASS, 1 FAIL, 3 doctor failure.
 
@@ -55,6 +56,8 @@ Every run keeps ~/.local/state/verify-launch-gate/<run-id>/:
 | install-1.json, settings-1.json | the install exit code and the file it wrote |
 | install-2.json, settings-2.json | the second run changed nothing |
 | check-project.code, check-empty.code | a gated project passes, an empty one fails |
+| missing.code, missing.err | the command settings call is safe with the hook file gone |
+| registered-hold.code, registered-hold.err | that same command still blocks at HOLD |
 | hold.code, hold.err | the blocked launch, its reason and the override line |
 | add.code, careful.code and their .err | allowed launches stay silent |
 | open.code, open.err | a probe failure fails open with one warning |
@@ -75,6 +78,7 @@ Every change to `hooks/launch-gate.py`, its installer or its skill runs it, with
 
 - The live check makes two reads of a moving host. A host crossing a threshold between them fails `live`; run it again rather than loosening the check.
 - Failing open is graded, not excused. A probe that hangs, exits 3 or is missing must still allow the launch, with exactly one warning line.
+- A registered command that names the file directly is graded FAIL even though the hook itself is fine: a broken link then exits 2 and blocks every Bash call.
 - A block on a healthy host is as wrong as a launch on a full one. `verdicts` fails if ADD or CAREFUL prints anything.
 - The scratch project's settings are evidence, not a live registration. To gate a real project, run `--install-for-project` in it.
 - The grade path has its own unit tests in `tests/test_launch_gate.py`, so a broken grade fails on GitHub without a board login.

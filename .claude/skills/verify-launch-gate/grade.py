@@ -12,7 +12,8 @@ from pathlib import Path
 
 PASS, FAIL = 'PASS', 'FAIL'
 EXIT_FOR = {'ADD': 0, 'CAREFUL': 1, 'HOLD': 2}
-CHECKS = ('doctor', 'install', 'idempotent', 'check-project', 'hold', 'verdicts', 'fail-open', 'live')
+CHECKS = ('doctor', 'install', 'idempotent', 'check-project', 'registered', 'hold', 'verdicts',
+          'fail-open', 'live')
 
 
 def text(directory, name):
@@ -105,6 +106,22 @@ def check_project(directory):
     return PASS, 'check-project passes on the installed project and fails with the install command'
 
 
+def check_registered(directory):
+    absent = exit_code(directory, 'missing.code')
+    absent_err = (text(directory, 'missing.err') or '').strip()
+    blocked = exit_code(directory, 'registered-hold.code')
+    blocked_err = text(directory, 'registered-hold.err') or ''
+    if absent != 0:
+        return FAIL, 'the registered command exited {} with the hook file missing'.format(absent)
+    if absent_err:
+        return FAIL, 'a missing hook file printed on stderr: ' + absent_err[:200]
+    if blocked != 2:
+        return FAIL, 'the registered command exited {} at HOLD, expected 2'.format(blocked)
+    if not blocked_err.startswith('BLOCKED by launch-gate: server is full ('):
+        return FAIL, 'the registered command did not carry the block: ' + blocked_err.strip()[:200]
+    return PASS, 'the command settings call exits 0 without the hook file, and blocks at HOLD'
+
+
 def check_hold(directory):
     code = exit_code(directory, 'hold.code')
     err = text(directory, 'hold.err') or ''
@@ -161,7 +178,8 @@ def grade(directory):
     results = []
     for name, check in (('doctor', check_doctor), ('install', check_install),
                         ('idempotent', check_idempotent), ('check-project', check_project),
-                        ('hold', check_hold), ('verdicts', check_verdicts),
+                        ('registered', check_registered), ('hold', check_hold),
+                        ('verdicts', check_verdicts),
                         ('fail-open', check_fail_open), ('live', check_live)):
         verdict, detail = check(directory)
         results.append((name, verdict == PASS, detail))

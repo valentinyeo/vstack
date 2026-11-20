@@ -4,8 +4,8 @@
 
 ## Sub-features
 
-- `install`: the command exits 0, creates `.claude/settings.local.json` in the project, and registers one PreToolUse entry with matcher `Bash` and the command `$HOME/.claude/hooks/launch-gate.py`.
-- `idempotent`: a second run exits 0, says it changed nothing, and leaves the file byte for byte the same.
+- `install`: the command exits 0, creates `.claude/settings.local.json` in the project, and registers one PreToolUse entry with matcher `Bash`, whose command names `$HOME/.claude/hooks/launch-gate.py` behind `sh -c` with a `[ -f "$f" ] || exit 0` guard.
+- `idempotent`: a second run exits 0, says it changed nothing, and leaves the file byte for byte the same. An entry in the older bare-path form is upgraded in place, not duplicated.
 
 ## How to get to it (user POV)
 
@@ -21,3 +21,4 @@
 
 - The scratch project's `HOME` is not the real one, so the gate cannot pass `install` on a hook that lives only in the global settings.
 - The install keeps every other key and every other hook entry. A test in `tests/test_launch_gate.py` pins that, because merging by replacement would wipe another guard.
+- An upgrade keeps that entry's `matcher` and every other item in its `hooks` list, and changes only the `command` string.

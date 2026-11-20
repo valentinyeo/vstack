@@ -13,6 +13,7 @@ Every part of the gate `run` drives, one file each, and the check in [grade.py](
 - Only `run` drives the hook. It feeds the same JSON Claude Code sends, never a shortened form.
 - Every fake `vps-state` is a file in the scratch directory, named by `LAUNCH_GATE_VPS_STATE`. The real one is used only for the live check.
 - The install runs twice on purpose. The second run is what proves the command is safe to repeat.
+- The registered command is driven through `sh -c`, the way Claude Code runs a hook command, never by calling the hook file directly.
 
 ## Proof and skip reporting
 
@@ -26,6 +27,7 @@ Every part of the gate `run` drives, one file each, and the check in [grade.py](
 | --- | --- | --- |
 | [install.md](install.md) | `install`, `idempotent` | One command registers the hook in a project, and a second run changes nothing |
 | [check-project.md](check-project.md) | `check-project` | A project can prove it installed the hook, and an empty one fails with the command |
+| [registered-command.md](registered-command.md) | `registered` | The command settings call exits 0 when the hook file is missing, and still blocks at HOLD |
 | [hold.md](hold.md) | `hold` | A real incident launch is blocked at HOLD with the reason and the override |
 | [verdicts.md](verdicts.md) | `verdicts` | ADD and CAREFUL let the launch through, silently |
 | [fail-open.md](fail-open.md) | `fail-open` | A probe failure allows the launch and warns once |
