@@ -331,16 +331,16 @@ def open_path_set(ctx):
 
 
 def in_use(path, ctx):
+    """True when a live process holds this path, or anything inside it, open.
+
+    An open parent directory (/tmp itself) says nothing about a child, so the
+    check only looks down, never up.
+    """
     opens = open_path_set(ctx)
     prefix = path.rstrip("/") + "/"
     for open_path in opens:
         if open_path == path or open_path.startswith(prefix):
             return True
-    parent = os.path.dirname(path)
-    while parent and parent != "/":
-        if parent in opens:
-            return True
-        parent = os.path.dirname(parent)
     return False
 
 
