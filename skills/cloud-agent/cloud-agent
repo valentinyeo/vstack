@@ -1,0 +1,657 @@
+#!/usr/bin/env python3
+"""cloud-agent: hand one coding brief to a vendor cloud agent and report what happened.
+
+  cloud-agent <cursor|codex|claude> --repo DIR --brief FILE [--model M] [--env ENV]
+              [--no-wait] [--timeout SECONDS]
+
+The work runs on the vendor's machines, so this VPS only sends the brief and reads the answer.
+
+One JSON line on stdout, always the last thing printed:
+
+  {"vendor","status","agent_url","task_id","branch","pr_url","error"}
+
+  status    started   --no-wait: the cloud agent has the brief, nobody waits here
+            done      a pull request exists for this task
+            failed    bad input, a vendor error or a missing pull request
+            limit     the vendor reported a usage, rate or quota limit
+            timeout   --timeout passed with no pull request
+
+  exit      0 started or done, 75 limit, 1 failed, 124 timeout
+
+`limit` also prints the text `429 limit` on stderr, because plan-pick reads that and moves to the
+next lane.
+
+Preflight, every vendor: --repo is a git repo on github.com, its branch has an upstream, every
+local commit is pushed, and no tracked file is modified. A cloud agent clones GitHub, so local
+work it cannot see would be silently missing.
+
+  cursor  There is no API key and none is needed: the CLI login works. `cursor-agent -p` ignores
+          the `&` prefix and runs locally, and --cloud/--background are gone, so this drives the
+          interactive keys in tmux: `&` alone, then the brief, then Enter. The pane prints
+          `Open Cloud Agent in: https://cursor.com/agents/bc-...` once the task is submitted.
+          Only Composer and Grok models are allowed: our Cursor plan includes them, so a cloud
+          task costs nothing extra. Newlines in the brief collapse to spaces because the terminal
+          REPL would submit the first line as the prompt.
+
+  codex   `codex cloud exec --env ENV "<brief>"`. Experiment 2026-11-20: --env accepts the
+          environment LABEL shown by `codex cloud list --json` (environment_label, e.g.
+          `token-ladder`), not only the id. An unknown label exits 1 with
+          `environment '<label>' not found`. Without --env, the label comes from
+          ~/.config/cloud-agent/codex-envs.json, a JSON map {"owner/repo": "<label or id>"}.
+          The `--` before the brief keeps a brief that starts with `-` a positional argument.
+
+  claude  Wraps ~/.local/bin/claude-cloud-task. Exit 3 there means the Claude GitHub App is
+          missing, so the session would get an upload it cannot push; this reports that message.
+
+Claude cloud is for Claude-native jobs only; code workers go to codex or cursor
+(rule ~/.claude/rules/pstack-models.md).
+
+Every external command has a timeout. No `&`, nohup or setsid. Every tmux session this
+creates is killed in a finally block.
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HOME = Path.home()
+BIN_DIRS = (HOME / '.local/bin', HOME / '.npm-global/bin')
+KEYS = ('vendor', 'status', 'agent_url', 'task_id', 'branch', 'pr_url', 'error')
+STATUS_EXIT = {'started': 0, 'done': 0, 'failed': 1, 'limit': 75, 'timeout': 124}
+VENDORS = ('cursor', 'codex', 'claude')
+
+COMMAND_TIMEOUT = 120
+GIT_TIMEOUT = 60
+GH_TIMEOUT = 90
+TMUX_TIMEOUT = 30
+PR_POLL_SECONDS = 60
+CODEX_POLL_SECONDS = 30
+CURSOR_PROMPT_SECONDS = 60
+CURSOR_CLOUD_SECONDS = 60
+CURSOR_SUBMIT_SECONDS = 240
+DEFAULT_CURSOR_MODEL = 'composer-2.5'
+CODEX_ENVS = HOME / '.config/cloud-agent/codex-envs.json'
+
+LIMIT = re.compile(r'usage limit|rate limit|quota', re.I)
+CURSOR_LIMIT = re.compile(r'usage limit|rate limit|quota|upgrade', re.I)
+CURSOR_URL = re.compile(r'https://cursor\.com/agents/(bc-[0-9a-f-]+)')
+CLAUDE_URL = re.compile(r'https://claude\.ai/code/session_[A-Za-z0-9]+')
+CODEX_TASK = re.compile(r'task_e_[0-9a-z]+')
+CODEX_TASK_URL = re.compile(r'https://chatgpt\.com/codex/tasks/(task_e_[0-9a-z]+)')
+PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
+GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
+CURSOR_MODEL = re.compile(r'^(?:composer-2\.5(?:-|$)|(?:cursor-)?grok-)')
+UPSTREAM = re.compile(r'^[^/]+/(.+)$')
+
+
+def environ():
+    """The process environment with the two real binary folders first."""
+    env = dict(os.environ)
+    env['PATH'] = os.pathsep.join([str(path) for path in BIN_DIRS] + [env.get('PATH', '')])
+    return env
+
+
+def run(args, cwd=None, timeout=COMMAND_TIMEOUT):
+    """One external command with a timeout. A missing binary or a timeout comes back as a result."""
+    command = [str(arg) for arg in args]
+    try:
+        return subprocess.run(command, cwd=None if cwd is None else str(cwd),
+                              capture_output=True, text=True, timeout=timeout, env=environ())
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(command, 124, '', f'timed out after {timeout}s')
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(command, 127, '', f'{command[0]}: not found')
+    except OSError as exc:
+        return subprocess.CompletedProcess(command, 126, '', f'{command[0]}: {exc}')
+
+
+def saying(proc):
+    """What a command said, stdout then stderr, stripped."""
+    return ((proc.stdout or '') + (proc.stderr or '')).strip()
+
+
+def outcome(vendor, status, agent_url=None, task_id=None, branch=None, pr_url=None, error=None):
+    """One result row with every documented key present, in a fixed order."""
+    return {'vendor': vendor, 'status': status, 'agent_url': agent_url, 'task_id': task_id,
+            'branch': branch, 'pr_url': pr_url, 'error': error}
+
+
+def exit_code(status):
+    """The exit code for a status, or a loud error for a status nobody defined."""
+    if status not in STATUS_EXIT:
+        raise ValueError(f'unknown status {status!r}')
+    return STATUS_EXIT[status]
+
+
+def emit(row):
+    """Print the one JSON line and return the process exit code."""
+    print(json.dumps({key: row.get(key) for key in KEYS}))
+    if row['status'] == 'limit':
+        print('429 limit', file=sys.stderr)
+    return exit_code(row['status'])
+
+
+def failed(vendor, error, **fields):
+    return outcome(vendor, 'failed', error=error, **fields)
+
+
+def limit(vendor, **fields):
+    return outcome(vendor, 'limit', error='the vendor reported a usage, rate or quota limit', **fields)
+
+
+def read_brief(path):
+    """The brief text, or None when the file cannot be read."""
+    try:
+        return Path(path).expanduser().read_text()
+    except OSError:
+        return None
+
+
+def flatten(text):
+    """One line for the cursor REPL, which submits the first line as the prompt."""
+    return re.sub(r'\s*\n+\s*', ' ', text).strip()
+
+
+def limit_hit(text):
+    """The vendor said we are out of usage, rate or quota (codex and claude wording)."""
+    return bool(LIMIT.search(text or ''))
+
+
+def cursor_limit_hit(text):
+    """Cursor also says `upgrade`, which the other vendors do not."""
+    return bool(CURSOR_LIMIT.search(text or ''))
+
+
+def extract_cursor_url(text):
+    """(agent_url, task_id) from the cursor CLI pane, or (None, None). The real line is
+    `  Open Cloud Agent in: https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986`."""
+    match = CURSOR_URL.search(text or '')
+    if not match:
+        return None, None
+    return match.group(0), match.group(1)
+
+
+def extract_claude_url(text):
+    match = CLAUDE_URL.search(text or '')
+    return match.group(0) if match else None
+
+
+def codex_task(text):
+    """(task_id, agent_url) from `codex cloud exec` output, or (None, None)."""
+    url = CODEX_TASK_URL.search(text or '')
+    if url:
+        return url.group(1), url.group(0)
+    task = CODEX_TASK.search(text or '')
+    if task:
+        return task.group(0), None
+    return None, None
+
+
+def codex_state(text):
+    """done | failed | pending from one `codex cloud status` answer. Unknown words keep waiting;
+    the wait loop's --timeout is what stops a status we do not know."""
+    match = re.search(r'\[([A-Z][A-Z _]*)\]', text or '')
+    word = (match.group(1) if match else '').replace(' ', '_')
+    if word in ('READY', 'COMPLETED'):
+        return 'done'
+    if word in ('ERROR', 'FAILED', 'CANCELLED', 'CANCELED'):
+        return 'failed'
+    return 'pending'
+
+
+def owner_repo(remote):
+    """owner/repo from a github.com remote URL, or None."""
+    match = GITHUB_REMOTE.search((remote or '').strip())
+    return f'{match.group(1)}/{match.group(2)}' if match else None
+
+
+def moment(text):
+    """An aware datetime from gh's ISO timestamp, or None."""
+    try:
+        return datetime.datetime.fromisoformat((text or '').replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def pr_after(pull_requests, since, prefix):
+    """The first pull request created after launch on a branch with this prefix, or None."""
+    started = datetime.datetime.fromtimestamp(since, datetime.timezone.utc)
+    found = []
+    for pull in pull_requests or ():
+        created = moment(pull.get('createdAt'))
+        branch = pull.get('headRefName') or ''
+        if created and created > started and branch.startswith(prefix):
+            found.append((created, pull))
+    return min(found, key=lambda pair: pair[0])[1] if found else None
+
+
+def cursor_model_ok(model):
+    """Only Composer 2.5 and Grok models: our Cursor plan includes them, so no spend limit is asked."""
+    return bool(CURSOR_MODEL.match(model or ''))
+
+
+def model_label(model):
+    """What the cursor prompt bar shows for a model id: composer-2.5 -> Composer 2.5."""
+    head = model.split('-')[:2]
+    return ' '.join(part.capitalize() if not part[0].isdigit() else part for part in head)
+
+
+def claude_error(code, output):
+    """Why claude-cloud-task failed, or None. Exit 3 is its missing GitHub App refusal."""
+    if code == 0:
+        return None
+    text = (output or '').strip()
+    if code == 3:
+        return text or 'claude-cloud-task: the Claude GitHub App is not installed on this repo'
+    return text or f'claude-cloud-task exited {code}'
+
+
+def git(repo, *args, timeout=GIT_TIMEOUT):
+    return run(['git', '-C', str(repo), *args], timeout=timeout)
+
+
+def preflight(repo):
+    """Why a cloud agent cannot work from this checkout, or None when it can."""
+    path = Path(repo).expanduser()
+    if not path.is_dir():
+        return f'--repo {repo} is not a directory'
+    inside = git(path, 'rev-parse', '--is-inside-work-tree')
+    if inside.returncode != 0 or inside.stdout.strip() != 'true':
+        return f'--repo {repo} is not a git repository'
+    remote = git(path, 'config', '--get', 'remote.origin.url')
+    url = remote.stdout.strip()
+    if not owner_repo(url):
+        return f'the origin remote of {repo} is not on github.com: {url or "no origin"}'
+    upstream = upstream_ref(path)
+    if not upstream:
+        return (f'{repo} has no upstream branch: push it with -u first, '
+                'a cloud agent clones GitHub and cannot see local commits')
+    ahead = git(path, 'rev-list', '--count', '@{u}..HEAD')
+    count = ahead.stdout.strip()
+    if ahead.returncode != 0 or count not in ('', '0'):
+        return (f'{repo} has {count or "unpushed"} commit(s) not on {upstream}: push them first, '
+                'a cloud agent clones GitHub and cannot see local commits')
+    dirty = git(path, 'status', '--porcelain', '--untracked-files=no')
+    if dirty.returncode != 0:
+        return f'cannot read the git status of {repo}: {saying(dirty)}'
+    if dirty.stdout.strip():
+        first = dirty.stdout.strip().splitlines()[0].strip()
+        return (f'{repo} has uncommitted tracked changes ({first}): commit or stash them first, '
+                'a cloud agent clones GitHub and cannot see local files')
+    return None
+
+
+def upstream_ref(repo):
+    """origin/main for the current branch, or ''."""
+    proc = git(repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}')
+    return proc.stdout.strip() if proc.returncode == 0 else ''
+
+
+def slug_of(repo):
+    """owner/repo from the checkout's origin, or None."""
+    proc = git(repo, 'config', '--get', 'remote.origin.url')
+    return owner_repo(proc.stdout)
+
+
+def drop_codex_log(cwd):
+    """The codex CLI writes error.log into its working directory. Remove it unless the repo tracks it.
+
+    Without this, `codex cloud apply` in the throwaway worktree would commit a debug log into the
+    pull request, and `codex cloud exec` would dirty the user's checkout.
+    """
+    path = Path(cwd) / 'error.log'
+    if not path.is_file():
+        return
+    if git(cwd, 'ls-files', '--error-unmatch', 'error.log').returncode == 0:
+        return
+    path.unlink(missing_ok=True)
+
+
+def run_codex(args, cwd, timeout=COMMAND_TIMEOUT):
+    """One codex command, leaving no error.log behind that was not already there."""
+    before = (Path(cwd) / 'error.log').exists()
+    proc = run(['codex', *args], cwd=cwd, timeout=timeout)
+    if not before:
+        drop_codex_log(cwd)
+    return proc
+
+
+def quiet(args, timeout=TMUX_TIMEOUT):
+    """A cleanup command whose failure must not hide the real result."""
+    try:
+        return run(args, timeout=timeout)
+    except OSError:
+        return None
+
+
+def list_prs(slug):
+    """(pull requests, why it failed) from gh. Read only."""
+    proc = run(['gh', 'pr', 'list', '-R', slug, '--state', 'all', '--limit', '100',
+                '--json', 'number,url,headRefName,createdAt'], timeout=GH_TIMEOUT)
+    if proc.returncode != 0:
+        return None, saying(proc) or f'gh pr list exited {proc.returncode}'
+    try:
+        return json.loads(proc.stdout), None
+    except ValueError as exc:
+        return None, f'gh pr list returned no JSON: {exc}'
+
+
+def wait_for_pr(slug, prefix, since, timeout):
+    """(pull request, why not) for the first PR on a prefix branch created after launch."""
+    deadline = time.time() + timeout
+    why = 'no gh answer yet'
+    while True:
+        pull_requests, why = list_prs(slug)
+        if pull_requests is not None:
+            found = pr_after(pull_requests, since, prefix)
+            if found:
+                return found, None
+            why = f'no pull request on a {prefix} branch after {time.strftime("%H:%M:%S", time.gmtime(since))} UTC'
+        if time.time() >= deadline:
+            return None, why
+        time.sleep(min(PR_POLL_SECONDS, max(0.0, deadline - time.time())))
+
+
+def poll(read, ready, seconds, interval=1.0):
+    """The first text that satisfies ready, or None when seconds run out."""
+    deadline = time.monotonic() + seconds
+    while True:
+        text = read()
+        if ready(text):
+            return text
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+
+
+def binary(name):
+    return shutil.which(name, path=environ()['PATH']) or name
+
+
+def pane_text(tmux, session, log):
+    """The visible pane plus everything the session has printed, so a scrolled line still counts."""
+    text = run([tmux, 'capture-pane', '-p', '-t', session], timeout=15).stdout or ''
+    try:
+        text += '\n' + log.read_text(errors='replace')
+    except OSError:
+        pass
+    return text
+
+
+def launch_cursor(repo, brief, model, no_wait, timeout):
+    """Drive the cursor REPL: `&` alone moves it to a cloud agent, then the brief, then Enter."""
+    tmux = binary('tmux')
+    agent = binary('cursor-agent')
+    session = f'cloud-agent-cursor-{os.getpid()}-{int(time.time() * 1000)}'
+    holder = Path(tempfile.mkdtemp(prefix='cloud-agent-cursor-'))
+    log = holder / 'pane.log'
+    started = time.time()
+    try:
+        created = run([tmux, 'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
+                       '-c', str(repo), f'{shlex.quote(agent)} --trust --model {shlex.quote(model)}'],
+                      timeout=TMUX_TIMEOUT)
+        if created.returncode != 0:
+            return failed('cursor', f'tmux new-session failed: {saying(created)}')
+        run([tmux, 'pipe-pane', '-t', session, '-o', f'cat >> {shlex.quote(str(log))}'], timeout=15)
+
+        def read():
+            return pane_text(tmux, session, log)
+
+        label = model_label(model)
+        pane = poll(read, lambda text: label in text or cursor_limit_hit(text), CURSOR_PROMPT_SECONDS)
+        if pane is None:
+            return failed('cursor', f'the cursor prompt bar with "{label}" never appeared in '
+                                   f'{CURSOR_PROMPT_SECONDS}s: {saying(read())[-600:]}')
+        if label not in pane and cursor_limit_hit(pane):
+            return limit('cursor')
+
+        # A lone `&` is a key press. Sending "& text" in one go runs the task LOCALLY instead.
+        pressed = run([tmux, 'send-keys', '-t', session, '&'], timeout=15)
+        if pressed.returncode != 0:
+            return failed('cursor', f'could not send & to the cursor prompt: {saying(pressed)}')
+        pane = poll(read, lambda text: 'Move to cloud agent' in text or cursor_limit_hit(text),
+                    CURSOR_CLOUD_SECONDS)
+        if pane is None:
+            return failed('cursor', 'the cursor prompt never offered "Move to cloud agent": '
+                                   f'{saying(read())[-600:]}')
+        if 'Move to cloud agent' not in pane:
+            return limit('cursor')
+
+        sent = run([tmux, 'send-keys', '-t', session, '-l', flatten(brief)], timeout=TMUX_TIMEOUT)
+        if sent.returncode != 0:
+            return failed('cursor', f'could not type the brief into the cursor prompt: {saying(sent)}')
+        entered = run([tmux, 'send-keys', '-t', session, 'Enter'], timeout=15)
+        if entered.returncode != 0:
+            return failed('cursor', f'could not press Enter in the cursor prompt: {saying(entered)}')
+
+        pane = poll(read, lambda text: bool(extract_cursor_url(text)[0]) or cursor_limit_hit(text),
+                    CURSOR_SUBMIT_SECONDS)
+        agent_url, task_id = extract_cursor_url(pane or '')
+        if not agent_url:
+            if pane and cursor_limit_hit(pane):
+                return limit('cursor')
+            return failed('cursor', f'no cloud agent URL in the cursor pane {CURSOR_SUBMIT_SECONDS}s '
+                                    f'after pressing Enter: {saying(read())[-600:]}')
+        if no_wait:
+            return outcome('cursor', 'started', agent_url=agent_url, task_id=task_id)
+
+        slug = slug_of(repo)
+        if not slug:
+            return failed('cursor', 'cannot read owner/repo from the origin remote',
+                          agent_url=agent_url, task_id=task_id)
+        pull, why = wait_for_pr(slug, 'cursor/', started, timeout)
+        if not pull:
+            return outcome('cursor', 'timeout', agent_url=agent_url, task_id=task_id,
+                           error=f'{why} within {timeout:g}s')
+        return outcome('cursor', 'done', agent_url=agent_url, task_id=task_id,
+                       branch=pull.get('headRefName'), pr_url=pull.get('url'))
+    finally:
+        quiet([tmux, 'kill-session', '-t', session])
+        shutil.rmtree(holder, ignore_errors=True)
+
+
+def codex_env(slug, given, path=None):
+    """(environment label or id, why not). --env wins, else the per-repo map file."""
+    if given:
+        return given, None
+    path = Path(path or CODEX_ENVS)
+    try:
+        data = json.loads(path.read_text())
+    except OSError:
+        return None, (f'codex needs --env, or a JSON map {{"owner/repo": "<label or id>"}} at {path}')
+    except ValueError as exc:
+        return None, f'{path} is not valid JSON: {exc}'
+    value = data.get(slug) if isinstance(data, dict) else None
+    if not isinstance(value, str) or not value:
+        return None, f'{path} has no environment for {slug}'
+    return value, None
+
+
+def upstream_branch(repo):
+    """main from origin/main, for gh --base."""
+    match = UPSTREAM.match(upstream_ref(repo))
+    return match.group(1) if match else ''
+
+
+def first_line(text, width):
+    line = ' '.join((text or '').strip().splitlines()[:1]).strip() or 'cloud agent task'
+    return line if len(line) <= width else line[:width - 1].rstrip() + '…'
+
+
+def codex_pull_request(repo, slug, task_id, agent_url, brief):
+    """Apply a ready cloud task in a throwaway worktree, push, and open the pull request."""
+    base_ref = upstream_ref(repo)
+    base = upstream_branch(repo)
+    if not base_ref or not base:
+        return failed('codex', 'the checkout has no origin upstream branch for the pull request',
+                      agent_url=agent_url, task_id=task_id)
+    fetched = git(repo, 'fetch', 'origin', '--prune', timeout=180)
+    if fetched.returncode != 0:
+        return failed('codex', f'git fetch origin failed: {saying(fetched)}',
+                      agent_url=agent_url, task_id=task_id)
+    branch = f'codex/{task_id}'
+    holder = Path(tempfile.mkdtemp(prefix='cloud-agent-codex-'))
+    tree = holder / 'worktree'
+    try:
+        added = git(repo, 'worktree', 'add', '-b', branch, str(tree), base_ref, timeout=120)
+        if added.returncode != 0:
+            return failed('codex', f'git worktree add failed: {saying(added)}',
+                          agent_url=agent_url, task_id=task_id)
+        applied = run_codex(['cloud', 'apply', task_id], tree, timeout=300)
+        if applied.returncode != 0:
+            return failed('codex', f'codex cloud apply failed: {saying(applied)}',
+                          agent_url=agent_url, task_id=task_id, branch=branch)
+        git(tree, 'add', '-A')
+        staged = git(tree, 'status', '--porcelain')
+        if not staged.stdout.strip():
+            return failed('codex', f'task {task_id} applied no changes',
+                          agent_url=agent_url, task_id=task_id, branch=branch)
+        committed = git(tree, 'commit', '-m', f'codex cloud: {first_line(brief, 60)}', timeout=120)
+        if committed.returncode != 0:
+            return failed('codex', f'git commit failed: {saying(committed)}',
+                          agent_url=agent_url, task_id=task_id, branch=branch)
+        pushed = git(tree, 'push', '-u', 'origin', branch, timeout=300)
+        if pushed.returncode != 0:
+            return failed('codex', f'git push failed: {saying(pushed)}',
+                          agent_url=agent_url, task_id=task_id, branch=branch)
+        body = (f'Codex cloud task {task_id}: {agent_url}\n\n'
+                f'Brief:\n\n{brief.strip()[:1500]}\n\n'
+                'Author model: openai/codex-cloud\n')
+        created = run(['gh', 'pr', 'create', '-R', slug, '--head', branch, '--base', base,
+                       '--title', f'codex: {first_line(brief, 60)}', '--body', body],
+                      timeout=GH_TIMEOUT)
+        if created.returncode != 0:
+            return failed('codex', f'gh pr create failed: {saying(created)}',
+                          agent_url=agent_url, task_id=task_id, branch=branch)
+        match = PR_URL.search(created.stdout or '')
+        return outcome('codex', 'done', agent_url=agent_url, task_id=task_id, branch=branch,
+                       pr_url=match.group(0) if match else None)
+    finally:
+        git(repo, 'worktree', 'remove', '--force', str(tree), timeout=120)
+        shutil.rmtree(holder, ignore_errors=True)
+
+
+def launch_codex(repo, brief, env_arg, no_wait, timeout):
+    slug = slug_of(repo)
+    environment, why = codex_env(slug, env_arg)
+    if why:
+        return failed('codex', why)
+    started = time.time()
+    proc = run_codex(['cloud', 'exec', '--env', environment, '--', brief], repo, timeout=300)
+    text = saying(proc)
+    if limit_hit(text):
+        return limit('codex')
+    task_id, agent_url = codex_task(text)
+    if proc.returncode != 0 or not task_id:
+        return failed('codex', f'codex cloud exec failed: {text[-600:] or "no output"}')
+    agent_url = agent_url or f'https://chatgpt.com/codex/tasks/{task_id}'
+    if no_wait:
+        return outcome('codex', 'started', agent_url=agent_url, task_id=task_id)
+
+    deadline = time.time() + timeout
+    holder = Path(tempfile.mkdtemp(prefix='cloud-agent-codex-'))
+    try:
+        while True:
+            # status needs no checkout, so its error.log lands in a temp dir that goes away.
+            status = run_codex(['cloud', 'status', task_id], holder, GH_TIMEOUT)
+            answer = saying(status)
+            if limit_hit(answer):
+                return limit('codex', agent_url=agent_url, task_id=task_id)
+            state = codex_state(answer)
+            if state == 'done':
+                break
+            if state == 'failed':
+                return failed('codex', f'task {task_id} ended in error: {answer[-600:]}',
+                              agent_url=agent_url, task_id=task_id)
+            if time.time() >= deadline:
+                return outcome('codex', 'timeout', agent_url=agent_url, task_id=task_id,
+                               error=f'task {task_id} did not finish within {timeout:g}s')
+            time.sleep(min(CODEX_POLL_SECONDS, max(0.0, deadline - time.time())))
+    finally:
+        shutil.rmtree(holder, ignore_errors=True)
+    return codex_pull_request(repo, slug, task_id, agent_url, brief)
+
+
+def launch_claude(repo, brief, no_wait, timeout):
+    """Claude cloud is for Claude-native jobs only; code workers go to codex or cursor
+    (rule ~/.claude/rules/pstack-models.md)."""
+    script = binary('claude-cloud-task')
+    started = time.time()
+    proc = run([script, brief], cwd=repo, timeout=180)
+    text = saying(proc)
+    if limit_hit(text):
+        return limit('claude')
+    why = claude_error(proc.returncode, text)
+    if why:
+        return failed('claude', why)
+    agent_url = extract_claude_url(proc.stdout) or extract_claude_url(text)
+    if not agent_url:
+        return failed('claude', f'claude-cloud-task printed no session URL: {text[-600:] or "no output"}')
+    if no_wait:
+        return outcome('claude', 'started', agent_url=agent_url)
+    slug = slug_of(repo)
+    if not slug:
+        return failed('claude', 'cannot read owner/repo from the origin remote', agent_url=agent_url)
+    pull, why = wait_for_pr(slug, 'claude/', started, timeout)
+    if not pull:
+        return outcome('claude', 'timeout', agent_url=agent_url,
+                       error=f'{why} within {timeout:g}s')
+    return outcome('claude', 'done', agent_url=agent_url,
+                   branch=pull.get('headRefName'), pr_url=pull.get('url'))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog='cloud-agent',
+        description='Send one coding brief to a vendor cloud agent and wait for its pull request.')
+    parser.add_argument('vendor', choices=VENDORS)
+    parser.add_argument('--repo', required=True, help='git checkout the cloud agent works from')
+    parser.add_argument('--brief', required=True, help='file holding the prompt')
+    parser.add_argument('--model', help='cursor model: composer-2.5 (default) or a Grok id')
+    parser.add_argument('--env', help='codex environment label or id')
+    parser.add_argument('--no-wait', action='store_true', help='report the started task and exit')
+    parser.add_argument('--timeout', type=float, default=3600,
+                        help='seconds to wait for the pull request (default 3600)')
+    args = parser.parse_args(argv)
+
+    if args.vendor != 'cursor' and args.model:
+        return emit(failed(args.vendor, '--model belongs to cursor only'))
+    if args.vendor != 'codex' and args.env:
+        return emit(failed(args.vendor, '--env belongs to codex only'))
+    if args.vendor == 'cursor':
+        model = args.model or DEFAULT_CURSOR_MODEL
+        if not cursor_model_ok(model):
+            return emit(failed('cursor', f'only Composer 2.5 and Grok models are allowed, not {model}: '
+                                         'our Cursor plan includes those, so a cloud task costs nothing extra'))
+    if args.timeout <= 0:
+        return emit(failed(args.vendor, f'--timeout must be greater than 0, not {args.timeout:g}'))
+
+    brief = read_brief(args.brief)
+    if brief is None:
+        return emit(failed(args.vendor, f'cannot read --brief {args.brief}'))
+    if not brief.strip():
+        return emit(failed(args.vendor, f'--brief {args.brief} is empty'))
+
+    why = preflight(args.repo)
+    if why:
+        return emit(failed(args.vendor, why))
+
+    if args.vendor == 'cursor':
+        row = launch_cursor(args.repo, brief, model, args.no_wait, args.timeout)
+    elif args.vendor == 'codex':
+        row = launch_codex(args.repo, brief, args.env, args.no_wait, args.timeout)
+    else:
+        row = launch_claude(args.repo, brief, args.no_wait, args.timeout)
+    return emit(row)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
