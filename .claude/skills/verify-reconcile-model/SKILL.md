@@ -9,7 +9,7 @@ Reconcile picks a card column from worker and GitHub facts. A bug here moves the
 
 ## Property
 
-After one planned move, age reset to zero and a second plan must KEEP the new column, and still KEEP after age passes two hours. Hard evidence (open or merged PR, live worker) moves even inside the grace window. Protected and unknown columns never move. Every configured board ranks PR evidence above worker above idle the same way.
+After one planned move, age reset to zero and a second plan must KEEP the new column, and still KEEP after age passes two hours. Hard evidence (open PR, a merge newer than the card's column entry, live worker) moves even inside the grace window. A merge older than the column entry never promotes and never demotes. Protected and unknown columns never move. Every configured board ranks PR evidence above worker above idle the same way.
 
 ## Command
 
@@ -24,7 +24,7 @@ Or: `python3 -m unittest tests.test_verify_reconcile_model -v`
 | Code | Role |
 |------|------|
 | `skills/hypertask-work/reconcile` | `Stage`, `plan_stage`, `target`, `BoardConfig`, `BOARDS` |
-| `tests/test_verify_reconcile_model.py` | Enumeration and assertions |
+| `tests/test_verify_reconcile_model.py` | Enumeration and assertions; the skill's `check_model.py` runs this file |
 
 Sync commit: bump when reconcile planning changes without re-running this check.
 

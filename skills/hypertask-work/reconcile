@@ -76,6 +76,7 @@ class Pull:
     state: str
     checks: str
     passed: bool
+    merged_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,8 @@ class Facts:
     waiting: bool = False
     blocked: bool = False
     verification: bool = False
+    # When this card entered the column it sits in, from the ticket's own timestamps.
+    column_entry: float | None = None
 
 
 class Stage(Enum):
@@ -182,6 +185,18 @@ def open_pr_in_checks(pull, board):
     return pull.checks != 'green'
 
 
+def merged_since_entry(pull, facts):
+    """A merge is evidence only if it came after the card entered its current column.
+
+    A card parked or reopened behind an old, already merged PR carries history, not
+    work. An unreadable time on either side keeps the old reading: a missing clock
+    is not proof the merge came first.
+    """
+    if pull.merged_at is None or facts.column_entry is None:
+        return True
+    return pull.merged_at > facts.column_entry
+
+
 def plan_stage(facts, here, board):
     """One evidence order for every board: PR, worker, verification routing, grace, idle."""
     if facts.waiting or facts.blocked:
@@ -190,9 +205,11 @@ def plan_stage(facts, here, board):
         return Stage.CHECKS, 'open PR checks running, red, or missing'
     if any(p.state == 'OPEN' for p in facts.pulls):
         return Stage.REVIEW, _open_pr_reason(board)
-    if facts.pulls and all(p.state == 'MERGED' and p.passed for p in facts.pulls):
+    merged = [p for p in facts.pulls if p.state == 'MERGED']
+    fresh = [p for p in merged if merged_since_entry(p, facts)]
+    if fresh and all(p.passed for p in fresh):
         return Stage.REVIEW, 'merged PR with PASS; live proof pending'
-    if any(p.state == 'MERGED' for p in facts.pulls):
+    if fresh:
         return Stage.REVIEW, 'merged PR missing PASS on current head'
     if facts.alive:
         return Stage.IN_PROGRESS, _worker_reason(board)
@@ -202,6 +219,9 @@ def plan_stage(facts, here, board):
         return None, 'verification backlog; kept'
     if here == Stage.BACKLOG and facts.verification and Stage.VERIFICATION in stage_column_map(board):
         return Stage.VERIFICATION, 'verification ticket'
+    if merged and here in (Stage.BACKLOG, Stage.REVIEW):
+        # Older than the column it sits in: history, so it holds the card and never pulls it.
+        return None, 'merged PR older than column entry; kept'
     if facts.age < GRACE_SECONDS:
         return None, 'touched within 2h'
     if here in board.idle_demotion:
@@ -329,6 +349,24 @@ def stamp(value):
     if isinstance(value, (int, float)):
         return float(value)
     return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+
+
+def moment(value):
+    """One timestamp as epoch seconds, or None when the board sent nothing usable."""
+    try:
+        return stamp(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def column_entry(task):
+    """When this card entered its current column, from the fields the board list sends.
+
+    The list read carries no `staleness` block, and one task read per ticket is out,
+    so the last update stands in: a move is an update, and only an edit made after
+    the move can make a merged PR look older than it really was.
+    """
+    return moment(task.get('updatedAt'))
 
 
 def ticket_date(value):
@@ -1218,7 +1256,7 @@ def head_pulls(keys, board=DEFAULT):
 
     def lookup(batch):
         fields = [f'q{n}:search(query:{json.dumps(f"is:pr {scope} head:{key}")},type:ISSUE,first:100)'
-                  '{pageInfo{hasNextPage} nodes{... on PullRequest{url headRefName state number baseRefName repository{nameWithOwner}}}}'
+                  '{pageInfo{hasNextPage} nodes{... on PullRequest{url headRefName state mergedAt number baseRefName repository{nameWithOwner}}}}'
                   for n, key in enumerate(batch)]
         result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
         if result.get('errors'):
@@ -1269,7 +1307,7 @@ def discover(keys, board=DEFAULT, created=None):
         for n, key in enumerate(batch):
             query = f'is:pr {search_scope(board)} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
             fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
-                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number baseRefName repository{nameWithOwner}}}}')
+                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state mergedAt number baseRefName repository{nameWithOwner}}}}')
         result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
         if result.get('errors'):
             raise ValueError('GitHub search errors')
@@ -1361,11 +1399,11 @@ def pull_facts(pull, board=DEFAULT):
     board reads checks, base and verifier verdicts in batches of its own.
     """
     if product_board(board):
-        return Pull(pull['url'], pull['state'], '', False)
+        return Pull(pull['url'], pull['state'], '', False, moment(pull.get('mergedAt')))
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
-PULL_FIELDS = '''url state headRefOid baseRefOid author{login}
+PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid author{login}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
  ... on CheckRun{status conclusion} ... on StatusContext{state}}}}
  comments(last:100){totalCount nodes{databaseId body updatedAt author{login}}}'''
@@ -1414,7 +1452,7 @@ def pull_from_node(repo, number, node):
     if not passed and total > len(comments):
         # A verdict older than the newest hundred still counts; read them all.
         passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
-    return Pull(node['url'], node['state'], checks, passed)
+    return Pull(node['url'], node['state'], checks, passed, moment(node.get('mergedAt')))
 
 
 def read_pull_group(refs):
@@ -1534,7 +1572,7 @@ def collect(task, pulls, now, board=DEFAULT):
     details = tuple(pull_facts(p, board) for p in pulls)
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
                  bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')),
-                 is_verification(task))
+                 is_verification(task), column_entry(task))
 
 
 def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
