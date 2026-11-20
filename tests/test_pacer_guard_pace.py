@@ -90,6 +90,34 @@ class PacerGuardPace(unittest.TestCase):
         result = run(payload=payload('python3 -m unittest discover -s tests', transcript=PLAIN), env=self.env)
         self.assertEqual(result.returncode, 0)
 
+    def test_ahead_allows_text_that_mentions_loops_or_tests(self):
+        ahead_cases = [
+            'grep -n "while true" hooks/x.py',
+            'cat > brief.txt <<EOF\nwhile true; do drain; done\nEOF',
+            '~/.local/bin/plan-pick --run --brief "while true; do sync; done"',
+            'git commit -m "handle while true loop"',
+            'grep -r "npm test" .',
+            "cat > brief.txt <<'EOF'\nrun pytest\nEOF",
+            'lease X run -- ~/.local/bin/plan-pick --run',
+        ]
+        for command in ahead_cases:
+            with self.subTest(command=command):
+                result = run(payload=payload(command), env=self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ahead_still_blocks_heavy_commands(self):
+        blocked = (
+            'pytest -q',
+            'timeout 600 npm test',
+            'bash -c "npm test"',
+            'while true; do sleep 1; done',
+        )
+        for command in blocked:
+            with self.subTest(command=command):
+                result = run(payload=payload(command), env=self.env)
+                self.assertEqual(result.returncode, 2, command)
+                self.assertIn(PACE_MESSAGE, result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

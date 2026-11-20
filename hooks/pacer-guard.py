@@ -44,9 +44,7 @@ PACKAGE_MANAGERS = frozenset({"npm", "pnpm", "yarn", "bun"})
 GIT_READ = frozenset({"log", "status", "diff", "show"})
 GIT_BLOCK = frozenset({"rebase", "merge", "cherry-pick"})
 GH_READ = frozenset({"view", "list", "checks"})
-WHILE_LOOP = re.compile(r"\bwhile\s+(:|true|1|-)\b")
 UNTIL_WAIT = re.compile(r"\buntil\b[^;]*;\s*do\s+(sleep|wait)\b")
-FOR_C_LOOP = re.compile(r"\bfor\s+\(\(")
 _here = Path(__file__).resolve()
 _spec = importlib.util.spec_from_file_location("book_check", _here.with_name("book-check.py"))
 book = importlib.util.module_from_spec(_spec)
@@ -305,10 +303,62 @@ def npm_script_blocked(args):
     return rest[1] in ("test", "build", "lint", "check", "verify", "typecheck", "fmt")
 
 
-def loop_blocked(text):
-    if UNTIL_WAIT.search(text):
+def strip_heredocs(cmd):
+    if "<<" not in cmd:
+        return cmd
+    lines = cmd.split("\n")
+    out, delim = [], None
+    for line in lines:
+        if delim is not None:
+            if line.strip() == delim:
+                delim = None
+            continue
+        hit = re.search(r"<<-?\s*(?:'(\w+)'|\"(\w+)\"|(\w+))", line)
+        if hit:
+            delim = next(part for part in hit.groups() if part)
+            out.append(line)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def loop_segment_blocked(args):
+    if not args:
         return False
-    return bool(WHILE_LOOP.search(text) or FOR_C_LOOP.search(text))
+    head = args[0]
+    if head == "while" and len(args) >= 2 and args[1] in (":", "true", "1", "-"):
+        return True
+    if head == "for" and len(args) >= 2 and args[1].startswith("(("):
+        return True
+    if head == "until" and "do" in args:
+        chunk = " ".join(args)
+        if UNTIL_WAIT.search(chunk):
+            return False
+        return True
+    return False
+
+
+def shell_c_strings(args):
+    if not args:
+        return []
+    name = Path(args[0]).name
+    if name not in frozenset({"bash", "sh", "zsh", "dash"}):
+        return []
+    rest = args[1:]
+    found, idx = [], 0
+    while idx < len(rest):
+        word = rest[idx]
+        if word in ("-c", "--command"):
+            if idx + 1 < len(rest):
+                found.append(rest[idx + 1])
+            idx += 2
+        elif word == "--":
+            break
+        elif word.startswith("-"):
+            idx += 1
+        else:
+            idx += 1
+    return found
 
 
 def pace_segment_blocked(args):
@@ -330,20 +380,26 @@ def pace_segment_blocked(args):
     return False
 
 
-def pace_bash_verdict(command, ratio):
+def pace_bash_verdict(command, ratio, _depth=0):
     if not isinstance(command, str) or not command.strip():
         return None
-    if loop_blocked(command):
-        return pace_message(ratio)
-    for args in ttg.simple_commands(command):
+    scrubbed = strip_heredocs(command)
+    for args in ttg.simple_commands(scrubbed):
         args, _wrapped = ttg.strip_wrappers(args)
         if not args:
             continue
         text = shlex.join(args)
+        if loop_segment_blocked(args):
+            return pace_message(ratio)
         if pace_segment_allowed(text, args):
             continue
         if pace_segment_blocked(args):
             return pace_message(ratio)
+        if _depth < 4:
+            for inner in shell_c_strings(args):
+                why = pace_bash_verdict(inner, ratio, _depth + 1)
+                if why:
+                    return why
     return None
 
 
