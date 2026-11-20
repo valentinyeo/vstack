@@ -1,27 +1,53 @@
 ---
 name: repo-tidy
 description: >-
-  Remove git worktrees and branches whose work already shipped, across many repos at once, with gates that protect uncommitted, unpushed and in-use work. Use after a merge your session made, for the daily VPS sweep, or when dead worktrees fill the disk.
+  Remove git worktrees and branches whose work already shipped, across many repos at once, with gates that protect uncommitted, unpushed and in-use work. Use after a merge your session made, or when dead worktrees fill the disk.
 ---
 
 # repo-tidy
 
-Prior art: pstack's worktree-cleanup playbook and its worktree-audit.sh are
-read-only audits for one repo. The clean-up skill covers one session in
-hypertask only. This adds the multi-repo, gated, ongoing apply.
+Prior art: pstack `poteto-mode` was checked. Its worktree-cleanup playbook is a
+read-only audit for one repo. The clean-up skill covers one session in hypertask
+only. Neither is the multi-repo, gated, repeated apply. That gap is this skill.
 
 Dry run by default. `--apply` removes.
 
-## When to run
+## Run it on your own repo
 
-1. After a merge your session made: `repo-tidy --apply --mine $PWD`. It reads
-   only the one repo you are in. The Stop hook does this for you.
-2. VPS Admin, daily: `repo-tidy --apply --all`. Every repo under the projects
-   root, plus the two shared checkouts.
-3. Any time, read only: `repo-tidy --all` prints the plan.
+1. After your session merges something: `repo-tidy --apply --mine $PWD`. It reads
+   only the one repo you are in.
+2. Read only, any time: `repo-tidy --all` prints the plan for every repo.
+   `--apply --all` is there when you mean it. Nothing runs it on a timer, and
+   nobody sweeps other chats' repos for them.
 
-Every session cleans its own repo after it ships. Nobody waits for the daily
-sweep to tidy the worktree they just finished with.
+## Set up your own check
+
+Nobody registers this for you. Pick either or both.
+
+1. In your own loop, after each merge, run `repo-tidy --apply --mine "$PWD"`.
+2. Add the Stop hook to your own project's .claude/settings.local.json. It tidies
+   that repo when a turn ends, at most once per 30 minutes per repo:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.local/share/vstack/hooks/repo-tidy-stop"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook is `hooks/repo-tidy-stop`. It looks for the script beside itself, so it
+works with no install step. Never run this repo's ./install for it: that repoints
+shared skills for every chat on this host.
 
 ## The gates
 
@@ -69,7 +95,7 @@ directory under repo-tidy.
 repo-tidy                      # dry run, this repo
 repo-tidy --all                # dry run, every repo
 repo-tidy --apply --mine $PWD  # this repo, after your merge
-repo-tidy --apply --all        # the daily sweep
+repo-tidy --apply --all        # every repo, when you mean it
 repo-tidy --all --json         # machine readable
 ```
 

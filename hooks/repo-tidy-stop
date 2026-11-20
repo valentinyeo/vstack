@@ -4,7 +4,8 @@
 # repo, keyed by a stamp file. Prints nothing and always exits 0, so it can
 # never hold up a session.
 #
-# Registered by the orchestrator. Never edit ~/.claude/settings.json from here.
+# Each chat adds this to its own project's .claude/settings.local.json. Nothing
+# registers it for you, and it never edits a settings file itself.
 set -u
 
 cwd=${CLAUDE_PROJECT_DIR:-$PWD}
@@ -13,7 +14,13 @@ cwd=${CLAUDE_PROJECT_DIR:-$PWD}
 repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -n "$repo" ] || exit 0
 
+# The hook is usually a symlink into a vstack checkout, so -f follows it there
+# and the script sits one level up from hooks/.
+here=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
 tidy=$(command -v repo-tidy 2>/dev/null || true)
+if [ -z "$tidy" ] && [ -x "${here%/*}/../skills/repo-tidy/repo-tidy" ]; then
+  tidy=$(readlink -f "${here%/*}/../skills/repo-tidy/repo-tidy")
+fi
 [ -n "$tidy" ] || tidy="$HOME/.local/bin/repo-tidy"
 [ -x "$tidy" ] || exit 0
 
