@@ -6,7 +6,7 @@ description: >-
 
 # PR housekeeping
 
-Prior art: pstack `poteto-mode` Babysit, Shipping and Autopilot-full step 6 take one PR at a time; the house-rules `hypertask-triage` `pr-queue` reads PRs from the board side. Neither says which live chat owns a PR, so this skill adds the per chat queue and its states.
+Prior art: pstack `poteto-mode` Babysit, Shipping and Autopilot-full step 6 take one PR at a time; the older `hypertask-triage` `pr-queue` reads PRs from the board side. Neither says which live chat owns a PR, so this skill adds the per chat queue and its states.
 
 Every chat tidies its own PRs. Nobody tidies another chat's. Maintainers are not operators: no central timer and no central runner watches for you, so you set up your own check.
 
