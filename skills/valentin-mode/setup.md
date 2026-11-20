@@ -15,7 +15,7 @@ Write every registered command to fail open when its file is missing, and to blo
 | `launch-gate.py` | PreToolUse, Bash | No worker, build or test starts while vps-state says HOLD; `LAUNCH_GATE=off` is Valentin's override. | each project |
 | `skill-update.py` | UserPromptSubmit | Keeps the shared skills current and says when valentin-mode changed, so the chat re-reads it. | each project |
 | `gh-watch-guard.py` | PreToolUse, Bash | `gh --watch` and gh poll loops sleeping under 60 s are blocked. CI waits through `~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>` as a tracked background command (Bash `run_in_background`), not `&` or nohup. | each project |
-| `long-chat.py` | UserPromptSubmit, Stop, PreCompact (`auto`) | Valentin-mode chats hand off via mp-fresh before autocompact. Soft threshold adds context; hard threshold blocks Stop and auto PreCompact. Warn-only without a Multibot host. Acts only when valentin-mode is loaded. | each project |
+| `long-chat.py` | UserPromptSubmit, Stop, PreCompact (`auto`) | Valentin-mode chats hand off via mp-fresh before autocompact. Soft at 300k / hard at 400k on 1M chats (110k / 140k on 200k). Soft adds context; hard blocks Stop and auto PreCompact. Warn-only without a Multibot host. Acts only when valentin-mode is loaded. | each project |
 
 Run `python3 ~/.claude/hooks/launch-gate.py --install-for-project` once per project (writes `.claude/settings.local.json`); `--check-project` exits 0 when wired.
 

@@ -10,7 +10,7 @@ description: >-
 
 Prior art: checked vstack skills (responsive-mode, board-drain, spawn-multibot-session, pstack recall), none fits because this skill is only the handover-and-mp-fresh flow when context is large, not looping, spawning, or recall.
 
-Valentin-mode chats must hand off and restart in the same Multibot chat before context autocompacts. The hook nudges you at the soft limit and blocks further turns at the hard limit until you complete this flow.
+Valentin-mode chats must hand off and restart in the same Multibot chat before context autocompacts. The hook nudges you at the soft limit and blocks further turns at the hard limit until you complete this flow. On a 1M-token window that is 300k warn and 400k hand off; on a 200k window it stays 110k / 140k (55% / 70% capped by those token limits).
 
 ## Steps
 

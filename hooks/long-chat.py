@@ -21,6 +21,8 @@ DEFAULT_WINDOW = 200_000
 WINDOW_1M = 1_000_000
 DEFAULT_SOFT = 0.55
 DEFAULT_HARD = 0.70
+SOFT_CAP = 300_000
+HARD_CAP = 400_000
 MAX_BLOCKS = 3
 SKILL = '~/.claude/skills/long-chat/SKILL.md'
 READ_CHUNK = 1 << 20
@@ -46,6 +48,18 @@ def float_env(env, key, default):
         return float(env.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def int_env(env, key, default):
+    try:
+        return int(env.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def token_threshold(window, fraction, cap, env, cap_key, default_cap):
+    cap_tokens = int_env(env, cap_key, default_cap)
+    return min(int(fraction * window), cap_tokens)
 
 
 def window_tokens(model, env):
@@ -182,15 +196,16 @@ def queued(home, session_id):
     return (state_dir(home) / f'{session_id}.queued').is_file()
 
 
-def soft_context(size, window, soft):
+def soft_context(size, window, soft_tokens, hard_tokens):
     pct = int(round(100 * size / window))
     return {
         'hookSpecificOutput': {
             'hookEventName': 'UserPromptSubmit',
             'additionalContext': (
                 f'Chat context is about {pct}% of the window ({size:,} / {window:,} tokens). '
-                f'Before autocompact, follow the long-chat skill at your next clean point '
-                f'({SKILL}): hand over and run mp-fresh in this same Multibot chat.'
+                f'Long-chat limits for this window: warn at {soft_tokens:,} tokens, hand off at '
+                f'{hard_tokens:,}. Before autocompact, follow the long-chat skill at your next '
+                f'clean point ({SKILL}): hand over and run mp-fresh in this same Multibot chat.'
             ),
         },
     }
@@ -226,15 +241,20 @@ def user_prompt(payload, env):
     if size is None:
         return {}
     window = window_tokens(model, env)
-    soft = float_env(env, 'LONG_CHAT_SOFT', DEFAULT_SOFT)
-    if size < soft * window:
+    soft_frac = float_env(env, 'LONG_CHAT_SOFT', DEFAULT_SOFT)
+    hard_frac = float_env(env, 'LONG_CHAT_HARD', DEFAULT_HARD)
+    soft_tokens = token_threshold(
+        window, soft_frac, SOFT_CAP, env, 'LONG_CHAT_SOFT_TOKENS', SOFT_CAP)
+    hard_tokens = token_threshold(
+        window, hard_frac, HARD_CAP, env, 'LONG_CHAT_HARD_TOKENS', HARD_CAP)
+    if size < soft_tokens:
         return {}
     band = min(9, int(size * 10 / window))
     home = home_dir(env)
     if soft_notified(home, session_id, band):
         return {}
     mark_soft(home, session_id, band)
-    return soft_context(size, window, soft)
+    return soft_context(size, window, soft_tokens, hard_tokens)
 
 
 def stop_or_precompact(payload, env, event_name):
@@ -254,8 +274,10 @@ def stop_or_precompact(payload, env, event_name):
     if size is None:
         return {}
     window = window_tokens(model, env)
-    hard = float_env(env, 'LONG_CHAT_HARD', DEFAULT_HARD)
-    if size < hard * window:
+    hard_frac = float_env(env, 'LONG_CHAT_HARD', DEFAULT_HARD)
+    hard_tokens = token_threshold(
+        window, hard_frac, HARD_CAP, env, 'LONG_CHAT_HARD_TOKENS', HARD_CAP)
+    if size < hard_tokens:
         return {}
     if not multibot_host(env):
         return warn_no_host()
@@ -358,6 +380,37 @@ def self_test():
         pre_auto = {**pre_manual, 'trigger': 'auto'}
         env_host.pop('MULTIPROMPT_TAB')
         assert hook(pre_auto, env) == warn_no_host(), 'PreCompact auto warn-only without host'
+
+        model_1m = 'claude-sonnet[1m]'
+        soft_1m = write_transcript(
+            place, 'soft_1m.jsonl',
+            {'input_tokens': 350000, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0},
+            model=model_1m)
+        hard_1m = write_transcript(
+            place, 'hard_1m.jsonl',
+            {'input_tokens': 410000, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0},
+            model=model_1m)
+        sid_soft_1m = 'sess-1m-soft'
+        sid_hard_1m = 'sess-1m-hard'
+        env_1m = {'HOME': str(home)}
+        payload_soft_1m = {
+            'hook_event_name': 'UserPromptSubmit', 'session_id': sid_soft_1m,
+            'transcript_path': soft_1m}
+        assert hook(payload_soft_1m, env_1m).get('hookSpecificOutput', {}).get(
+            'additionalContext'), '1m 350k -> soft context'
+        env_1m_host = {
+            **env_1m, 'MULTIPROMPT_TAB': 'live-1m-test',
+            'PATH': f'{bin_dir}:{env.get("PATH", "")}'}
+        stop_soft_1m = {
+            'hook_event_name': 'Stop', 'session_id': sid_soft_1m,
+            'transcript_path': soft_1m, 'stop_hook_active': False}
+        assert hook(stop_soft_1m, env_1m_host) == {}, '1m 350k under hard -> no Stop block'
+        stop_hard_1m = {
+            'hook_event_name': 'Stop', 'session_id': sid_hard_1m,
+            'transcript_path': hard_1m, 'stop_hook_active': False}
+        assert hook(stop_hard_1m, env_1m_host).get('decision') == 'block', '1m 410k -> block'
 
     print('long-chat self-test ok')
 
