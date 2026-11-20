@@ -89,20 +89,35 @@ class Sandbox:
             age(path, seconds_old)
         return path
 
+    def make_tree(self, relative, seconds_old, files=('deep/file',)):
+        """A tree whose every entry but the top directory is `seconds_old` old."""
+        top = self.root / relative.lstrip('/')
+        for name in files:
+            path = top / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('x')
+        for dirpath, dirnames, filenames in os.walk(top):
+            for name in filenames:
+                age(os.path.join(dirpath, name), seconds_old)
+            for name in dirnames:
+                child = os.path.join(dirpath, name)
+                if child != str(top):
+                    age(child, seconds_old)
+        return top
+
     def _write_tool(self, name, tool):
+        body = ["#!/bin/sh",
+                "printf '%s %s\\n' '" + tool + "' \"$*\" >> '" + str(self.docker_log) + "'",
+                'case "$1 $2" in',
+                '  "system df") echo \'{"Type":"Images","Size":"7.5GB","Reclaimable":"4.7GB"}\' ;;',
+                '  "image ls") echo "sha256:aaaa 1.2GB" ;;',
+                '  "volume ls") echo "ht-smoke-build-1"; echo "ht-smoke-state-2" ;;',
+                '  "ps -a") echo "" ;;',
+                '  *) : ;;',
+                'esac',
+                'exit 0']
         script = self.bin / name
-        script.write_text(
-            '#!/bin/sh\n'
-            'printf "%s %s\\n" "{tool}" "$*" >> "' + str(self.docker_log) + '"\n'
-            'case "$1 $2" in\n'
-            '  "system df") echo \'{"Type":"Images","Size":"7.5GB","Reclaimable":"4.7GB"}\' ;;\n'
-            '  "image ls") echo "sha256:aaaa 1.2GB" ;;\n'
-            '  "volume ls") echo "ht-smoke-build-1"; echo "ht-smoke-state-2" ;;\n'
-            '  "ps -a") echo "" ;;\n'
-            '  *) : ;;\n'
-            'esac\n'
-            'exit 0\n'.format(tool=tool)
-        )
+        script.write_text("\n".join(body) + "\n")
         script.chmod(0o755)
 
     def tool_calls(self):
@@ -362,27 +377,29 @@ class TmpRules(Base):
 
 class EvidenceAndCaches(Base):
     def test_vcc_evidence_children_go_at_thirty_days(self):
-        old = self.box.make('home/.local/state/vcc-evidence/VSTA-1/run-old/out.txt',
-                            seconds_old=40 * DAY)
+        old = self.box.make_tree('home/.local/state/vcc-evidence/VSTA-OLD', 40 * DAY,
+                                files=('run-old/out.txt',))
         fresh = self.box.make('home/.local/state/vcc-evidence/VSTA-2/run-new/out.txt')
         payload = self.box.payload('--only', 'evidence', '--apply')
-        self.assertRemoved(payload, old.parent)
-        self.assertFalse(old.parent.exists())
-        self.assertTrue(fresh.parent.exists())
+        self.assertRemoved(payload, old)
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
 
     def test_evidence_builds_go_at_two_days(self):
-        run = self.box.make('home/.local/state/vcc-evidence/VSTA-1/run-live/state.json')
-        build = self.box.make('home/.local/state/vcc-evidence/VSTA-1/run-live/app/.next/build',
-                              seconds_old=3 * DAY)
-        modules = self.box.make('home/.local/state/vcc-evidence/VSTA-1/run-live/app/node_modules/x/y',
-                                seconds_old=3 * DAY)
-        fresh_build = self.box.make('home/.local/state/vcc-evidence/VSTA-1/run-live/app/.next/live')
+        base = 'home/.local/state/vcc-evidence/VSTA-1'
+        run = self.box.make(base + '/run-build/state.json')
+        build = self.box.make_tree(base + '/run-build/app/.next', 3 * DAY,
+                                  files=('build/index.js',))
+        modules = self.box.make_tree(base + '/run-build/app/node_modules', 3 * DAY,
+                                     files=('x/y/index.js',))
+        fresh_build = self.box.make_tree(base + '/run-fresh/app/.next', 0,
+                                         files=('live/index.js',))
         payload = self.box.payload('--only', 'evidence', '--apply')
-        self.assertRemoved(payload, build.parent)
-        self.assertRemoved(payload, modules.parent.parent)
+        self.assertRemoved(payload, build)
+        self.assertRemoved(payload, modules)
         self.assertTrue(fresh_build.exists())
         self.assertTrue(run.exists())
-        self.assertTrue(build.parent.parent.exists(), 'the app folder itself stays')
+        self.assertTrue((build.parent).exists(), 'the app folder itself stays')
 
     def test_evidence_videos_need_a_successful_board_read(self):
         video = self.box.make('home/.local/state/vcc-evidence/VSTA-7/run-1/demo.mp4',
@@ -405,29 +422,31 @@ class EvidenceAndCaches(Base):
         self.assertTrue(video2.exists())
 
     def test_state_tmp_dirs_need_a_known_parent(self):
-        known = self.box.make('home/.local/state/hax/tmp/file', seconds_old=3 * DAY)
-        unknown = self.box.make('home/.local/state/mystery/tmp/file', seconds_old=3 * DAY)
+        known = self.box.make_tree('home/.local/state/hax/tmp', 3 * DAY)
+        unknown = self.box.make_tree('home/.local/state/mystery/tmp', 3 * DAY)
         payload = self.box.payload('--only', 'evidence', '--apply')
-        self.assertRemoved(payload, known.parent)
+        self.assertRemoved(payload, known)
         self.assertTrue(unknown.exists())
 
     def test_npx_cache_ages_at_seven_days(self):
-        old = self.box.make('home/.npm/_npx/abc/node_modules/x/index.js', seconds_old=8 * DAY)
-        fresh = self.box.make('home/.npm/_npx/def/node_modules/x/index.js')
+        old = self.box.make_tree('home/.npm/_npx/abc', 8 * DAY, files=('node_modules/x/index.js',))
+        fresh = self.box.make_tree('home/.npm/_npx/def', 0, files=('node_modules/x/index.js',))
         payload = self.box.payload('--only', 'caches', '--apply')
-        self.assertRemoved(payload, old.parent.parent)
-        self.assertTrue(fresh.parent.parent.exists())
+        self.assertRemoved(payload, old)
+        self.assertTrue(fresh.exists())
 
     def test_tool_caches_age_at_two_days_and_playwright_keeps_current(self):
-        old_cache = self.box.make('home/.cache/go-build/aa/bb', seconds_old=3 * DAY)
-        fresh_cache = self.box.make('home/.cache/zig/aa/bb')
-        oldest = self.box.make('home/.cache/ms-playwright/chromium-1000/chrome', seconds_old=9 * DAY)
-        newest = self.box.make('home/.cache/ms-playwright/chromium-1200/chrome', seconds_old=9 * DAY)
+        old_cache = self.box.make_tree('home/.cache/go-build', 3 * DAY, files=('aa/bb',))
+        fresh_cache = self.box.make_tree('home/.cache/zig', 0, files=('aa/bb',))
+        oldest = self.box.make_tree('home/.cache/ms-playwright/chromium-1000', 9 * DAY,
+                                    files=('chrome',))
+        newest = self.box.make_tree('home/.cache/ms-playwright/chromium-1200', 9 * DAY,
+                                    files=('chrome',))
         payload = self.box.payload('--only', 'caches', '--apply')
-        self.assertRemoved(payload, old_cache.parent.parent)
-        self.assertTrue(fresh_cache.parent.parent.exists())
-        self.assertRemoved(payload, oldest.parent)
-        self.assertKept(payload, newest.parent, 'current')
+        self.assertRemoved(payload, old_cache)
+        self.assertTrue(fresh_cache.exists())
+        self.assertRemoved(payload, oldest)
+        self.assertKept(payload, newest, 'current')
 
     def test_playwright_version_referenced_by_a_link_is_kept(self):
         install = self.box.make('home/node_modules/playwright-core/package.json',
@@ -436,28 +455,29 @@ class EvidenceAndCaches(Base):
         browsers.write_text(json.dumps({'browsers': [{'name': 'firefox', 'revision': '1400'}]}))
         # The real .links mechanism: a link file points at the install that needs the build.
         ms = self.box.home / '.cache' / 'ms-playwright'
-        referenced = self.box.make('home/.cache/ms-playwright/firefox-1400/firefox',
-                                   seconds_old=9 * DAY)
-        stale = self.box.make('home/.cache/ms-playwright/firefox-1300/firefox', seconds_old=9 * DAY)
+        referenced = self.box.make_tree('home/.cache/ms-playwright/firefox-1400', 9 * DAY,
+                                        files=('firefox',))
+        stale = self.box.make_tree('home/.cache/ms-playwright/firefox-1300', 9 * DAY,
+                                   files=('firefox',))
         linkdir = ms / '.links'
         linkdir.mkdir(parents=True, exist_ok=True)
         (linkdir / 'abc').write_text(str(install.parent))
         payload = self.box.payload('--only', 'caches', '--apply')
-        self.assertKept(payload, referenced.parent)
-        self.assertRemoved(payload, stale.parent)
+        self.assertKept(payload, referenced)
+        self.assertRemoved(payload, stale)
 
     def test_repo_target_needs_a_cachedir_tag(self):
-        tagged = self.box.make('home/projects/repo/target/debug/x', seconds_old=3 * DAY)
-        (self.box.home / 'projects' / 'repo' / 'target' / 'CACHEDIR.TAG').write_text('Signature: 8a477f597d28d172789f06886806bc55\n')
-        age(self.box.home / 'projects' / 'repo' / 'target' / 'CACHEDIR.TAG', 3 * DAY)
-        untagged = self.box.make('home/projects/other/target/debug/x', seconds_old=3 * DAY)
-        zig = self.box.make('home/projects/repo/.zig-cache/o/x', seconds_old=3 * DAY)
-        nextcache = self.box.make('home/projects/repo/.next/cache/aa', seconds_old=3 * DAY)
+        tagged = self.box.make_tree('home/projects/repo/target', 3 * DAY, files=('debug/x',))
+        (tagged / 'CACHEDIR.TAG').write_text('Signature: 8a477f597d28d172789f06886806bc55\n')
+        age(tagged / 'CACHEDIR.TAG', 3 * DAY)
+        untagged = self.box.make_tree('home/projects/other/target', 3 * DAY, files=('debug/x',))
+        zig = self.box.make_tree('home/projects/repo/.zig-cache', 3 * DAY, files=('o/x',))
+        nextcache = self.box.make_tree('home/projects/repo/.next/cache', 3 * DAY, files=('aa',))
         payload = self.box.payload('--only', 'caches', '--apply')
-        self.assertRemoved(payload, tagged.parent.parent)
+        self.assertRemoved(payload, tagged)
         self.assertTrue(untagged.exists())
-        self.assertRemoved(payload, zig.parent.parent)
-        self.assertRemoved(payload, nextcache.parent)
+        self.assertRemoved(payload, zig)
+        self.assertRemoved(payload, nextcache)
 
     def test_ceo_runs_keeps_small_proof_files(self):
         big = self.box.make('home/projects/ceo/runs/big.txt', 'x' * (6 * MB), seconds_old=3 * DAY)
@@ -575,8 +595,6 @@ class ProcessRules(Base):
             protected[name] = proc
             self.box.add_process(proc.pid, 1, '{} something'.format(name),
                                  etimes=99 * 3600, cwd=self.box.state / 'hypertask-x')
-        for proc in protected.values():
-            self.box.add_process(proc.pid, 1, 'proxy for claude', etimes=1)
         payload = self.box.payload('--only', 'processes', '--apply')
         for name, proc in protected.items():
             item = [row for row in payload['items'] if row.get('pid') == proc.pid]
@@ -685,7 +703,7 @@ class ProcessRules(Base):
         self.assertTrue(record['reason'])
         self.assertEqual(record['cwd'], str(worktree))
         self.assertIn(record['signal'], ('SIGTERM', 'SIGKILL'))
-        kills_log = (self.state / 'vps-tidy' / 'kills.log')
+        kills_log = (self.box.state / 'vps-tidy' / 'kills.log')
         self.assertTrue(kills_log.exists())
         self.assertIn(str(proc.pid), kills_log.read_text())
 
@@ -720,7 +738,7 @@ class Shape(Base):
         self.assertIn('used_percent', summary[0])
         self.assertIn('would_free_bytes', summary[0])
         self.assertIn('removed', summary[0])
-        status = json.loads((self.state / 'vps-tidy' / 'status.json').read_text())
+        status = json.loads((self.box.state / 'vps-tidy' / 'status.json').read_text())
         self.assertIn('finished_at', status)
         self.assertNotIn('verdict', status)
 
@@ -741,7 +759,7 @@ class Shape(Base):
         self.assertEqual(bad_flag.returncode, 2)
 
     def test_lock_held_refuses_the_run(self):
-        lock = self.state / 'vps-tidy' / 'lock'
+        lock = self.box.state / 'vps-tidy' / 'lock'
         lock.parent.mkdir(parents=True, exist_ok=True)
         with open(lock, 'w') as handle:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
