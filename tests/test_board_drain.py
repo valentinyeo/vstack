@@ -86,9 +86,26 @@ class CheckTest(unittest.TestCase):
             code = drain.main(argv)
         return code, out.getvalue()
 
-    def test_000_real_case_from_this_morning(self):
-        # This morning: SOFT-2809 and SOFT-2813 sat unmarked in Todo for hours,
-        # two other tickets were marked waiting, and nothing was in Doing.
+    def test_real_case_all_four_unmarked(self):
+        # Board 2060 label Poteto this morning, unedited: four real tickets sat
+        # unmarked in Todo for hours and nothing was in Doing.
+        rows = []
+        for key in ('SOFT-2809', 'SOFT-2810', 'SOFT-2813', 'SOFT-2815'):
+            row = snapshot(key)
+            row['task'].update(section='Todo', waitingOnUserId=None, blockerCommentId=None,
+                               labels=[{'name': 'Poteto'}], updatedAt=iso(NOW - 3 * 3600))
+            rows.append(row)
+        code, out = self.run_check(rows)
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off: 4 workable Todo, nothing in Doing.', out)
+        for key in ('SOFT-2809', 'SOFT-2810', 'SOFT-2813', 'SOFT-2815'):
+            self.assertIn(f'stale: {key} workable in Todo for 3h.', out)
+            self.assertNotIn(f'waiting: {key}', out)
+        self.assertIn('drain-check: FAIL (5 findings)', out)
+
+    def test_real_case_two_marked_variant(self):
+        # This morning, marked side: SOFT-2809 and SOFT-2813 sat unmarked in Todo
+        # for hours, two other tickets were marked waiting, and nothing was in Doing.
         rows = []
         for key in ('SOFT-2809', 'SOFT-2813'):
             row = snapshot(key)
