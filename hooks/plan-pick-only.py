@@ -15,6 +15,7 @@ plan-pick-only.py --self-test
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shlex
 import sys
 
@@ -27,6 +28,14 @@ book = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(book)
 NESTED = frozenset({"lease"})
 PROBE = frozenset({"-h", "--help", "-V", "--version"})
+REDIRECT = re.compile(r"^\d*[<>]")
+
+
+def probe(args):
+    rest = args[1:]
+    if not PROBE.intersection(rest):
+        return False
+    return all(arg in PROBE or arg == "exec" or arg.startswith("-") or REDIRECT.match(arg) for arg in rest)
 
 
 def argv_list(cmd, depth=0):
@@ -42,7 +51,7 @@ def argv_list(cmd, depth=0):
 
 def verdict(cmd):
     for args in argv_list(cmd):
-        if Path(args[0]).name == "plan-pick" or PROBE.intersection(args[1:]):
+        if Path(args[0]).name == "plan-pick" or probe(args):
             continue
         if book.worker_launch(shlex.join(args)):
             return MESSAGE
@@ -63,6 +72,8 @@ def self_test():
         '~/.local/bin/plan-pick --run && codex exec -C /tmp/x "$(cat b)"',
         'spawn-worker --level normal /tmp/brief.md',
         'command codex exec -C /tmp/x "b"',
+        'codex exec --help "$(cat b)"',
+        'nohup codex exec --version "$(cat b)" &',
     ]
     allowed = [
         '~/.local/bin/plan-pick --run',
@@ -70,7 +81,9 @@ def self_test():
         'lease SOFT-12 run -- timeout 3600 ~/.local/bin/plan-pick --run',
         'grep -n "codex exec" file',
         'codex exec --help',
+        'codex exec -h 2>&1',
         'codex --version',
+        'pi --print --help',
         'pi --version',
         'echo "pi -p --model x"',
         'cat notes.md',
@@ -96,7 +109,8 @@ def main():
     tool_input = data.get("tool_input")
     if not isinstance(tool_input, dict):
         return 0
-    why = verdict(tool_input.get("command") or "")
+    command = tool_input.get("command")
+    why = verdict(command if isinstance(command, str) else "")
     if not why:
         return 0
     print(why, file=sys.stderr)

@@ -43,11 +43,20 @@ class PlanPickOnly(unittest.TestCase):
             'command': '~/.local/bin/plan-pick --run && pi -p "$(cat b)"'}})
         self.assertEqual(run(payload=payload).returncode, 2)
 
+    def test_a_probe_passes_but_a_probe_with_a_brief_is_blocked(self):
+        for command, expected in [('codex exec --help', 0), ('codex exec -h 2>&1', 0),
+                                  ('codex exec --help "$(cat b)"', 2)]:
+            with self.subTest(command=command):
+                result = run(payload=json.dumps({'tool_name': 'Bash', 'tool_input': {'command': command}}))
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_other_tools_and_unreadable_input_pass(self):
         for payload in [json.dumps({'tool_name': 'Write', 'tool_input': {'command': 'codex exec -C /tmp/x b'}}),
                         'not json', json.dumps({'tool_name': 'Bash'}),
                         json.dumps({'tool_name': 'Bash', 'tool_input': 'x'}),
-                        json.dumps({'tool_name': 'Bash', 'tool_input': None})]:
+                        json.dumps({'tool_name': 'Bash', 'tool_input': None}),
+                        json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 42}}),
+                        json.dumps({'tool_name': 'Bash', 'tool_input': {'command': ['pi', '-p']}})]:
             with self.subTest(payload=payload):
                 self.assertEqual(run(payload=payload).returncode, 0)
 
