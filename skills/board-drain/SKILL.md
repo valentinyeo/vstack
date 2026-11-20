@@ -50,7 +50,7 @@ A ticket linked BlockedBy a ticket that is not Done also stays outside the drain
 ## drain-check fails
 
 - **loop off:** workable Todo, nothing alive in Doing. Re-arm, then give the named ticket an owner.
-- **unassigned:** a ticket in a working column (Doing, Building, Checks, AI Review, Verifier) with no agent. Assign your own agent login: `task assign <KEY> --self`.
+- **unassigned:** a ticket in a working column with no agent. Assign your own agent login: `task assign <KEY> --self`.
 - **stalled:** a Doing ticket with no live owner. Replace it with a fresh plan-pick owner. A ticket moved in from another board gets a new key nothing records, so a worker started under the old key is invisible here: check that lease by hand before restarting a worker.
 - **stale:** a workable Todo ticket idle over two hours. Give it an owner; note the gap on your role ticket.
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.
