@@ -34,7 +34,7 @@ Each chat with a board runs `/board-drain` on itself: at session start, after a 
 
 ### PR owner
 
-Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; one nobody finishes closes with a reason.
+Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; one nobody finishes closes with a reason. Your loop runs `/pr-housekeeping` on your own open PRs.
 
 ## Working
 
@@ -44,6 +44,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verifying:** every app has one `verify-<app>` skill. Every Done when names its proof. A behaviour PR carries proof that fits: screenshot or video for UI, transcript for CLI, response body for API. No proof, no PASS.
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author.
+- **GitHub calls:** one budget serves every chat. Poll checks at most once a minute, never `gh pr checks --watch`; batch reads.
 - **Server load:** before a worker, build or long test, run `~/.local/bin/vps-state --can-launch worker`; on HOLD start nothing and say so. Time-limit long commands.
 - **Server and cloud:** GitHub runners run CI and the verifier, never self-hosted; this server runs the rest.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
