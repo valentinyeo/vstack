@@ -17,6 +17,7 @@ here. The credential identity is the bucket column, which is as close as the log
 """
 import argparse
 import collections
+import gzip
 import sys
 from pathlib import Path
 
@@ -45,8 +46,24 @@ def cacheable(argv):
     return sub_of(argv) in READ_SUBS and not (set(words) & BYPASS_FLAGS)
 
 
+def _log_slices(path):
+    """Yield line iterators oldest-first: .2.gz, .1.gz, then the live file."""
+    log = Path(path)
+    parent, name = log.parent, log.name
+    for piece in (name + ".2.gz", name + ".1.gz", name):
+        target = parent / piece
+        if not target.exists():
+            continue
+        if piece.endswith(".gz"):
+            with gzip.open(target, "rt", encoding="utf-8", errors="replace") as handle:
+                yield handle
+        else:
+            with open(target, encoding="utf-8", errors="replace") as handle:
+                yield handle
+
+
 def rows(path, seconds=None, end=None):
-    with open(path, encoding="utf-8", errors="replace") as handle:
+    for handle in _log_slices(path):
         for line in handle:
             fields = line.rstrip("\n").split("\t")
             if len(fields) < 4 or fields[2] != "pr":
