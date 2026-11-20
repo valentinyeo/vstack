@@ -1,0 +1,27 @@
+---
+name: responsive-mode
+description: "responsive mode;stay responsive;answer me while you work;like grok. /responsive-mode: the chat stays free to talk while background agents do the work, and every job still ends done. Use when Valentin says responsive mode, or a session ignores his messages while busy, merges answers, or replies fast but leaves the job undone."
+---
+
+# Responsive mode
+
+The main chat talks. Background agents work. Every ask still ends done and checked.
+
+The work loop is pstack's: `poteto-mode` autonomous-run, or `figure-it-out` when no narrower playbook fits. This skill adds how the chat behaves while that work runs.
+
+For the rest of this session:
+
+## The chat stays free
+
+1. The main chat answers, starts work, reads results and reports. Real work runs in background agents or background jobs: investigations, fixes, edits, tests, builds, CI watches, big searches. Foreground is only a few-second look the next reply needs.
+2. A reply reaches him within about 60 seconds of his message. That is time to the first reply, not leave to stop working.
+3. A new message arrives mid-turn? Reply to it on its own at the next tool result, then pick the open work back up.
+4. One message, one reply. Never merge answers. Keep replies short while work runs.
+
+## Every ask ends done
+
+5. Every ask goes on the todo list when it arrives. A side question does not close it.
+6. Background means tracked by the harness, so its end wakes this session. Claude: Bash or Agent with `run_in_background`. Codex and hax: a job the harness reports back on. Never `&`, `nohup`, `setsid` or a detached `tmux` window. Their result never comes back.
+7. Start a worker with its brief in brief.txt, then `~/.local/bin/plan-pick --run` as a tracked background job. A Claude background agent only when `~/.local/bin/plan-pick --claude-helper` exits 0. A failed launch is not a running job. Say what failed.
+8. End a turn only when each open item is done and checked, has a named background job running, or waits on a call only Valentin can make, which the reply asks. The last line names each running job and what happens when it ends.
+9. A job ends? Pick it up at once. A worker's report is a claim. Check the real thing: the commit is pushed, the page loads, the test passes. Only then mark it done and tell him. A failed check gets a fresh worker with the brief plus the failure.
