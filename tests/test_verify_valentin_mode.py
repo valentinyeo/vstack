@@ -310,6 +310,11 @@ class VerifyValentinModeGrade(unittest.TestCase):
 
 
 class VerifyValentinModeRunScript(unittest.TestCase):
+    def temp_dir(self):
+        temp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, temp, ignore_errors=True)
+        return temp
+
     def test_run_script_parses(self):
         result = subprocess.run(['bash', '-n', str(RUN)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -344,8 +349,48 @@ class VerifyValentinModeRunScript(unittest.TestCase):
 
     def test_run_script_copies_the_installed_skill(self):
         text = RUN.read_text()
-        self.assertIn('$HOME/.local/share/vstack/skills/valentin-mode/SKILL.md', text)
+        self.assertIn('INSTALLED="$VSTACK_SKILLS/valentin-mode/SKILL.md"', text)
         self.assertIn('installed-valentin-mode.md', text)
+        self.assertNotIn('$HOME/.local/share/vstack/skills', text,
+                         'every skill path must come from one VSTACK_DIR root')
+
+    def test_run_script_names_a_missing_skill_folder(self):
+        text = RUN.read_text()
+        self.assertIn('echo "run: skill folder missing: $VSTACK_SKILLS/$skill" >&2', text)
+
+    def vstack_root_lines(self):
+        lines = RUN.read_text().splitlines()
+        starts = [i for i, line in enumerate(lines) if line.startswith('VSTACK_ROOT=')]
+        self.assertEqual(len(starts), 1, 'expected one VSTACK_ROOT line in run')
+        return lines[starts[0]:starts[0] + 2]
+
+    def installed_copy_lines(self):
+        lines = RUN.read_text().splitlines()
+        starts = [i for i, line in enumerate(lines) if line.startswith('INSTALLED=')]
+        self.assertEqual(len(starts), 1, 'expected one INSTALLED line in run')
+        ends = [i for i in range(starts[0], len(lines)) if lines[i].strip() == 'fi']
+        self.assertTrue(ends, 'the installed copy block is never closed')
+        return lines[starts[0]:ends[0] + 1]
+
+    def test_installed_copy_comes_from_the_vstack_dir_tree(self):
+        tree = self.temp_dir()
+        skill = tree / 'skills/valentin-mode'
+        skill.mkdir(parents=True)
+        (skill / 'SKILL.md').write_text('# valentin mode from the temp tree\n')
+        evidence = tree / 'evidence'
+        evidence.mkdir()
+        home = tree / 'home'
+        home.mkdir()
+        script = '\n'.join(self.vstack_root_lines() + self.installed_copy_lines())
+        result = subprocess.run(
+            ['bash', '-c', script],
+            env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': str(home),
+                 'VSTACK_DIR': str(tree), 'E': str(evidence)},
+            capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        copied = (evidence / 'installed-valentin-mode.md').read_text()
+        self.assertEqual(copied, '# valentin mode from the temp tree\n',
+                         'the evidence copy must come from $VSTACK_DIR, not $HOME')
 
     def test_run_script_copies_both_skills_into_scratch(self):
         text = RUN.read_text()

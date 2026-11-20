@@ -38,6 +38,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# 0. One skill tree feeds every path below: the copies into the scratch repo
+# and the installed copy the grade reads. VSTACK_DIR lets a PR worktree stand in
+# for the installed tree.
+VSTACK_ROOT="${VSTACK_DIR:-$HOME/.local/share/vstack}"
+VSTACK_SKILLS="$VSTACK_ROOT/skills"
+
 # 1. Claude must be under pace before a Sonnet test chat starts.
 if ! gate_output=$("$HOME/.local/bin/plan-pick" --claude-helper 2>&1); then
   printf '%s\n' "$gate_output"
@@ -78,7 +84,12 @@ git -C "$W" init -q
     "$AGENT" "$AGENT"
   printf "This project's ticket is %s.\n" "$TICKET"
 } > "$W/CLAUDE.md"
-VSTACK_SKILLS="${VSTACK_DIR:-$HOME/.local/share/vstack}/skills"
+for skill in valentin-mode responsive-mode; do
+  if [ ! -d "$VSTACK_SKILLS/$skill" ]; then
+    echo "run: skill folder missing: $VSTACK_SKILLS/$skill" >&2
+    exit 3
+  fi
+done
 mkdir -p "$W/.claude/skills"
 cp -rL "$VSTACK_SKILLS/valentin-mode" "$W/.claude/skills/valentin-mode"
 cp -rL "$VSTACK_SKILLS/responsive-mode" "$W/.claude/skills/responsive-mode"
@@ -104,7 +115,7 @@ PROMPT=$(cat "$E/prompt.txt")
 
 # 5b. The installed skill as the chat sees it, so the grade can read its
 # frontmatter and its version.
-INSTALLED="$HOME/.local/share/vstack/skills/valentin-mode/SKILL.md"
+INSTALLED="$VSTACK_SKILLS/valentin-mode/SKILL.md"
 : > "$E/installed-valentin-mode.md"
 if [ -f "$INSTALLED" ]; then
   cp "$INSTALLED" "$E/installed-valentin-mode.md"
