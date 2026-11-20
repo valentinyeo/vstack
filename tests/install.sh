@@ -67,3 +67,10 @@ printf 'PASS retired ticket folder moved, not deleted\n'
 
 [ "$(sha256sum "$TEST_HOME/.claude/settings.json")" = "$settings" ]
 printf 'PASS install never edits a settings file\n'
+# repo-tidy: the command and the Stop hook land at the paths settings call.
+[ -L "$TEST_HOME/.local/bin/repo-tidy" ]
+[ "$(readlink -f "$TEST_HOME/.local/bin/repo-tidy")" = "$ROOT/skills/repo-tidy/repo-tidy" ]
+[ -x "$TEST_HOME/.local/bin/repo-tidy" ]
+[ -L "$TEST_HOME/.claude/hooks/repo-tidy-stop" ]
+[ "$(readlink -f "$TEST_HOME/.claude/hooks/repo-tidy-stop")" = "$ROOT/hooks/repo-tidy-stop" ]
+printf 'PASS repo-tidy command and Stop hook linked\n'
