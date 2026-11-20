@@ -6,7 +6,7 @@ description: >-
 
 # Hypertask checkup
 
-Prior art: checked pstack, hypertask-work and board-identity. hypertask-work owns the board rules but nothing makes a chat audit its own board; it has no room left under its word budget, so the audit lives here.
+Prior art: pstack poteto-mode — no board audit; vstack hypertask-work owns the board rules but is near its word budget, so the audit lives here.
 
 Check your own board or view against the `hypertask-work` rules, then fix your own gaps.
 That skill owns every rule; this one only makes you look.
