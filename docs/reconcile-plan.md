@@ -18,7 +18,17 @@ That assumption is wrong. The two lists disagree on two things:
 So the same facts give different answers on each board.
 A fix on one board never reaches the other.
 The answer is one rule model with one evidence order: PR, then worker, then idle.
-Each board then supplies only its column names and the columns it leaves alone.
+The rules speak in stages, never in column names.
+
+## Boards belong to their chats
+
+Each chat designs its own board and columns. The script never assumes a layout.
+The one fixed rule from Valentin: every board has a verification column.
+A board says which of its columns plays which stage in its repo's `board.yml`.
+That file already exists in the agent template (`roles:` maps a role to a real column).
+Reconcile reads that map. A column the map does not name is left alone.
+A board whose map has no verification column fails with one clear line and moves nothing.
+The owner of reconcile never edits another chat's board or its map.
 
 ## Landing order
 
@@ -56,7 +66,8 @@ PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN`
 
 ## PR 4: one rule model and a model check
 
-- [ ] Change: one evidence order for every board. A `BoardConfig` keeps only column names, managed and protected columns. The second rule list is deleted.
+- [ ] Change: one evidence order for every board, written in stages (backlog, in progress, checks, review, verification). The per-board rule lists and the hardcoded board 15 and 2060 configs are deleted. Each board's stage map comes from its repo's `board.yml` `roles:`, which gains a required `verification` role.
+- [ ] Unit: a board with no verification role fails loudly and moves nothing. A column no role names is never moved.
 - [ ] Unit (model check): enumerate every fact combination. That covers column, alive, PR states (none, open red, open green, merged pass, merged no pass), waiting, blocked, verification, and age (under 2h, over 2h). For each, on both boards:
   - Fixed point: after the planned move, with age reset to 0, the next plan is KEEP. The same holds once age passes 2h. No card flip-flops.
   - Hard evidence (open or merged PR, live worker) moves a card even inside the grace.
