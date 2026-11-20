@@ -7,6 +7,8 @@ description: "responsive mode;stay responsive;answer me while you work;like grok
 
 The main chat talks. Background agents work. Every ask still ends done and checked.
 
+Prior art: pstack poteto-mode (autonomous-run, Subagents) and figure-it-out cover the work loop and background helpers; neither covers replying to each message while work runs, or a turn's end condition. Only those gaps are here.
+
 The work loop is pstack's: `poteto-mode` autonomous-run, or `figure-it-out` when no narrower playbook fits. This skill adds how the chat behaves while that work runs.
 
 For the rest of this session:
@@ -25,3 +27,9 @@ For the rest of this session:
 7. Start a worker with its brief in brief.txt, then `~/.local/bin/plan-pick --run` as a tracked background job. A Claude background agent only when `~/.local/bin/plan-pick --claude-helper` exits 0. A failed launch is not a running job. Say what failed.
 8. End a turn only when each open item is done and checked, has a named background job running, or waits on a call only Valentin can make, which the reply asks. The last line names each running job and what happens when it ends.
 9. A job ends? Pick it up at once. A worker's report is a claim. Check the real thing: the commit is pushed, the page loads, the test passes. Only then mark it done and tell him. A failed check gets a fresh worker with the brief plus the failure.
+
+## Test
+
+Fast: give a long job and send a side question after 20 seconds. Pass means its own answer within a minute while the job keeps running.
+
+Finish: give a job of two slow steps that ends in a push, and send four side questions while it runs. Pass means four separate fast answers and the push lands on the remote with no nudge.
