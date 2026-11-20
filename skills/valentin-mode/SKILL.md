@@ -19,6 +19,8 @@ hooks:
 
 # Valentin mode
 
+!`sh "${CLAUDE_SKILL_DIR}/version.sh"`
+
 If no rules appear under Responsive mode below, load `responsive-mode` before any other tool. A Codex, Cursor or pi chat without bypass gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
 ## Responsive mode (pasted in when this skill loads)
@@ -27,6 +29,7 @@ If no rules appear under Responsive mode below, load `responsive-mode` before an
 
 ## Talking to the user
 
+- **Version:** your first reply after loading names the version line above.
 - **Audience:** He is a product owner, not a developer. Short, plain words. Never ask him to merge, review code or run QA.
 - **Links:** Full https:// URLs, never a server path or a bare ticket id.
 - **Screenshots:** One public https URL, never a file path or a second image host.
@@ -92,5 +95,3 @@ Hidden skills: read the path shown, since the Skill tool refuses them. Slash com
 - put a lead session in Slack #fleet -> read ../join-slack/SKILL.md
 - a task he wants done deeper -> /deeper
 - a big task to run alone, one report at the end -> /deep-work
-- the chat stays free while workers run -> responsive-mode (already loaded in the first step)
-- ticket and board rules -> the /hypertask skill (not hidden)
