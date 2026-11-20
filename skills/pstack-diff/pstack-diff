@@ -48,7 +48,20 @@ EXTRA_JOB_HINTS = re.compile(
     re.I,
 )
 
-VERIFIER_VERDICT_POST = re.compile(r"PASS\+NOTES|VERDICT:|pstack-verifier", re.I)
+VERIFIER_VERDICT_LITERAL = re.compile(r"PASS\+NOTES|VERDICT:", re.I)
+VERIFIER_VERDICT_POST = re.compile(
+    r"gh pr comment\b|"
+    r"name=pstack-verifier\b|"
+    r"pstack-verifier:\s*(?:PASS|PASS\+NOTES|FAIL|BLOCKED)\b",
+    re.I,
+)
+
+
+def _job_posts_verdict(body: str) -> bool:
+    stripped = _strip_yaml_comments(body)
+    return bool(
+        VERIFIER_VERDICT_LITERAL.search(stripped) or VERIFIER_VERDICT_POST.search(stripped)
+    )
 
 
 def _strip_yaml_comments(text: str) -> str:
@@ -241,7 +254,7 @@ def _ai_judge_rank(label: str, body: str, file_order: int) -> tuple[int, int, in
     """Higher tuple sorts first as the one ASKED verifier workflow."""
     job_id = label.rsplit(" job ", 1)[-1]
     wf_file = label.split(" via ", 1)[0]
-    posts_verdict = bool(VERIFIER_VERDICT_POST.search(body))
+    posts_verdict = _job_posts_verdict(body)
     names_verifier = bool(re.search(r"verifier|verdict", f"{wf_file} {job_id}", re.I))
     pstack_sources = "pstack-sources.yml" in label and label.endswith("job verifier")
     return (
