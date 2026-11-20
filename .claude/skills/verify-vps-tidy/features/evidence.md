@@ -44,5 +44,5 @@ what a live run would then remove.
 - `sandbox.json`: the seeded remove and keep lists after the apply run.
 - `json.out`: the plan, including the keep reason each video rested on.
 - `host-dry-run.json`: the real evidence folder read, with nothing removed.
-- `verdict.txt`: `stale_gone`, `fresh_alive`, `untouched_alive`, plus the note that
+- `verdict.txt`: `stale_gone`, `fresh_alive`, plus the note that
   the live board read is unproven.

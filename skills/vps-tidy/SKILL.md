@@ -51,7 +51,7 @@ That keeps your own temp files and orphaned programs in check without a central 
 - Another user's files or processes. Only your uid.
 - claude, tmux, codex, pi and interactive shells, and any process tree holding one of them.
 - A symlink, a mount point, a foreign owner, a special file, or a path a process holds open.
-- Anything under `.config`, `.ssh`, `.claude`, `.codex`.
+- Anything under a config, ssh, claude or codex directory: those names are on its never-touch list.
 
 It also never posts to a board. When disk is over 85% used it prints the alarm line, and a chat has to file the ticket.
 

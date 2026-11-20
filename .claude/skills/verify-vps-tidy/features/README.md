@@ -31,8 +31,9 @@ sandbox at `sandbox/` and every evidence file.
    on a real pid. Nothing on this host is signalled.
 4. Runs `--apply` once over the sandbox, all five parts, with `--statvfs-json` for
    the disk gate and fake `npm`, `pnpm`, `uv` and `docker` on PATH.
-5. Runs once with no `--root` against the real host, dry run only, saved as
-   `host-dry-run.json`. It must report and change nothing.
+5. Runs one dry run per part with no `--root` against the real host, saved as
+   `host-<part>.json` and merged into `host-dry-run.json`. Nothing is deleted and
+   no process is signalled.
 6. Grades every check and writes `verdict.txt`.
 
 ## The grading rule
@@ -41,8 +42,8 @@ PASS only when every check holds. The five that decide it:
 
 - `stale_gone`: exactly the seeded stale items are gone.
 - `orphan_gone`: every seeded orphaned process is gone, none left half killed.
-- `fresh_alive`, `protected_alive`, `untouched_alive`: every fresh, protected,
-  foreign and shared item survives, and every protected process still runs.
+- `fresh_alive`, `protected_alive`: every fresh, protected, foreign and shared
+  item survives, and every protected process still runs.
 
 Then `removed_count` must match the stale list, `nothing_else_removed` must find no
 path outside it, `zombie_reported` must show the zombie named and not signalled,
@@ -62,7 +63,8 @@ proves nothing, so the run refuses to grade it.
 | json.out | the apply run's own report as data |
 | items.json | one record per item from the apply run, with rule and result |
 | sandbox.json | the seeded remove and keep lists, and the pids the run started |
-| host-dry-run.json | the real host read, with nothing removed |
+| host-<part>.json | the live host read for one part, dry run |
+| host-dry-run.json, host-dry-run.txt | the merged live totals |
 | verdict.txt | one PASS or FAIL line per check, then the verdict |
 
 CI runs only `tests/test_vps_tidy.py`. A run that touches the real host stays on the

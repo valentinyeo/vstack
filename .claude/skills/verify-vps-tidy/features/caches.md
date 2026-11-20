@@ -37,4 +37,4 @@ Disk use is read before and after a run, and `freed_bytes` is reported either wa
 - `sandbox.json`: the seeded remove and keep lists after the apply run.
 - `items.json`: every candidate with its rule, age in seconds and result.
 - `json.out`: the plan, so a keep reason can be read beside its result.
-- `verdict.txt`: `stale_gone`, `fresh_alive`, `untouched_alive`.
+- `verdict.txt`: `stale_gone`, `fresh_alive`.

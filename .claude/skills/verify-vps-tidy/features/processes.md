@@ -18,8 +18,9 @@ the agent helpers.
 Stop sequence: `SIGTERM`, a 10 second grace, then `SIGKILL`. One JSON line per kill
 in `~/.local/state/vps-tidy/kills.log` with pid, kind, reason and cwd.
 
-The spec said 30 minutes for `next dev`. The script now uses 2 hours, the same age
-as any other dev server. Worth a board 2060 ticket if 30 minutes was the intent.
+The brief for this ticket set 2 hours for every orphaned dev server (`next dev`,
+`vite`, `esbuild --service`), where the old `reap-orphan-devservers` used 30 minutes.
+That is a deliberate change: an hour-long local build should not lose its server.
 
 ## How the verify run proves it
 
