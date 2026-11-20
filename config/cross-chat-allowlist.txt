@@ -1,0 +1,6 @@
+# Cross-chat reach allowlist. One line per file that may read or touch state outside the running chat.
+# Format: <path> | <what it reaches> | <reason> | <expiry YYYY-MM-DD or never> | approved-by: Valentin
+
+skills/board-drain/owners | roster-live (read) | Read-only: lists live chat names so orphan board labels fail this check; does not message or act for other chats | never | approved-by: Valentin
+skills/pr-housekeeping/pr-queue | roster-live (read) | Read-only: maps live checkouts to PR ownership; each chat filters with --mine; script writes nothing to GitHub or other chats | never | approved-by: Valentin
+skills/cloud-agent/cloud-agent | tmux send-keys (ephemeral session) | Types into a cloud-agent tmux session this script creates; never targets another live chat on the fleet | never | approved-by: Valentin
