@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""Read-only fleet report: valentin-mode version, board loop, pstack-diff per live chat.
+
+    fleet-report              table on stdout
+    fleet-report --json
+    fleet-report --html FILE
+
+Always exits 0 (report, not gate). Each failing chat should fix itself; do not centralize enforcement.
+"""
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+VERSION_LATEST = re.compile(r"valentin-mode v(\d+) \(latest\)")
+VERSION_BEHIND = re.compile(r"valentin-mode v(\d+), latest is v(\d+)")
+ROSTER_LINE = re.compile(r"^(.+?) \(([^,]+), ([^,)]+)(?:, (.+))?\)$")
+PSTACK_EXTRA = re.compile(r"^EXTRA ")
+
+
+def home() -> Path:
+    return Path(os.environ.get("FLEET_REPORT_HOME") or Path.home())
+
+
+def vstack_root() -> Path:
+    return Path(os.environ.get("FLEET_REPORT_VSTACK") or (home() / ".local/share/vstack"))
+
+
+def tool_path(env_name: str, default: Path) -> Path:
+    override = os.environ.get(env_name)
+    return Path(override) if override else default
+
+
+def encode_cwd(cwd: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "-", os.path.expanduser(cwd))
+
+
+def expand_cwd(cwd: str) -> str:
+    if not cwd:
+        return ""
+    return os.path.expanduser(cwd.replace("~/", str(home()) + "/") if cwd.startswith("~/") else cwd)
+
+
+def parse_roster_lines(text: str) -> list[dict]:
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or re.fullmatch(r"\d+ live sessions", line):
+            continue
+        match = ROSTER_LINE.match(line)
+        if not match:
+            continue
+        name, tmux, harness, cwd = match.group(1), match.group(2), match.group(3), match.group(4) or ""
+        rows.append(
+            dict(name=name.strip(), tmux=tmux.strip(), harness=harness.strip(), cwd=cwd.strip(), sid="")
+        )
+    return rows
+
+
+def load_announce_index() -> tuple[dict[str, dict], dict[str, dict]]:
+    root = home() / ".local/state/roster/announce"
+    by_tmux: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    if not root.is_dir():
+        return by_tmux, by_name
+    for path in root.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(errors="replace"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        tmux = data.get("tmux")
+        name = data.get("name")
+        if isinstance(tmux, str) and tmux:
+            by_tmux[tmux] = data
+        if isinstance(name, str) and name:
+            by_name[name.casefold()] = data
+    return by_tmux, by_name
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def load_claude_sessions() -> list[dict]:
+    root = home() / ".claude/sessions"
+    rows = []
+    if not root.is_dir():
+        return rows
+    for path in root.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(errors="replace"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(data, dict) or data.get("kind") != "interactive":
+            continue
+        pid = data.get("pid")
+        if pid is not None and not pid_alive(pid):
+            continue
+        sid = data.get("sessionId")
+        if isinstance(sid, str) and sid:
+            rows.append(data)
+    return rows
+
+
+def resolve_sid(row: dict, by_tmux: dict[str, dict], by_name: dict[str, dict], claude: list[dict]) -> str:
+    if row.get("sid"):
+        return row["sid"]
+    tmux = row.get("tmux") or ""
+    if tmux in by_tmux and isinstance(by_tmux[tmux].get("sid"), str):
+        return by_tmux[tmux]["sid"]
+    name = (row.get("name") or "").casefold()
+    if name in by_name and isinstance(by_name[name].get("sid"), str):
+        return by_name[name]["sid"]
+    if tmux.startswith("pid "):
+        try:
+            pid = int(tmux.split()[1])
+        except (IndexError, ValueError):
+            pid = None
+        if pid is not None:
+            for session in claude:
+                if session.get("pid") == pid and isinstance(session.get("sessionId"), str):
+                    return session["sessionId"]
+    cwd = expand_cwd(row.get("cwd") or "")
+    if cwd:
+        matches = [s for s in claude if (s.get("cwd") or "") == cwd and isinstance(s.get("sessionId"), str)]
+        if len(matches) == 1:
+            return matches[0]["sessionId"]
+        if len(matches) > 1:
+            peer = (row.get("name") or "").casefold()
+            for session in matches:
+                title = (session.get("name") or "").casefold()
+                if peer and title and (peer in title or title in peer):
+                    return session["sessionId"]
+    return ""
+
+
+def load_sessions() -> list[dict]:
+    override = os.environ.get("FLEET_REPORT_SESSIONS_JSON")
+    if override:
+        try:
+            data = json.loads(Path(override).read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [normalize_session(row) for row in data if isinstance(row, dict)]
+        except (OSError, ValueError, TypeError):
+            pass
+
+    rows: dict[str, dict] = {}
+    mp_bin = home() / ".local/bin/mp-sessions"
+    if mp_bin.is_file():
+        try:
+            done = subprocess.run(
+                [str(mp_bin), "--json"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if done.returncode == 0 and done.stdout.strip():
+                for item in json.loads(done.stdout):
+                    if not isinstance(item, dict):
+                        continue
+                    row = normalize_session(
+                        dict(
+                            name=item.get("name") or item.get("tmux"),
+                            harness=item.get("provider") or item.get("harness") or "",
+                            cwd=item.get("cwd") or "",
+                            sid=item.get("sid") or "",
+                            tmux=item.get("tmux") or "",
+                        )
+                    )
+                    rows[row_key(row)] = row
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+
+    roster = tool_path("FLEET_REPORT_ROSTER_LIVE", home() / ".local/share/house-rules/fleet/roster-live")
+    if roster.is_file():
+        try:
+            if os.environ.get("FLEET_REPORT_ROSTER_TEXT"):
+                text = Path(os.environ["FLEET_REPORT_ROSTER_TEXT"]).read_text(errors="replace")
+            elif roster.suffix == ".txt" or roster.name.endswith("-fixture"):
+                text = roster.read_text(errors="replace")
+            else:
+                done = subprocess.run([str(roster)], capture_output=True, text=True, timeout=60, check=False)
+                text = done.stdout if done.returncode == 0 else ""
+            for row in parse_roster_lines(text):
+                key = row_key(row)
+                if key not in rows:
+                    rows[key] = normalize_session(row)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    by_tmux, by_name = load_announce_index()
+    claude = load_claude_sessions()
+    out = []
+    for row in sorted(rows.values(), key=lambda r: (r.get("name") or "").casefold()):
+        if not row.get("sid"):
+            row["sid"] = resolve_sid(row, by_tmux, by_name, claude)
+        out.append(row)
+    return out
+
+
+def normalize_session(row: dict) -> dict:
+    name = (row.get("name") or row.get("tmux") or "unknown").strip()
+    harness = (row.get("harness") or row.get("provider") or "").strip() or "unknown"
+    cwd = (row.get("cwd") or "").strip()
+    return dict(
+        name=name,
+        harness=harness,
+        cwd=cwd,
+        sid=(row.get("sid") or "").strip(),
+        tmux=(row.get("tmux") or "").strip(),
+    )
+
+
+def row_key(row: dict) -> str:
+    return (row.get("sid") or row.get("tmux") or row.get("name") or "").casefold()
+
+
+def transcript_path(cwd: str, sid: str) -> Path | None:
+    if not sid or not cwd:
+        return None
+    project = home() / ".claude/projects" / encode_cwd(expand_cwd(cwd)) / f"{sid}.jsonl"
+    return project
+
+
+def last_valentin_version(transcript: Path | None, harness: str) -> tuple[str, int | None, int | None]:
+    if harness != "claude":
+        return "unknown (no transcript)", None, None
+    if transcript is None or not transcript.is_file():
+        return "unknown (no transcript)", None, None
+    loaded_text = "never loaded"
+    loaded_num = None
+    latest_num = None
+    try:
+        with transcript.open("r", errors="replace") as handle:
+            for line in handle:
+                for match in VERSION_LATEST.finditer(line):
+                    loaded_text = match.group(0)
+                    loaded_num = int(match.group(1))
+                    latest_num = loaded_num
+                for match in VERSION_BEHIND.finditer(line):
+                    loaded_text = match.group(0)
+                    loaded_num = int(match.group(1))
+                    latest_num = int(match.group(2))
+    except OSError:
+        return "unknown (no transcript)", None, None
+    return loaded_text, loaded_num, latest_num
+
+
+def fetch_latest_version() -> tuple[str, int | None]:
+    script = tool_path(
+        "FLEET_REPORT_VERSION_SH",
+        vstack_root() / "skills/valentin-mode/version.sh",
+    )
+    if not script.is_file():
+        return "unknown", None
+    try:
+        done = subprocess.run(["sh", str(script)], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown", None
+    line = (done.stdout or "").strip().splitlines()[-1] if done.stdout else ""
+    if not line:
+        return "unknown", None
+    match = VERSION_LATEST.match(line)
+    if match:
+        num = int(match.group(1))
+        return f"v{num}", num
+    match = VERSION_BEHIND.match(line)
+    if match:
+        return f"v{match.group(2)}", int(match.group(2))
+    if line == "valentin-mode version unknown":
+        return "unknown", None
+    return line, None
+
+
+def board_loop_status(name: str) -> tuple[int | None, str]:
+    loop_state = tool_path(
+        "FLEET_REPORT_LOOP_STATE",
+        vstack_root() / "skills/board-drain/loop-state",
+    )
+    if not loop_state.is_file():
+        return None, "missing loop-state"
+    try:
+        done = subprocess.run(
+            [sys.executable, str(loop_state), "status", "--name", name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, "timeout"
+    text = (done.stdout or done.stderr or "").strip().splitlines()
+    summary = text[-1] if text else ""
+    return done.returncode, summary
+
+
+def is_git_repo(cwd: str) -> bool:
+    if not cwd:
+        return False
+    expanded = expand_cwd(cwd)
+    return (Path(expanded) / ".git").exists()
+
+
+def run_pstack_diff(cwd: str) -> tuple[str, int | None, int]:
+    if not is_git_repo(cwd):
+        return "skip", None, 0
+    tool = tool_path("FLEET_REPORT_PSTACK_DIFF", vstack_root() / "skills/pstack-diff/pstack-diff")
+    if not tool.is_file():
+        return "missing", None, 0
+    expanded = expand_cwd(cwd)
+    try:
+        done = subprocess.run(
+            [sys.executable, str(tool), expanded],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "timeout", None, 0
+    except OSError:
+        return "error", None, 0
+    extras = 0
+    if done.stdout:
+        for line in done.stdout.splitlines():
+            if PSTACK_EXTRA.match(line):
+                extras += 1
+    if done.returncode != 0 and extras == 0 and done.stdout:
+        try:
+            payload = json.loads(done.stdout)
+            if isinstance(payload, dict) and isinstance(payload.get("extras"), list):
+                extras = len(payload["extras"])
+        except ValueError:
+            pass
+    code = done.returncode
+    if extras:
+        label = f"exit {code}, {extras} EXTRA"
+    elif code == 0:
+        label = "exit 0"
+    else:
+        label = f"exit {code}"
+    return label, code, extras
+
+
+def verdict(
+    harness: str,
+    loaded_label: str,
+    loaded_num: int | None,
+    latest_num: int | None,
+    board_exit: int | None,
+    pstack_label: str,
+    extra_count: int,
+) -> tuple[str, str]:
+    failing: list[str] = []
+    behind: list[str] = []
+    if harness == "claude":
+        if loaded_label == "never loaded":
+            failing.append("never loaded valentin-mode")
+        elif loaded_label == "unknown (no transcript)":
+            failing.append("no transcript")
+    if (
+        loaded_num is not None
+        and latest_num is not None
+        and loaded_num < latest_num
+        and loaded_label not in ("never loaded", "unknown (no transcript)")
+    ):
+        behind.append(f"loaded v{loaded_num} < latest v{latest_num}")
+    if board_exit not in (0, None):
+        failing.append(f"board loop exit {board_exit}")
+    if pstack_label not in ("skip", "missing", "timeout", "error"):
+        if extra_count > 0:
+            failing.append(f"pstack-diff {extra_count} EXTRA")
+        elif pstack_label != "exit 0":
+            failing.append(pstack_label.replace("exit", "pstack-diff exit", 1))
+    if failing:
+        return "FAILING", "; ".join(failing + behind)
+    if behind:
+        return "BEHIND", "; ".join(behind)
+    return "OK", ""
+
+
+def build_rows() -> list[dict]:
+    latest_label, latest_num = fetch_latest_version()
+    sessions = load_sessions()
+    rows = []
+    for session in sessions:
+        path = transcript_path(session.get("cwd", ""), session.get("sid", ""))
+        loaded_label, loaded_num, transcript_latest = last_valentin_version(path, session.get("harness", ""))
+        effective_latest = latest_num if latest_num is not None else transcript_latest
+        board_exit, board_text = board_loop_status(session["name"])
+        pstack_label, pstack_exit, extra_count = run_pstack_diff(session.get("cwd", ""))
+        status, reason = verdict(
+            session.get("harness", ""),
+            loaded_label,
+            loaded_num,
+            effective_latest,
+            board_exit,
+            pstack_label,
+            extra_count,
+        )
+        rows.append(
+            dict(
+                name=session["name"],
+                harness=session.get("harness") or "",
+                cwd=session.get("cwd") or "",
+                loaded=loaded_label,
+                latest=latest_label,
+                latest_num=effective_latest,
+                board=f"{board_exit if board_exit is not None else '?'} {board_text}".strip(),
+                board_exit=board_exit,
+                self_check=pstack_label,
+                pstack_exit=pstack_exit,
+                extra_count=extra_count,
+                verdict=status,
+                reason=reason,
+            )
+        )
+    return rows
+
+
+def column_widths(rows: list[dict], columns: list[tuple[str, str]]) -> list[int]:
+    widths = [len(title) for title, _ in columns]
+    for row in rows:
+        for index, (_, key) in enumerate(columns):
+            widths[index] = max(widths[index], len(str(row.get(key, ""))))
+    return widths
+
+
+def format_table(rows: list[dict]) -> str:
+    columns = [
+        ("CHAT", "name"),
+        ("HARNESS", "harness"),
+        ("LOADED", "loaded"),
+        ("LATEST", "latest"),
+        ("BOARD", "board"),
+        ("SELF-CHECK", "self_check"),
+        ("VERDICT", "verdict"),
+    ]
+    widths = column_widths(rows, columns)
+    lines = []
+    header = "  ".join(title.ljust(widths[i]) for i, (title, _) in enumerate(columns))
+    lines.append(header)
+    lines.append("  ".join("-" * widths[i] for i in range(len(columns))))
+    for row in rows:
+        cells = []
+        for index, (_, key) in enumerate(columns):
+            text = str(row.get(key, ""))
+            if key == "verdict" and row.get("reason"):
+                text = f"{text} ({row['reason']})"
+            cells.append(text.ljust(widths[index]))
+        lines.append("  ".join(cells))
+    return "\n".join(lines)
+
+
+def write_html(path: Path, rows: list[dict]) -> None:
+    headers = ["Chat", "Harness", "Loaded", "Latest", "Board loop", "Self-check", "Verdict"]
+    body_rows = []
+    for row in rows:
+        verdict = row["verdict"]
+        if row.get("reason"):
+            verdict = f"{verdict} ({row['reason']})"
+        body_rows.append(
+            [
+                row["name"],
+                row["harness"],
+                row["loaded"],
+                row["latest"],
+                row["board"],
+                row["self_check"],
+                verdict,
+            ]
+        )
+    table_rows = []
+    for cells in body_rows:
+        tds = "".join(f"<td>{html.escape(str(cell))}</td>" for cell in cells)
+        cls = ""
+        if cells[-1].startswith("FAILING"):
+            cls = ' class="fail"'
+        elif cells[-1].startswith("BEHIND"):
+            cls = ' class="behind"'
+        table_rows.append(f"<tr{cls}>{tds}</tr>")
+    doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fleet report</title>
+<style>
+body {{ font-family: ui-monospace, monospace; margin: 1.5rem; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #ccc; padding: 0.35rem 0.5rem; text-align: left; vertical-align: top; }}
+th {{ background: #f4f4f4; }}
+tr.fail td {{ background: #ffe8e8; }}
+tr.behind td {{ background: #fff6dd; }}
+</style>
+</head>
+<body>
+<h1>Fleet report</h1>
+<p>Read-only snapshot. Message each failing chat; it fixes itself.</p>
+<table>
+<thead><tr>{"".join(f"<th>{html.escape(h)}</th>" for h in headers)}</tr></thead>
+<tbody>
+{"".join(table_rows)}
+</tbody>
+</table>
+</body>
+</html>
+"""
+    path.write_text(doc, encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="print JSON rows")
+    parser.add_argument("--html", metavar="FILE", help="write a static HTML table")
+    args = parser.parse_args(argv)
+    rows = build_rows()
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        print(format_table(rows))
+    if args.html:
+        write_html(Path(args.html), rows)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
