@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
 from pathlib import Path
 
 STALE_CLOSED_DAYS = 14
@@ -39,17 +39,14 @@ STALE_UNMERGED_PR_DAYS = 30
 RECENT_SECONDS = 2 * 60 * 60
 FETCH_TIMEOUT = 60
 GIT_TIMEOUT = 180
-GH_TIMEOUT = 300
+GH_TIMEOUT = 120
 PR_LIMIT = 2000
 DEFAULT_MAX_REMOVE = 200
+DEFAULT_REPO_TIMEOUT = 180
+ALL_PR_FIELDS = "headRefName,headRefOid,number,mergedAt,closedAt,state"
 OWNERS_THAT_ALLOW_THE_SETTING = {"valentinyeo", "hypertask-ai"}
 SHARE_REPOS = [".local/share/vstack", ".local/share/house-rules"]
 FORBIDDEN = ".local/state/vcc-evidence"
-GH_FIELDS = {
-    "merged": "headRefName,headRefOid,number,mergedAt",
-    "open": "headRefName,headRefOid,number",
-    "closed": "headRefName,headRefOid,number,mergedAt,closedAt",
-}
 SKIP_DIRS = {".git", "node_modules"}
 
 
@@ -254,25 +251,27 @@ class Github:
     def load(self):
         if not self.slug:
             return False
-        prs = {}
-        for state, fields in GH_FIELDS.items():
-            code, out, err = gh(["pr", "list", "-R", self.slug, "--state", state,
-                                 "--limit", str(PR_LIMIT), "--json", fields])
-            if code != 0:
-                self.error = err.strip().splitlines()[-1] if err.strip() else "gh failed"
-                return False
-            try:
-                prs[state] = json.loads(out or "[]")
-            except ValueError:
-                self.error = "gh returned unreadable JSON"
-                return False
-        for pr in prs["merged"]:
-            self.merged.setdefault(pr.get("headRefName"), []).append(pr)
-        self.open = {pr.get("headRefName") for pr in prs["open"]}
-        for pr in prs["closed"]:
-            if pr.get("mergedAt"):
+        code, out, err = gh(["pr", "list", "-R", self.slug, "--state", "all",
+                             "--limit", str(PR_LIMIT), "--json", ALL_PR_FIELDS])
+        if code != 0:
+            self.error = err.strip().splitlines()[-1] if err.strip() else "gh failed"
+            return False
+        try:
+            rows = json.loads(out or "[]")
+        except ValueError:
+            self.error = "gh returned unreadable JSON"
+            return False
+        for pr in rows:
+            branch = pr.get("headRefName")
+            if not branch:
                 continue
-            self.closed.setdefault(pr.get("headRefName"), []).append(pr)
+            state = (pr.get("state") or "").upper()
+            if pr.get("mergedAt") or state == "MERGED":
+                self.merged.setdefault(branch, []).append(pr)
+            elif state == "OPEN" or (not pr.get("closedAt") and not pr.get("mergedAt")):
+                self.open.add(branch)
+            elif not pr.get("mergedAt"):
+                self.closed.setdefault(branch, []).append(pr)
         self.ok = True
         return True
 
@@ -523,15 +522,24 @@ class RepoRun:
         slug = repo_slug(self.repo)
         result["slug"] = slug
 
-        fetch_ok = git(["-C", str(self.repo), "fetch", "--prune", "--quiet", "origin"],
-                       timeout=FETCH_TIMEOUT)[0] == 0
+        if not slug:
+            fetch_ok = False
+            self.note("WARN", "repo", self.repo,
+                      "no GitHub origin, fetch and remote decisions skipped")
+        elif self.opts.apply:
+            fetch_ok = git(["-C", str(self.repo), "fetch", "--prune", "--quiet", "origin"],
+                           timeout=FETCH_TIMEOUT)[0] == 0
+        else:
+            code, out, _ = git(["-C", str(self.repo), "for-each-ref", "--format=%(refname)",
+                                "refs/remotes/origin"])
+            fetch_ok = code == 0 and bool(out.strip())
         result["fetch_ok"] = fetch_ok
-        if not fetch_ok:
+        if slug and not fetch_ok:
             self.note("WARN", "repo", self.repo,
                       "fetch failed, remote-dependent decisions skipped")
 
         github = Github(self.repo)
-        remote_ok = fetch_ok and github.load()
+        remote_ok = bool(slug) and fetch_ok and github.load()
         result["remote_decisions"] = remote_ok
         if fetch_ok and not remote_ok:
             reason = getattr(github, "error", "no GitHub slug") or "no GitHub slug"
@@ -851,6 +859,8 @@ class RepoRun:
 
     # github setting ----------------------------------------------------
     def tidy_setting(self, github):
+        if not self.opts.apply:
+            return
         if not github.slug:
             return
         owner = github.slug.split("/")[0]
@@ -937,11 +947,15 @@ def main(argv):
                         help="cap deletions per repo per run (default %d)" % DEFAULT_MAX_REMOVE)
     parser.add_argument("--projects-root", default=None,
                         help="where worktrees may be deleted (default ~/projects)")
+    parser.add_argument("--repo-timeout", type=int, default=DEFAULT_REPO_TIMEOUT,
+                        help="seconds per repo before SKIPPED (default %d)" % DEFAULT_REPO_TIMEOUT)
     parser.add_argument("paths", nargs="*", help="repo paths")
     opts = parser.parse_args(argv)
 
     if opts.max_remove < 0:
         parser.error("--max-remove must be 0 or more")
+    if opts.repo_timeout < 1:
+        parser.error("--repo-timeout must be at least 1")
     opts.projects_root = Path(opts.projects_root or (Path.home() / "projects")).resolve()
 
     repos = []
@@ -966,29 +980,47 @@ def main(argv):
     started = time.time()
     results = []
     if not opts.json and not opts.apply:
-        print("DRY RUN: nothing is removed; pass --apply to do it")
-    for repo in repos:
+        print("DRY RUN: nothing is removed; pass --apply to do it", flush=True)
+
+    def process_one(repo):
         runner = RepoRun(repo, opts, live)
         try:
-            result = runner.run()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(runner.run)
+                try:
+                    result = future.result(timeout=opts.repo_timeout)
+                except FutureTimeout:
+                    result = runner.result
+                    reason = "exceeded %ds per-repo cap" % opts.repo_timeout
+                    result["skipped"] = reason
+                    runner.plan = ["SKIP repo %s (%s)" % (repo, reason)]
         except Exception as exc:  # one bad repo must not stop the sweep
             result = runner.result
             result["error"] = "%s: %s" % (type(exc).__name__, exc)
             runner.note("ERROR", "repo", repo, result["error"])
         result["max_remove"] = opts.max_remove
-        results.append(result)
-        if opts.json:
-            continue
-        for line in runner.plan:
-            print(line)
-        print(summarise(result, opts.apply))
-        outside = result["worktrees"]["outside"]
-        if outside:
-            print("OUTSIDE %d worktrees outside %s, reported only (widen with "
-                  "--projects-root)" % (outside, opts.projects_root))
-        deferred = deferred_line(result)
-        if deferred:
-            print(deferred)
+        return runner, result
+
+    sweep_workers = min(12, max(2, (os.cpu_count() or 4)))
+    if len(repos) == 1:
+        sweep_workers = 1
+    with ThreadPoolExecutor(max_workers=sweep_workers) as sweep:
+        futures = [sweep.submit(process_one, repo) for repo in repos]
+        for future in as_completed(futures):
+            runner, result = future.result()
+            results.append(result)
+            if opts.json:
+                continue
+            for line in runner.plan:
+                print(line, flush=True)
+            print(summarise(result, opts.apply), flush=True)
+            outside = result["worktrees"]["outside"]
+            if outside:
+                print("OUTSIDE %d worktrees outside %s, reported only (widen with "
+                      "--projects-root)" % (outside, opts.projects_root), flush=True)
+            deferred = deferred_line(result)
+            if deferred:
+                print(deferred, flush=True)
 
     payload = {
         "run_id": stamp,
@@ -1013,7 +1045,7 @@ def main(argv):
     if opts.json:
         print(json.dumps(payload, indent=2))
     elif log and not opts.mine:
-        print("log: %s" % log)
+        print("log: %s" % log, flush=True)
     return 0
 
 

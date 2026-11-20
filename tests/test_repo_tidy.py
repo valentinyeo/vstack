@@ -11,6 +11,7 @@ Run: python3 -m unittest discover -s tests -p 'test_*.py'
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -238,6 +239,58 @@ class TestScale(unittest.TestCase):
         self.assertIn("worktrees", result.stdout)
         self.assertGreaterEqual(len(sandbox.snapshot(root)["worktrees"]), 801)
         self.assertGreaterEqual(len(sandbox.snapshot(root)["branches"]), 1300)
+
+
+class TestGhPrListOnce(SandboxCase):
+    def test_one_pr_list_call_per_repo(self):
+        result = tidy(self.world, "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = sandbox.snapshot(self.world.root)["gh_calls"]
+        lists = [c for c in calls if c.startswith("PR_LIST")]
+        self.assertEqual(lists, ["PR_LIST -R valentinyeo/sandbox --state all"], lists)
+
+
+class TestRepoTimeout(SandboxCase):
+    def test_per_repo_cap_skips_hung_repo(self):
+        result = tidy(self.world, "--all", "--repo-timeout", "1",
+                      extra_env={"GH_PR_DELAY": "5"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("exceeded 1s per-repo cap", result.stdout)
+
+
+class TestStreamingManyRepos(unittest.TestCase):
+    """A multi-repo dry run prints a summary before the sweep finishes."""
+
+    def test_first_summary_while_still_running(self):
+        root = Path(tempfile.mkdtemp(prefix="repo-tidy-stream-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        home = root / "home"
+        projects = home / "projects"
+        projects.mkdir(parents=True)
+        for index in range(20):
+            repo = projects / ("stream-%02d" % index)
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"],
+                           check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+            (repo / "f").write_text("x\n")
+            subprocess.run(["git", "-C", str(repo), "add", "f"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+        env = dict(os.environ, HOME=str(home))
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(TIDY), "--all", "--projects-root", str(projects)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
+        self.addCleanup(proc.kill)
+        saw = False
+        for line in proc.stdout:
+            if re.search(r": worktrees ", line):
+                saw = True
+                self.assertIsNone(proc.poll(),
+                                  "sweep ended before the first summary (no streaming)")
+                break
+        self.assertTrue(saw, "never saw a per-repo summary line")
+        proc.wait(timeout=120)
 
 
 class TestStopHook(unittest.TestCase):

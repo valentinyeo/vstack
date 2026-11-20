@@ -76,7 +76,19 @@ if argv[:2] == ["pr", "list"]:
     data = fixture.get(slug)
     if data is None:
         die()
-    print(json.dumps(data["prs"].get(state, [])))
+    with open(log, "a") as handle:
+        handle.write("PR_LIST -R %s --state %s\n" % (slug, state))
+    delay = float(os.environ.get("GH_PR_DELAY", "0") or "0")
+    if delay > 0:
+        import time as _time
+        _time.sleep(delay)
+    if state == "all":
+        rows = []
+        for key in ("merged", "open", "closed"):
+            rows.extend(data["prs"].get(key, []))
+        print(json.dumps(rows))
+    else:
+        print(json.dumps(data["prs"].get(state, [])))
     sys.exit(0)
 
 if argv and argv[0] == "api":
