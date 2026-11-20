@@ -1323,10 +1323,15 @@ class ProcessLivenessTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.proc = Path(self.temp.name)
+        self.lease_dir = self.proc / 'leases'
+        self.lease_dir.mkdir()
         self.addCleanup(self.temp.cleanup)
         patcher = patch.object(r, 'PROC', self.proc)
         patcher.start()
         self.addCleanup(patcher.stop)
+        lease_patcher = patch.object(r, 'LEASES', self.lease_dir)
+        lease_patcher.start()
+        self.addCleanup(lease_patcher.stop)
         r.process_tickets.cache_clear()
         self.addCleanup(r.process_tickets.cache_clear)
 
@@ -1342,6 +1347,12 @@ class ProcessLivenessTest(unittest.TestCase):
         directory.mkdir(parents=True, exist_ok=True)
         (directory / 'stat').write_text(f'{pid} (cmd) S {ppid} {ppid} {ppid}\n')
         (directory / 'cmdline').write_bytes(b'\0'.join(os.fsencode(word) for word in argv) + b'\0')
+
+    def write_lease(self, key, pid, now=None):
+        now = time.time() if now is None else now
+        payload = {'pid': pid, 'host': socket.gethostname(),
+                   'started': now, 'last_beat': now}
+        (self.lease_dir / f'{key}.json').write_text(json.dumps(payload))
 
     def test_url_marks_its_ticket_live(self):
         self.spawn(4001, ['hax', '-p', '--model=gpt-6.1-sol',
@@ -1391,6 +1402,31 @@ class ProcessLivenessTest(unittest.TestCase):
                           'SOFT-2730', 'run', '--', 'pi', '-p', 'fix the release gate'])
         self.spawn(4002, ['bash', '-c', 'cd /tmp && pi -p https://app.hypertask.ai/detail/project-2060/2731'])
         self.assertEqual(r.process_tickets(), {'SOFT-2730', 'SOFT-2731'})
+
+    def test_leased_agent_argv_for_another_key_does_not_count(self):
+        now = time.time()
+        self.write_lease('SOFT-2730', 4001, now)
+        self.spawn(4001, ['python3', '/skills/hypertask-work/lease', 'SOFT-2730', 'run', '--',
+                          'plan-pick', '--run'], ppid=1)
+        self.spawn(4002, ['cursor-agent', '-p', 'SOFT-2731 fix board sync'], ppid=4001)
+        with patch.object(r, 'pid_alive', return_value=True):
+            self.assertEqual(r.process_tickets(), set())
+            self.assertTrue(r.live_lease('SOFT-2730', now, self.lease_dir))
+            self.assertFalse(r.worker_alive('SOFT-2731', now))
+
+    def test_unleased_agent_still_counts_from_argv(self):
+        self.spawn(4100, ['cursor-agent', '-p', 'SOFT-2732 work'])
+        self.assertEqual(r.process_tickets(), {'SOFT-2732'})
+
+    def test_leased_grandchild_agent_is_skipped(self):
+        now = time.time()
+        self.write_lease('SOFT-2733', 5001, now)
+        self.spawn(5001, ['lease', 'SOFT-2733', 'run', '--', 'bash'], ppid=1)
+        self.spawn(5002, ['bash', '-c', 'cursor-agent'], ppid=5001)
+        self.spawn(5003, ['cursor-agent', '-p', 'SOFT-2734'], ppid=5002)
+        with patch.object(r, 'pid_alive', return_value=True):
+            self.assertEqual(r.process_tickets(), set())
+            self.assertFalse(r.worker_alive('SOFT-2734', now))
 
     def test_lease_without_a_run_does_not_count(self):
         self.spawn(4001, ['bash', '-c', 'lease SOFT-2730 watch --pid 4001'])
