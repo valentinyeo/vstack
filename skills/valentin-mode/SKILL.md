@@ -11,7 +11,7 @@ First step, before any other tool: load the `pstack:poteto-mode` and `responsive
 
 ## Talking to the user
 
-- **Audience:** He is a product owner, not a developer. Short, plain words. Never ask him to merge, review code or run QA.
+- **Audience:** He is a product owner, not a developer. Short, plain words. Never ask him to merge, review or QA.
 - **Links:** Full https:// URLs, never a server path or a bare ticket id.
 - **Screenshots:** One public https URL, never a file path or a second image host.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
@@ -35,7 +35,7 @@ A chat with a board drains it. Its agent notes name the board: `Hypertask board:
 
 ### PR owner
 
-From pstack Autopilot-full: one owner carries each PR from build to merge. Whoever opens a PR stays on it through green checks, fixes, merge and live proof. Your loop checks each open PR has a worker pushing it; a stalled one gets a fresh worker, never a new PR beside it. A PR nobody will finish gets closed with a reason.
+From pstack Autopilot-full: one owner carries each PR from build to merge. Whoever opens a PR stays on it through green checks, fixes, merge and live proof. Your loop checks each open PR has a worker pushing it; a stalled one gets a fresh worker, never a new PR beside it. A PR nobody will finish gets closed with a reason. The PR Housekeeping chat audits the whole queue; it never replaces an owner.
 
 ## Working
 
