@@ -37,7 +37,7 @@ AI_JUDGE = re.compile(
     r"api\.deepseek\.com|openrouter\.ai|ai-gateway\.vercel\.sh|"
     r"api\.openai\.com|api\.anthropic\.com|"
     r"pick-verifier-model|run-verifier|"
-    r"(?:scripts/|python3\s+[-\w./]*)(?:\S*(?:verifier|advisor)\S*)|"
+    r"(?:scripts/|python3\s+)(?:[-\w.]+/)*[-\w.]*(?:verifier|advisor)[-\w.]*(?![-\w./])|"
     r"VERDICT:|PASS\+NOTES",
     re.M | re.I,
 )

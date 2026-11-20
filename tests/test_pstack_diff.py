@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Drive skills/pstack-diff/pstack-diff against fixture repos."""
+import importlib.machinery
+import importlib.util
 import json
 import os
 import subprocess
@@ -10,6 +12,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "skills/pstack-diff/pstack-diff"
+
+
+def _load_pstack_diff():
+    loader = importlib.machinery.SourceFileLoader("pstack_diff", str(TOOL))
+    spec = importlib.util.spec_from_loader("pstack_diff", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+PSTACK_DIFF = _load_pstack_diff()
 FIXTURES = Path(__file__).resolve().parent / "fixtures/pstack-diff"
 CLONES = FIXTURES / "clones"
 PSTACK = FIXTURES / "pstack"
@@ -174,6 +187,16 @@ class PstackDiffTest(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["exit"], 0)
         self.assertTrue(payload["asked"])
+
+    def test_ai_judge_matches_script_file_not_directory(self):
+        is_judge = PSTACK_DIFF._is_ai_judge
+        self.assertFalse(
+            is_judge("node .github/scripts/pstack-verifier/coverage.cjs check"),
+            "registry coverage check is not an AI judge",
+        )
+        self.assertTrue(is_judge("python3 scripts/column-verifier.py"))
+        self.assertTrue(is_judge("scripts/run-verifier"))
+        self.assertTrue(is_judge("python3 scripts/verification/advisor.py"))
 
     def test_reusable_workflow_resolves_ai_judge(self):
         result = run_diff(FIXTURES / "reusable-verifier", clones=CLONES)
