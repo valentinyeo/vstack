@@ -569,13 +569,13 @@ def budget_ledger(now=None) -> list:
 def budget_until(session: str, now=None) -> int:
     """The epoch when this session's rolling hour falls under the refuse line."""
     rows = budget_rows(session, now)
-    until = (budget_minute(now) + 1) * 60
+    until = (budget_minute(now) + BUDGET_MINUTES) * 60
     total = sum(count for _minute, count in rows)
     for minute, count in rows:
         if total < BUDGET_REFUSE:
             break
         total -= count
-        until = (minute + 1) * 60
+        until = (minute + BUDGET_MINUTES) * 60
     return until
 
 
