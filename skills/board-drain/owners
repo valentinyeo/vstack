@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""owners: open tickets whose label names no live chat, so nobody ever drains them.
+
+House rule: a chat's Multibot name equals its board label. Every open ticket in
+Todo, Doing, Building or Verification Backlog carries a label, and that label is
+the chat that owns it. A label with no live chat is owner-less: its tickets wait
+until someone relabels them to a live chat or starts that chat. Generic labels
+(brain tiers, Bug, infra, verification and friends) are not chat names and are
+skipped.
+"""
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+HERE = Path(__file__).resolve().parent
+
+loader = importlib.machinery.SourceFileLoader(
+    'fleet_reconcile', str(HERE.parent / 'hypertask-work' / 'reconcile'))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+reconcile = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = reconcile
+loader.exec_module(reconcile)
+
+SECTIONS = frozenset({'Todo', 'Doing', 'Building', 'Verification Backlog'})
+# Labels that classify work, never name a chat. brain-light and brain-medium are prefixes.
+GENERIC = frozenset({'bug', 'infra', 'verification', 'vstack', 'needs-design', 'triage', 'ci',
+                     'agent feedback'})
+GENERIC_PREFIX = 'brain-'
+ROSTER = Path.home() / '.local/share/house-rules/fleet/roster-live'
+ROSTER_TIMEOUT = 60
+SHOWN = 5
+# One roster line: "Name (session, harness, cwd)".
+LINE = re.compile(r'^(?P<name>.+?)\s*\((?P<detail>[^()]*)\)\s*$')
+ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
+
+
+def is_generic(label):
+    """A classification label, or an empty one: never a chat name."""
+    name = label.strip().casefold()
+    return not name or name in GENERIC or name.startswith(GENERIC_PREFIX)
+
+
+def live_names(args):
+    """Every live chat name, trimmed and case-insensitive; repeated lines collapse."""
+    if args.roster:
+        text = Path(args.roster).read_text()
+    else:
+        result = subprocess.run([str(ROSTER)], capture_output=True, text=True, timeout=ROSTER_TIMEOUT)
+        if result.returncode:
+            raise RuntimeError(f'roster-live failed: {result.stderr.strip()[-200:]}')
+        text = result.stdout
+    names = set()
+    for line in text.splitlines():
+        match = LINE.match(line.strip())
+        if match:
+            names.add(match.group('name').strip().casefold())
+    return names
+
+
+def read_fixture(path):
+    """A JSON list of {"task": {...}}: the API answers, without the API."""
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, list):
+        raise ValueError('fixture must be a JSON list')
+    rows = []
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get('task'), dict):
+            raise ValueError('each fixture row needs a task')
+        rows.append({'task': item['task']})
+    return rows
+
+
+def fixture_board(board_id, rows):
+    if board_id in reconcile.BOARDS:
+        return reconcile.BOARDS[board_id]
+    prefix = ''
+    if rows:
+        prefix = str(rows[0]['task'].get('ticketNumber') or '').split('-')[0]
+    return reconcile.BoardConfig(board_id, prefix, reconcile.DEFAULT.managed,
+                                 reconcile.DEFAULT.protected, reconcile.DEFAULT.rules)
+
+
+def rows_for(args):
+    if args.fixture:
+        rows = read_fixture(args.fixture)
+        board = fixture_board(args.board, rows)
+    else:
+        board = reconcile.board_config(args.board)
+        rows = [{'task': task} for task in reconcile.tickets(board=board)]
+    for row in rows:
+        task = row['task']
+        if 'projectId' in task and str(task['projectId']) != str(args.board):
+            raise ValueError(f'ticket outside board {args.board}')
+    return board, rows
+
+
+def key_rank(board, key):
+    """Numeric ticket order where the prefix fits, plain string order otherwise."""
+    try:
+        return (0, int(reconcile.ticket_index(key, board)), '')
+    except ValueError:
+        return (1, 0, str(key))
+
+
+def labels_on(rows):
+    """Every non-generic label on an open ticket, with the tickets carrying it."""
+    found = {}
+    for row in rows:
+        task = row['task']
+        if task.get('section') not in SECTIONS:
+            continue
+        for label in task.get('labels') or ():
+            name = (label.get('name') or '').strip()
+            if is_generic(name):
+                continue
+            slot = found.setdefault(name.casefold(), {'name': name, 'keys': []})
+            slot['keys'].append(task['ticketNumber'])
+    return found
+
+
+def check(args):
+    board, rows = rows_for(args)
+    live = live_names(args)
+    orphans = [slot for name, slot in labels_on(rows).items() if name not in live]
+    for slot in sorted(orphans, key=lambda slot: slot['name'].casefold()):
+        keys = sorted(slot['keys'], key=lambda key: key_rank(board, key))[:SHOWN]
+        print(f'orphan: {slot["name"]}: {len(slot["keys"])} open ({", ".join(keys)}). '
+              'Relabel to a live chat or start that chat.')
+    print('owners: PASS' if not orphans else f'owners: FAIL ({len(orphans)} labels)')
+    return 0 if not orphans else 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board', type=int, required=True)
+    parser.add_argument('--fixture', help='Read a JSON list of {"task"} instead of the API')
+    parser.add_argument('--roster', help='Read live chat names from this file instead of roster-live')
+    args = parser.parse_args(argv)
+    if args.board < 1:
+        parser.error('--board must be a positive board id')
+    try:
+        return check(args)
+    except ERRORS as error:
+        print(f'owners: {error}', file=sys.stderr)
+        return 2
+    except Exception as error:  # noqa: BLE001 - a crash must read as 2, never as 1
+        print(f'owners: error: {error}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())
