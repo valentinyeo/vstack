@@ -74,3 +74,10 @@ printf 'PASS install never edits a settings file\n'
 [ -L "$TEST_HOME/.claude/hooks/repo-tidy-stop" ]
 [ "$(readlink -f "$TEST_HOME/.claude/hooks/repo-tidy-stop")" = "$ROOT/hooks/repo-tidy-stop" ]
 printf 'PASS repo-tidy command and Stop hook linked\n'
+
+for hook in pacer-guard.py launch-gate.py; do
+  [ -L "$TEST_HOME/.claude/hooks/$hook" ]
+  [ "$(readlink -f "$TEST_HOME/.claude/hooks/$hook")" = "$ROOT/hooks/$hook" ]
+  [ -x "$TEST_HOME/.claude/hooks/$hook" ]
+  printf 'PASS hook %s is linked and executable\n' "$hook"
+done
