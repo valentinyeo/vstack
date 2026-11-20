@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Start one fresh headless Claude Code chat in responsive mode, hand it a slow
+# job that ends in a git push, ask side questions while it runs, then grade the
+# timestamps and the pushed commit.
+# Usage: run [--skill PATH] [--hard] [--break no-responsive-mode] [--keep]
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SKILL="${VSTACK_DIR:-$HOME/.local/share/vstack}/skills/responsive-mode/SKILL.md"
+CLAUDE="$HOME/.local/bin/claude"
+NAME=responsive-mode-under-test
+BREAK=""
+KEEP=0
+HARD=0
+
+need() {
+  if [ "$#" -lt 2 ]; then
+    echo "run: $1 needs a value" >&2
+    exit 2
+  fi
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --skill)
+      need "$@"
+      if [ ! -f "$2" ]; then
+        echo "run: no skill at $2" >&2
+        exit 2
+      fi
+      SKILL=$(realpath "$2")
+      shift 2
+      ;;
+    --break)
+      need "$@"
+      if [ "$2" != "no-responsive-mode" ]; then
+        echo "run: --break takes no-responsive-mode" >&2
+        exit 2
+      fi
+      BREAK=$2
+      shift 2
+      ;;
+    --keep) KEEP=1; shift ;;
+    --hard) HARD=1; shift ;;
+    *)
+      echo "run: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ ! -f "$SKILL" ]; then
+  echo "run: no skill at $SKILL" >&2
+  exit 2
+fi
+if [ ! -x "$CLAUDE" ]; then
+  echo "run: no claude at $CLAUDE" >&2
+  exit 2
+fi
+PACE="$HOME/.local/bin/plan-pick"
+if [ ! -x "$PACE" ]; then
+  echo "run: no plan-pick at $PACE" >&2
+  exit 2
+fi
+
+# 1. The test chat runs on Claude Sonnet, so Claude has to be under pace.
+if ! gate=$("$PACE" --claude-helper 2>&1); then
+  printf '%s\n' "$gate"
+  echo "run: Claude is ahead of pace; try later" >&2
+  exit 3
+fi
+
+# 2. Evidence folder. It outlives cleanup. Two runs may start in the same
+# second, so a taken name gets a suffix instead of being shared.
+SUFFIX=""
+if [ "$HARD" -eq 1 ]; then SUFFIX="$SUFFIX-hard"; fi
+if [ -n "$BREAK" ]; then SUFFIX="$SUFFIX-$BREAK"; fi
+BASE="$HOME/.local/state/verify-responsive-mode/$(date -u +%Y%m%dT%H%M%SZ)$SUFFIX"
+E="$BASE"
+taken=1
+while [ -e "$E" ]; do
+  taken=$((taken + 1))
+  E="$BASE-$taken"
+done
+mkdir -p "$E"
+cp "$SKILL" "$E/skill-under-test.md"
+GIT_SHA=$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)
+python3 -I - "$E/meta.json" "$SKILL" "$BREAK" "$HARD" "$KEEP" "$GIT_SHA" <<'PY'
+import json
+import sys
+
+path, skill, brk, hard, keep, sha = sys.argv[1:7]
+meta = {'skill': skill, 'break': brk or None, 'hard': hard == '1',
+        'keep': keep == '1', 'git_sha': sha}
+open(path, 'w').write(json.dumps(meta, indent=2) + '\n')
+PY
+
+# 3. Scratch repo with a local bare origin, so "pushed" is checkable offline.
+W=$(mktemp -d /tmp/vrm-scratch.XXXXXX)
+O=$(mktemp -d /tmp/vrm-origin.XXXXXX)
+cleanup() {
+  if [ "$KEEP" -eq 0 ]; then rm -rf "${W:?}" "${O:?}"; fi
+}
+trap cleanup EXIT
+git init -q --bare -b main "$O"
+git -C "$W" init -q -b main
+SEED=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+cat > "$W/slow-report.sh" <<SH
+#!/bin/sh
+# Takes about 90 seconds, like a real test suite.
+sleep 90
+echo done > "$E/ran.txt"
+echo "report $SEED"
+SH
+chmod +x "$W/slow-report.sh"
+SEED2=""
+if [ "$HARD" -eq 1 ]; then
+  SEED2=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+  cat > "$W/slow-publish.sh" <<SH
+#!/bin/sh
+# Needs REPORT.md from the first step. Takes about 90 seconds.
+[ -s REPORT.md ] || { echo "slow-publish: run slow-report.sh first" >&2; exit 1; }
+sleep 90
+echo done > "$E/ran2.txt"
+echo "published $SEED2"
+SH
+  chmod +x "$W/slow-publish.sh"
+fi
+printf '# Scratch project for the responsive mode check\n' > "$W/CLAUDE.md"
+mkdir -p "$W/.claude/skills/$NAME"
+sed "s/^name: responsive-mode$/name: $NAME/" "$SKILL" > "$W/.claude/skills/$NAME/SKILL.md"
+git -C "$W" add -A
+git -C "$W" -c user.name=vrm -c user.email=vrm@invalid commit -qm init
+git -C "$W" remote add origin "$O"
+git -C "$W" push -q origin main
+printf '%s\n%s\n' "$W" "$O" > "$E/workdirs"
+
+# 4. The job never says how to run the slow step; responsive mode has to. It
+# does say where temporary files belong: one run owns this folder, /tmp is
+# shared by every run on the box, and two runs writing the same /tmp name
+# overwrite each other's report and grade FAIL on a pushed line.
+JOB='Run ./slow-report.sh (it takes about 90 seconds). Put its one output line into REPORT.md, commit it, and push to origin main. Keep every temporary file inside this working folder, never in /tmp. Work without asking me anything.'
+if [ "$HARD" -eq 1 ]; then
+  JOB='Run ./slow-report.sh (about 90 seconds) and put its one output line into REPORT.md. Then run ./slow-publish.sh (also about 90 seconds) and add its output line to REPORT.md as a second line. Commit and push to origin main. Keep every temporary file inside this working folder, never in /tmp. Work without asking me anything.'
+fi
+if [ -n "$BREAK" ]; then
+  FIRST=$JOB
+else
+  FIRST="/$NAME $JOB"
+fi
+python3 -I - "$E" "$W" "$CLAUDE" "$FIRST" "$SEED" "$SEED2" "$HARD" <<'PY'
+import json
+import sys
+
+evidence, workdir, claude, first, seed, seed2, hard = sys.argv[1:8]
+hard = hard == '1'
+plan = {
+    'cwd': workdir,
+    'claude': claude,
+    'args': ['--model', 'sonnet', '--permission-mode', 'bypassPermissions',
+             '--max-turns', '60'],
+    'messages': [
+        {'at': 0, 'text': first},
+        {'at': 25, 'text': 'Side question: what is 17 + 25?'},
+        {'at': 40, 'text': 'Another one: what is the capital of France?'},
+    ] + ([{'at': 100, 'text': 'And how many days are in a leap year?'},
+          {'at': 150, 'text': 'Last one: what colour do you get mixing blue and yellow?'}]
+         if hard else []),
+    'idle_close': 60,
+    'timeout': 1200 if hard else 900,
+}
+spec = {
+    'skill_marker': '# Responsive mode',
+    'answers': ['42', 'Paris'] + (['366', 'green'] if hard else []),
+    'slow_step': 'slow-report',
+    'expected_lines': [f'report {seed}'] + ([f'published {seed2}'] if hard else []),
+}
+open(f'{evidence}/plan.json', 'w').write(json.dumps(plan, indent=2) + '\n')
+open(f'{evidence}/spec.json', 'w').write(json.dumps(spec, indent=2) + '\n')
+PY
+
+# 5. One test chat, 3 to 15 minutes.
+echo "run: one test chat, 3 to 15 minutes; evidence $E" >&2
+python3 -I "$HERE/drive.py" "$E/plan.json" "$E/chat.jsonl" || true
+
+# 6. Collect what the chat was given and what landed on origin. The expanded
+# skill text lives in the chat's own transcript, not in the output stream.
+SID=$(python3 -I -c 'import json, sys
+for line in open(sys.argv[1]):
+    try:
+        event = json.loads(line).get("ev") or {}
+    except ValueError:
+        continue
+    if event.get("type") == "system" and event.get("subtype") == "init":
+        print(event["session_id"])
+        break' "$E/chat.jsonl" 2>/dev/null || true)
+: > "$E/transcript.jsonl"
+if [ -n "$SID" ]; then
+  for t in "$HOME"/.claude/projects/*/"$SID".jsonl; do
+    [ -f "$t" ] && cp "$t" "$E/transcript.jsonl"
+  done
+fi
+if git -C "$O" show main:REPORT.md > "$E/pushed-report.md" 2>/dev/null; then :; else : > "$E/pushed-report.md"; fi
+git -C "$O" log --oneline main > "$E/origin-log.txt" 2>/dev/null || true
+
+# 7. Grade. The EXIT trap removes only the two scratch folders, never $E.
+set +e
+python3 -I "$HERE/grade.py" "$E"
+status=$?
+set -e
+echo "Evidence: $E"
+exit "$status"
