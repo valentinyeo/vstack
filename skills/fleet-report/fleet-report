@@ -14,14 +14,19 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 VERSION_LATEST = re.compile(r"valentin-mode v(\d+) \(latest\)")
 VERSION_BEHIND = re.compile(r"valentin-mode v(\d+), latest is v(\d+)")
 ROSTER_LINE = re.compile(r"^(.+?) \(([^,]+), ([^,)]+)(?:, (.+))?\)$")
 PSTACK_EXTRA = re.compile(r"^EXTRA ")
+PSTACK_GAP = re.compile(r"^GAP ")
+PSTACK_WARN_BEHIND = re.compile(r"^WARN checkout is (\d+) commits behind")
+HYPERTASK_BOARD = re.compile(r"Hypertask board:", re.I)
 
 
 def home() -> Path:
@@ -314,45 +319,194 @@ def is_git_repo(cwd: str) -> bool:
     return (Path(expanded) / ".git").exists()
 
 
-def run_pstack_diff(cwd: str) -> tuple[str, int | None, int]:
-    if not is_git_repo(cwd):
-        return "skip", None, 0
+def repo_has_hypertask_board(cwd: str) -> bool:
+    expanded = Path(expand_cwd(cwd))
+    if not expanded.is_dir():
+        return False
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        path = expanded / name
+        if path.is_file() and HYPERTASK_BOARD.search(path.read_text(errors="replace")):
+            return True
+    return False
+
+
+def parse_pstack_stdout(stdout: str) -> tuple[int, int, int | None]:
+    extras = gaps = 0
+    behind: int | None = None
+    for line in stdout.splitlines():
+        if PSTACK_EXTRA.match(line):
+            extras += 1
+        elif PSTACK_GAP.match(line):
+            gaps += 1
+        elif match := PSTACK_WARN_BEHIND.match(line):
+            behind = int(match.group(1))
+    if behind is None and stdout.strip():
+        try:
+            payload = json.loads(stdout)
+            if isinstance(payload, dict):
+                if isinstance(payload.get("extras"), list):
+                    extras = len(payload["extras"])
+                if isinstance(payload.get("gaps"), list):
+                    gaps = len(payload["gaps"])
+                for line in payload.get("lines") or []:
+                    if isinstance(line, str) and (match := PSTACK_WARN_BEHIND.match(line)):
+                        behind = int(match.group(1))
+        except ValueError:
+            pass
+    return extras, gaps, behind
+
+
+def format_self_check(
+    extras: int,
+    gaps: int,
+    behind: int | None,
+    *,
+    upstream: bool = False,
+    stale: bool = False,
+) -> str:
+    if stale and behind is not None:
+        return f"stale, {behind} behind"
+    parts = [f"EXTRA {extras}", f"GAP {gaps}"]
+    if behind is not None and behind > 0:
+        parts.append(f"behind {behind}")
+    label = " ".join(parts)
+    if upstream:
+        label += " (upstream)"
+    return label
+
+
+def git_upstream_ref(repo: Path) -> str | None:
+    for args in (
+        ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        ["rev-parse", "--abbrev-ref", "origin/HEAD"],
+    ):
+        try:
+            ref = subprocess.check_output(
+                ["git", "-C", str(repo), *args],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            ).strip()
+            if ref:
+                return ref
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+    for branch in ("origin/main", "origin/master"):
+        try:
+            subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "--verify", branch],
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+            return branch
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def run_pstack_diff_at(root: Path) -> tuple[str, int | None, int, int, int | None]:
     tool = tool_path("FLEET_REPORT_PSTACK_DIFF", vstack_root() / "skills/pstack-diff/pstack-diff")
     if not tool.is_file():
-        return "missing", None, 0
-    expanded = expand_cwd(cwd)
+        return "missing", None, 0, 0, None
     try:
         done = subprocess.run(
-            [sys.executable, str(tool), expanded],
+            [sys.executable, str(tool), str(root)],
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return "timeout", None, 0
+        return "timeout", None, 0, 0, None
     except OSError:
-        return "error", None, 0
-    extras = 0
-    if done.stdout:
-        for line in done.stdout.splitlines():
-            if PSTACK_EXTRA.match(line):
-                extras += 1
-    if done.returncode != 0 and extras == 0 and done.stdout:
-        try:
-            payload = json.loads(done.stdout)
-            if isinstance(payload, dict) and isinstance(payload.get("extras"), list):
-                extras = len(payload["extras"])
-        except ValueError:
-            pass
-    code = done.returncode
-    if extras:
-        label = f"exit {code}, {extras} EXTRA"
-    elif code == 0:
-        label = "exit 0"
-    else:
-        label = f"exit {code}"
-    return label, code, extras
+        return "error", None, 0, 0, None
+    extras, gaps, behind = parse_pstack_stdout(done.stdout or "")
+    label = format_self_check(extras, gaps, behind)
+    return label, done.returncode, extras, gaps, behind
+
+
+def run_pstack_diff_upstream(cwd: str, behind: int) -> tuple[int, int, bool] | None:
+    """Re-run pstack-diff on a fresh detached worktree at origin default. None if fetch fails."""
+    expanded = Path(expand_cwd(cwd))
+    if not (expanded / ".git").exists():
+        return None
+    try:
+        subprocess.run(
+            ["git", "-C", str(expanded), "fetch", "origin"],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    ref = git_upstream_ref(expanded)
+    if not ref:
+        return None
+    tmp = tempfile.mkdtemp(prefix="fleet-report-pstack-")
+    try:
+        add = subprocess.run(
+            ["git", "-C", str(expanded), "worktree", "add", "--detach", tmp, ref],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if add.returncode != 0:
+            return None
+        _label, _code, extras, gaps, _behind = run_pstack_diff_at(Path(tmp))
+        return extras, gaps, True
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        subprocess.run(
+            ["git", "-C", str(expanded), "worktree", "remove", "--force", tmp],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def run_pstack_diff(cwd: str) -> dict:
+    if not is_git_repo(cwd):
+        return dict(
+            self_check="skip",
+            pstack_exit=None,
+            extra_count=0,
+            gap_count=0,
+            behind=None,
+            upstream_extras=None,
+            upstream_gaps=None,
+            upstream_ok=False,
+            stale=False,
+        )
+    expanded = expand_cwd(cwd)
+    label, code, extras, gaps, behind = run_pstack_diff_at(Path(expanded))
+    upstream_extras = upstream_gaps = None
+    upstream_ok = False
+    stale = False
+    self_check = label
+    if behind is not None and behind > 0:
+        upstream = run_pstack_diff_upstream(cwd, behind)
+        if upstream is None:
+            stale = True
+            self_check = format_self_check(extras, gaps, behind, stale=True)
+        else:
+            upstream_extras, upstream_gaps, upstream_ok = upstream
+            self_check = format_self_check(
+                upstream_extras, upstream_gaps, behind, upstream=True
+            )
+    return dict(
+        self_check=self_check,
+        pstack_exit=code,
+        extra_count=extras,
+        gap_count=gaps,
+        behind=behind,
+        upstream_extras=upstream_extras,
+        upstream_gaps=upstream_gaps,
+        upstream_ok=upstream_ok,
+        stale=stale,
+    )
 
 
 def verdict(
@@ -361,35 +515,59 @@ def verdict(
     loaded_num: int | None,
     latest_num: int | None,
     board_exit: int | None,
-    pstack_label: str,
+    has_board: bool,
     extra_count: int,
-) -> tuple[str, str]:
-    failing: list[str] = []
-    behind: list[str] = []
-    if harness == "claude":
-        if loaded_label == "never loaded":
-            failing.append("never loaded valentin-mode")
-        elif loaded_label == "unknown (no transcript)":
-            failing.append("no transcript")
+    gap_count: int,
+    upstream_extras: int | None,
+    upstream_gaps: int | None,
+    upstream_ok: bool,
+    stale: bool,
+    behind: int | None,
+) -> tuple[str, str, str]:
+    tags: list[str] = []
+    notes: list[str] = []
+    actions: list[str] = []
+
+    if harness == "claude" and loaded_label == "never loaded":
+        tags.append("NO VALENTIN-MODE")
+        actions.append("re-run /valentin-mode")
+
     if (
         loaded_num is not None
         and latest_num is not None
         and loaded_num < latest_num
         and loaded_label not in ("never loaded", "unknown (no transcript)")
     ):
-        behind.append(f"loaded v{loaded_num} < latest v{latest_num}")
-    if board_exit not in (0, None):
-        failing.append(f"board loop exit {board_exit}")
-    if pstack_label not in ("skip", "missing", "timeout", "error"):
-        if extra_count > 0:
-            failing.append(f"pstack-diff {extra_count} EXTRA")
-        elif pstack_label != "exit 0":
-            failing.append(pstack_label.replace("exit", "pstack-diff exit", 1))
-    if failing:
-        return "FAILING", "; ".join(failing + behind)
-    if behind:
-        return "BEHIND", "; ".join(behind)
-    return "OK", ""
+        tags.append("BEHIND")
+        notes.append("updates on its next message")
+
+    if has_board and board_exit not in (0, None):
+        tags.append("LOOP OFF")
+        actions.append("re-arm /board-drain")
+
+    use_upstream = upstream_ok and behind is not None and behind > 0 and not stale
+    if use_upstream:
+        effective_extras = upstream_extras if upstream_extras is not None else 0
+        effective_gaps = upstream_gaps if upstream_gaps is not None else 0
+    elif stale and behind is not None and behind > 0:
+        effective_extras = 0
+        effective_gaps = gap_count
+    else:
+        effective_extras = extra_count
+        effective_gaps = gap_count
+
+    if effective_extras > 0:
+        tags.append("FIX")
+        actions.append("remove the EXTRA in one PR")
+    if effective_gaps > 0:
+        tags.append("GAPS")
+
+    if not tags:
+        tags.append("OK")
+
+    reason = "; ".join(notes) if notes else ""
+    action = "; ".join(dict.fromkeys(actions))
+    return "; ".join(tags), reason, action
 
 
 def build_rows() -> list[dict]:
@@ -401,15 +579,22 @@ def build_rows() -> list[dict]:
         loaded_label, loaded_num, transcript_latest = last_valentin_version(path, session.get("harness", ""))
         effective_latest = latest_num if latest_num is not None else transcript_latest
         board_exit, board_text = board_loop_status(session["name"])
-        pstack_label, pstack_exit, extra_count = run_pstack_diff(session.get("cwd", ""))
-        status, reason = verdict(
+        pstack = run_pstack_diff(session.get("cwd", ""))
+        has_board = repo_has_hypertask_board(session.get("cwd", ""))
+        status, reason, action = verdict(
             session.get("harness", ""),
             loaded_label,
             loaded_num,
             effective_latest,
             board_exit,
-            pstack_label,
-            extra_count,
+            has_board,
+            pstack["extra_count"],
+            pstack["gap_count"],
+            pstack["upstream_extras"],
+            pstack["upstream_gaps"],
+            pstack["upstream_ok"],
+            pstack["stale"],
+            pstack["behind"],
         )
         rows.append(
             dict(
@@ -421,11 +606,14 @@ def build_rows() -> list[dict]:
                 latest_num=effective_latest,
                 board=f"{board_exit if board_exit is not None else '?'} {board_text}".strip(),
                 board_exit=board_exit,
-                self_check=pstack_label,
-                pstack_exit=pstack_exit,
-                extra_count=extra_count,
+                self_check=pstack["self_check"],
+                pstack_exit=pstack["pstack_exit"],
+                extra_count=pstack["extra_count"],
+                gap_count=pstack["gap_count"],
+                behind=pstack["behind"],
                 verdict=status,
                 reason=reason,
+                action=action,
             )
         )
     return rows
@@ -448,6 +636,7 @@ def format_table(rows: list[dict]) -> str:
         ("BOARD", "board"),
         ("SELF-CHECK", "self_check"),
         ("VERDICT", "verdict"),
+        ("ACTION", "action"),
     ]
     widths = column_widths(rows, columns)
     lines = []
@@ -466,7 +655,16 @@ def format_table(rows: list[dict]) -> str:
 
 
 def write_html(path: Path, rows: list[dict]) -> None:
-    headers = ["Chat", "Harness", "Loaded", "Latest", "Board loop", "Self-check", "Verdict"]
+    headers = [
+        "Chat",
+        "Harness",
+        "Loaded",
+        "Latest",
+        "Board loop",
+        "Self-check",
+        "Verdict",
+        "Action",
+    ]
     body_rows = []
     for row in rows:
         verdict = row["verdict"]
@@ -481,15 +679,17 @@ def write_html(path: Path, rows: list[dict]) -> None:
                 row["board"],
                 row["self_check"],
                 verdict,
+                row.get("action") or "",
             ]
         )
     table_rows = []
     for cells in body_rows:
         tds = "".join(f"<td>{html.escape(str(cell))}</td>" for cell in cells)
         cls = ""
-        if cells[-1].startswith("FAILING"):
+        verdict_cell = cells[6]
+        if verdict_cell != "OK" and not verdict_cell.startswith("BEHIND"):
             cls = ' class="fail"'
-        elif cells[-1].startswith("BEHIND"):
+        elif verdict_cell.startswith("BEHIND") or verdict_cell.endswith("BEHIND"):
             cls = ' class="behind"'
         table_rows.append(f"<tr{cls}>{tds}</tr>")
     doc = f"""<!DOCTYPE html>

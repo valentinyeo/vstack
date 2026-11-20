@@ -68,9 +68,13 @@ sys.exit({code})
         self.env["FLEET_REPORT_LOOP_STATE"] = str(script)
         return script
 
-    def fake_pstack_diff(self, exit_code: int, extras: int) -> Path:
+    def fake_pstack_diff(self, exit_code: int, extras: int, gaps: int = 0, behind: int | None = None) -> Path:
+        lines = [f"EXTRA workflow: job-{i}" for i in range(extras)]
+        lines.extend(f"GAP verify-skill: gap-{i}" for i in range(gaps))
+        if behind:
+            lines.insert(0, f"WARN checkout is {behind} commits behind origin/main; results may show extras already removed upstream")
+        body = "\n".join(lines)
         script = self.home / "pstack-diff.py"
-        body = "\n".join(f"EXTRA workflow: job-{i}" for i in range(extras))
         script.write_text(
             f"""#!/usr/bin/env python3
 import sys
@@ -124,7 +128,12 @@ sys.exit({exit_code})
         self.assertIn("v5", row["loaded"])
         self.assertEqual(row["latest"], "v5")
         self.assertEqual(row["extra_count"], 0)
-        self.assertEqual(mod.verdict("claude", row["loaded"], 5, 5, 0, "exit 0", 0)[0], "OK")
+        self.assertEqual(row["gap_count"], 0)
+        v, reason, action = mod.verdict(
+            "claude", row["loaded"], 5, 5, 0, False, 0, 0, None, None, False, False, None
+        )
+        self.assertEqual(v, "OK")
+        self.assertEqual(action, "")
 
     def test_behind_version(self):
         self.fake_version_script("valentin-mode v6 (latest)")
@@ -143,6 +152,7 @@ sys.exit({exit_code})
         )
         row = rows[0]
         self.assertEqual(row["verdict"], "BEHIND", row)
+        self.assertIn("updates on its next message", row["reason"])
         self.assertIn("v5", row["loaded"])
         self.assertIn("v6", row["loaded"])
 
@@ -156,8 +166,8 @@ sys.exit({exit_code})
         )
         row = rows[0]
         self.assertEqual(row["loaded"], "never loaded")
-        self.assertEqual(row["verdict"], "FAILING", row)
-        self.assertIn("never loaded", row["reason"])
+        self.assertEqual(row["verdict"], "NO VALENTIN-MODE", row)
+        self.assertIn("/valentin-mode", row["action"])
 
     def test_non_claude_no_transcript(self):
         self.fake_version_script("valentin-mode v4 (latest)")
@@ -170,7 +180,7 @@ sys.exit({exit_code})
         self.assertEqual(row["loaded"], "unknown (no transcript)")
         self.assertEqual(row["verdict"], "OK", row)
 
-    def test_pstack_diff_extra_fails(self):
+    def test_pstack_diff_extra_fix(self):
         self.fake_version_script("valentin-mode v4 (latest)")
         self.fake_loop_state(0)
         self.fake_pstack_diff(1, 2)
@@ -186,9 +196,103 @@ sys.exit({exit_code})
             [dict(name="Extra", harness="claude", cwd=str(repo), sid="sid-extra", tmux="live-extra")]
         )
         row = rows[0]
-        self.assertEqual(row["verdict"], "FAILING", row)
+        self.assertEqual(row["verdict"], "FIX", row)
         self.assertEqual(row["extra_count"], 2)
-        self.assertIn("EXTRA", row["reason"])
+        self.assertIn("EXTRA", row["self_check"])
+        self.assertIn("PR", row["action"])
+
+    def test_pstack_gap_only(self):
+        mod = load_module()
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(0)
+        self.fake_pstack_diff(1, 0, gaps=2)
+        repo = self.home / "gaps"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self.write_transcript(
+            str(repo),
+            "sid-gap",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [dict(name="Gaps", harness="claude", cwd=str(repo), sid="sid-gap", tmux="live-gaps")]
+        )
+        row = rows[0]
+        self.assertEqual(row["verdict"], "GAPS", row)
+        self.assertEqual(row["gap_count"], 2)
+        extras, gaps, behind = mod.parse_pstack_stdout("GAP a\nGAP b\n")
+        self.assertEqual((extras, gaps, behind), (0, 2, None))
+
+    def test_loop_off_only_with_board_line(self):
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(1)
+        self.fake_pstack_diff(0, 0)
+        repo = self.home / "boarded"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "CLAUDE.md").write_text("Hypertask board: 15, label: Demo\n", encoding="utf-8")
+        self.write_transcript(
+            str(repo),
+            "sid-loop",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [dict(name="Looper", harness="claude", cwd=str(repo), sid="sid-loop", tmux="live-loop")]
+        )
+        row = rows[0]
+        self.assertIn("LOOP OFF", row["verdict"])
+        self.assertIn("/board-drain", row["action"])
+
+    def test_loop_not_checked_without_board_line(self):
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(1)
+        self.fake_pstack_diff(0, 0)
+        repo = self.home / "noboard"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self.write_transcript(
+            str(repo),
+            "sid-nb",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [dict(name="NoBoard", harness="claude", cwd=str(repo), sid="sid-nb", tmux="live-nb")]
+        )
+        row = rows[0]
+        self.assertEqual(row["verdict"], "OK", row)
+
+    def test_parse_pstack_stdout_behind(self):
+        mod = load_module()
+        out = (
+            "WARN checkout is 12 commits behind origin/main; x\n"
+            "GAP verifier workflow: no job\n"
+            "EXTRA workflow: foo\n"
+        )
+        self.assertEqual(mod.parse_pstack_stdout(out), (1, 1, 12))
+        self.assertEqual(
+            mod.format_self_check(1, 1, 12, upstream=True),
+            "EXTRA 1 GAP 1 behind 12 (upstream)",
+        )
+
+    def test_verdict_stale_behind_ignores_local_extras(self):
+        mod = load_module()
+        v, reason, action = mod.verdict(
+            "claude",
+            "valentin-mode v4 (latest)",
+            4,
+            4,
+            0,
+            False,
+            5,
+            1,
+            None,
+            None,
+            False,
+            True,
+            170,
+        )
+        self.assertEqual(v, "GAPS")
+        self.assertNotIn("FIX", v)
 
     def test_parse_roster_line(self):
         mod = load_module()

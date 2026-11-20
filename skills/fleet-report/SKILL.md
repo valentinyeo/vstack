@@ -22,6 +22,6 @@ python3 skills/fleet-report/fleet-report --html /tmp/fleet-report.html
 
 Sources: `~/.local/bin/mp-sessions --json` and `~/.local/share/house-rules/fleet/roster-live` for live chats; Claude transcripts under `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
 
-Columns: loaded valentin-mode version (last load line in the transcript), latest from `skills/valentin-mode/version.sh`, board-drain `loop-state status`, `pstack-diff` exit and EXTRA count, verdict **OK** / **BEHIND** / **FAILING**.
+Columns: loaded valentin-mode version, latest from `skills/valentin-mode/version.sh`, board-drain `loop-state status`, `pstack-diff` EXTRA/GAP counts (re-run on upstream default when checkout is behind), verdict tags (**OK**, **BEHIND**, **NO VALENTIN-MODE**, **LOOP OFF**, **FIX**, **GAPS**), and a short **ACTION** column.
 
 **Do not fix other chats from here.** Message each failing chat; it fixes itself.
