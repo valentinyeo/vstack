@@ -6,6 +6,34 @@
           {
             "type": "command",
             "command": "sh -c 'f=\"$HOME/.claude/hooks/skill-update.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.local/share/vstack/hooks/long-chat.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.local/share/vstack/hooks/long-chat.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.local/share/vstack/hooks/long-chat.py",
+            "timeout": 10
           }
         ]
       }
