@@ -8,7 +8,6 @@ Write every registered command to fail open when its file is missing, and to blo
 { "command": "sh -c 'f=\"$HOME/.claude/hooks/plan-pick-only.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'" }
 ```
 
-<<<<<<< HEAD
 | Hook | Event | What it does | Where to wire it |
 |---|---|---|---|
 | `plan-pick-only.py` | PreToolUse, Bash | Code workers start only through `~/.local/bin/plan-pick --run`. Acts only in a valentin-mode chat. | global, once |
@@ -57,17 +56,3 @@ Merge these two entries into the `PreToolUse` list in `~/.claude/settings.json`,
 Then delete the `plan-pick-only.py` and `claude-helper-gate.py` entries from each project's `.claude/settings.json`. Two entries on one event both run, and the old per-project copy cannot tell a plain chat from a valentin-mode one.
 
 Prove it in your own chats: in a plain chat `codex exec -C /tmp/x "hi"` starts; in a valentin-mode chat the same command is blocked and points at `plan-pick --run`.
-=======
-| Hook | Event | What it does |
-|---|---|---|
-| `plan-pick-only.py` | PreToolUse, Bash | Code workers start only through `~/.local/bin/plan-pick --run`. |
-| `claude-helper-gate.py` | PreToolUse, Agent and Task | A Claude helper starts only when `plan-pick --claude-helper` allows it. |
-| `launch-gate.py` | PreToolUse, Bash | No worker, build or test starts while vps-state says HOLD; `LAUNCH_GATE=off` is Valentin's override. |
-| `skill-update.py` | UserPromptSubmit | Keeps the shared skills current and says when valentin-mode changed, so the chat re-reads it. |
-| `gh-watch-guard.py` | PreToolUse, Bash | `gh --watch` and gh poll loops sleeping under 60 s are blocked. CI waits through `~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>` as a tracked background command (Bash `run_in_background`), not `&` or nohup. |
-<<<<<<< HEAD
-
-Run `python3 ~/.claude/hooks/launch-gate.py --install-for-project` once per project (writes `.claude/settings.local.json`); `--check-project` exits 0 when wired.
-=======
->>>>>>> 3e13545 (Name wait-checks by shared install path so any chat can run it.)
->>>>>>> d1c5fc8 (Name wait-checks by shared install path so any chat can run it.)

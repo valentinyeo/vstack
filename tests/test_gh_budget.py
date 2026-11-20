@@ -175,6 +175,19 @@ class BudgetRefuseTests(BudgetCase):
         self.assertEqual(self.count(), 600)
         self.assertEqual([row[6] for row in self.log_rows()], ["refused"])
 
+    def test_refuse_at_600_stops_no_cache_pr_reads(self):
+        self.seed(600)
+        for extra in (["--no-cache"], [],):
+            with self.subTest(extra=extra):
+                result = self.run_gh("pr", "checks", "2", *extra)
+                self.assertEqual(result.returncode, 75, result.stderr)
+                self.assertEqual(self.upstream_calls(), [])
+                self.assertIn("is over 600 GitHub calls this hour", result.stderr)
+        env = self.env(GH_WRAPPER_NO_CACHE="1")
+        result = self.run_gh("pr", "checks", "2", env=env)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertEqual(self.upstream_calls(), [])
+
     def test_refuse_covers_one_rest_read(self):
         self.seed(600)
         result = self.run_gh("api", "repos/valentinyeo/vstack")

@@ -613,6 +613,11 @@ def graphql_read(argv) -> bool:
     return "graphql" in argv[1:] and not any("mutation" in arg for arg in argv)
 
 
+def budgeted_read(argv) -> bool:
+    """A GitHub read the per-session budget may refuse or warn on before upstream runs."""
+    return graphql_read(argv) or pr_command(argv) in PR_READ_SUBS
+
+
 def reaches_github(argv) -> bool:
     """This call spends a GitHub request: it is not a local subcommand."""
     sub = _subcommand(argv)
@@ -1080,7 +1085,7 @@ def wrap_main(argv=None) -> int:
         env = child_env(path) if path else os.environ.copy()
         bucket = "app" if env.get("GH_TOKEN") else "user"
         marker = "-"
-        if graphql_read(argv):
+        if budgeted_read(argv):
             verdict, count = budget_verdict(argv)
             if verdict == "refuse":
                 _log_call(argv, bucket=bucket, marker="refused")
