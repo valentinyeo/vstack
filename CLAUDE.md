@@ -27,6 +27,7 @@ Nobody pushes to main.
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | Each chat tidies its own open PRs | `skills/pr-housekeeping/pr-queue`, `tests/test_pr_queue.py` |
+| A PR never collides with an older open PR on a guarded file or ticket | `scripts/pr-overlap`, `.github/workflows/pr-overlap.yml`, `tests/test_pr_overlap.py` |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Worker tasks can run on vendor cloud agents | `skills/cloud-agent/cloud-agent`, `tests/test_cloud_agent.py` |
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |

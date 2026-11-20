@@ -1,0 +1,2 @@
+# Guarded paths: two open PRs must not edit the same path; the older PR wins.
+skills/valentin-mode/SKILL.md
