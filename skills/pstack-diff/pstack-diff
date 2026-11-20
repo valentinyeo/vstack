@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""Compare a repo's verification setup with pstack's recipe (read-only, stdlib only).
+
+    pstack-diff [--json] [--pstack DIR] [REPO_ROOT]
+
+--pstack names the directory holding pstack installs; PSTACK_DIFF_PSTACK does the
+same. Without either it reads the newest installed pstack. Exit 0 when every line
+is ASKED; 1 when any GAP or EXTRA is present.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+PSTACK_ROOT = Path.home() / ".claude/plugins/cache/cursor-plugins/pstack"
+PSTACK_ENV = "PSTACK_DIFF_PSTACK"
+_SKILL_DIR = Path(__file__).resolve().parent
+
+REUSABLE_USES = re.compile(
+    r"^\s+uses:\s*([\w.-]+)/([\w.-]+)/\.github/workflows/([\w.-]+)@(\S+)",
+    re.M,
+)
+
+AI_JUDGE = re.compile(
+    r"cursor-agent|(?:^|[\s\"'])(?:pi\s+-p|pi\s+--provider)|claude\s+-p|codex\s+exec|"
+    r"api\.deepseek\.com|openrouter\.ai|ai-gateway\.vercel\.sh|"
+    r"api\.openai\.com|api\.anthropic\.com|"
+    r"pick-verifier-model|run-verifier|"
+    r"(?:scripts/|python3\s+[-\w./]*)(?:\S*(?:verifier|advisor)\S*)|"
+    r"VERDICT:|PASS\+NOTES",
+    re.M | re.I,
+)
+
+EXTRA_JOB_HINTS = re.compile(
+    r"pacer-check|scorecard|repro-must-fail|coverage.*ratchet|ratchet.*coverage|"
+    r"freeze|budget|cap gate",
+    re.I,
+)
+
+
+def pstack_root(flag: str | None = None) -> Path:
+    """--pstack first, then PSTACK_DIFF_PSTACK, then the installed cache."""
+    chosen = flag or os.environ.get(PSTACK_ENV)
+    if chosen:
+        return Path(chosen).expanduser()
+    return PSTACK_ROOT
+
+
+def latest_pstack(root: Path) -> Path:
+    versions = [p for p in root.glob("*") if p.is_dir()]
+    if not versions:
+        raise SystemExit(f"GAP pstack: no install under {root}")
+    return max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".") if n.isdigit()))
+
+
+def verify_skills(root: Path) -> list[str]:
+    lines: list[str] = []
+    skills_root = root / ".claude/skills"
+    found: list[str] = []
+    if skills_root.is_dir():
+        for child in sorted(skills_root.iterdir()):
+            if not child.name.startswith("verify-") or not child.is_dir():
+                continue
+            skill = child / "SKILL.md"
+            features = child / "features"
+            if skill.is_file() and features.is_dir():
+                found.append(child.name)
+    if not found:
+        lines.append("GAP verify-skill: no .claude/skills/verify-<app>/SKILL.md with features/")
+    else:
+        lines.append(f"ASKED verify-skill: {', '.join(found)}")
+    return lines
+
+
+def workflow_files(root: Path) -> list[Path]:
+    workflows = root / ".github/workflows"
+    if not workflows.is_dir():
+        return []
+    return sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml"))
+
+
+def _on_pull_request(text: str) -> bool:
+    if re.search(r"^on:\s*pull_request\b", text, re.M):
+        return True
+    if re.search(r"^on:\s*\[[^\]]*pull_request", text, re.M):
+        return True
+    block = re.search(r"^on:\s*\n((?:[ \t]+[^\n]+\n)+)", text, re.M)
+    if block and re.search(r"^\s+pull_request:", block.group(1), re.M):
+        return True
+    return False
+
+
+def _job_blocks(text: str) -> list[tuple[str, str]]:
+    match = re.search(r"^jobs:\s*\n", text, re.M)
+    if not match:
+        return []
+    rest = text[match.end() :]
+    jobs: list[tuple[str, str]] = []
+    current_name = None
+    current_lines: list[str] = []
+    for line in rest.splitlines():
+        if re.match(r"^  [A-Za-z0-9_.-]+:\s*$", line):
+            if current_name is not None:
+                jobs.append((current_name, "\n".join(current_lines)))
+            current_name = line.strip()[:-1]
+            current_lines = []
+        elif current_name is not None:
+            if re.match(r"^[A-Za-z0-9_.-]+:\s*$", line) and not line.startswith(" "):
+                break
+            current_lines.append(line)
+    if current_name is not None:
+        jobs.append((current_name, "\n".join(current_lines)))
+    return jobs
+
+
+def _job_fails_pr(job_body: str) -> bool:
+    if re.search(r"^\s+if:\s*false\s*$", job_body, re.M):
+        return False
+    if re.search(r"^\s+continue-on-error:\s*true\s*$", job_body, re.M):
+        return False
+    return True
+
+
+def _clones_root() -> Path:
+    override = os.environ.get("PSTACK_DIFF_CLONES")
+    if override:
+        return Path(override)
+    return Path.home() / "projects"
+
+
+def _load_reusable_workflow(owner: str, repo: str, workflow_file: str, ref: str) -> str | None:
+    clone = _clones_root() / repo
+    rel = f".github/workflows/{workflow_file}"
+    if not clone.is_dir():
+        return None
+    if re.fullmatch(r"[0-9a-f]{40}", ref):
+        try:
+            return subprocess.check_output(
+                ["git", "-C", str(clone), "show", f"{ref}:{rel}"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    path = clone / rel
+    if path.is_file():
+        return path.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _house_entries(root: Path) -> dict[tuple[str, str], str]:
+    entries: dict[tuple[str, str], str] = {}
+    paths = [_SKILL_DIR / "house.txt", root / ".pstack-house.txt"]
+    for path in paths:
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"^([^:]+):(\S+)\s+(.+)$", line)
+            if match:
+                entries[(match.group(1), match.group(2))] = match.group(3)
+    return entries
+
+
+def _is_ai_judge(job_body: str) -> bool:
+    return bool(AI_JUDGE.search(job_body))
+
+
+def _reusable_spec(job_body: str) -> str | None:
+    match = REUSABLE_USES.search(job_body)
+    if not match:
+        return None
+    return (
+        f"{match.group(1)}/{match.group(2)}/.github/workflows/"
+        f"{match.group(3)}@{match.group(4)}"
+    )
+
+
+def _iter_pr_jobs(
+    root: Path,
+    caller_file: str,
+    text: str,
+    via: str | None,
+    lines: list[str],
+) -> list[tuple[str, str, str]]:
+    """Return (file_label, job_id, body) for classifiable jobs."""
+    collected: list[tuple[str, str, str]] = []
+    prefix = f"{caller_file} via {via}" if via else caller_file
+    for job_id, body in _job_blocks(text):
+        spec = _reusable_spec(body)
+        if spec and not re.search(r"^\s+steps:\s*$", body, re.M):
+            match = REUSABLE_USES.search(body)
+            assert match
+            inner = _load_reusable_workflow(
+                match.group(1), match.group(2), match.group(3), match.group(4)
+            )
+            if inner is None:
+                lines.append(f"UNKNOWN reusable workflow {spec} (check by hand)")
+                lines.append(f"EXTRA workflow: {prefix} job {job_id} (unresolved reusable)")
+                continue
+            collected.extend(_iter_pr_jobs(root, caller_file, inner, spec, lines))
+            continue
+        if not _job_fails_pr(body):
+            continue
+        collected.append((prefix, job_id, body))
+    return collected
+
+
+def classify_workflows(root: Path) -> list[str]:
+    lines: list[str] = []
+    house = _house_entries(root)
+    ai_judges: list[str] = []
+    saw_pr_workflow = False
+
+    for path in workflow_files(root):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not _on_pull_request(text):
+            continue
+        saw_pr_workflow = True
+        file_label = path.relative_to(root).as_posix()
+        for label, job_id, body in _iter_pr_jobs(root, file_label, text, None, lines):
+            wf_file = file_label.split(" via ", 1)[0]
+            house_key = (wf_file, job_id)
+            if house_key in house:
+                lines.append(f"HOUSE {label} job {job_id}: {house[house_key]}")
+                continue
+            if _is_ai_judge(body):
+                ai_judges.append(f"{label} job {job_id}")
+            elif EXTRA_JOB_HINTS.search(body):
+                lines.append(f"EXTRA workflow: {label} job {job_id}")
+            else:
+                lines.append(f"ASKED CI workflow: {label} job {job_id}")
+
+    preferred = [j for j in ai_judges if "pstack-sources.yml" in j and j.endswith("job verifier")]
+    ordered = preferred + [j for j in ai_judges if j not in preferred]
+    if ordered:
+        lines.append(f"ASKED verifier workflow: {ordered[0]}")
+        for extra in ordered[1:]:
+            lines.append(f"EXTRA workflow: {extra}")
+    elif saw_pr_workflow:
+        lines.append("GAP verifier workflow: no pull_request job runs an AI verifier")
+
+    return lines
+
+
+def _rule_line(line: str) -> bool:
+    lower = line.lower()
+    if "verify-" in lower and "skill" in lower:
+        return False
+    if re.search(r"\bpass\b", lower) and re.search(r"\bfail\b", lower):
+        return True
+    if "verdict" in lower:
+        return True
+    if "verifier" in lower and re.search(r"\bpass\b|\bfail\b|model family|required check", lower):
+        return True
+    if "required check" in lower:
+        return True
+    return False
+
+
+RULE_FILES = ("AGENTS.md", "CLAUDE.md")
+
+
+def rule_restatements(root: Path) -> list[str]:
+    lines: list[str] = []
+    paths: list[Path] = []
+    for name in RULE_FILES:
+        path = root / name
+        if path.is_file():
+            paths.append(path)
+    skills = root / ".claude/skills"
+    if skills.is_dir():
+        for child in sorted(skills.iterdir()):
+            if child.name.startswith("verify-") or not child.is_dir():
+                continue
+            skill = child / "SKILL.md"
+            if skill.is_file():
+                paths.append(skill)
+    for path in paths:
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if _rule_line(line):
+                rel = path.relative_to(root).as_posix()
+                lines.append(f"EXTRA rule restatement: {rel}:{number} (link to pstack instead)")
+    return lines
+
+
+def analyze(root: Path, pstack: Path) -> list[str]:
+    latest = latest_pstack(pstack)
+    lines = [f"ASKED pstack recipe: {latest.name}"]
+    lines.extend(verify_skills(root))
+    lines.extend(classify_workflows(root))
+    lines.extend(rule_restatements(root))
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
+    parser.add_argument(
+        "--pstack",
+        default=None,
+        help=f"directory holding pstack installs; default ${PSTACK_ENV} or the newest installed",
+    )
+    parser.add_argument("root", nargs="?", default=".", type=Path)
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+    lines = analyze(root, pstack_root(args.pstack))
+    gaps = [line for line in lines if line.startswith("GAP ")]
+    extras = [line for line in lines if line.startswith("EXTRA ")]
+    asked = [line for line in lines if line.startswith("ASKED ")]
+    code = 1 if gaps or extras else 0
+    if args.json:
+        payload = {"exit": code, "asked": asked, "gaps": gaps, "extras": extras, "lines": lines}
+        print(json.dumps(payload, indent=2))
+    else:
+        for line in lines:
+            print(line)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

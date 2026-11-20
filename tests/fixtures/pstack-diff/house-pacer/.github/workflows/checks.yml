@@ -1,0 +1,16 @@
+name: checks
+on:
+  pull_request:
+jobs:
+  skills:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 -m unittest discover -s tests -v
+  pacer-check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/pacer-check.py --body-file pacer-body.md --changed-files-file pacer-changed.txt
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/run-verifier

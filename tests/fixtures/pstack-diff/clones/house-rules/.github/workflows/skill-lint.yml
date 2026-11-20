@@ -1,0 +1,9 @@
+name: Shared skill lint
+on:
+  workflow_call:
+jobs:
+  pstack-verifier:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 picker-base/scripts/pick-verifier-model
+      - run: python3 picker-base/scripts/run-verifier --verdict-pattern 'VERDICT: PASS'
