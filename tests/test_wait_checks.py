@@ -68,6 +68,13 @@ class WaitChecksTests(unittest.TestCase):
         self.assertIn("1 check(s) failed: build", out)
         self.assertEqual(len(out.splitlines()), 1, out)
 
+    def test_a_cancelled_check_counts_as_a_failure(self):
+        cancelled = "build\tcancel\t1s\thttps://e/2\n"
+        code, sleeps, _polls, out, _err = self.drive([(1, cancelled, "")])
+        self.assertEqual(code, 1)
+        self.assertEqual(sleeps, [])
+        self.assertIn("failed: build", out)
+
     def test_a_failed_row_ends_the_wait_even_while_others_are_pending(self):
         code, sleeps, _polls, out, _err = self.drive([(1, PENDING + FAILED, "")])
         self.assertEqual(code, 1)

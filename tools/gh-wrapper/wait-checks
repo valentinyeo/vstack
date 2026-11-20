@@ -42,7 +42,7 @@ def failed(text: str) -> list:
     names = []
     for line in (text or "").splitlines():
         fields = line.split("\t")
-        if len(fields) > 1 and fields[1] in ("fail", "cancelled", "timed_out"):
+        if len(fields) > 1 and fields[1] in ("fail", "cancel", "cancelled", "timed_out"):
             names.append(fields[0])
     return names
 
