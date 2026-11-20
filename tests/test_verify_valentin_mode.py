@@ -12,6 +12,41 @@ GRADE = SKILL / 'grade.py'
 RUN = SKILL / 'run'
 FIXTURES = ROOT / 'tests/fixtures/verify-valentin-mode'
 
+SCRATCH = '/tmp/vvm-scratch/.claude/skills/valentin-mode'
+HOOKED_VALENTIN = """---
+name: valentin-mode
+description: test skill
+disable-model-invocation: true
+hooks:
+  PreToolUse:
+    - matcher: "*"
+      hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/reply-check.py"
+  Stop:
+    - hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/said-started.py"
+---
+
+# Valentin mode
+
+## Three tools
+"""
+
+
+def hook_line(event, name, folder=SCRATCH, matcher=''):
+    """One hook line from the debug file, shaped like a live probe."""
+    path = '%s/../responsive-mode/%s' % (folder, name)
+    return ('2026-11-20T13:34:13.605Z [DEBUG] Hooks: %s%s '
+            '[python3 "%s"] finished with status 0 (131ms)\n'
+            % (event, ':' + matcher if matcher else '', path))
+
+
+def ran_valentin_hooks():
+    return hook_line('PreToolUse', 'reply-check.py', matcher='Bash') + hook_line(
+        'Stop', 'said-started.py')
+
 
 class VerifyValentinModeGrade(unittest.TestCase):
     def temp_dir(self):
@@ -52,9 +87,9 @@ class VerifyValentinModeGrade(unittest.TestCase):
         verdict = json.loads((target / 'verdict.json').read_text())
         self.assertEqual(verdict['verdict'], 'PASS')
         self.assertEqual(verdict['session_id'], 'sid-pass')
-        self.assertEqual(len(verdict['checks']), 7)
-        self.assertEqual([check['name'] for check in verdict['checks']][:2],
-                         ['loaded', 'responsive'])
+        self.assertEqual(len(verdict['checks']), 8)
+        self.assertEqual([check['name'] for check in verdict['checks']][:3],
+                         ['loaded', 'responsive', 'checks loaded'])
         self.assertEqual((target / 'verdict.txt').read_text(), output)
 
     def test_no_plan_pick_fixture_fails_pacer(self):
@@ -241,6 +276,38 @@ class VerifyValentinModeGrade(unittest.TestCase):
             capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 2, result.stderr)
 
+    def grade_checks_loaded(self, installed_text, debug_text):
+        target = self.temp_dir() / 'hooks'
+        shutil.copytree(FIXTURES / 'pass', target)
+        (target / 'installed-valentin-mode.md').write_text(installed_text)
+        if debug_text is not None:
+            (target / 'debug.log').write_text(debug_text)
+        return subprocess.run([sys.executable, str(GRADE), str(target)],
+                              capture_output=True, text=True, check=False)
+
+    def test_checks_loaded_both_hook_lines_pass(self):
+        result = self.grade_checks_loaded(HOOKED_VALENTIN, ran_valentin_hooks())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('PASS checks loaded:', result.stdout)
+        self.assertIn('reply-check.py', result.stdout)
+        self.assertIn('said-started.py', result.stdout)
+
+    def test_checks_loaded_stop_missing_fails(self):
+        debug = hook_line('PreToolUse', 'reply-check.py', matcher='Bash')
+        result = self.grade_checks_loaded(HOOKED_VALENTIN, debug)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL checks loaded:', result.stdout)
+        self.assertIn('said-started.py (Stop)', result.stdout)
+
+    def test_checks_loaded_unexpanded_root_fails(self):
+        debug = ('2026-11-20T13:34:13.605Z [DEBUG] Hooks: PreToolUse:Bash '
+                 '[python3 "/../responsive-mode/reply-check.py"] finished with status 0 (131ms)\n'
+                 '2026-11-20T13:34:13.605Z [DEBUG] Hooks: Stop '
+                 '[python3 "/../responsive-mode/said-started.py"] finished with status 0 (131ms)\n')
+        result = self.grade_checks_loaded(HOOKED_VALENTIN, debug)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL checks loaded:', result.stdout)
+
 
 class VerifyValentinModeRunScript(unittest.TestCase):
     def test_run_script_parses(self):
@@ -279,6 +346,15 @@ class VerifyValentinModeRunScript(unittest.TestCase):
         text = RUN.read_text()
         self.assertIn('$HOME/.local/share/vstack/skills/valentin-mode/SKILL.md', text)
         self.assertIn('installed-valentin-mode.md', text)
+
+    def test_run_script_copies_both_skills_into_scratch(self):
+        text = RUN.read_text()
+        self.assertIn('cp -rL "$VSTACK_SKILLS/valentin-mode" "$W/.claude/skills/valentin-mode"', text)
+        self.assertIn('cp -rL "$VSTACK_SKILLS/responsive-mode" "$W/.claude/skills/responsive-mode"', text)
+
+    def test_run_script_passes_debug_file(self):
+        text = RUN.read_text()
+        self.assertIn('--debug-file "$E/debug.log"', text)
 
     def test_grade_script_has_shebang(self):
         self.assertEqual(GRADE.read_text().splitlines()[0], '#!/usr/bin/env python3')

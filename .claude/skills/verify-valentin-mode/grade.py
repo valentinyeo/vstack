@@ -24,6 +24,9 @@ INSTALLED_NAME = 'installed-valentin-mode.md'
 DISABLE_LINE = 'disable-model-invocation: true'
 NO_SESSION = 'no session id in stream'
 TASK_LINE = 'hello from the worker'
+HOOK_FILE = re.compile(r'[^\s"\'`]+\.[a-z]{2}\b')
+# A debug log line per hook run: "Hooks: <Event>[:<matcher>] [<command>] finished".
+DEBUG_HOOK = re.compile(r'Hooks: ([A-Za-z]+)(?::\S*)?\s+\[([^\]]*)\]')
 # valentin-mode pastes responsive mode's body in at load: these three mark it whole.
 RESPONSIVE_PASTE_HEADING = '## Responsive mode (pasted in when this skill loads)'
 RESPONSIVE_PASTE_FIRST = 'The main chat talks. Background agents work.'
@@ -206,6 +209,72 @@ def frontmatter_lines(text):
         if lines[index].strip() == '---':
             return lines[1:index]
     return []
+
+
+def hook_files(command):
+    """The script names a hook command line runs."""
+    return [token.rsplit('/', 1)[-1] for token in HOOK_FILE.findall(command)]
+
+
+def hook_commands(text):
+    """(event, file name) for every hook the skill's frontmatter turns on."""
+    block = []
+    inside = False
+    for line in frontmatter_lines(text):
+        if not inside:
+            inside = line.rstrip() == 'hooks:'
+            continue
+        if line.strip() and not line[:1].isspace():
+            break
+        block.append(line)
+    found, event = [], ''
+    for line in block:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if stripped.endswith(':') and not stripped.startswith('-') and indent <= 2:
+            event = stripped[:-1]
+        elif stripped.startswith('command:'):
+            for name in hook_files(stripped):
+                found.append((event, name))
+    return found
+
+
+def installed_hook_files(command):
+    """Hook file names a command runs out of a .claude/skills/ folder."""
+    return [token.rsplit('/', 1)[-1] for token in HOOK_FILE.findall(command)
+            if '.claude/skills/' in token]
+
+
+def hook_runs(evidence):
+    """(event, file name) for every hook the chat's debug log recorded running."""
+    runs = []
+    for line in read_text(evidence / 'debug.log').splitlines():
+        match = DEBUG_HOOK.search(line)
+        if not match:
+            continue
+        event, command = match.group(1), match.group(2)
+        runs.extend((event, name) for name in installed_hook_files(command))
+    return runs
+
+
+def check_checks_loaded(evidence):
+    """The skill's own hooks loaded with it (mirrors verify-responsive-mode/grade.py)."""
+    text = read_text(evidence / INSTALLED_NAME)
+    if not text:
+        return PASS, 'no skill text in evidence, so no hooks block to check'
+    wanted = hook_commands(text)
+    if not wanted:
+        return PASS, 'the skill under test turns no hooks on'
+    if not (evidence / 'debug.log').is_file():
+        return FAIL, ('no debug.log: the skill turns hooks on, but nothing shows they ran')
+    ran = hook_runs(evidence)
+    missing = [f'{name} ({event})' for event, name in wanted
+               if (event, name) not in ran]
+    if missing:
+        return FAIL, ('debug.log shows no run of ' + ', '.join(missing)
+                      + ' from the scratch project\'s .claude/skills/ folder')
+    return PASS, 'debug.log shows every declared hook ran: ' + ', '.join(
+        f'{name} ({event})' for event, name in wanted)
 
 
 def check_loaded(evidence):
@@ -434,6 +503,7 @@ def grade(evidence, agent, ticket, board, label):
     name, result = 'loaded', check_loaded(evidence)
     checks.append((name, result))
     checks.append(('responsive', check_responsive(events)))
+    checks.append(('checks loaded', check_checks_loaded(evidence)))
 
     if session_id is None:
         for name in ('session', 'login', 'pacer', 'task', 'board sync'):
