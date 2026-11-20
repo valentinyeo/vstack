@@ -56,8 +56,11 @@ def comment(body, age=1.0):
     return {'body': body, 'createdAt': hours_ago(age), 'author': {'login': 'verifier'}}
 
 
-def view(number=1, repo='o/r', title='SOFT-1 thing', branch='soft-1-thing', author='valentinyeo',
+def view(number=1, repo='o/r', title=None, branch=None, author='valentinyeo',
          age=1.0, pushed=1.0, body=BODY, checks='green', mergeable='MERGEABLE', comments=(), head=SHA):
+    # One ticket key per PR unless the test names one, so unrelated fixtures never read as duplicates.
+    title = title or f'SOFT-{number} thing'
+    branch = branch or f'soft-{number}-thing'
     return {
         'repository': repo,
         'number': number,
@@ -168,6 +171,8 @@ class ModuleTests(unittest.TestCase):
             view(14, comments=[failed], body=''),
             view(15, body=''),
             view(16, pushed=100, body=''),
+            view(17, pushed=100, comments=[passed]),
+            view(18, repo='o/other', comments=[passed]),
         ])
         got = states(rows)
         self.assertEqual(got[1], 'BOT')
@@ -178,22 +183,32 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(got[6], 'VERIFIER-FAIL')
         self.assertEqual(got[7], 'MISSING-LINES')
         self.assertEqual(got[8], 'NO-VERDICT')
-        self.assertEqual(got[9], 'STALE')
+        self.assertEqual(got[9], 'NO-VERDICT', 'no verdict is the next action before stale')
         self.assertEqual(got[10], 'READY')
-        self.assertEqual(got[11], 'NO-OWNER', 'no live chat claims o/other')
+        self.assertEqual(got[11], 'NO-VERDICT', 'the ticket ladder puts no verdict before no owner')
         self.assertEqual(got[12], 'CONFLICT', 'conflict beats red')
         self.assertEqual(got[13], 'RED', 'red beats missing lines')
         self.assertEqual(got[14], 'VERIFIER-FAIL', 'verifier fail beats missing lines')
         self.assertEqual(got[15], 'MISSING-LINES', 'missing lines beats no verdict')
         self.assertEqual(got[16], 'MISSING-LINES', 'missing lines beats stale')
+        self.assertEqual(got[17], 'STALE', 'a verified PR nobody pushed for 72h is stale')
+        self.assertEqual(got[18], 'NO-OWNER', 'a verified PR no live chat claims has no owner')
 
     def test_duplicate_keeps_the_older_pr(self):
         rows = self.rows([view(20, title='SOFT-9 new', age=1), view(21, title='SOFT-9 old', age=5)],
                          chats=[chat('Owner', repo='o/r')])
         rows = {row['number']: row for row in rows}
-        self.assertEqual(rows[21]['state'], 'OK')
+        self.assertEqual(rows[21]['state'], 'NO-VERDICT')
         self.assertEqual(rows[20]['state'], 'DUPLICATE')
         self.assertEqual(rows[20]['duplicate_of'], 21)
+
+    def test_duplicate_breaks_a_same_second_tie_by_number(self):
+        rows = self.rows([view(30, title='SOFT-8 a', age=2), view(31, title='SOFT-8 b', age=2)],
+                         chats=[chat('Owner', repo='o/r')])
+        got = {row['number']: row for row in rows}
+        self.assertEqual(got[31]['state'], 'DUPLICATE')
+        self.assertEqual(got[31]['duplicate_of'], 30)
+        self.assertNotEqual(got[30]['state'], 'DUPLICATE', 'one keeper per ticket, even in the same second')
 
     def test_billing_needs_a_failing_check_message(self):
         failed = [{'output': {'title': 'The job was not started because recent account payments have failed '
@@ -224,7 +239,7 @@ class ModuleTests(unittest.TestCase):
                       'verdict', 'has_author_model', 'has_pacer_line', 'duplicate_of', 'state', 'next_action'):
             self.assertIn(field, row)
         self.assertEqual(row['repo'], 'o/r')
-        self.assertEqual(row['ticket_key'], 'SOFT-1')
+        self.assertEqual(row['ticket_key'], 'SOFT-40')
         self.assertEqual(row['verdict'], 'PASS')
         self.assertEqual(row['owner_chat'], 'Some Chat')
         self.assertAlmostEqual(row['age_hours'], 2, delta=0.1)
@@ -239,10 +254,13 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(row['state'], 'MISSING-LINES')
 
     def test_stale_hours_is_configurable(self):
-        rows = self.rows([view(50, pushed=10)], chats=[chat('Owner', repo='o/r')], stale_hours=5)
+        passed = [comment(f'VERDICT: PASS\n\nHead `{SHA}`')]
+        rows = self.rows([view(50, pushed=10, comments=passed)], chats=[chat('Owner', repo='o/r')],
+                         stale_hours=5)
         self.assertEqual(rows[0]['state'], 'STALE')
-        rows = self.rows([view(50, pushed=10)], chats=[chat('Owner', repo='o/r')], stale_hours=20)
-        self.assertNotEqual(rows[0]['state'], 'STALE')
+        rows = self.rows([view(50, pushed=10, comments=passed)], chats=[chat('Owner', repo='o/r')],
+                         stale_hours=20)
+        self.assertEqual(rows[0]['state'], 'READY', 'a verified PR inside the window is ready')
 
     def test_ready_accepts_pass_with_notes(self):
         notes = comment(f'VERDICT: PASS+NOTES\n\nHead `{SHA}`')
@@ -255,8 +273,8 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(row['state'], 'OK')
 
     def test_counts(self):
-        rows = self.rows([view(70), view(71, pushed=100)], chats=[])
-        self.assertEqual(self.m.counts(rows), {'NO-OWNER': 2})
+        rows = self.rows([view(70), view(71, checks='red')], chats=[])
+        self.assertEqual(self.m.counts(rows), {'NO-VERDICT': 1, 'RED': 1})
 
 
 class CliTests(unittest.TestCase):
@@ -304,8 +322,9 @@ if argv[:2] == ["pr", "view"]:
     print((root / "views" / (key + ".json")).read_text())
     sys.exit(0)
 if argv[0] == "api":
-    repo = argv[1].split("/")[2] + "/" + argv[1].split("/")[3]
-    sha = argv[1].split("/")[4]
+    parts = argv[1].split("/")
+    repo = parts[1] + "/" + parts[2]
+    sha = parts[4]
     for item in json.loads((root / "search.json").read_text()):
         key = repo.replace("/", "_") + "-" + str(item["number"])
         path = root / "checks" / (key + ".json")
@@ -330,13 +349,15 @@ sys.exit(3)
         self.assertIn('READY', result.stdout)
 
     def test_no_owner_exits_one(self):
-        views = [view(1, repo='o/r', branch='nobody-here', pushed=1)]
+        passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
+        views = [view(1, repo='o/r', branch='nobody-here', pushed=1, comments=[passed])]
         result = self.cli(views, chats=())
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('NO-OWNER', result.stdout)
 
     def test_stale_exits_one(self):
-        views = [view(1, repo='o/r', branch='owner-thing', pushed=100)]
+        passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
+        views = [view(1, repo='o/r', branch='owner-thing', pushed=100, comments=[passed])]
         result = self.cli(views, chats=('Owner (live-x, claude, /home/valentin/projects/r)',))
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn('STALE', result.stdout)
@@ -360,6 +381,12 @@ sys.exit(3)
         result = self.cli(views, chats=('Owner (live-x, claude, /home/valentin/projects/r)',),
                           args=['--mine', 'Gone Chat'])
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_mine_with_no_readable_checkout_says_zero_rows_proves_nothing(self):
+        result = self.cli([], chats=('Owner (live-x, claude, /home/valentin/projects/gone)',),
+                          args=['--mine', 'Owner'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('0 rows proves nothing', result.stderr)
 
     def test_repo_filter(self):
         views = [view(1, repo='o/r', branch='owner-thing'), view(2, repo='o/one', branch='owner-thing')]
