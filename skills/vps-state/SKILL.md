@@ -8,13 +8,13 @@ description: >-
 
 Prior art: checked pstack (`create-verification-skill`, `poteto-mode/playbooks/worktree-cleanup.md`); neither has a host-capacity skill. house-rules fleet/runner has a worker gate this mirrors.
 
-Run `vps-state` from any directory. It reads /proc live on every call, never a cache, and answers in about a second.
+Run `"$HOME/.local/bin/vps-state"` from any directory. It reads /proc live on every call, never a cache, and answers in about a second. Name it by full path: a Claude Code Bash shell's PATH carries no ~/.local/bin, so a bare command name exits 127 there.
 
 ## Set up your own check
 
 Nobody runs this for you. Do it once, for your own chat.
 
-1. In your own loop or launcher, run `vps-state --can-launch worker` before you start a worker, or `--can-launch chat` before a chat. Exit 0 means start. Exit 1 means start one and ask again before a second. Exit 2 means hold. Further rules are in [What HOLD obliges](#what-hold-obliges).
+1. In your own loop or launcher, run `"$HOME/.local/bin/vps-state" --can-launch worker` before you start a worker, or `--can-launch chat` before a chat. Exit 0 means start. Exit 1 means start one and ask again before a second. Exit 2 means hold. Further rules are in [What HOLD obliges](#what-hold-obliges).
 2. Optional: have the answer print as your session opens. Add this to your own project's `.claude/settings.json`. `install` puts the hook file at that path. It does not register it for you.
 
 ```json
@@ -53,7 +53,7 @@ Flags: `--json` for every number, `--brief` for one line, `--can-launch chat|wor
 
 1. Start nothing new. Say you are holding, and why.
 2. Finish, merge or close what you already have, and clean up your own scratch files.
-3. Run vps-state again in 10 minutes.
+3. Run `"$HOME/.local/bin/vps-state"` again in 10 minutes.
 
 ## Housekeeping duty
 

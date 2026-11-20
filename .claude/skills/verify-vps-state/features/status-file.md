@@ -10,7 +10,7 @@
 
 ## How to get to it (user POV)
 
-- Run `vps-state` once. Then `cat ~/.local/state/vps-load/status` shows what the runner will see.
+- Run `"$HOME/.local/bin/vps-state"` once. Then `cat ~/.local/state/vps-load/status` shows what the runner will see.
 - A stale file is worse than none: on 2026-11-15 it said `add load5=7.55 cores=18` while the host ran at 30 load on 18 cores today.
 
 ## Driving it with run

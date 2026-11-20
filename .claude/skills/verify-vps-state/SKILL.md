@@ -6,7 +6,7 @@ description: >-
 
 # Verify vps-state
 
-Prior art: checked pstack (`create-verification-skill`), this repo's `verify-reconcile` and `verify-valentin-mode`. Neither proves a host reading. This is the `verify-<app>` skill create-verification-skill asks for, with `vps-state` as the app.
+Prior art: checked pstack (`create-verification-skill`), this repo's `verify-reconcile` and `verify-valentin-mode`. Neither proves a host reading. This is the `verify-<app>` skill create-verification-skill asks for, with vps-state as the app.
 
 The proof bar: the script's own numbers are compared with a second read of the same host, taken by other tools. A run where the two agree, the exit codes match the verdict, the status file carries the verdict, and the hook prints the line, is a PASS. A script that prints a nice block nobody checked is not proof.
 

@@ -11,18 +11,17 @@ here=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")" 2>/
 if [ -n "${VPS_STATE_BIN:-}" ]; then
   bin=$VPS_STATE_BIN
 else
+  # Absolute paths only, never a PATH lookup: a Claude Code Bash shell's PATH
+  # carries no ~/.local/bin, and a hook must not fail to find its own script.
   bin=""
   for candidate in "$HOME/.local/bin/vps-state" "$here/../skills/vps-state/vps-state"; do
     if [ -x "$candidate" ]; then bin=$candidate; break; fi
   done
-  if [ -z "$bin" ] && command -v vps-state >/dev/null 2>&1; then
-    bin=$(command -v vps-state)
-  fi
 fi
 [ -n "$bin" ] && [ -x "$bin" ] || exit 0
 
 line=$(timeout 2 "$bin" --brief 2>/dev/null | head -1)
 [ -n "$line" ] || exit 0
 
-printf 'Server: %s\nrun vps-state before starting chats or workers\n' "$line"
+printf 'Server: %s\nrun ~/.local/bin/vps-state before starting chats or workers\n' "$line"
 exit 0

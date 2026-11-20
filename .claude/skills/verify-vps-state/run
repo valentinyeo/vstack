@@ -237,7 +237,7 @@ def grade_run(directory, results, live):
         hook_lines = hook["out"].splitlines()
         first = hook_lines[0] if hook_lines else ""
         ok = (hook["code"] == 0 and first.startswith("Server: ")
-              and any("run vps-state before starting chats or workers" in line
+              and any("run ~/.local/bin/vps-state before starting chats or workers" in line
                       for line in hook_lines)
               and hook["seconds"] < 3.0 and len(hook_lines) == 2)
         checks.append(("hook", ok, "exit {} in {:.2f}s: {}".format(

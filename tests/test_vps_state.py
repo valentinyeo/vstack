@@ -434,7 +434,7 @@ class SessionHook(unittest.TestCase):
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         server = [line for line in lines if line.startswith("Server: ")]
         self.assertEqual(len(server), 1, proc.stdout)
-        self.assertIn("run vps-state before starting chats or workers", proc.stdout)
+        self.assertIn("run ~/.local/bin/vps-state before starting chats or workers", proc.stdout)
         self.assertTrue(server[0].strip() != "Server:", proc.stdout)
 
     def test_hook_exits_0_with_no_script_and_prints_nothing(self):

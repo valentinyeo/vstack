@@ -10,9 +10,9 @@ Two answers, `ADD`, `CAREFUL` or `HOLD` for a chat and for a worker, each with t
 
 ## How to get to it (user POV)
 
-- Run `vps-state`. The first line is the answer: `HOLD worker, CAREFUL chat: <reasons>`.
-- A script asks `vps-state --can-launch worker` and reads the exit code.
-- A person who wants every number runs `vps-state --json`.
+- Run `"$HOME/.local/bin/vps-state"`. The first line is the answer: `HOLD worker, CAREFUL chat: <reasons>`.
+- A script asks `"$HOME/.local/bin/vps-state" --can-launch worker` and reads the exit code.
+- A person who wants every number runs `"$HOME/.local/bin/vps-state" --json`.
 
 ## Driving it with run
 
