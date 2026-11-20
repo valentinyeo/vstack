@@ -1,0 +1,9 @@
+    PID    PPID   RSS %CPU ELAPSED STAT COMMAND
+   1000     999 512000  3.0    3600 Ss   claude
+   1001       1 640000  1.0    1800 Sl   claude --continue
+   1002       1 900000 95.0     600 Rl   claude -p "fix the flaky test"
+   1003       1 220000 40.0     300 Sl   node /home/valentin/app/server.js
+   1004       1  96000 10.0     900 Sl   python3 -m pytest tests
+   1005       1  12000  0.0    9000 Ss   /usr/lib/systemd/systemd --user
+   1006       1  18000  0.0    7000 Ss   sshd: valentin [priv]
+   1007    1000      0  0.0     100 Z    [node] <defunct>

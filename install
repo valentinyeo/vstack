@@ -68,6 +68,13 @@ link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.c
 link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
 link_one reconcile-auto.py "$ROOT/hooks/reconcile-auto.py" "$HOME/.claude/hooks"
 
+# vps-state answers "can this server take another chat or worker", and the
+# SessionStart hook can print that answer as a session opens. This script only
+# links the script and the hook file. Each chat registers the hook in its own
+# project's .claude/settings.json, as skills/vps-state/SKILL.md says.
+link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
+link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
+
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"
 else
