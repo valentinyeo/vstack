@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Block until this chat's own board view changes, print why, and exit so the chat wakes."""
+import argparse
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import math
+import os
+from pathlib import Path
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+# The harness ends a tracked background job at two hours, so the heartbeat lands inside it.
+LIMIT = 7200
+FAILURES = 3
+
+
+def sibling(name, filename):
+    """The module when this process already loaded it, else load it the way the tests do."""
+    if name in sys.modules:
+        return sys.modules[name]
+    loader = importlib.machinery.SourceFileLoader(name, str(HERE / filename))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+# drain-check owns every read, every verdict and loop-state; nothing is copied here.
+drain = sibling('board_drain_check', 'drain-check')
+loop_state = drain.loop_state
+# The watcher runs the tick's sync itself; the chat wakes on change or heartbeat.
+sync = sibling('board_drain_sync', 'sync')
+
+
+def window(seconds):
+    """The heartbeat in its shortest honest unit: 7020 seconds reads as 2h."""
+    if seconds >= 3600:
+        return f'{math.ceil(seconds / 3600)}h'
+    return f'{max(1, round(seconds / 60))}m'
+
+
+def heartbeat_seconds(args):
+    """Default is one poll short of the plan pace (capped at 2h), so the watcher ends first."""
+    if args.heartbeat is not None:
+        return args.heartbeat
+    paced = min(loop_state.loop_interval(), LIMIT)
+    return paced - args.every
+
+
+def waiting_mark(task):
+    return [task.get('waitingOnUserId'), task.get('blockerCommentId')]
+
+
+def newest_id(comments):
+    """The newest comment's id, by time, else the last one the API sent."""
+    rows = [comment for comment in comments or () if isinstance(comment, dict)]
+    if not rows:
+        return None
+    ranked = max(enumerate(rows), key=lambda pair: (drain.said(pair[1]) or 0, pair[0]))
+    return ranked[1].get('id')
+
+
+def snapshot(args, now):
+    """One read of the view: each open ticket's state, plus drain-check's finding kinds."""
+    view = drain.read_view(args, now)
+    board, tickets = view['board'], {}
+    for row in view['rows']:
+        task = row['task']
+        comments = row.get('comments') or []
+        tickets[task['ticketNumber']] = {
+            'column': task.get('section'),
+            'waiting': waiting_mark(task),
+            'answered': drain.answered(comments),
+            'newest_comment': newest_id(comments),
+            'stalled': task.get('section') in drain.DOING and not drain.alive(task, now, board),
+        }
+    return {'tickets': tickets,
+            'findings': sorted({kind for kind, _ in view['findings']})}
+
+
+def changes(before, after):
+    """One line per difference, so the chat wakes knowing what moved and why."""
+    lines, old, new = [], before['tickets'], after['tickets']
+    for key in sorted(new):
+        state = new[key]
+        if key not in old:
+            lines.append(f'changed: {key} new in {state["column"]}')
+            continue
+        was = old[key]
+        if was['column'] != state['column']:
+            lines.append(f'changed: {key} {was["column"]} -> {state["column"]}')
+        if state['stalled'] and not was['stalled']:
+            lines.append(f'changed: {key} worker died')
+        elif was['stalled'] and not state['stalled']:
+            lines.append(f'changed: {key} worker back')
+        if state['answered'] and not was['answered']:
+            lines.append(f'changed: {key} Valentin replied')
+        elif was['newest_comment'] != state['newest_comment']:
+            lines.append(f'changed: {key} new comment')
+        if was['waiting'] != state['waiting']:
+            mark = 'wait mark set' if state['waiting'] else 'wait mark cleared'
+            lines.append(f'changed: {key} {mark}')
+    for key in sorted(set(old) - set(new)):
+        lines.append(f'changed: {key} gone')
+    for kind in sorted(set(after['findings']) - set(before['findings'])):
+        lines.append(f'changed: drain-check {kind}')
+    for kind in sorted(set(before['findings']) - set(after['findings'])):
+        lines.append(f'changed: drain-check {kind} cleared')
+    return lines
+
+
+def sync_reason(args):
+    """Run this chat's own board sync; None when it worked, else the one-line reason."""
+    quiet = io.StringIO()
+    with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
+        code = sync.main(['--board', str(args.board), '--label', args.label,
+                          '--name', args.name])
+    if code == 0:
+        return None
+    record = sync.loop_state.sync_state(args.name) or {}
+    return record.get('reason') or f'sync exited {code}'
+
+
+def follow(args, clock=time.time, sleep=time.sleep):
+    """Poll the view; print why the chat is wanted again. 0 to wake, 1 when the API is gone."""
+    heartbeat, baseline, started, failures = heartbeat_seconds(args), None, clock(), 0
+    every_sync = 0 if args.no_sync else args.sync_every
+    synced = None
+    while True:
+        # Before the snapshot, so a sync that moved a card is a change on this read.
+        if every_sync and (synced is None or clock() - synced >= every_sync):
+            synced = clock()
+            reason = sync_reason(args)
+            if reason:
+                print(f'changed: sync failed: {reason}')
+                return 0
+        try:
+            current = snapshot(args, clock())
+        except drain.ERRORS as error:
+            failures += 1
+            if failures >= FAILURES:
+                print(f'watch: FAIL {error}')
+                return 1
+        else:
+            failures = 0
+            if baseline is None:
+                baseline, started = current, clock()
+            elif current != baseline:
+                for line in changes(baseline, current):
+                    print(line)
+                return 0
+            if clock() - started >= heartbeat:
+                print(f'heartbeat: no change in {window(heartbeat)}')
+                return 0
+        # Sleep one poll, but never past the heartbeat: the chat wakes on time.
+        left = heartbeat - (clock() - started)
+        sleep(max(1, min(args.every, left)))
+
+
+def once(args, clock):
+    """The one snapshot, as JSON, for a live check or a test."""
+    print(json.dumps(snapshot(args, clock()), indent=2, sort_keys=True))
+    return 0
+
+
+def main(argv=None, clock=time.time, sleep=time.sleep):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board', type=int, required=True)
+    parser.add_argument('--label', required=True)
+    parser.add_argument('--name', required=True, help="This chat's Multibot name")
+    parser.add_argument('--every', type=int, default=180, help='Seconds between polls; default 180')
+    parser.add_argument('--heartbeat', type=int,
+                        help='Seconds without a change before exiting; default 2h minus one poll')
+    parser.add_argument('--sync-every', type=int, default=900,
+                        help='Seconds between board syncs; default 900')
+    parser.add_argument('--no-sync', action='store_true',
+                        help='Never run the board sync, for tests')
+    parser.add_argument('--fixture',
+                        help='Read a JSON list of {"task", "comments"} instead of the API')
+    parser.add_argument('--once', action='store_true',
+                        help='Print one snapshot as JSON and exit, for a live check')
+    args = parser.parse_args(argv)
+    if args.board < 1:
+        parser.error('--board must be a positive board id')
+    if args.every < 1:
+        parser.error('--every must be at least one second')
+    if heartbeat_seconds(args) < 1:
+        parser.error('--heartbeat must be at least one second')
+    if args.sync_every < 1:
+        parser.error('--sync-every must be at least one second')
+    try:
+        if args.once:
+            return once(args, clock)
+        loop_state.record_watch(args.name, os.getpid(), now=clock())
+    except drain.ERRORS as error:
+        print(f'watch: FAIL {error}')
+        return 1
+    try:
+        return follow(args, clock, sleep)
+    finally:
+        # The chat is awake anyway; a recorded dead pid would read as a dead watcher.
+        try:
+            loop_state.clear_watch(args.name)
+        except loop_state.ERRORS as error:
+            print(f'watch: could not clear the watcher: {error}', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

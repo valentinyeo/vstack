@@ -14,17 +14,19 @@ Dry run by default. `--apply` removes.
 
 ## Run it on your own repo
 
-1. After your session merges something: `repo-tidy --apply --mine $PWD`. It reads
+1. After your session merges something: `"$HOME/.local/bin/repo-tidy" --apply --mine $PWD`. It reads
    only the one repo you are in.
-2. Read only, any time: `repo-tidy --all` prints the plan for every repo.
+2. Read only, any time: `"$HOME/.local/bin/repo-tidy" --all` prints each repo as it finishes.
    `--apply --all` is there when you mean it. Nothing runs it on a timer, and
-   nobody sweeps other chats' repos for them.
+   nobody sweeps other chats' repos for them. It runs at `nice` 10, four repos
+   at once by default (`--jobs 1..8`), and one when `vps-state --can-launch
+   worker` says HOLD or cannot answer, two when it says CAREFUL.
 
 ## Set up your own check
 
 Nobody registers this for you. Pick either or both.
 
-1. In your own loop, after each merge, run `repo-tidy --apply --mine "$PWD"`.
+1. In your own loop, after each merge, run `"$HOME/.local/bin/repo-tidy" --apply --mine "$PWD"`.
 2. Add the Stop hook to your own project's .claude/settings.local.json. It tidies
    that repo when a turn ends, at most once per 30 minutes per repo:
 
@@ -97,11 +99,11 @@ directory under repo-tidy.
 ## Commands
 
 ```
-repo-tidy                      # dry run, this repo
-repo-tidy --all                # dry run, every repo
-repo-tidy --apply --mine $PWD  # this repo, after your merge
-repo-tidy --apply --all        # every repo, when you mean it
-repo-tidy --all --json         # machine readable
+"$HOME/.local/bin/repo-tidy"                      # dry run, this repo
+"$HOME/.local/bin/repo-tidy" --all                # dry run, every repo
+"$HOME/.local/bin/repo-tidy" --apply --mine $PWD  # this repo, after your merge
+"$HOME/.local/bin/repo-tidy" --apply --all        # every repo, when you mean it
+"$HOME/.local/bin/repo-tidy" --all --json         # machine readable
 ```
 
 ## Proof

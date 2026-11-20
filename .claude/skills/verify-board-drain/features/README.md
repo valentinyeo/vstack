@@ -19,11 +19,12 @@ The restart a chat survives, split into the three things it must do on its own, 
 
 - Every check reads a side effect: the stream's tool calls, or the state file the chat left on disk.
 - A check that could not run (no stream, a run that fails the gate) reports FAIL with the reason, never as PASS.
+- `armed` has two pass shapes, because the skill does: a 15-minute cron (Codex), or a tracked background `watch` on this chat's view plus a safety cron of at most 6 hours (Claude Code). `grade.py --board` and `--label` name the view both shapes must match.
 
 ## Features
 
 | File | Checks | Feature |
 | --- | --- | --- |
-| [restart-rearm.md](restart-rearm.md) | `loaded`, `status-read`, `armed`, `recorded` | The loop is armed again after a restart, and recorded |
+| [restart-rearm.md](restart-rearm.md) | `loaded`, `status-read`, `armed`, `recorded` | The loop is armed again after a restart (a 15-minute cron, or a background watcher plus a safety cron), and recorded |
 | [sync.md](sync.md) | `synced` | The tick syncs the board as the chat's own login |
 | [check.md](check.md) | `checked`, `no-writes` | drain-check runs on the chat's own state, and nothing else moves |

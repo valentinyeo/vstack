@@ -1,8 +1,9 @@
 """A chat's own board login and the status store its card syncs write.
 
 One rule, one place: a Multibot chat's tmux session names it in the house-rules
-fleet roster, and its login is that name's agent token. The after-turn hook and
-the lease both read it from here; neither keeps its own copy.
+fleet roster, and its login is that name's agent token. A chat with no tab (a
+headless test run, a scripted run) is named by SHIP_SESSION_NAME instead. The
+after-turn hook and the lease both read it from here; neither keeps its own copy.
 """
 import json
 import os
@@ -12,10 +13,19 @@ import time
 
 TOKENS = '.config/hypertask-agents/credentials/sessions'
 STATE = '.local/state/reconcile-auto'
+# The owner is a person, not an agent. A login named after him writes as him, so
+# no session resolves to one: "Valentins Claude Code", "Valentin Yeo" and
+# "Valentin's Chat" all refuse.
+PERSON = re.compile(r'^valentins?(?:-|$)')
 
 
 def slug(text):
     return re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')
+
+
+def is_person(name):
+    """Is this name the owner's, rather than an agent's?"""
+    return bool(PERSON.match(slug(name)))
 
 
 def home(env=None):
@@ -54,18 +64,27 @@ def session_name(home, tab):
 
 
 def login_for_session(env=None):
-    """(name, token path) for the chat in MULTIPROMPT_TAB, or None when unnamed.
+    """(name, token path) for this chat's own login, or None when it has none.
 
-    A returned path may not exist yet: the caller decides whether a missing token
-    is its own setup gap (the hook) or a reason to stay quiet (the lease).
+    A tab names the chat through the roster, then the chat-name file. It wins
+    over SHIP_SESSION_NAME, which names a chat with no tab (a headless run) and
+    applies only when that name's token exists. A person's name never resolves.
+
+    A path that came from a tab may not exist yet: the caller decides whether a
+    missing token is its own setup gap (the hook) or a reason to stay quiet (the
+    lease).
     """
     env = os.environ if env is None else env
-    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
-    if not tab:
-        return None
     where = home(env)
-    name = session_name(where, tab)
-    return (name, token_path(where, name)) if name else None
+    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
+    name = session_name(where, tab) if tab else ''
+    if name:
+        return (name, token_path(where, name))
+    name = str(env.get('SHIP_SESSION_NAME') or '').strip()
+    if not name or is_person(name):
+        return None
+    path = token_path(where, name)
+    return (name, path) if path.is_file() else None
 
 
 def state_dir(home):
