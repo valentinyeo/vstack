@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, armed loop."""
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+
+loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(HERE.parent / 'hypertask-work' / 'reconcile'))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+reconcile = importlib.util.module_from_spec(spec)
+sys.modules[loader.name] = reconcile
+loader.exec_module(reconcile)
+
+state_loader = importlib.machinery.SourceFileLoader('board_drain_loop_state', str(HERE / 'loop-state'))
+state_spec = importlib.util.spec_from_loader(state_loader.name, state_loader)
+loop_state = importlib.util.module_from_spec(state_spec)
+sys.modules[state_loader.name] = loop_state
+state_loader.exec_module(loop_state)
+
+TODO = 'Todo'
+DOING = frozenset({'Doing', 'Building'})
+FRESH = 1800
+STALE = 7200
+ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
+
+
+def ticked(task):
+    """The board's timestamp in epoch seconds, or None when it sent nothing usable."""
+    try:
+        return reconcile.stamp(task.get('updatedAt'))
+    except (TypeError, ValueError):
+        return None
+
+
+def age(task, now):
+    value = ticked(task)
+    return None if value is None else now - value
+
+
+def waiting(task):
+    return bool(task.get('waitingOnUserId') or task.get('blockerCommentId'))
+
+
+def is_human(comment):
+    """Valentin writes with no agent on the comment; his agents always leave one."""
+    return not (comment.get('agent') or comment.get('agent_display_name'))
+
+
+def said(comment):
+    try:
+        return reconcile.stamp(comment.get('createdAt'))
+    except (TypeError, ValueError):
+        return None
+
+
+def answered(comments):
+    """A human replied after every agent: the waiting-on mark no longer holds."""
+    pairs = [(said(comment), is_human(comment)) for comment in comments]
+    pairs = [(moment, human) for moment, human in pairs if moment is not None]
+    humans = [moment for moment, human in pairs if human]
+    agents = [moment for moment, human in pairs if not human]
+    return bool(humans) and (not agents or max(humans) > max(agents))
+
+
+def alive(task, now, board):
+    """A lease, a live agent command line, or a ticket touched in the last half hour."""
+    try:
+        if reconcile.worker_alive(task['ticketNumber'], now, board):
+            return True
+    except ERRORS:
+        # A lease from another host cannot be checked, and no local worker owns it.
+        pass
+    spent = age(task, now)
+    return spent is not None and spent < FRESH
+
+
+def top_key(rows, now, board):
+    """The longest-idle workable ticket; the lowest key breaks a tie."""
+    def rank(row):
+        key = row['task']['ticketNumber']
+        try:
+            index = int(reconcile.ticket_index(key, board))
+        except ValueError:
+            index = sys.maxsize
+        return (-(age(row['task'], now) or 0), index)
+    return sorted(rows, key=rank)[0]['task']['ticketNumber']
+
+
+def read_fixture(path):
+    """A JSON list of {"task": {...}, "comments": [...]}: the API answers, without the API."""
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, list):
+        raise ValueError('fixture must be a JSON list')
+    rows = []
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get('task'), dict):
+            raise ValueError('each fixture row needs a task')
+        rows.append({'task': item['task'], 'comments': item.get('comments') or []})
+    return rows
+
+
+def fixture_board(board_id, rows):
+    if board_id in reconcile.BOARDS:
+        return reconcile.BOARDS[board_id]
+    prefix = ''
+    if rows:
+        prefix = str(rows[0]['task'].get('ticketNumber') or '').split('-')[0]
+    return reconcile.BoardConfig(board_id, prefix, reconcile.DEFAULT.managed,
+                                 reconcile.DEFAULT.protected, reconcile.DEFAULT.rules)
+
+
+def ticket_comments(key):
+    rows, cursor, seen = [], None, set()
+    while True:
+        args = ['comment', 'list', key, '--limit', '100']
+        if cursor:
+            args += ['--cursor', cursor]
+        page = reconcile.api(*args)
+        rows += page.get('comments') or []
+        cursor = page.get('nextCursor')
+        if not cursor:
+            return rows
+        if cursor in seen:
+            raise ValueError('repeated comment cursor')
+        seen.add(cursor)
+
+
+def rows_for(args):
+    """Open tickets carrying the label, each Todo ticket with its comments."""
+    if args.fixture:
+        rows = read_fixture(args.fixture)
+        board = fixture_board(args.board, rows)
+    else:
+        board = reconcile.board_config(args.board)
+        rows = [{'task': task} for task in reconcile.tickets(board=board)]
+    kept = []
+    for row in rows:
+        task = row['task']
+        if 'projectId' in task and str(task['projectId']) != str(args.board):
+            raise ValueError(f'ticket outside board {args.board}')
+        if not reconcile.carries_label(task, args.label):
+            continue
+        if not args.fixture and task.get('section') == TODO:
+            row = {'task': task, 'comments': ticket_comments(task['ticketNumber'])}
+        kept.append(row)
+    return board, kept
+
+
+def check(args, now):
+    board, rows = rows_for(args)
+    todos = [row for row in rows if row['task'].get('section') == TODO]
+    doings = [row for row in rows if row['task'].get('section') in DOING]
+    live = [row for row in doings if alive(row['task'], now, board)]
+    workable, waiting_lines, findings = [], [], []
+    for row in todos:
+        task = row['task']
+        if waiting(task):
+            if answered(row.get('comments') or []):
+                findings.append(f'answered: {task["ticketNumber"]} clear the waiting-on mark and work it')
+            else:
+                waiting_lines.append(f'waiting: {task["ticketNumber"]} (marked)')
+        else:
+            workable.append(row)
+    for line in waiting_lines:
+        print(line)
+    if workable and not live:
+        findings.append(f'loop off: {len(workable)} workable Todo, nothing in Doing. '
+                        f'Re-arm your loop and start a worker on {top_key(workable, now, board)}.')
+    for row in doings:
+        if row not in live:
+            findings.append(f'stalled: {row["task"]["ticketNumber"]} in Doing with no live worker. '
+                            'Start a fresh plan-pick worker.')
+    for row in workable:
+        spent = age(row['task'], now)
+        if spent is not None and spent > STALE:
+            findings.append(f'stale: {row["task"]["ticketNumber"]} workable in Todo for {int(spent // 3600)}h.')
+    if args.state_name:
+        code, text = loop_state.status(args.state_name, now)
+        if code:
+            findings.append(f'loop state: {text}')
+    for line in findings:
+        print(line)
+    print('drain-check: PASS' if not findings else f'drain-check: FAIL ({len(findings)} findings)')
+    return 0 if not findings else 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board', type=int, required=True)
+    parser.add_argument('--label', required=True)
+    parser.add_argument('--fixture', help='Read a JSON list of {"task", "comments"} instead of the API')
+    parser.add_argument('--now', help='Judge ages against this ISO time instead of the clock')
+    parser.add_argument('--state-name', help='Also require this chat\'s loop to be armed')
+    args = parser.parse_args(argv)
+    if args.board < 1:
+        parser.error('--board must be a positive board id')
+    try:
+        now = reconcile.stamp(args.now) if args.now else time.time()
+        return check(args, now)
+    except ERRORS as error:
+        print(f'drain-check: {error}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())
