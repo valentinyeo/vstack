@@ -20,7 +20,7 @@ Act as your own agent login, from the board-identity skill. Never write as Valen
 4. **True columns.** Each card sits where the `hypertask-work` column rules put it; this check adds none of its own. Run the reconcile preview, then apply. A ticket that waits on Valentin stays where it is; never move one into Valentin Review.
 5. **Sync routine.** Your project's agent notes carry `Hypertask board: <id>, label: <label>`, and your loop runs the reconcile. Add whichever is missing.
 6. **Ticket per task.** Each open branch, PR, worktree and running worker has a ticket in your view. File one for any that lacks it.
-7. **Outdated or duplicate.** Close each with a one-line reason and a link to the ticket that replaces it. Move it to Done; never delete.
+7. **Outdated or duplicate.** Close each with a one-line reason and a link to the ticket that replaces it. Move it to Done by hand; never delete. A ticket waiting on Valentin is his to close: ask him instead.
 8. **Misfiled.** A ticket another chat owns moves to that chat's label or board. Tell that chat. A ticket of yours on another view gets your label.
 9. **Own view.** You own a view named after your repo, or after your Multibot name. Create it with your label when missing, then work from it.
 

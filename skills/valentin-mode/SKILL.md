@@ -44,7 +44,7 @@ The project's agent notes name its board in one line: `Hypertask board: <id>, la
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author.
 - **Server and cloud:** this server runs workers, focused tests, the app, the QA phone and boards. GitHub runners run CI and the verifier. Never a self-hosted runner.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork button. No commit carries a real email.
-- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan the repo for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
+- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** a new project begins from Joel Hooks' rat-stack template.
 - **Long chats:** save the handover, then start a fresh chat with its loop on.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
