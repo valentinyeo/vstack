@@ -7,6 +7,21 @@ Default runs print plans without moving tickets.
 `--section Doing` limits a dry run.
 `--label NAME` syncs only tickets carrying that label (trimmed, case-insensitive).
 Run it as `reconcile --label <your view label>` so a session never syncs the whole board.
+`--ticket KEY` syncs exactly one ticket, on the board that ticket belongs to.
+The board comes from the ticket itself, so `--ticket` takes no `--board`, `--label` or `--section`.
+It shares the board lock and holds its own exclusive per-ticket lock.
+It costs a handful of GitHub calls and reads the ticket before anything else.
+An unreadable ticket prints UNKNOWN and refuses every move.
+A key from another board's prefix is refused.
+The lease starts it on worker start and worker end as `--ticket KEY --apply --limit 1`.
+Each lease run writes a card status record, `<board>-<ticket>-<phase>.json`, with its log beside it.
+`<phase>` is `start` or `end`, from `RECONCILE_CARD_PHASE` in the lease environment.
+That record carries `at`, `session_name`, `board`, `ticket`, `phase`, `exit`, `moved`, `unknown`, `summary_line` and `log`.
+`RECONCILE_AUTO_DRY=1` drops `--apply`, so a run reads and plans and moves nothing.
+It is for proving a sync on the real server with no board writes.
+A failed run is one JSON line in `~/.local/state/reconcile-auto/failures.jsonl`.
+The after-turn hook writes those lines, and they never stop a chat.
+A card sync that cannot read its ticket writes no record; its one line goes there instead.
 `--apply` previews first, then permits five moves.
 `--limit N` changes that per-run cap.
 A plan over the cap applies only the first N moves.

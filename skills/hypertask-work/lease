@@ -15,11 +15,18 @@ import sys
 import tempfile
 import time
 
-loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(Path(__file__).with_name('reconcile')))
-spec = importlib.util.spec_from_loader(loader.name, loader)
-reconcile = importlib.util.module_from_spec(spec)
-sys.modules[loader.name] = reconcile
-loader.exec_module(reconcile)
+
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+reconcile = load('fleet_reconcile', Path(__file__).with_name('reconcile'))
+session = load('fleet_session', Path(__file__).with_name('session_login.py'))
 
 
 def write(key, action, pid, directory=None, now=None):
@@ -56,14 +63,54 @@ def write(key, action, pid, directory=None, now=None):
                 Path(temp.name).unlink(missing_ok=True)
 
 
+def spawn_card(command, env):
+    """Start one card sync and return at once. Detached, silent, never waited on."""
+    subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                     env=env, cwd=str(Path.home()))
+
+
+def sync_card(key, phase, env=None):
+    """Sync this card on start and on end, as the chat's own login.
+
+    The run is `reconcile --ticket KEY --apply --limit 1`, fully detached, and it
+    writes its own status record. No login, no token, or no reconcile script
+    starts nothing: a lease never blocks and never fails on a sync.
+    """
+    env = dict(os.environ if env is None else env)
+    try:
+        login = session.login_for_session(env)
+        if login is None:
+            return False
+        name, token = login
+        if not Path(token).is_file():
+            return False
+        script = Path(__file__).resolve().with_name('reconcile')
+        if not script.is_file():
+            return False
+        uid = os.getuid()
+        env.setdefault('XDG_RUNTIME_DIR', f'/run/user/{uid}')
+        env.setdefault('DBUS_SESSION_BUS_ADDRESS', f'unix:path=/run/user/{uid}/bus')
+        env['HT_TOKEN'] = Path(token).read_text().strip()
+        env['SHIP_SESSION_NAME'] = name
+        env['RECONCILE_CARD_PHASE'] = phase
+        command = [sys.executable, str(script), '--ticket', key, '--apply', '--limit', '1']
+        spawn_card(command, env)
+        return True
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return False
+
+
 def watch(key, pid):
     write(key, 'start', pid)
+    sync_card(key, 'start')
     try:
         while reconcile.pid_alive(pid):
             write(key, 'beat', pid)
             time.sleep(60)
     finally:
         write(key, 'end', pid)
+        sync_card(key, 'end')
 
 
 def main():
@@ -91,6 +138,7 @@ def main():
                 if child.poll() is not None:
                     return child.returncode
                 raise
+            sync_card(args.key, 'start')
             while child.poll() is None:
                 try:
                     write(args.key, 'beat', child.pid)
@@ -110,6 +158,7 @@ def main():
             raise
         finally:
             write(args.key, 'end', child.pid)
+            sync_card(args.key, 'end')
     if command:
         parser.error('unexpected arguments')
     if args.action == 'watch':
@@ -119,6 +168,8 @@ def main():
             return 0
     else:
         write(args.key, args.action, args.pid)
+        if args.action in ('start', 'end'):
+            sync_card(args.key, args.action)
     return 0
 
 

@@ -49,7 +49,8 @@ Other boards keep their own columns.
 
 ## Reconcile
 
-Run the reconcile yourself, on your own board, with your own agent login:
+The lease syncs a card when its worker starts and ends. The Stop hook reconcile-auto syncs your board and label at most every 10 minutes. You still run it by hand after you move work.
+Run it yourself, on your own board, with your own agent login:
 
 ```sh
 skills/hypertask-work/reconcile --board 2060

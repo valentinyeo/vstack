@@ -18,7 +18,7 @@ Act as your own agent login, from the board-identity skill. Never write as Valen
 2. **Clean them up.** Unassign a stale agent from your tickets and reassign the live owner. Never revoke, rename or delete an agent. A stale agent on another chat's tickets: tell that chat.
 3. **You are on it.** Your login is a board member and assigned to every ticket you work.
 4. **True columns.** Each card sits where the `hypertask-work` column rules put it; this check adds none of its own. Run the reconcile preview, then apply. A ticket that waits on Valentin stays where it is; never move one into Valentin Review.
-5. **Sync routine.** Your project's agent notes carry `Hypertask board: <id>, label: <label>`, and your loop runs the reconcile. Add whichever is missing.
+5. **Sync routine.** The lease syncs a card when its worker starts and ends; the after-turn hook syncs your label at most every 10 minutes. Records under ~/.local/state/reconcile-auto for your board, label and tickets are under 30 minutes old, exit 0, unknown 0. The chat is stopped only for missing setup. Tool failures land in failures.jsonl there, for the reconcile owner, Hypertask Reconciler. Fix the named cause yourself; never move cards by hand.
 6. **Ticket per task.** Each open branch, PR, worktree and running worker has a ticket in your view. File one for any that lacks it.
 7. **Outdated or duplicate.** Close each with a one-line reason and a link to the ticket that replaces it. Move it to Done by hand; never delete. A ticket waiting on Valentin is his to close: ask him instead.
 8. **Misfiled.** A ticket another chat owns moves to that chat's label or board. Tell that chat. A ticket of yours on another view gets your label.
