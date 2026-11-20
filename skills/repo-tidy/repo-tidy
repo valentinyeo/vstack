@@ -592,6 +592,24 @@ class RepoRun:
                 self.result["worktrees"]["removed"].append({"path": path, "why": reason[1]})
                 self.note("REMOVE", "worktree", path, reason[1])
                 continue
+            # Last look before the destructive call: the scan above took a
+            # while, and another session may have started in here since.
+            status, err = worktree_status(path)
+            if status is None or status[0] or status[1]:
+                detail = "changed since the scan: " + (
+                    (err or "").strip() or "%d tracked, %d untracked" % (
+                        len(status[0]), len(status[1])))
+                self.result["worktrees"]["held"].append(
+                    {"path": path, "reason": "wip", "detail": detail})
+                self.note("HOLD", "worktree", path, "wip: " + detail)
+                continue
+            use = self.live.in_use(path) or recently_touched(path, cutoff)
+            if use:
+                detail = "started using it since the scan: " + str(use)
+                self.result["worktrees"]["held"].append(
+                    {"path": path, "reason": "in use", "detail": detail})
+                self.note("HOLD", "worktree", path, "in use: " + detail)
+                continue
             removed, detail = self.remove_worktree(path, main_path)
             if removed:
                 self.budget -= 1
