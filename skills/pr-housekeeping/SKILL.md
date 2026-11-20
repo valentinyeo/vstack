@@ -36,7 +36,7 @@ A nonzero exit is the enforcement: one of your own PRs has gone quiet, or, witho
 - MISSING-LINES: add the `Author model:` and `Pacer launch:` lines to the PR body.
 - NO-VERDICT: run Babysit in check mode, then get a verdict at the current head before merging.
 - STALE: finish it, or close it with a reason and note that on the ticket.
-- READY: merge per pstack Shipping, only when a verdict from another model family than every `Author model:` line covers this head. Never skip a required check or approval.
+- READY: merge per pstack Shipping once the one verifier's PASS or PASS+NOTES covers the current head. Never skip a required check or approval.
 - OK: nothing to do this tick.
 
 ## Who owns a PR

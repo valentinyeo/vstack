@@ -119,8 +119,7 @@ NEXT_ACTION = {
                 'so on the ticket so the board names it next tick.',
     'STALE': 'Finish this pull request or close it with a reason and note that on the ticket.',
     'NO-VERDICT': 'Ask for a verdict at the current head and read it before merging.',
-    'READY': 'Merge it per pstack Shipping only when the verdict comes from a model family that differs '
-             'from every Author model line and it covers this head.',
+    'READY': 'Merge it per pstack Shipping once the one verifier\'s PASS or PASS+NOTES covers this head.',
     'OK': 'Wait for CI and look again on the next tick.',
 }
 
