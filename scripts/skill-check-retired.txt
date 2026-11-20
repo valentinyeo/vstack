@@ -1,0 +1,7 @@
+# Retired terms: a skill or command that still says one of these is stale.
+# One term per line, matched case-insensitively as a substring. `#` starts a comment.
+token-ladder
+hypertask-poteto
+Grok Bot
+house-rules
+Global rules 6
