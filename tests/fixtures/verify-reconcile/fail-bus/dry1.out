@@ -1,0 +1,2 @@
+UNKNOWN HTPR-9521 | systemctl --user failed: Failed to connect to bus: No medium found
+DRY RUN board=15 tickets=366 unknown=1

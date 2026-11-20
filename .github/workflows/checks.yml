@@ -11,6 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s tests -p test_verify_reconcile.py -v
       - run: bash tests/install.sh
 
   pacer-check:

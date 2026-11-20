@@ -1,0 +1,9 @@
+{
+  "board": 15,
+  "label": null,
+  "apply": true,
+  "limit": 5,
+  "call_budget": 30,
+  "script": "/tmp/vr-verify/skills/hypertask-work/reconcile",
+  "git_sha": "deadbeef"
+}
