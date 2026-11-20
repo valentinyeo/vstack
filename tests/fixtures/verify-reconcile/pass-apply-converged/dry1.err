@@ -1,0 +1,3 @@
+reconcile: timed 2.0s (3 external calls)
+reconcile: facts done in 9.4s (365 external calls)
+reconcile: github calls=28 (graphql=28, rest=0)

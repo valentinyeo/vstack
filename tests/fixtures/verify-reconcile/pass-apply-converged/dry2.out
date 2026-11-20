@@ -1,0 +1,5 @@
+KEEP HTPR-9514 Verification Backlog -> Verification Backlog | unknown column; kept
+KEEP HTPR-9511 Verification Backlog -> Verification Backlog | unknown column; kept
+KEEP HTPR-9387 AI Review -> AI Review | open PR checks green; verifier or merge pending
+KEEP HTPR-9308 AI Review -> AI Review | merged PR with PASS; live proof pending
+DRY RUN board=15 tickets=366 unknown=0

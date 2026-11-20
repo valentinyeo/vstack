@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# Drive skills/hypertask-work/reconcile against a real board and grade what it
+# printed. Usage: run [--board N] [--label L] [--script PATH] [--apply]
+#                    [--limit N] [--cases FILE] [--call-budget N] [--keep-bus]
+# A dry run only; --apply is opt-in and never used on board 15 today.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$HERE/../../.." && pwd)
+GRADE="$HERE/grade.py"
+
+BOARD=15
+LABEL=""
+SCRIPT="$REPO/skills/hypertask-work/reconcile"
+APPLY=0
+LIMIT=5
+CASES=""
+CALL_BUDGET=30
+KEEP_BUS=0
+
+need() {
+  if [ "$#" -lt 2 ]; then
+    echo "run: $1 needs a value" >&2
+    exit 2
+  fi
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --board) need "$@"; BOARD=$2; shift 2 ;;
+    --label) need "$@"; LABEL=$2; shift 2 ;;
+    --script) need "$@"; SCRIPT=$2; shift 2 ;;
+    --apply) APPLY=1; shift ;;
+    --limit) need "$@"; LIMIT=$2; shift 2 ;;
+    --cases) need "$@"; CASES=$2; shift 2 ;;
+    --call-budget) need "$@"; CALL_BUDGET=$2; shift 2 ;;
+    --keep-bus) KEEP_BUS=1; shift ;;
+    *)
+      echo "run: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$BOARD" in
+  ''|*[!0-9]*) echo "run: --board must be a number" >&2; exit 2 ;;
+esac
+case "$LIMIT" in
+  ''|*[!0-9]*) echo "run: --limit must be a number" >&2; exit 2 ;;
+esac
+case "$CALL_BUDGET" in
+  ''|*[!0-9]*) echo "run: --call-budget must be a number" >&2; exit 2 ;;
+esac
+
+# The script may be a branch's copy of reconcile, so make it absolute once.
+case "$SCRIPT" in
+  /*) : ;;
+  *) SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd)/$(basename "$SCRIPT")" ;;
+esac
+
+# 1. Evidence directory and its meta.
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+E="$HOME/.local/state/verify-reconcile/$RUN_ID"
+if [ -e "$E" ]; then
+  echo "run: evidence directory already exists: $E" >&2
+  exit 2
+fi
+mkdir -p "$E"
+GIT_SHA=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)
+python3 - "$E/meta.json" "$BOARD" "$LABEL" "$APPLY" "$LIMIT" "$CALL_BUDGET" "$SCRIPT" "$GIT_SHA" <<'PY'
+import json
+import sys
+
+path, board, label, apply, limit, budget, script, sha = sys.argv[1:9]
+meta = {
+    'board': int(board),
+    'label': label or None,
+    'apply': apply == '1',
+    'limit': int(limit),
+    'call_budget': int(budget),
+    'script': script,
+    'git_sha': sha,
+}
+open(path, 'w').write(json.dumps(meta, indent=2) + '\n')
+PY
+if [ -n "$CASES" ]; then
+  if [ ! -f "$CASES" ]; then
+    echo "run: cases file not found: $CASES" >&2
+    exit 2
+  fi
+  cp "$CASES" "$E/cases.json"
+else
+  printf '[]\n' > "$E/cases.json"
+fi
+
+# 2. Doctor. Read-only checks that decide whether this board is worth driving.
+DOCTOR="$E/doctor.txt"
+: > "$DOCTOR"
+doctor_exit=0
+pass() { printf 'PASS %s\n' "$1" >> "$DOCTOR"; }
+fail() { printf 'FAIL %s\n' "$1" >> "$DOCTOR"; doctor_exit=3; }
+
+if [ -f "$SCRIPT" ] && [ -x "$SCRIPT" ]; then
+  pass "script: $SCRIPT is executable"
+else
+  fail "script: $SCRIPT is missing or not executable"
+fi
+
+if remaining=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>"$E/doctor-gh.err"); then
+  case "$remaining" in
+    ''|*[!0-9]*) fail "github: rate_limit gave no graphql remaining" ;;
+    *)
+      if [ "$remaining" -gt 200 ]; then
+        pass "github: graphql remaining $remaining, above 200"
+      else
+        fail "github: graphql remaining $remaining, at or below 200"
+      fi
+      ;;
+  esac
+else
+  fail "github: gh api rate_limit failed"
+fi
+
+LOCK=$(python3 - "$SCRIPT" "$BOARD" <<'PY' 2>>"$DOCTOR"
+import sys
+import types
+from importlib.machinery import SourceFileLoader
+
+script, board = sys.argv[1], int(sys.argv[2])
+module = types.ModuleType('reconcile_under_test')
+SourceFileLoader(module.__name__, script).exec_module(module)
+print(module.lock_path(types.SimpleNamespace(id=board)))
+PY
+) || LOCK=""
+if [ -n "$LOCK" ]; then
+  mkdir -p "$(dirname "$LOCK")"
+  set +e
+  (
+    exec {fd}>"$LOCK"
+    flock -n "$fd"
+  )
+  lock_exit=$?
+  set -e
+  if [ "$lock_exit" -eq 0 ]; then
+    pass "lock: $LOCK is free"
+  else
+    fail "lock: $LOCK is held by another run"
+  fi
+else
+  fail "lock: cannot read lock_path from $SCRIPT"
+fi
+
+if [ "$APPLY" -eq 1 ]; then
+  if [ -n "${HT_TOKEN:-}" ]; then
+    pass "token: HT_TOKEN is set"
+  else
+    fail "token: --apply needs HT_TOKEN"
+  fi
+  if [ -z "${SHIP_SESSION_NAME:-}" ]; then
+    fail "session: --apply needs SHIP_SESSION_NAME for an agent login"
+  elif [ "${SHIP_SESSION_NAME}" = "Valentins Claude Code" ]; then
+    fail "session: SHIP_SESSION_NAME is Valentin's own login"
+  else
+    pass "session: SHIP_SESSION_NAME=$SHIP_SESSION_NAME"
+  fi
+  # The script and the scrubber read these from the environment.
+  if [ -n "${HT_TOKEN:-}" ]; then export HT_TOKEN; fi
+  if [ -n "${SHIP_SESSION_NAME:-}" ]; then export SHIP_SESSION_NAME; fi
+fi
+
+if [ "$doctor_exit" -ne 0 ]; then
+  cat "$DOCTOR" >&2
+  echo "run: doctor failed; evidence $E" >&2
+  exit 3
+fi
+
+# 3. The user session bus. reconcile reads live workers through systemctl --user,
+# and a chat without XDG_RUNTIME_DIR cannot reach it.
+if [ "$KEEP_BUS" -eq 0 ]; then
+  : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+  export XDG_RUNTIME_DIR
+  : "${DBUS_SESSION_BUS_ADDRESS:=unix:path=/run/user/$(id -u)/bus}"
+  export DBUS_SESSION_BUS_ADDRESS
+fi
+
+ARGV=(--board "$BOARD")
+if [ -n "$LABEL" ]; then
+  ARGV+=(--label "$LABEL")
+fi
+
+drive() {
+  name=$1
+  shift
+  set +e
+  ( cd "$REPO" && "$SCRIPT" "$@" > "$E/$name.out" 2> "$E/$name.err" )
+  code=$?
+  set -e
+  printf '%s\n' "$code" > "$E/$name.exit"
+}
+
+# 4. Round 1: the dry run at this head.
+echo "run: dry run 1 on board $BOARD; evidence $E" >&2
+drive dry1 "${ARGV[@]}"
+
+if [ "$APPLY" -eq 1 ]; then
+  # 5. Apply a bounded number of moves, then look again.
+  echo "run: apply limit $LIMIT on board $BOARD" >&2
+  drive apply "${ARGV[@]}" --apply --limit "$LIMIT"
+  echo "run: dry run 2 on board $BOARD" >&2
+  drive dry2 "${ARGV[@]}"
+fi
+
+# 6. Scrub anything token-like before a person reads the evidence.
+python3 - "$E" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+tokens = (
+    re.compile(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+    re.compile(r'sk-[A-Za-z0-9_-]{16,}'),
+    re.compile(r'gh[pousr]_[A-Za-z0-9]{16,}'),
+    re.compile(r'github_pat_[A-Za-z0-9_]{20,}'),
+)
+secret = os.environ.get('HT_TOKEN') or ''
+for path in sorted(Path(sys.argv[1]).glob('*.out')) + sorted(Path(sys.argv[1]).glob('*.err')):
+    text = path.read_text(errors='replace')
+    if secret:
+        text = text.replace(secret, 'REDACTED')
+    for pattern in tokens:
+        text = pattern.sub('REDACTED', text)
+    path.write_text(text)
+PY
+
+# 7. Grade and report.
+set +e
+"$GRADE" "$E" > "$E/grade.stdout" 2> "$E/grade.stderr"
+GRADE_EXIT=$?
+set -e
+if [ -f "$E/verdict.txt" ]; then
+  cat "$E/verdict.txt"
+else
+  cat "$E/grade.stderr" >&2
+fi
+echo "Evidence: $E"
+
+# run keeps every evidence directory; it starts nothing that outlives the call.
+exit "$GRADE_EXIT"
