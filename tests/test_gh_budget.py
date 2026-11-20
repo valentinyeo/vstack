@@ -219,6 +219,36 @@ class BudgetRefuseTests(BudgetCase):
         self.assertEqual(self.count(), 605)
 
 
+class BudgetUntilTests(BudgetCase):
+    def test_single_bucket_refuse_until_when_bucket_leaves_the_window(self):
+        mod = load_wrapper()
+        os.environ["GH_BUDGET_DIR"] = str(self.tmp / "budget")
+        minute = int(time.time()) // 60
+        now = minute * 60 + 45
+        self.seed(650, minute=minute)
+        until = mod.budget_until(self.session, now=now)
+        self.assertEqual(until, (minute + mod.BUDGET_MINUTES) * 60)
+        expected = time.strftime("%H:%M UTC", time.gmtime(until))
+        result = self.run_gh("pr", "checks", "2")
+        self.assertEqual(result.returncode, 75)
+        self.assertIn("wait until %s" % expected, result.stderr)
+
+    def test_two_buckets_refuse_until_when_the_last_needed_bucket_leaves(self):
+        mod = load_wrapper()
+        os.environ["GH_BUDGET_DIR"] = str(self.tmp / "budget")
+        minute = int(time.time()) // 60
+        now = minute * 60 + 10
+        self.add(minute - 10, 400)
+        self.add(minute, 600)
+        until = mod.budget_until(self.session, now=now)
+        self.assertEqual(until, (minute + mod.BUDGET_MINUTES) * 60,
+                         "the newest bucket that must expire sets until")
+        expected = time.strftime("%H:%M UTC", time.gmtime(until))
+        result = self.run_gh("pr", "checks", "2")
+        self.assertEqual(result.returncode, 75)
+        self.assertIn("wait until %s" % expected, result.stderr)
+
+
 class BudgetCommandTests(BudgetCase):
     def test_budget_prints_this_session_top_five_and_rate_limit(self):
         self.seed(7, session="aaa")
@@ -283,7 +313,9 @@ class BudgetCountRuleTests(BudgetCase):
         self.add(minute - 30, 600)
         result = self.run_gh("pr", "checks", "10")
         self.assertEqual(result.returncode, 75)
-        expected = time.strftime("%H:%M UTC", time.gmtime((minute - 30 + 1) * 60))
+        mod = load_wrapper()
+        expected = time.strftime("%H:%M UTC",
+                                 time.gmtime((minute - 30 + mod.BUDGET_MINUTES) * 60))
         self.assertIn("wait until %s" % expected, result.stderr)
 
     def test_a_warned_api_read_still_reaches_github(self):
