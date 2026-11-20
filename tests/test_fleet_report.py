@@ -320,11 +320,21 @@ sys.exit({code})
     def test_json_upstream_counts_match_self_check(self):
         mod = load_module()
         self.fake_pstack_diff(1, 1, behind=3)
+        bare = self.home / "bare-up.git"
+        subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
         repo = self.home / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@test"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+        (repo / "f").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "f"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+        subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check=True)
+        subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
 
-        def fake_upstream(_cwd: str, _behind: int):
+        def fake_upstream(_cwd: str):
             return 0, 0, True
 
         original = mod.run_pstack_diff_upstream
@@ -409,6 +419,101 @@ sys.exit({code})
     def test_script_always_exits_zero(self):
         done = subprocess.run([sys.executable, str(SCRIPT)], env=self.env, check=False)
         self.assertEqual(done.returncode, 0)
+
+    def test_missing_pstack_diff_reports_unknown(self):
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(0)
+        repo = self.home / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self.write_transcript(
+            str(repo),
+            "sid-miss",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [dict(name="Chat", harness="claude", cwd=str(repo), sid="sid-miss", tmux="live-miss")],
+            extra_env={"FLEET_REPORT_PSTACK_DIFF": str(self.home / "no-such-pstack-diff")},
+        )
+        row = rows[0]
+        self.assertEqual(row["self_check"], "missing")
+        self.assertEqual(row["verdict"], "UNKNOWN", row)
+        self.assertIn("pstack-diff", row["reason"])
+
+    def test_stale_clone_unfetched_reports_upstream_extra(self):
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(0)
+        bare = self.home / "bare.git"
+        subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+        upstream = self.home / "upstream"
+        upstream.mkdir()
+        subprocess.run(["git", "init", "-q", str(upstream)], check=True)
+        subprocess.run(["git", "-C", str(upstream), "config", "user.email", "t@test"], check=True)
+        subprocess.run(["git", "-C", str(upstream), "config", "user.name", "t"], check=True)
+        (upstream / "README").write_text("v1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(upstream), "add", "README"], check=True)
+        subprocess.run(["git", "-C", str(upstream), "commit", "-q", "-m", "v1"], check=True)
+        subprocess.run(["git", "-C", str(upstream), "branch", "-M", "main"], check=True)
+        subprocess.run(["git", "-C", str(upstream), "remote", "add", "origin", str(bare)], check=True)
+        subprocess.run(["git", "-C", str(upstream), "push", "-q", "origin", "main"], check=True)
+
+        clone = self.home / "clone"
+        subprocess.run(
+            ["git", "clone", "-q", str(bare), str(clone)],
+            check=True,
+            env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"},
+        )
+        subprocess.run(
+            ["git", "-C", str(clone), "config", "user.email", "t@test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(clone), "config", "user.name", "t"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(bare), "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+
+        (upstream / "README").write_text("v2\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(upstream), "commit", "-aq", "-m", "v2"], check=True)
+        subprocess.run(["git", "-C", str(upstream), "push", "-q", "origin", "main"], check=True)
+
+        fleet_prefix = "fleet-report-pstack-"
+        script = self.home / "pstack-diff-stale.py"
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"prefix = {json.dumps(fleet_prefix)}\n"
+            "root = sys.argv[1]\n"
+            "if prefix in root:\n"
+            '    print("EXTRA workflow: upstream-only")\n'
+            "    sys.exit(1)\n"
+            'print("clean checkout")\n'
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        self.env["FLEET_REPORT_PSTACK_DIFF"] = str(script)
+
+        self.write_transcript(
+            str(clone),
+            "sid-stale",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [
+                dict(
+                    name="Stale",
+                    harness="claude",
+                    cwd=str(clone),
+                    sid="sid-stale",
+                    tmux="live-stale",
+                )
+            ]
+        )
+        row = rows[0]
+        self.assertIn("(upstream)", row["self_check"], row)
+        self.assertEqual(row["extra_count"], 1, row)
+        self.assertEqual(row["verdict"], "FIX", row)
 
 
 if __name__ == "__main__":

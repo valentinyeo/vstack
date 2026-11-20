@@ -10,7 +10,7 @@ description: >-
 
 Prior art: pstack poteto-mode — checked per-chat autonomous loop and shipping skills; local pstack-diff already self-checks one repo, so only the cross-session fleet table lives here.
 
-Changes no tracked files in the chats it inspects. For an outdated git checkout it runs `git fetch`, adds a temporary detached worktree at the remote default branch, runs pstack-diff there, and always removes that worktree. Exit 0 always (report, not gate).
+Changes no tracked files in the chats it inspects. For every git checkout with an `origin` remote it always runs `git fetch` (60 s), adds a temporary detached worktree at the remote default branch, runs pstack-diff there, and always removes that worktree. Exit 0 always (report, not gate).
 
 ## Run
 
@@ -22,6 +22,6 @@ python3 skills/fleet-report/fleet-report --html /tmp/fleet-report.html
 
 Sources: mp-sessions --json and the house-rules fleet roster-live helper for live chats; Claude transcripts under ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl.
 
-Columns: loaded valentin-mode version, latest from skills/valentin-mode/version.sh, board-drain loop-state status, pstack-diff EXTRA/GAP counts (re-run on upstream default when checkout is behind), verdict tags (**OK**, **BEHIND**, **NO VALENTIN-MODE**, **LOOP OFF**, **FIX**, **GAPS**), and a short **ACTION** column.
+Columns: loaded valentin-mode version, latest from skills/valentin-mode/version.sh, board-drain loop-state status, pstack-diff EXTRA/GAP counts (always re-run on upstream default after fetch), verdict tags (**OK**, **BEHIND**, **NO VALENTIN-MODE**, **LOOP OFF**, **FIX**, **GAPS**, **UNKNOWN**, **STALE**), and a short **ACTION** column.
 
 **Do not fix other chats from here.** Message each failing chat; it fixes itself.

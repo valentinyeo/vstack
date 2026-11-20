@@ -312,6 +312,19 @@ def board_loop_status(name: str) -> tuple[int | None, str]:
     return done.returncode, summary
 
 
+def has_origin_remote(repo: Path) -> bool:
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(repo), "remote", "get-url", "origin"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        return done.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def is_git_repo(cwd: str) -> bool:
     if not cwd:
         return False
@@ -407,6 +420,10 @@ def git_upstream_ref(repo: Path) -> str | None:
     return None
 
 
+def pstack_run_unreliable(label: str, code: int | None) -> bool:
+    return label in ("missing", "timeout", "error") or code is None
+
+
 def run_pstack_diff_at(root: Path) -> tuple[str, int | None, int, int, int | None]:
     tool = tool_path("FLEET_REPORT_PSTACK_DIFF", vstack_root() / "skills/pstack-diff/pstack-diff")
     if not tool.is_file():
@@ -431,8 +448,8 @@ def run_pstack_diff_at(root: Path) -> tuple[str, int | None, int, int, int | Non
 FETCH_FAILED = "fetch_failed"
 
 
-def run_pstack_diff_upstream(cwd: str, behind: int) -> tuple[int, int, bool] | str | None:
-    """Re-run pstack-diff on a fresh detached worktree at origin default.
+def run_pstack_diff_upstream(cwd: str) -> tuple[int, int, bool] | str | None:
+    """Fetch origin and run pstack-diff on a temporary detached worktree at origin default.
 
     Returns FETCH_FAILED when git fetch fails; None for other upstream skip reasons.
     """
@@ -464,7 +481,9 @@ def run_pstack_diff_upstream(cwd: str, behind: int) -> tuple[int, int, bool] | s
         )
         if add.returncode != 0:
             return None
-        _label, _code, extras, gaps, _behind = run_pstack_diff_at(Path(tmp))
+        label, code, extras, gaps, _behind = run_pstack_diff_at(Path(tmp))
+        if pstack_run_unreliable(label, code):
+            return None
         return extras, gaps, True
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -494,32 +513,45 @@ def run_pstack_diff(cwd: str) -> dict:
             upstream_ok=False,
             stale=False,
             fetch_failed=False,
+            checker_unreliable=False,
+            checker_reason="",
         )
     expanded = expand_cwd(cwd)
     label, code, extras, gaps, behind = run_pstack_diff_at(Path(expanded))
+    local_unreliable = pstack_run_unreliable(label, code)
     upstream_extras = upstream_gaps = None
     upstream_ok = False
     stale = False
     fetch_failed = False
     self_check = label
-    if behind is not None and behind > 0:
-        upstream = run_pstack_diff_upstream(cwd, behind)
-        if upstream == FETCH_FAILED:
-            fetch_failed = True
-            stale = True
-            self_check = format_self_check(
-                extras, gaps, behind, stale=True, fetch_failed=True
-            )
-        elif upstream is None:
-            stale = True
+    has_origin = has_origin_remote(Path(expanded))
+    upstream = run_pstack_diff_upstream(cwd) if has_origin else None
+    if upstream == FETCH_FAILED:
+        fetch_failed = True
+        stale = True
+        self_check = format_self_check(
+            extras, gaps, behind, stale=True, fetch_failed=True
+        )
+    elif upstream is None and has_origin:
+        stale = True
+        if not local_unreliable:
             self_check = format_self_check(extras, gaps, behind, stale=True)
-        else:
-            upstream_extras, upstream_gaps, upstream_ok = upstream
-            self_check = format_self_check(
-                upstream_extras, upstream_gaps, behind, upstream=True
-            )
+    elif upstream is not None:
+        upstream_extras, upstream_gaps, upstream_ok = upstream
+        self_check = format_self_check(
+            upstream_extras, upstream_gaps, behind, upstream=True
+        )
     display_extras = upstream_extras if upstream_ok else extras
     display_gaps = upstream_gaps if upstream_ok else gaps
+    checker_unreliable = local_unreliable or (
+        has_origin and upstream is None and not fetch_failed
+    )
+    if local_unreliable:
+        checker_reason = label
+    elif checker_unreliable:
+        checker_reason = "upstream check failed"
+    else:
+        checker_reason = ""
     return dict(
         self_check=self_check,
         pstack_exit=code,
@@ -534,6 +566,8 @@ def run_pstack_diff(cwd: str) -> dict:
         upstream_ok=upstream_ok,
         stale=stale,
         fetch_failed=fetch_failed,
+        checker_unreliable=checker_unreliable,
+        checker_reason=checker_reason,
     )
 
 
@@ -552,10 +586,18 @@ def verdict(
     stale: bool,
     fetch_failed: bool,
     behind: int | None,
+    checker_unreliable: bool = False,
+    checker_reason: str = "",
 ) -> tuple[str, str, str]:
     tags: list[str] = []
     notes: list[str] = []
     actions: list[str] = []
+
+    if checker_unreliable:
+        tags.append("UNKNOWN")
+        if checker_reason:
+            notes.append(f"pstack-diff {checker_reason}")
+        return "; ".join(tags), "; ".join(notes), ""
 
     if harness == "claude" and loaded_label == "never loaded":
         tags.append("NO VALENTIN-MODE")
@@ -629,6 +671,8 @@ def build_rows() -> list[dict]:
             pstack["stale"],
             pstack["fetch_failed"],
             pstack["behind"],
+            pstack["checker_unreliable"],
+            pstack["checker_reason"],
         )
         rows.append(
             dict(
