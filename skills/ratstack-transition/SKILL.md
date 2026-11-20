@@ -8,6 +8,8 @@ skill-word-budget-reason: The rat-stack migration protocol must stay together.
 
 # /ratstack-transition [app dir]
 
+Prior art: pstack `poteto-mode` — checked shipping playbooks; no rat-stack migration skill there. Body copied from retired house-rules `skills/ratstack-transition`, with vstack paths for `/hypertask` and `scripts/rat-diff`.
+
 Valentin, 2026-11-13:
 
 > make a plan to FORCE an existing app
@@ -18,13 +20,13 @@ Valentin, 2026-11-13:
 
 Output: a rewrite plan on the app's board, one ticket per slice. This skill writes no app code. Runners build the tickets.
 
-The one rule: **Rat Stack's own files decide.** Its `AGENTS.md` is law. Its pins are exact. Its layout, nouns and skills are the plan. When this skill and Rat Stack disagree, Rat Stack wins. Never invent a pattern Rat Stack has not got.
+The one rule: **Rat Stack's own files decide.** Its AGENTS.md is law. Its pins are exact. Its layout, nouns and skills are the plan. When this skill and Rat Stack disagree, Rat Stack wins. Never invent a pattern Rat Stack has not got.
 
 ## 1. Pin Rat Stack
 
 - Clone it next to the app: `gh repo clone joelhooks/rat-stack /tmp/rat-stack-<app>`.
 - Record the commit: `SHA=$(git -C /tmp/rat-stack-<app> rev-parse HEAD)`. Every ticket names this commit, and so does every rat-diff run.
-- Read in full, in this order: `AGENTS.md`, VISION.md, `README.md`, skills/rat-stack-mode/SKILL.md, skills/learn-rat-stack/SKILL.md, skills/keep-or-cut/SKILL.md.
+- Read in full, in this order: AGENTS.md, VISION.md, README.md, skills/rat-stack-mode/SKILL.md, skills/learn-rat-stack/SKILL.md, skills/keep-or-cut/SKILL.md.
 - Skim every other `skills/*/SKILL.md`. Each slice ticket points at the Rat Stack skill that builds it (`add-a-capability`, `add-a-store`, `add-a-lifecycle-machine`, `add-a-feature-flag`, `ship`, `learn-alchemy`).
 
 ## 2. Diff the app
@@ -58,14 +60,14 @@ The rewrite must keep every behaviour. List each one from the code, not from doc
 - Secrets and settings: names only, never values.
 - Screens and pages users see.
 - Outside APIs it calls, CDN assets included.
-- Helper scripts, extra CI workflows, project law and agent files (`CLAUDE.md`, `AGENTS.md`, skills).
+- Helper scripts, extra CI workflows, project law and agent files (CLAUDE.md, AGENTS.md, skills).
 - Tests that exist today. Each becomes a behaviour test.
 
 Number every item. The coverage rule in step 6 uses the numbers.
 
 ## 4. Map every item onto a Rat Stack noun
 
-Use the noun table in Rat Stack's `AGENTS.md`. Typical homes:
+Use the noun table in Rat Stack's AGENTS.md. Typical homes:
 
 | App has | Rat Stack home |
 |---|---|
@@ -93,7 +95,7 @@ An item with no home: run Rat Stack's `keep-or-cut`. Cut it, or write on its tic
 
 Rules behind the table:
 - **Non-JS.** Only a native app (Go, Rust, Zig or Kotlin as the main app) is out of scope. Stop and say so. A small helper script is port-to-Effect-or-cut.
-- **Workers.** Read Rat Stack's `AGENTS.md` for where Workers live. apps/site is Joel's site Worker, not a home for the app's jobs. Follow the apps/site/src/worker.ts pattern in an app-named Worker declared in alchemy.run.ts. Write the reason on the ticket.
+- **Workers.** Read Rat Stack's AGENTS.md for where Workers live. apps/site is Joel's site Worker, not a home for the app's jobs. Follow the apps/site/src/worker.ts pattern in an app-named Worker declared in alchemy.run.ts. Write the reason on the ticket.
 - **Access.** Keep Cloudflare Access (Zero Trust) in front. Read the JWT in a small Effect cartridge, with the written reason on the ticket. Use Better Auth only for apps that own their users.
 - **D1 already migrated.** Baseline the existing `d1_migrations` rows in the database cartridge. Never re-run a migration. Never drop a table.
 
@@ -120,7 +122,7 @@ Rules behind the table:
 
 **Slices, in this order:**
 1. Scaffold: template, cut unused parts, fence green in GitHub CI. Measure the built Worker size.
-2. Project law and agent files. Rat Stack's child-project checklist: rename the `@rat-stack` scope, `pnpm sources:fetch`, `pnpm git-snapshot`, .shitrat/public-allow.json, Alchemy profile. Then replace the Project law, Architecture and Boundaries sections of `AGENTS.md`, write VISION.md, port the app's agent files and skills.
+2. Project law and agent files. Rat Stack's child-project checklist: rename the `@rat-stack` scope, `pnpm sources:fetch`, `pnpm git-snapshot`, .shitrat/public-allow.json, Alchemy profile. Then replace the Project law, Architecture and Boundaries sections of AGENTS.md, write VISION.md, port the app's agent files and skills.
 3. apps/infra: adopt every live resource and secret name. Plan only, no deploy.
 4. Database: schema port and migration baseline.
 5. Auth or access, if the app has any.
