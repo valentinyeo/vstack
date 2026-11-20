@@ -290,7 +290,7 @@ def heal_project_settings(payload):
             return
     try:
         text = path.read_text()
-    except OSError:
+    except (OSError, UnicodeError):
         return
     if 'launch-gate' not in text or HOOK_COMMAND in text:
         return

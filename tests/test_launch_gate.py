@@ -562,6 +562,18 @@ class LaunchGate(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((project / '.claude/settings.local.json').exists())
 
+    def test_heal_leaves_a_non_utf8_settings_file_untouched(self):
+        project = self.dir / 'proj'
+        (project / '.claude').mkdir(parents=True)
+        path = project / '.claude/settings.local.json'
+        path.write_bytes(b'{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": ['
+                        b'{"type": "command", "command": "$HOME/.claude/hooks/launch-gate.py"}]}]}}\xff')
+        hold, _log = fake_state(self.dir, 2)
+        before = path.read_bytes()
+        result = self.hook_on_project(project, '~/.local/bin/plan-pick --run', hold)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(path.read_bytes(), before)
+
     def test_heal_never_touches_project_settings_json(self):
         project = self.dir / 'proj'
         (project / '.claude').mkdir(parents=True)
