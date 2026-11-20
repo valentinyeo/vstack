@@ -45,9 +45,11 @@ Nobody registers this for you. Pick either or both.
 }
 ```
 
-The hook is `hooks/repo-tidy-stop`. It looks for the script beside itself, so it
-works with no install step. Never run this repo's ./install for it: that repoints
-shared skills for every chat on this host.
+The hook is `hooks/repo-tidy-stop`, and it finds the script beside itself, so the
+checkout path above works with no install step. A shared install also links it
+at ~/.claude/hooks/repo-tidy-stop, which is the older path settings call. Never
+run this repo's ./install for it: that repoints shared skills for every chat on
+this host.
 
 ## The gates
 
