@@ -120,6 +120,14 @@ class PickVerifierModelTests(unittest.TestCase):
         result = self.run_picker("```\nx\n```\nAuthor model: deepseek/x")
         self.assertEqual(result.stdout, "glm-5.3-flash\n")
 
+    def test_cursor_composer_author(self):
+        result = self.run_picker("Author model: cursor/composer-2.5")
+        self.assertEqual(result.stdout, "deepseek-v4.1-flash\n")
+        result = self.run_picker(
+            "Author model: cursor/composer-2.5\nAuthor model: deepseek/deepseek-v4.1-flash"
+        )
+        self.assertEqual(result.stdout, "glm-5.3-flash\n")
+
     def test_other_families_are_known(self):
         for body in (
             "Author model: o3-mini",

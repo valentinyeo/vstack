@@ -36,6 +36,7 @@ FAMILY_NAMES = {
     "qwen": ("qwen", "alibaba"),
     "mimo": ("mimo", "xiaomi"),
     "minimax": ("minimax",),
+    "cursor": ("composer", "cursor"),
 }
 O_SERIES = re.compile(r"^o\d+$")  # o1, o3, o4 (o3-mini splits into o3 + mini)
 DECLARATION = re.compile(r"^Author model: (\S+)$")
@@ -131,6 +132,8 @@ def self_test():
         ("Author model: zhipu/glm-5.3-flash\nAuthor model: deepseek/x", "kimi-k3"),
         ("Author model: anthropic/claude-sonnet\nAuthor model: deepseek/x", "glm-5.3-flash"),
         ("Author model: opencode-go/glm-5.3-flash\nAuthor model: opencode-go/deepseek-v4.1-flash", "kimi-k3"),
+        ("Author model: cursor/composer-2.5", "deepseek-v4.1-flash"),
+        ("Author model: cursor/composer-2.5\nAuthor model: deepseek/x", "glm-5.3-flash"),
     ]
     for body, want in cases:
         got = pick(body)

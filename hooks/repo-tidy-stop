@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# repo-tidy-stop: Claude Stop hook. When a turn ends, tidy this repo's shipped
+# worktrees and branches in the background. At most once per 30 minutes per
+# repo, keyed by a stamp file. Prints nothing and always exits 0, so it can
+# never hold up a session.
+#
+# Each chat adds this to its own project's .claude/settings.local.json. Nothing
+# registers it for you, and it never edits a settings file itself.
+set -u
+
+cwd=${CLAUDE_PROJECT_DIR:-$PWD}
+[ -d "$cwd" ] || exit 0
+
+repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$repo" ] || exit 0
+
+# The hook is usually a symlink into a vstack checkout, so -f follows it there
+# and the script sits one level up from hooks/.
+here=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+tidy=$(command -v repo-tidy 2>/dev/null || true)
+if [ -z "$tidy" ] && [ -x "${here%/*}/../skills/repo-tidy/repo-tidy" ]; then
+  tidy=$(readlink -f "${here%/*}/../skills/repo-tidy/repo-tidy")
+fi
+[ -n "$tidy" ] || tidy="$HOME/.local/bin/repo-tidy"
+[ -x "$tidy" ] || exit 0
+
+state="$HOME/.local/state/repo-tidy"
+mkdir -p "$state" 2>/dev/null || exit 0
+
+stamp="$state/stop-$(printf '%s' "$repo" | cksum | cut -d' ' -f1).stamp"
+now=$(date +%s)
+if [ -f "$stamp" ]; then
+  last=$(cat "$stamp" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt 1800 ]; then
+    exit 0
+  fi
+fi
+printf '%s\n' "$now" > "$stamp" 2>/dev/null || exit 0
+
+# Detach fully: no output, no stdin, no terminal, so the hook returns at once.
+setsid nohup "$tidy" --apply --mine "$repo" --max-remove 20 \
+  >> "$state/stop.log" 2>&1 < /dev/null &
+exit 0
