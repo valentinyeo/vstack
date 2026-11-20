@@ -43,9 +43,10 @@ failure instead of waiting for the rest.
 ## Budget per chat
 
 One token serves every chat, so the wrapper also counts. A call that reaches GitHub adds one to a
-small counter file per session per hour under `~/.local/state/gh-call-log/budget/`; a cache hit adds
-nothing and the log itself is never scanned. The numbers are the table at the top of
-`tools/gh-wrapper/gh`, so the code and the doc read the same:
+small counter file per session under `~/.local/state/gh-call-log/budget/`, holding at most an hour
+of minute buckets so the window rolls instead of resetting on the hour; a cache hit adds nothing and
+the log itself is never scanned. The numbers are the table at the top of `tools/gh-wrapper/gh`, so
+the code and the doc read the same:
 
 | Session id | Warn | Refuse |
 |---|---|---|
@@ -54,7 +55,8 @@ nothing and the log itself is never scanned. The numbers are the table at the to
 
 Above 300 the call runs and stderr gets one line, `gh budget: <session> used N of 600 GitHub calls
 this hour; slow down or use the cache`, then the concrete next command and the path of
-`USING-GITHUB.md`. Above 600 a read is refused with exit 75 and `... wait until HH:MM UTC`. Writes
+`USING-GITHUB.md`. Above 600 a read is refused with exit 75 and `... wait until HH:MM UTC`, the minute the oldest
+bucket leaves the rolling hour. Writes
 (merge, create, comment, edit, ready) are counted and never refused. A `warned` or `refused` event
 lands in `calls.tsv` in the marker column, so the owner can see who was slowed.
 

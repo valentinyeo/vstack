@@ -106,19 +106,29 @@ class BudgetCase(unittest.TestCase):
             return []
         return [line.split("\t") for line in self.call_log.read_text(encoding="utf-8").splitlines() if line]
 
-    def seed(self, count, session=None):
-        session = session or self.session
-        target = self.tmp / "budget" / ("%d-%s" % (int(time.time()) // 3600, session))
+    def path(self, session=None):
+        return self.tmp / "budget" / ("s." + (session or self.session))
+
+    def seed(self, count, session=None, minute=None):
+        target = self.path(session)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("%d\n" % count, encoding="utf-8")
+        minute = int(time.time()) // 60 if minute is None else minute
+        target.write_text("%d %d\n" % (minute, count), encoding="utf-8")
         return target
 
+    def add(self, minute, count, session=None):
+        target = self.path(session)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write("%d %d\n" % (minute, count))
+
     def count(self, session=None):
-        target = self.tmp / "budget" / ("%d-%s" % (int(time.time()) // 3600, session or self.session))
+        target = self.path(session)
         try:
-            return int(target.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
+            lines = [line.split() for line in target.read_text(encoding="utf-8").splitlines()]
+        except OSError:
             return 0
+        return sum(int(parts[1]) for parts in lines if len(parts) == 2 and parts[0].isdigit())
 
 
 class BudgetWarnTests(BudgetCase):
@@ -226,21 +236,42 @@ class BudgetCommandTests(BudgetCase):
 
 
 class BudgetCountRuleTests(BudgetCase):
-    def test_only_this_hour_counts(self):
-        old = self.tmp / "budget" / ("%d-%s" % (int(time.time()) // 3600 - 2, self.session))
-        old.parent.mkdir(parents=True, exist_ok=True)
-        old.write_text("999\n", encoding="utf-8")
+    def test_minutes_inside_the_rolling_hour_count(self):
+        self.seed(600, minute=int(time.time()) // 60 - 59)
+        result = self.run_gh("pr", "checks", "5")
+        self.assertEqual(result.returncode, 75)
+        self.assertEqual(self.upstream_calls(), [])
+
+    def test_minutes_older_than_the_rolling_hour_are_ignored(self):
+        self.seed(600, minute=int(time.time()) // 60 - 60)
         result = self.run_gh("pr", "checks", "6")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "", "last hour's count must not warn this hour")
-        self.assertEqual(self.count(), 1)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(self.count(), 1, "the old bucket is dropped and only this call remains")
 
-    def test_old_counters_are_pruned_when_a_new_hour_starts(self):
-        old = self.tmp / "budget" / ("%d-other" % (int(time.time()) // 3600 - 8))
-        old.parent.mkdir(parents=True, exist_ok=True)
-        old.write_text("12\n", encoding="utf-8")
-        self.assertEqual(self.run_gh("pr", "checks", "8").returncode, 0)
-        self.assertFalse(old.exists(), "a counter from hours ago is dropped on the next new count")
+    def test_a_fixed_hour_boundary_cannot_reset_the_count(self):
+        minute = int(time.time()) // 60
+        self.add(minute, 400)
+        self.add(minute - 59, 400)
+        result = self.run_gh("pr", "checks", "8")
+        self.assertEqual(result.returncode, 75, "the rolling hour still holds 800 calls")
+
+    def test_a_stale_session_file_is_dropped(self):
+        stale = self.tmp / "budget" / "s.other"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("%d 12\n" % (int(time.time()) // 60 - 500), encoding="utf-8")
+        old = time.time() - 5 * 3600
+        os.utime(stale, (old, old))
+        self.assertEqual(self.run_gh("pr", "checks", "9").returncode, 0)
+        self.assertFalse(stale.exists(), "a counter nobody touched for hours is dropped")
+
+    def test_the_wait_until_is_when_the_oldest_bucket_expires(self):
+        minute = int(time.time()) // 60
+        self.add(minute - 30, 600)
+        result = self.run_gh("pr", "checks", "10")
+        self.assertEqual(result.returncode, 75)
+        expected = time.strftime("%H:%M UTC", time.gmtime((minute - 30 + 1) * 60))
+        self.assertIn("wait until %s" % expected, result.stderr)
 
     def test_a_warned_api_read_still_reaches_github(self):
         self.seed(300)

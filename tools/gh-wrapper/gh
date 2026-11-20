@@ -15,9 +15,9 @@ GitHub calls per chat per hour, counted where a call reaches GitHub: a cache hit
 | known | 300 | 600 | no upstream call, exit 75 |
 | unknown (`-`) | 300 | never | the call always runs |
 
-Writes (merge, create, comment, edit, ready) are never refused. The counters are one small file
-per session per hour under `budget/` beside the call log, so a call reads one tiny file, never
-the log. `gh budget` prints the counters and the live rate limit.
+Writes (merge, create, comment, edit, ready) are never refused. Each session has one small file
+under `budget/` beside the call log holding at most an hour of minute buckets, so a call reads one
+tiny file and never the log. `gh budget` prints the counters and the live rate limit.
 """
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ PR_TTL_ENV = "GH_WRAPPER_TTL"
 PR_NO_CACHE_ENV = "GH_WRAPPER_NO_CACHE"
 BUDGET_WARN = 300
 BUDGET_REFUSE = 600
+BUDGET_MINUTES = 60
 BUDGET_KEEP_HOURS = 3
 BUDGET_RULES = "~/.local/share/vstack/tools/gh-wrapper/USING-GITHUB.md"
 BUDGET_REPLACEMENT = "tools/gh-wrapper/wait-checks <repo> <pr>"
@@ -454,9 +455,9 @@ def budget_dir() -> Path:
     return Path(os.environ.get("GH_BUDGET_DIR", str(Path(log).parent / "budget")))
 
 
-def budget_hour(now=None) -> int:
-    """The hour bucket a count belongs to. It turns over on the hour, as the refuse message says."""
-    return int(time.time() if now is None else now) // 3600
+def budget_minute(now=None) -> int:
+    """The minute bucket a count belongs to. A rolling hour is the last BUDGET_MINUTES of them."""
+    return int(time.time() if now is None else now) // 60
 
 
 def budget_session() -> str:
@@ -464,15 +465,32 @@ def budget_session() -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", log_session())[:32] or "-"
 
 
-def budget_path(session: str, now=None) -> Path:
-    return budget_dir() / ("%d-%s" % (budget_hour(now), session))
+def budget_path(session: str) -> Path:
+    return budget_dir() / ("s." + session)
+
+
+def budget_lines(text: str, first: int) -> dict:
+    """{minute: count} from a counter file, keeping only the minutes inside the rolling hour."""
+    rows = {}
+    for line in (text or "").splitlines():
+        head, _sep, tail = line.partition(" ")
+        if head.isdigit() and tail.isdigit() and int(head) >= first:
+            rows[int(head)] = rows.get(int(head), 0) + int(tail)
+    return rows
+
+
+def budget_rows(session: str, now=None) -> list:
+    """[(minute, count)] inside the rolling hour, oldest first."""
+    try:
+        text = budget_path(session).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    rows = budget_lines(text, budget_minute(now) - BUDGET_MINUTES + 1)
+    return sorted(rows.items())
 
 
 def budget_count(session: str, now=None) -> int:
-    try:
-        return int(budget_path(session, now).read_text(encoding="utf-8").strip() or 0)
-    except (OSError, ValueError):
-        return 0
+    return sum(count for _minute, count in budget_rows(session, now))
 
 
 def budget_lock():
@@ -485,58 +503,80 @@ def budget_lock():
 
 
 def budget_prune(now=None) -> None:
-    """Drop counters older than a few hours. Runs only when a session's own counter is new."""
-    keep_from = budget_hour(now) - BUDGET_KEEP_HOURS
+    """Drop counters nobody has touched for a few hours. Runs when a session's file is first made."""
+    cutoff = (budget_minute(now) - 60 * BUDGET_KEEP_HOURS) * 60
     try:
         items = list(budget_dir().iterdir())
     except OSError:
         return
     for item in items:
-        head = item.name.split("-", 1)[0]
-        if head.isdigit() and int(head) < keep_from:
-            _unlink(str(item))
+        if not item.name.startswith("s."):
+            continue
+        try:
+            if item.stat().st_mtime < cutoff:
+                _unlink(str(item))
+        except OSError:
+            continue
 
 
 def budget_charge(session=None, now=None) -> int:
-    """Count one call that reached GitHub, for this session and hour. Returns the new count."""
+    """Count one call that reached GitHub, for this session and rolling hour. Returns the new count."""
     session = session or budget_session()
+    minute = budget_minute(now)
+    first = minute - BUDGET_MINUTES + 1
     try:
         lock = budget_lock()
     except OSError:
         return budget_count(session, now)
     try:
-        count = budget_count(session, now)
-        if count == 0:
+        try:
+            text = budget_path(session).read_text(encoding="utf-8")
+        except OSError:
+            text = ""
             budget_prune(now)
-        target = budget_path(session, now)
+        rows = budget_lines(text, first)
+        rows[minute] = rows.get(minute, 0) + 1
+        target = budget_path(session)
         tmp = target.with_name(target.name + ".%s.tmp" % os.getpid())
-        tmp.write_text("%d\n" % (count + 1), encoding="utf-8")
+        tmp.write_text("".join("%d %d\n" % (minute, rows[minute]) for minute in sorted(rows)),
+                       encoding="utf-8")
         os.chmod(tmp, 0o600)
         os.replace(tmp, target)
-        return count + 1
+        return sum(rows.values())
     except OSError:
-        return count
+        return budget_count(session, now)
     finally:
         lock.close()
 
 
 def budget_ledger(now=None) -> list:
-    """[(session, count)] for this hour, busiest first, read from the counter files alone."""
-    hour = budget_hour(now)
+    """[(session, count)] for the rolling hour, busiest first, read from the counter files alone."""
     rows = []
     try:
         items = list(budget_dir().iterdir())
     except OSError:
         return rows
     for item in items:
-        head, _sep, name = item.name.partition("-")
-        if head != str(hour) or not name:
+        if not item.name.startswith("s."):
             continue
-        try:
-            rows.append((name, int(item.read_text(encoding="utf-8").strip() or 0)))
-        except (OSError, ValueError):
-            continue
+        name = item.name[2:]
+        count = budget_count(name, now)
+        if count:
+            rows.append((name, count))
     return sorted(rows, key=lambda row: -row[1])
+
+
+def budget_until(session: str, now=None) -> int:
+    """The epoch when this session's rolling hour falls under the refuse line."""
+    rows = budget_rows(session, now)
+    until = (budget_minute(now) + 1) * 60
+    total = sum(count for _minute, count in rows)
+    for minute, count in rows:
+        if total < BUDGET_REFUSE:
+            break
+        total -= count
+        until = (minute + 1) * 60
+    return until
 
 
 def budget_verdict(argv, now=None):
@@ -561,7 +601,7 @@ def budget_message(verdict: str, session: str, count: int, argv) -> str:
     """The one line a slowed call writes: what happened, then the command and the rules to run."""
     tail = "Next: %s. Rules: %s" % (budget_next(argv), BUDGET_RULES)
     if verdict == "refuse":
-        until = time.strftime("%H:%M UTC", time.gmtime((budget_hour() + 1) * 3600))
+        until = time.strftime("%H:%M UTC", time.gmtime(budget_until(session)))
         return "gh budget: %s is over %d GitHub calls this hour; wait until %s. %s" % (
             session, BUDGET_REFUSE, until, tail)
     return "gh budget: %s used %d of %d GitHub calls this hour; slow down or use the cache. %s" % (
