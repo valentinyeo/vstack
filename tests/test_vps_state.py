@@ -177,6 +177,12 @@ class ExitCodes(unittest.TestCase):
     def test_can_launch_bad_argument(self):
         self.assertEqual(cli("add", "--can-launch", "banana").returncode, 3)
 
+    def test_brief_with_can_launch_prints_the_line_and_keeps_the_code(self):
+        proc = cli("hold-cpu", "--can-launch", "worker", "--brief")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertTrue(proc.stdout.startswith("HOLD worker"), proc.stdout)
+        self.assertEqual(len(proc.stdout.strip().splitlines()), 1, proc.stdout)
+
 
 class RunnerGate(unittest.TestCase):
     """ADD worker must be exactly the fleet runner gate, over load and memory."""
@@ -428,6 +434,8 @@ class Install(unittest.TestCase):
         env = dict(os.environ)
         env["HOME"] = str(home)
         env["VSTACK_DIR"] = str(home / ".local" / "share" / "vstack")
+        # The install guard only links from ~/.local/share/vstack (VSTA-47).
+        env["VSTACK_INSTALL_ANYWHERE"] = "1"
         proc = subprocess.run([str(ROOT / "install")], env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         link = home / ".local" / "bin" / "vps-state"

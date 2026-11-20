@@ -19,6 +19,9 @@ loop_state = importlib.util.module_from_spec(spec)
 sys.modules[loader.name] = loop_state
 loader.exec_module(loop_state)
 
+# Before the reconcile steps: a worker `hypertask` shim earlier on PATH exits 3.
+loop_state.ensure_cli_path()
+
 
 def credentials_dir():
     return Path(os.environ.get('BOARD_DRAIN_CRED_DIR')

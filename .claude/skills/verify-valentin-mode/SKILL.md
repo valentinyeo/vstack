@@ -39,7 +39,7 @@ A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worke
 
 ## Doctor
 
-Read the `loaded` line first. It needs the `/valentin-mode` prompt, the command in the chat's command list, and an installed copy with the Three tools section and `disable-model-invocation: true` (saved as installed-valentin-mode.md). Any Skill call for valentin-mode fails it: the chat started it by itself. Then read `responsive`: it needs a Skill call for responsive-mode (or a user prompt starting `/responsive-mode`), because the chat must load responsive mode by itself.
+Read the `loaded` line first. It needs the `/valentin-mode` prompt, the command in the chat's command list, and an installed copy with the Three tools section and `disable-model-invocation: true` (saved as installed-valentin-mode.md). Any Skill call for valentin-mode fails it: the chat started it by itself. Then read `responsive`: it passes when /valentin-mode pasted responsive mode's body in at load (a paste that stopped before the body's last sentence fails), or on a Skill call for responsive-mode, or a user prompt starting `/responsive-mode`.
 
 The chat reads the installed copy in ~/.local/share/vstack, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main.
 

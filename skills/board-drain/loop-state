@@ -50,6 +50,23 @@ def state_path(name):
     return state_dir() / (slug(name) + '.json')
 
 
+def cli_bin_dir():
+    """The real CLI's home. A worker shim earlier on PATH exits 3, no board login."""
+    return Path.home() / '.local/bin'
+
+
+def ensure_cli_path():
+    """Put the real CLI's directory first on PATH, once, when this host has it."""
+    directory = str(cli_bin_dir())
+    if not cli_bin_dir().is_dir():
+        return
+    entries = [entry for entry in os.environ.get('PATH', '').split(os.pathsep) if entry]
+    if entries[:1] == [directory]:
+        return
+    kept = [entry for entry in entries if entry != directory]
+    os.environ['PATH'] = os.pathsep.join([directory, *kept])
+
+
 def command_line(pid):
     try:
         return [os.fsdecode(part) for part in

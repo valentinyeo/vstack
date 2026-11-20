@@ -16,6 +16,9 @@ DETACHED = ('nohup', 'setsid', 'disown', 'tmux')
 # A single & backgrounds the command; && does not.
 BACKGROUND_AMP = re.compile(r'(?:^|[^&])&(?:[^&]|$)')
 TRACKED_AGENTS = ('Agent', 'Task')
+HOOK_FILE = re.compile(r'[^\s"\'`]+\.[a-z]{2}\b')
+# A debug log line per hook run: "Hooks: <Event>[:<matcher>] [<command>] finished".
+DEBUG_HOOK = re.compile(r'Hooks: ([A-Za-z]+)(?::\S*)?\s+\[([^\]]*)\]')
 
 
 def read_text(path):
@@ -78,6 +81,102 @@ def reply_to(question, events, answer):
         if wanted in (block.get('text') or '').lower():
             return at, whole_message(events, message_id, block)
     return None, None
+
+
+def skill_text(evidence):
+    """The skill under test: the folder the run saved, else the single file an
+    older run saved. Empty when the evidence holds neither."""
+    for path in (evidence / 'skill-under-test/SKILL.md', evidence / 'skill-under-test.md'):
+        text = read_text(path)
+        if text:
+            return text
+    return ''
+
+
+def hook_files(command):
+    """The script names a hook command line runs, hooks on this box being
+    python3 "$CLAUDE_PLUGIN_ROOT/reply-check.py" or a plain .sh path."""
+    return [token.rsplit('/', 1)[-1] for token in HOOK_FILE.findall(command)]
+
+
+def frontmatter(text):
+    """The lines between a SKILL.md's first two --- fences, or none."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != '---':
+        return []
+    for index, line in enumerate(lines[1:], 1):
+        if line.strip() == '---':
+            return lines[1:index]
+    return []
+
+
+def hook_commands(text):
+    """(event, file name) for every hook the skill's frontmatter turns on.
+    Only the hooks: block counts, and only its own event lines."""
+    block = []
+    inside = False
+    for line in frontmatter(text):
+        if not inside:
+            inside = line.rstrip() == 'hooks:'
+            continue
+        if line.strip() and not line[:1].isspace():
+            break
+        block.append(line)
+    found, event = [], ''
+    for line in block:
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if stripped.endswith(':') and not stripped.startswith('-') and indent <= 2:
+            event = stripped[:-1]
+        elif stripped.startswith('command:'):
+            for name in hook_files(stripped):
+                found.append((event, name))
+    return found
+
+
+def installed_hook_files(command):
+    """The hook file names a command line runs out of a .claude/skills/ folder.
+    An unexpanded "$CLAUDE_PLUGIN_ROOT" leaves the path as /reply-check.py, which
+    would match on name alone, so a path outside that folder never counts."""
+    return [token.rsplit('/', 1)[-1] for token in HOOK_FILE.findall(command)
+            if '.claude/skills/' in token]
+
+
+def hook_runs(evidence):
+    """(event, file name) for every hook the chat's debug log recorded running.
+    The shape: "Hooks: <Event>[:<matcher>] [<command>] finished with status N".
+    The transcript is no use here: a hook that prints nothing leaves no entry."""
+    runs = []
+    for line in read_text(evidence / 'debug.log').splitlines():
+        match = DEBUG_HOOK.search(line)
+        if not match:
+            continue
+        event, command = match.group(1), match.group(2)
+        runs.extend((event, name) for name in installed_hook_files(command))
+    return runs
+
+
+def check_checks_loaded(evidence):
+    """The skill's own hooks loaded with it. A skill that turns no hooks on has
+    nothing to prove; one that does must show those hook files running in the
+    chat's debug log, never in the chat's words."""
+    text = skill_text(evidence)
+    if not text:
+        return True, 'no skill text in evidence, so no hooks block to check'
+    wanted = hook_commands(text)
+    if not wanted:
+        return True, 'the skill under test turns no hooks on'
+    if not (evidence / 'debug.log').is_file():
+        return False, ('no debug.log: the skill turns hooks on, but nothing shows '
+                       'they ran')
+    ran = hook_runs(evidence)
+    missing = [f'{name} ({event})' for event, name in wanted
+               if (event, name) not in ran]
+    if missing:
+        return False, ('debug.log shows no run of ' + ', '.join(missing)
+                       + ' from the scratch project\'s .claude/skills/ folder')
+    return True, 'debug.log shows every declared hook ran: ' + ', '.join(
+        f'{name} ({event})' for event, name in wanted)
 
 
 def check_loaded(evidence, marker):
@@ -168,7 +267,8 @@ def grade(evidence):
     if not sent:
         raise BadEvidence('no message was sent in ' + str(evidence / 'chat.jsonl'))
 
-    rows = [('loaded', *check_loaded(evidence, spec.get('skill_marker')))]
+    rows = [('loaded', *check_loaded(evidence, spec.get('skill_marker'))),
+            ('checks loaded', *check_checks_loaded(evidence))]
     rows += reply_rows(sent, events, spec.get('answers') or [])
     rows.append(('background', *check_background(events, spec.get('slow_step', 'slow-report'))))
 
