@@ -1,10 +1,10 @@
 ---
-name: board-health
+name: hypertask-checkup
 description: >-
-  Health-check this chat's own Hypertask board or view and fix what it finds: stale agents, wrong columns, missing or duplicate tickets, misfiled tickets, no sync routine, no own view. Use for /board-health, "check your board", "is your board in sync", or when Valentin asks why a board looks wrong.
+  Health-check this chat's own Hypertask board or view and fix what it finds: stale agents, wrong columns, missing or duplicate tickets, misfiled tickets, no sync routine, no own view. Use for /hypertask-checkup, "check your board", "is your board in sync", or when Valentin asks why a board looks wrong.
 ---
 
-# Board health
+# Hypertask checkup
 
 Prior art: checked pstack, hypertask-work and board-identity. hypertask-work owns the board rules but nothing makes a chat audit its own board; it has no room left under its word budget, so the audit lives here.
 
