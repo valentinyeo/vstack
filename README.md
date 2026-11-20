@@ -14,6 +14,7 @@ Writing and design skills for Claude Code and other AI agents. Each one is a sin
 | [valentin-mode](skills/valentin-mode/SKILL.md) | Valentin's working style on top of pstack: how to talk to him, which model does which job, and how a result gets checked. The same rules in every harness. |
 | [hypertask-work](skills/hypertask-work/SKILL.md) | Works a Hypertask board the same way every session: own login, own board or view, ticket before work, true column, live worker leases and the reconcile script. Files feedback when Hypertask blocks you. |
 | [design-lead-setup](skills/design-lead-setup/SKILL.md) | Sets an agent up as design lead for an existing app: real screenshots and code tokens in Figma, a rule-cited audit (top 5, deletions first), one problem ticket per case, and fixes shown as edits on the real screen. Nothing ships until the owner says yes. Built on Hypertask; sources include Emil Kowalski, Vercel's guidelines, pstack, Peng Zheng's "first 5%" and the Figma MCP skills. |
+| [join-slack](skills/join-slack/SKILL.md) | Puts a lead session in Slack #fleet: reuses the lead's bot, points @mentions at its tmux session, then checks the doctor and a dry-run reply. |
 
 ## Install
 

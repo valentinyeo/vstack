@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# fleet-slack-doctor [name]: check every #fleet member row (or one) can really receive a Slack @mention.
+# Per row: delivery set, target is a live agent session (not a dead pane), UID set. Plus: relay active and
+# running the current members.tsv. Prints one line per row, exits 1 on any FAIL. Never prints secrets.
+set -uo pipefail
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+CFG=$HOME/.config/fleet-slack; ENV=$CFG/env; MEM=${FLEET_SLACK_MEMBERS:-$CFG/members.tsv}
+AGENTS='^(claude|codex|hax|node|bun)$'
+RD_SLUGS='^([1-9][0-9]*|ht-product-lead|infra-manager|speed-runner)$'
+only=${1:-}; fail=0
+bad() { echo "FAIL $1"; fail=1; }
+
+if systemctl --user is-active --quiet fleet-slack-relay; then
+  started=$(date -d "$(systemctl --user show fleet-slack-relay -p ActiveEnterTimestamp --value)" +%s)
+  if [ "$(stat -c %Y "$MEM")" -gt "$started" ]; then bad "relay: members.tsv changed after relay start; run systemctl --user restart fleet-slack-relay"
+  else echo "ok   relay: active, current members.tsv"; fi
+else bad "relay: fleet-slack-relay not active"; fi
+
+# Tab is IFS whitespace, so empty columns would collapse; split on a non-whitespace separator instead.
+while IFS=$'\x1f' read -r name _aliases _tok uid_env delivery target _kw; do
+  [[ -z $name || $name == \#* ]] && continue
+  [[ -n $only && $name != "$only" ]] && continue
+  [[ $delivery == none ]] && { echo "warn $name: delivery none, @mentions never reach it"; continue; }
+  grep -q "^${uid_env}=." "$ENV" 2>/dev/null || { bad "$name: $uid_env not set, relay skips this row"; continue; }
+  case $delivery in
+    session-say)
+      if ! tmux has-session -t "=$target" 2>/dev/null; then bad "$name: tmux session $target gone"; continue; fi
+      cmd=$(tmux display -p -t "=$target:" '#{pane_current_command}')
+      if [[ ! $cmd =~ $AGENTS ]]; then bad "$name: session $target runs '$cmd', no agent there"; continue; fi
+      idle=$(( ($(date +%s) - $(tmux display -p -t "=$target:" '#{session_activity}')) / 3600 ))
+      if [ "$idle" -ge 24 ]; then echo "warn $name: session $target idle ${idle}h, maybe an old copy; is the lead elsewhere?"
+      else echo "ok   $name -> session $target ($cmd)"; fi ;;
+    runner-deliver)
+      [[ $target =~ $RD_SLUGS ]] && echo "ok   $name -> runner-deliver $target" || bad "$name: runner-deliver target $target unknown" ;;
+    *) bad "$name: delivery '$delivery' unknown" ;;
+  esac
+done < <(tr '\t' '\037' < "$MEM")
+exit $fail
