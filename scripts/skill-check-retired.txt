@@ -5,3 +5,6 @@ hypertask-poteto
 Grok Bot
 house-rules
 Global rules 6
+# VSTA-99: chats are not central watchers or operators for other chats
+orchestrator
+central watcher

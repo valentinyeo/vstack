@@ -79,7 +79,7 @@ call does at most one prune per 10 minutes, and each prune looks at the folder f
 - entries whose mtime is more than 1 day old are deleted;
 - the folder is capped at 2 GB, oldest deleted first.
 
-To clear a backlog in one go, as the orchestrator does after deploying:
+To clear a backlog in one go, as the VPS Admin chat does after deploying:
 
 ```bash
 GH_WRAPPER_PRUNE=1 gh
@@ -90,7 +90,7 @@ It prints `removed N entries, freed N bytes, seen N`. It never deletes `pause-un
 
 ## Deploy
 
-The orchestrator deploys after review, not the worker. On the box that runs the wrapper:
+The chat that deploys the wrapper runs review deploy, not the worker. On the box that runs the wrapper:
 
 ```bash
 sudo cp -p /usr/bin/gh /usr/bin/gh.prune-backup   # once, before the first deploy
