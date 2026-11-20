@@ -19,7 +19,7 @@ hooks:
 
 # Valentin mode
 
-Version: !`sh "${CLAUDE_SKILL_DIR}/version.sh"`
+!`sh "${CLAUDE_SKILL_DIR}/version.sh"`
 
 If no rules appear under Responsive mode below, load `responsive-mode` before any other tool. A Codex, Cursor or pi chat without bypass gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 

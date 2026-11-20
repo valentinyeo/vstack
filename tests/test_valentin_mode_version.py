@@ -1,8 +1,9 @@
 """valentin-mode prints its version when it loads.
 
-version.sh lives next to the skill and is run here in throwaway repos: one level
-with origin/main, one a commit behind it, and one with no git at all. The load
-line in SKILL.md has to keep calling it.
+The version is a plain number: commits that touched the skill folder. version.sh
+lives next to the skill and is run here in throwaway repos: one level with
+origin/main, one a commit behind it, and one with no git at all. The load line in
+SKILL.md has to keep calling it.
 """
 
 import os
@@ -18,9 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = ROOT / 'skills/valentin-mode'
 SCRIPT = SKILL_DIR / 'version.sh'
 SKILL = SKILL_DIR / 'SKILL.md'
-LOAD_LINE = 'Version: !`sh "${CLAUDE_SKILL_DIR}/version.sh"`'
+LOAD_LINE = '!`sh "${CLAUDE_SKILL_DIR}/version.sh"`'
 BULLET = '- **Version:** your first reply after loading names the version line above.'
-VERSION = re.compile(r'^\d{4}-\d{2}-\d{2} [0-9a-f]{7,} \(')
+LATEST = re.compile(r'^valentin-mode v\d+ \(latest\)$')
+BEHIND = re.compile(
+    r'^valentin-mode v\d+, latest is v\d+ \(updates itself within 10 minutes\)$')
 
 
 def git(cwd, *args):
@@ -73,9 +76,22 @@ class VersionScript(unittest.TestCase):
         work, _origin = self.build_repo()
         result = run_version(work / 'skills/valentin-mode')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('(latest)', result.stdout)
-        self.assertRegex(result.stdout, VERSION)
+        self.assertEqual(result.stdout.strip(), 'valentin-mode v1 (latest)')
         self.assertFalse(result.stderr, result.stderr)
+
+    def test_the_count_is_the_number_of_commits_touching_the_folder(self):
+        work, _origin = self.build_repo()
+        skill = work / 'skills/valentin-mode'
+        (skill / 'notes.md').write_text('a second commit on the skill\n')
+        git(work, 'add', '-A')
+        git(work, 'commit', '-m', 'v2 touches the skill')
+        (skill / 'notes.md').write_text('a third commit on the skill\n')
+        git(work, 'add', '-A')
+        git(work, 'commit', '-m', 'v3 touches the skill')
+
+        result = run_version(skill)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'valentin-mode v3 (latest)')
 
     def test_one_commit_behind_touching_the_folder_counts(self):
         work, origin = self.build_repo()
@@ -90,8 +106,9 @@ class VersionScript(unittest.TestCase):
 
         result = run_version(work / 'skills/valentin-mode')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('(1 changes behind', result.stdout)
-        self.assertIn('the skill-update hook brings the latest', result.stdout)
+        self.assertEqual(
+            result.stdout.strip(),
+            'valentin-mode v1, latest is v2 (updates itself within 10 minutes)')
 
     def test_a_commit_elsewhere_does_not_count(self):
         work, origin = self.build_repo()
@@ -105,19 +122,20 @@ class VersionScript(unittest.TestCase):
 
         result = run_version(work / 'skills/valentin-mode')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('(latest)', result.stdout)
+        self.assertEqual(result.stdout.strip(), 'valentin-mode v1 (latest)')
 
     def test_outside_git_says_unknown(self):
         folder = self.tmp / 'installed/valentin-mode'
         self.copy_script(folder)
         result = run_version(folder, {'GIT_CEILING_DIRECTORIES': str(self.tmp)})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), 'unknown (not a git checkout)')
+        self.assertEqual(result.stdout.strip(), 'valentin-mode version unknown')
 
-    def test_this_checkout_prints_a_date_and_id(self):
+    def test_this_checkout_prints_a_number(self):
         result = run_version(SKILL_DIR)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(result.stdout, VERSION)
+        line = result.stdout.strip()
+        self.assertTrue(LATEST.match(line) or BEHIND.match(line), line)
 
 
 class LoadLine(unittest.TestCase):
@@ -125,6 +143,11 @@ class LoadLine(unittest.TestCase):
         text = SKILL.read_text()
         self.assertIn(LOAD_LINE, text)
         self.assertLess(text.index('# Valentin mode'), text.index(LOAD_LINE))
+
+    def test_the_line_carries_no_version_prefix(self):
+        text = SKILL.read_text()
+        self.assertNotIn('Version: !`', text)
+        self.assertIn('\n' + LOAD_LINE + '\n', text)
 
     def test_the_first_reply_names_the_version(self):
         body = SKILL.read_text()
