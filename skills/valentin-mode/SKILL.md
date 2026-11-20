@@ -36,9 +36,9 @@ Before board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself: at session start, after a restart or handover, and whenever this skill loads. It keeps its own Autopilot-full loop over its own view armed and checked; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, after a restart or handover, and whenever this skill loads. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
 
-Add ~/.claude/hooks/skill-update.py as a UserPromptSubmit hook in your project's .claude/settings.json; it keeps skills current.
+Hook ~/.claude/hooks/skill-update.py on UserPromptSubmit to stay current.
 
 ### PR owner
 
