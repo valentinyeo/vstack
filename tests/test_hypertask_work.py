@@ -947,11 +947,11 @@ class Board15Test(unittest.TestCase):
         return [{**self.card(f'HTPR-{n}', column, NOW - 8000), 'createdAt': created}
                 for n in range(1, count + 1)]
 
-    def fixture_github15(self, tasks):
-        """A board-15 fixture's GitHub: one open PR per ticket, nothing else."""
+    def fixture_github15(self, tasks, state='OPEN', merged_at=None):
+        """A board-15 fixture's GitHub: one PR per ticket in that state, nothing else."""
         pulls = {t['ticketNumber']: {'title': f'{t["ticketNumber"]} work', 'body': '',
                                      'headRefName': f'{t["ticketNumber"].lower()}-work',
-                                     'state': 'OPEN',
+                                     'state': state, 'mergedAt': merged_at,
                                      'number': r.ticket_index(t['ticketNumber'], r.BOARDS[15]),
                                      'url': 'https://github.com/hypertask-ai/hypertask/pull/' + str(n),
                                      'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
@@ -1070,6 +1070,53 @@ else:
         for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
                 self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
+
+    # HTPR-7807 as the board has it: reopened into Backlog on 2026-11-20, behind
+    # hypertask-ai/hypertask#3180, merged 2026-11-10. The merge is evidence for the
+    # work that shipped before the reopen, not for pulling the card back out.
+    REOPENED = {'entry': '2026-11-20T10:35:31.522Z', 'created': '2026-10-24T16:18:39.517Z',
+                'merged': '2026-11-10T09:50:51Z'}
+
+    def reopened_facts(self, pulls, now, column='Backlog', alive=False):
+        card = {'ticketNumber': 'HTPR-7807', 'section': column, 'projectId': 15,
+                'createdAt': self.REOPENED['created'], 'updatedAt': r.stamp(self.REOPENED['entry']),
+                'staleness': {'sectionChangedAt': self.REOPENED['entry']},
+                'assignees': [], 'labels': [], 'pulls': list(pulls)}
+        return self.facts(card, now, alive=alive)
+
+    def test_an_old_merge_never_pulls_a_reopened_card(self):
+        now = r.stamp('2026-11-20T16:00:00Z')
+        old = {**self.product_pull(3180, 'MERGED'), 'mergedAt': self.REOPENED['merged']}
+        fresh = {**self.product_pull(3532, 'MERGED'), 'mergedAt': '2026-11-20T11:00:00Z'}
+        with self.subTest('the merge is older than the column entry'):
+            facts = self.reopened_facts([old], now)
+            self.assertEqual(facts.column_entry, r.stamp(self.REOPENED['entry']))
+            self.assertEqual(r.target(facts, board=r.BOARDS[15]),
+                             ('Backlog', 'merged PR older than column entry; kept'))
+        with self.subTest('a merge after the entry still pulls it'):
+            self.assertEqual(r.target(self.reopened_facts([fresh], now), board=r.BOARDS[15])[0],
+                             'AI Review')
+        with self.subTest('a live worker is unaffected'):
+            self.assertEqual(r.target(self.reopened_facts([old], now, alive=True),
+                                      board=r.BOARDS[15])[0], 'In Progress')
+        with self.subTest('an old merge holds a card already in review'):
+            self.assertEqual(r.target(self.reopened_facts([old], now, column='AI Review'),
+                                      board=r.BOARDS[15])[0], 'AI Review')
+        with self.subTest('no ticket read per card: one list read carries the entry time'):
+            task = self.board15_tasks(count=1)[0]
+            with patch.object(r, 'api', return_value={'tasks': []}) as api:
+                self.assertIsNotNone(r.column_entry(task))
+                api.assert_not_called()
+
+    def test_a_board_15_dry_run_keeps_a_reopened_card_in_backlog(self):
+        tasks = [{**self.board15_tasks(count=1)[0], 'ticketNumber': 'HTPR-7807',
+                  'updatedAt': r.stamp(self.REOPENED['entry'])}]
+        respond = self.fixture_github15(tasks, state='MERGED', merged_at=self.REOPENED['merged'])
+        code, printed, _calls = self.board15_run(tasks, respond=respond)
+        self.assertEqual(code, 0, printed)
+        self.assertIn('KEEP HTPR-7807 Backlog -> Backlog | merged PR older than column entry; kept',
+                      printed)
+        self.assertIn('DRY RUN board=15 tickets=1 unknown=0', printed)
 
     def test_stale_in_progress_cards_move_to_backlog(self):
         now = r.stamp(self.CREATED) + 3 * 3600

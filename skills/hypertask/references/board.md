@@ -30,6 +30,8 @@ Move the ticket the moment its stage moves. The PR outranks a live worker.
 - merged -> AI Review or Verifier, live proof pending
 - live proof -> Done
 
+A merged PR is evidence only when it merged after the card entered the column it is in now. A card parked or reopened behind an older merge keeps its column, and a card already in review stays there: an old merge is history, never a promotion, and never a demotion. Open PRs and live workers read the same as before.
+
 A ticket waiting on Valentin, or blocked by another ticket, stays where it is. Never move a ticket into Valentin Review. Other boards keep their own columns; use the name the board shows, including the `Building` and `Verifier` aliases.
 
 Verification tickets carry the label `verification` and start in Verification Backlog. The reconcile moves a labelled ticket out of Todo into that column, and an unlabelled one back to Todo. An open or merged PR still outranks the label.
