@@ -18,6 +18,8 @@ SKILL_NAMES = ('valentin-mode', 'vstack:valentin-mode')
 SKILL_BODY_MARKER = '## Three tools'
 COMMAND = 'valentin-mode'
 PROMPT_START = '/' + COMMAND
+RESPONSIVE = 'responsive-mode'
+RESPONSIVE_PROMPT = re.compile(r'\s*/' + re.escape(RESPONSIVE) + r'(?=\s|$)')
 INSTALLED_NAME = 'installed-valentin-mode.md'
 DISABLE_LINE = 'disable-model-invocation: true'
 NO_SESSION = 'no session id in stream'
@@ -157,6 +159,29 @@ def skill_invoked(tool_use):
     return skill in SKILL_NAMES or skill.endswith(':valentin-mode')
 
 
+def responsive_invoked(tool_use):
+    """True when the chat loads responsive mode through the Skill tool."""
+    if tool_use.get('name') != 'Skill':
+        return False
+    tool_input = tool_use.get('input')
+    skill = tool_input.get('skill') if isinstance(tool_input, dict) else None
+    if not isinstance(skill, str):
+        return False
+    return skill == RESPONSIVE or skill.endswith(':' + RESPONSIVE)
+
+
+def responsive_prompt(events):
+    """True when a user prompt starts with the /responsive-mode command."""
+    for event in events:
+        if event.get('type') != 'user':
+            continue
+        for block in content_blocks(event, 'text'):
+            text = block.get('text')
+            if isinstance(text, str) and RESPONSIVE_PROMPT.match(text):
+                return True
+    return False
+
+
 def command_installed(events):
     """True when an init event lists valentin-mode among the slash commands."""
     for event in events:
@@ -197,6 +222,15 @@ def check_loaded(evidence):
         return FAIL, 'installed valentin-mode can still start by itself'
     return PASS, ('the chat was started with /valentin-mode '
                   '(three tools version, no self-start)')
+
+
+def check_responsive(events):
+    """PASS when the chat loads responsive mode, alone or as valentin mode's first step."""
+    if any(responsive_invoked(tool_use) for tool_use in tool_uses(events)):
+        return PASS, 'responsive mode loaded by the Skill tool'
+    if responsive_prompt(events):
+        return PASS, 'responsive mode started by /responsive-mode'
+    return FAIL, 'responsive mode not loaded'
 
 
 def board_writes(evidence, started_at):
@@ -277,10 +311,22 @@ def check_pacer(evidence, session_id, events):
 
 
 SYNC_SEPARATORS = re.compile(r';|&&|\|\||\n')
+ASSIGNMENT = re.compile(r'(?<![\w$])([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|"\']+)')
+
+
+def resolve_path_variables(command):
+    """Expand $NAME and ${NAME} where NAME=<path ending in reconcile> in this command."""
+    paths = {name: value for name, value in ASSIGNMENT.findall(command)
+             if value.rsplit('/', 1)[-1] == 'reconcile'}
+    for name, value in paths.items():
+        command = re.sub(r'\$\{' + re.escape(name) + r'\}|\$' + re.escape(name) + r'(?!\w)',
+                         value, command)
+    return command
 
 
 def sync_invocations(command):
     """Split one Bash command into the calls a shell would run in order."""
+    command = resolve_path_variables(command)
     return [part.strip() for part in SYNC_SEPARATORS.split(command) if part.strip()]
 
 
@@ -356,6 +402,7 @@ def grade(evidence, agent, ticket, board, label):
     checks = []
     name, result = 'loaded', check_loaded(evidence)
     checks.append((name, result))
+    checks.append(('responsive', check_responsive(events)))
 
     if session_id is None:
         for name in ('session', 'login', 'pacer', 'task', 'board sync'):
