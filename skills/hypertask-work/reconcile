@@ -1264,7 +1264,7 @@ def board_run():
     options = {} if board.id == BOARD else {'board': board}
     if args.apply and board.id == 15:
         require_board15_agent()
-    if args.apply and not product_board(board) and (not os.environ.get('SHIP_SESSION_NAME') or os.environ['SHIP_SESSION_NAME'] == 'Valentins Claude Code'):
+    if args.apply and not product_board(board) and (not os.environ.get('SHIP_SESSION_NAME') or session.is_person(os.environ['SHIP_SESSION_NAME'])):
         parser.error('--apply requires SHIP_SESSION_NAME for an agent login')
     # Prevent two timer/manual runs from racing the same board. Two different
     # labels or tickets may sync at once; the same one, or any whole-board run, may not.
