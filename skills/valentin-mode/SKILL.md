@@ -9,7 +9,7 @@ skill-word-budget-reason: The index must name where every hidden skill is read, 
 
 # Valentin mode
 
-If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat, or one without bypass permissions, gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
+If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat without bypass gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
 ## Responsive mode (pasted in when this skill loads)
 
@@ -32,7 +32,7 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, bri
 
 ### Board work
 
-Before any board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
+Before board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
 ### Board drain
 
@@ -69,7 +69,7 @@ Design work follows [designing.md](designing.md).
 
 ## Skill index
 
-These skills are hidden from the skill list. Open one with the Read tool at the path shown; the Skill tool refuses a hidden skill. The user can still type its slash command.
+These skills hide from the skill list. Read the path shown; the Skill tool refuses hidden skills. Slash commands still work.
 
 - writing for Valentin, plain words for a non-coder, ticket comments and PR text -> read ../unjargon/SKILL.md
 - rewrite a reply for a product owner, he says "pospeak" or "too technical" -> read ../pospeak/SKILL.md

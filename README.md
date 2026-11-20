@@ -16,7 +16,7 @@ Writing and design skills for Claude Code and other AI agents. Each one is a sin
 | [design-lead-setup](skills/design-lead-setup/SKILL.md) | Sets an agent up as design lead for an existing app: real screenshots and code tokens in Figma, a rule-cited audit (top 5, deletions first), one problem ticket per case, and fixes shown as edits on the real screen. Nothing ships until the owner says yes. Built on Hypertask; sources include Emil Kowalski, Vercel's guidelines, pstack, Peng Zheng's "first 5%" and the Figma MCP skills. |
 | [join-slack](skills/join-slack/SKILL.md) | Puts a lead session in Slack #fleet: reuses the lead's bot, points @mentions at its tmux session, then checks the doctor and a dry-run reply. |
 
-All skills except valentin-mode and responsive-mode are hidden from the model's list of skills, and are opened through the valentin-mode index or by their own slash command.
+Nine writing and design skills (design-lead-setup, join-slack, pospeak, ptacek-copyedit, report-page, schneider-deutsch-stil, unjargon, web-writing, zinsser-english-style) and valentin-mode are hidden from the model's skill list; open them through the valentin-mode index or their slash command. responsive-mode stays visible because valentin-mode loads it with the Skill tool. hypertask, board-drain, pr-housekeeping and vps-state stay visible so a session can reach tickets, drain its board, tidy its PRs and check server load without reading the index first.
 
 ## Install
 
