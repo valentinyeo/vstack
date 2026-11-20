@@ -27,7 +27,7 @@ A nonzero exit is the enforcement: one of your own PRs has gone quiet, or, witho
 ## Ladder of states
 
 - BOT: CI Boss owns dependabot, renovate and github-actions PRs.
-- DUPLICATE: the keeper is the PR with a passing verdict at its current head, else the newest green one, else the oldest. Message its owner chat, then close this one with a one line reason and the ticket link. Never open a second PR beside a stalled one.
+- DUPLICATE: the keeper is the PR with a passing verdict at its current head, else the newest green one, else the oldest. Message its owner chat, then close this one with a one line reason and the ticket link. Never open a second PR beside a stalled one. The `pr-overlap` GitHub check fails the newer PR when an older open one already edits a guarded file or carries the same ticket key.
 - NO-OWNER: without `--mine`, a PR no live chat claims fails the tick whatever its checks and verdict. Hand it to the chat that works in the repo or owns its ticket, and say so there.
 - CONFLICT: run Babysit in check mode, rebase your own branch, then push with force-with-lease on your own branch only.
 - BILLING: private repos only. Scan the history for secrets and client data, then make the repo public; ask Valentin only if the scan finds something.
