@@ -362,6 +362,22 @@ class BrokenProbes(unittest.TestCase):
         self.assertIn("processes", data["facts"]["unknown"])
         self.assertIsNone(data["processes"])
 
+    def test_statvfs_json_that_is_not_an_object_is_unknown(self):
+        home = pathlib.Path(tempfile.mkdtemp())
+        case = FIX / "add"
+        for payload in ("[1, 2]", '"hello"', "3", "null"):
+            disk = home / "statvfs.json"
+            disk.write_text(payload)
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT), "--ps-file", str(case / "ps.txt"),
+                 "--statvfs-json", str(disk), "--json", "--no-write"],
+                env=fixture_env("add", home), capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, payload + proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr, payload)
+            data = json.loads(proc.stdout)
+            self.assertIsNone(data["facts"]["disk"], payload)
+            self.assertIn("disk", data["facts"]["unknown"], payload)
+
     def test_unreadable_proc_root_is_unknown(self):
         home = pathlib.Path(tempfile.mkdtemp())
         env = dict(os.environ)

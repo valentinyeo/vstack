@@ -161,6 +161,8 @@ def read_disk(statvfs_json=None):
             data = json.loads(text)
         except ValueError:
             return None
+        if not isinstance(data, dict):
+            return None
         total = data.get("total")
         free = data.get("free")
         files_total = data.get("files_total")
