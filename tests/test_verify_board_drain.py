@@ -219,6 +219,21 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         self.assertIn('FAIL armed: armed a job that does not fire every 15 minutes: 0 * * * *',
                       output)
 
+    def test_offset_quarter_hour_cron_passes_armed(self):
+        """A measured /loop arm used 7,22,37,52: 15 minutes apart, off the hour."""
+        target = self.copy_fixture('pass')
+
+        def offset(events):
+            for event in events:
+                for block in event.get('message', {}).get('content') or []:
+                    if isinstance(block, dict) and block.get('name') == 'CronCreate':
+                        block['input']['cron'] = '7,22,37,52 * * * *'
+            return events
+        self.rewrite_stream(target, offset)
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 0, output)
+        self.assert_check(output, 'PASS', 'armed')
+
     def test_quarter_hour_list_passes_armed(self):
         """Any minute expression on the quarter hour counts as every 15 minutes."""
         target = self.copy_fixture('pass')

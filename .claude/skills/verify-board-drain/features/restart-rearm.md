@@ -6,7 +6,7 @@ A chat that restarts finds its old loop dead: session cron jobs die with the pro
 
 - `rearm.load`: the chat loads board drain, through the `/board-drain` command or the `Skill` tool.
 - `rearm.status`: it asks `loop-state status --name "<its name>"` before arming, because exit 0 means already armed.
-- `rearm.arm`: it creates a recurring job on the quarter hour (`*/15 * * * *`, `0,15,30,45 * * * *`) whose prompt is the loop prompt from the skill, naming its own board and view. A `Skill` call to `loop` with `15m` and that prompt counts too.
+- `rearm.arm`: it creates a recurring job that fires every 15 minutes of every hour (`*/15 * * * *`, `0,15,30,45 * * * *`, `7,22,37,52 * * * *`), whose prompt is the loop prompt from the skill, naming its own board and view. A `Skill` call to `loop` with `15m` and that prompt counts too.
 - `rearm.record`: `loop-state arm` writes `armed_at` in this run, `expires_at` about 7 days later, and the job id the harness handed back.
 
 ## How to get to it (user POV)

@@ -235,8 +235,22 @@ def expand_field(field, low, high):
     return values
 
 
+def spaced_every_fifteen(minutes):
+    """True for four firings an hour, 15 minutes apart, wherever they start.
+
+    Claude Code's /loop offsets its cron to avoid the top of the hour, so
+    7,22,37,52 is a 15-minute loop just as 0,15,30,45 is.
+    """
+    if len(minutes) != 4:
+        return False
+    ordered = sorted(minutes)
+    gaps = [later - earlier for earlier, later in zip(ordered, ordered[1:])]
+    gaps.append(ordered[0] + 60 - ordered[-1])
+    return all(gap == FIFTEEN for gap in gaps)
+
+
 def every_fifteen_minutes(cron):
-    """True when a 5-field cron fires on the quarter hour, every hour."""
+    """True when a 5-field cron fires every 15 minutes of every hour."""
     if not isinstance(cron, str):
         return False
     fields = cron.split()
@@ -247,8 +261,7 @@ def every_fifteen_minutes(cron):
         hours = expand_field(fields[1], 0, 23)
     except (ValueError, TypeError):
         return False
-    per_hour = set(range(0, 60, FIFTEEN))
-    return minutes == per_hour and hours == set(range(24))
+    return spaced_every_fifteen(minutes) and hours == set(range(24))
 
 
 def prompt_ok(prompt, board):
