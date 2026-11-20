@@ -298,6 +298,105 @@ class PstackDiffTest(unittest.TestCase):
         self.assertNotIn("GAP verifier workflow", result.stdout)
         self.assertIn("ASKED verifier workflow:", result.stdout)
 
+    def test_multiprompt_verdict_job_wins_over_comment_sicko(self):
+        result = run_diff(FIXTURES / "multiprompt-verifier-rank")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        asked = next(
+            line for line in result.stdout.splitlines() if line.startswith("ASKED verifier workflow:")
+        )
+        self.assertIn("pr-verifier.yml job verdict", asked)
+        self.assertIn(
+            "EXTRA workflow: .github/workflows/no-comments.yml job pstack-no-comments",
+            result.stdout,
+        )
+
+    def test_base_mode_ignores_helper_grep_for_pstack_verifier_name(self):
+        real = (
+            "name: a\non:\n  pull_request:\njobs:\n"
+            "  verifier:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: python3 scripts/run-verifier\n"
+        )
+        helper = (
+            "name: z\non:\n  pull_request:\njobs:\n"
+            "  helper:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: claude -p foo\n"
+        )
+        skill = ".claude/skills/verify-app/SKILL.md"
+        features = ".claude/skills/verify-app/features/README.md"
+        root = build_repo(
+            self,
+            {
+                ".github/workflows/a.yml": real,
+                ".github/workflows/z.yml": helper,
+                skill: "# x\n",
+                features: "x\n",
+            },
+            {".github/workflows/z.yml": helper.rstrip("\n") + "\n      - run: grep pstack-verifier\n"},
+        )
+        result = run_diff(root, "--base", "HEAD~1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verifier workflow: .github/workflows/a.yml job verifier", result.stdout)
+
+    def test_base_mode_ignores_gh_pr_comment_on_triage(self):
+        real = (
+            "name: a\non:\n  pull_request:\njobs:\n"
+            "  verifier:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: python3 scripts/run-verifier\n"
+        )
+        helper = (
+            "name: z\non:\n  pull_request:\njobs:\n"
+            "  triage:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: claude -p foo\n"
+        )
+        skill = ".claude/skills/verify-app/SKILL.md"
+        features = ".claude/skills/verify-app/features/README.md"
+        root = build_repo(
+            self,
+            {
+                ".github/workflows/a.yml": real,
+                ".github/workflows/z.yml": helper,
+                skill: "# x\n",
+                features: "x\n",
+            },
+            {
+                ".github/workflows/z.yml": helper.rstrip("\n")
+                + "\n      - run: gh pr comment 1 --body-file verdict.md\n"
+            },
+        )
+        result = run_diff(root, "--base", "HEAD~1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verifier workflow: .github/workflows/a.yml job verifier", result.stdout)
+
+    def test_base_mode_ignores_yaml_comment_naming_pstack_verifier(self):
+        real = (
+            "name: a\non:\n  pull_request:\njobs:\n"
+            "  verifier:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: python3 scripts/run-verifier\n"
+        )
+        helper = (
+            "name: z\non:\n  pull_request:\njobs:\n"
+            "  helper:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - run: claude -p foo\n"
+        )
+        skill = ".claude/skills/verify-app/SKILL.md"
+        features = ".claude/skills/verify-app/features/README.md"
+        root = build_repo(
+            self,
+            {
+                ".github/workflows/a.yml": real,
+                ".github/workflows/z.yml": helper,
+                skill: "# x\n",
+                features: "x\n",
+            },
+            {
+                ".github/workflows/z.yml": helper.rstrip("\n")
+                + "\n        # pstack-verifier posts the real verdict elsewhere\n"
+            },
+        )
+        result = run_diff(root, "--base", "HEAD~1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verifier workflow: .github/workflows/a.yml job verifier", result.stdout)
+
     def test_stale_checkout_warning_does_not_change_exit(self):
         holder = tempfile.TemporaryDirectory(prefix="pstack-diff-behind-")
         self.addCleanup(holder.cleanup)

@@ -48,7 +48,6 @@ EXTRA_JOB_HINTS = re.compile(
     re.I,
 )
 
-
 def _strip_yaml_comments(text: str) -> str:
     """Remove YAML # comments (line-start or after whitespace, outside quotes)."""
     out: list[str] = []
@@ -235,6 +234,33 @@ def _is_ai_judge(job_body: str) -> bool:
     return bool(AI_JUDGE.search(job_body))
 
 
+def _ai_judge_rank(label: str, _body: str, file_order: int) -> tuple[int, int, int]:
+    """Higher tuple sorts first as the one ASKED verifier workflow."""
+    job_id = label.rsplit(" job ", 1)[-1]
+    wf_file = Path(label.split(" via ", 1)[0]).name
+    names_verifier = bool(re.search(r"verifier|verdict", f"{wf_file} {job_id}", re.I))
+    pstack_sources = "pstack-sources.yml" in label and label.endswith("job verifier")
+    return (int(pstack_sources), int(names_verifier), -file_order)
+
+
+def _order_ai_judges(
+    ai_judges: list[tuple[str, str, int]], pinned_verifier: str | None = None
+) -> list[str]:
+    ranked = sorted(ai_judges, key=lambda item: _ai_judge_rank(*item), reverse=True)
+    labels = [label for label, _body, _order in ranked]
+    if pinned_verifier and pinned_verifier in labels:
+        labels.remove(pinned_verifier)
+        labels.insert(0, pinned_verifier)
+    return labels
+
+
+def _asked_verifier(lines: list[str]) -> str | None:
+    for line in lines:
+        if line.startswith("ASKED verifier workflow: "):
+            return line[len("ASKED verifier workflow: ") :]
+    return None
+
+
 def _reusable_spec(job_body: str) -> str | None:
     match = REUSABLE_USES.search(job_body)
     if not match:
@@ -275,10 +301,11 @@ def _iter_pr_jobs(
     return collected
 
 
-def classify_workflows(root: Path) -> list[str]:
+def classify_workflows(root: Path, pinned_verifier: str | None = None) -> list[str]:
     lines: list[str] = []
     house = _house_entries(root)
-    ai_judges: list[str] = []
+    ai_judges: list[tuple[str, str, int]] = []
+    judge_order = 0
     saw_pr_workflow = False
 
     for path in workflow_files(root):
@@ -301,14 +328,14 @@ def classify_workflows(root: Path) -> list[str]:
             if _is_ai_judge(body):
                 if wf_file == file_label and any(n in direct_ai for n in _job_needs(body)):
                     continue
-                ai_judges.append(f"{label} job {job_id}")
+                ai_judges.append((f"{label} job {job_id}", body, judge_order))
+                judge_order += 1
             elif EXTRA_JOB_HINTS.search(_strip_yaml_comments(body)):
                 lines.append(f"EXTRA workflow: {label} job {job_id}")
             else:
                 lines.append(f"ASKED CI workflow: {label} job {job_id}")
 
-    preferred = [j for j in ai_judges if "pstack-sources.yml" in j and j.endswith("job verifier")]
-    ordered = preferred + [j for j in ai_judges if j not in preferred]
+    ordered = _order_ai_judges(ai_judges, pinned_verifier)
     if ordered:
         lines.append(f"ASKED verifier workflow: {ordered[0]}")
         for extra in ordered[1:]:
@@ -371,11 +398,11 @@ def rule_restatements(root: Path) -> list[str]:
     return lines
 
 
-def analyze(root: Path, pstack: Path) -> list[str]:
+def analyze(root: Path, pstack: Path, pinned_verifier: str | None = None) -> list[str]:
     latest = latest_pstack(pstack)
     lines = [f"ASKED pstack recipe: {latest.name}"]
     lines.extend(verify_skills(root))
-    lines.extend(classify_workflows(root))
+    lines.extend(classify_workflows(root, pinned_verifier))
     lines.extend(rule_restatements(root))
     return lines
 
@@ -482,14 +509,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.root.resolve()
     pstack = pstack_root(args.pstack)
-    lines = analyze(root, pstack)
     base_extras: list[str] = []
+    pinned_verifier: str | None = None
     if args.base:
         try:
-            base_lines = analyze_base(root, comparison_ref(root, args.base), pstack)
+            base_ref = comparison_ref(root, args.base)
+            base_lines = analyze_base(root, base_ref, pstack)
         except (subprocess.CalledProcessError, tarfile.TarError, OSError) as exc:
             print(f"pstack-diff: --base {args.base}: {exc}", file=sys.stderr)
             return 2
+        pinned_verifier = _asked_verifier(base_lines)
+    lines = analyze(root, pstack, pinned_verifier)
+    if args.base:
         known = {_extra_key(line) for line in base_lines if line.startswith("EXTRA ")}
         base_extras = [line for line in lines if line.startswith("EXTRA ") and _extra_key(line) in known]
         lines = [
