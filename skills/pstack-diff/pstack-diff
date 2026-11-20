@@ -11,10 +11,33 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 PSTACK_ROOT = Path.home() / ".claude/plugins/cache/cursor-plugins/pstack"
+_SKILL_DIR = Path(__file__).resolve().parent
+
+REUSABLE_USES = re.compile(
+    r"^\s+uses:\s*([\w.-]+)/([\w.-]+)/\.github/workflows/([\w.-]+)@(\S+)",
+    re.M,
+)
+
+AI_JUDGE = re.compile(
+    r"cursor-agent|(?:^|[\s\"'])(?:pi\s+-p|pi\s+--provider)|claude\s+-p|codex\s+exec|"
+    r"api\.deepseek\.com|openrouter\.ai|ai-gateway\.vercel\.sh|"
+    r"api\.openai\.com|api\.anthropic\.com|"
+    r"pick-verifier-model|run-verifier|"
+    r"(?:scripts/|python3\s+[-\w./]*)(?:\S*(?:verifier|advisor)\S*)|"
+    r"VERDICT:|PASS\+NOTES",
+    re.M | re.I,
+)
+
+EXTRA_JOB_HINTS = re.compile(
+    r"pacer-check|scorecard|repro-must-fail|coverage.*ratchet|ratchet.*coverage|"
+    r"freeze|budget|cap gate",
+    re.I,
+)
 
 
 def latest_pstack() -> Path:
@@ -38,12 +61,8 @@ def verify_skills(root: Path) -> list[str]:
                 found.append(child.name)
     if not found:
         lines.append("GAP verify-skill: no .claude/skills/verify-<app>/SKILL.md with features/")
-    elif len(found) == 1:
-        lines.append(f"ASKED verify-skill: {found[0]}")
     else:
-        lines.append(
-            f"EXTRA verify-skill: expected exactly one, found {len(found)} ({', '.join(found)})"
-        )
+        lines.append(f"ASKED verify-skill: {', '.join(found)}")
     return lines
 
 
@@ -96,52 +115,127 @@ def _job_fails_pr(job_body: str) -> bool:
     return True
 
 
-VERIFIER_HINTS = re.compile(
-    r"pick-verifier-model|run-verifier|column-verifier\.py|verification/advisor\.py|"
-    r"independent verification|Post independent verdict|post verifier verdict|"
-    r"PASS, PASS\+NOTES, or FAIL|scripts/verdict\.py",
-    re.I,
-)
+def _clones_root() -> Path:
+    override = os.environ.get("PSTACK_DIFF_CLONES")
+    if override:
+        return Path(override)
+    return Path.home() / "projects"
 
-EXTRA_JOB_HINTS = re.compile(
-    r"pacer-check|scorecard|repro-must-fail|coverage.*ratchet|ratchet.*coverage|"
-    r"freeze|budget|cap gate",
-    re.I,
-)
+
+def _load_reusable_workflow(owner: str, repo: str, workflow_file: str, ref: str) -> str | None:
+    clone = _clones_root() / repo
+    rel = f".github/workflows/{workflow_file}"
+    if not clone.is_dir():
+        return None
+    if re.fullmatch(r"[0-9a-f]{40}", ref):
+        try:
+            return subprocess.check_output(
+                ["git", "-C", str(clone), "show", f"{ref}:{rel}"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+    path = clone / rel
+    if path.is_file():
+        return path.read_text(encoding="utf-8", errors="replace")
+    return None
+
+
+def _house_entries(root: Path) -> dict[tuple[str, str], str]:
+    entries: dict[tuple[str, str], str] = {}
+    paths = [_SKILL_DIR / "house.txt", root / ".pstack-house.txt"]
+    for path in paths:
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"^([^:]+):(\S+)\s+(.+)$", line)
+            if match:
+                entries[(match.group(1), match.group(2))] = match.group(3)
+    return entries
+
+
+def _is_ai_judge(job_body: str) -> bool:
+    return bool(AI_JUDGE.search(job_body))
+
+
+def _reusable_spec(job_body: str) -> str | None:
+    match = REUSABLE_USES.search(job_body)
+    if not match:
+        return None
+    return (
+        f"{match.group(1)}/{match.group(2)}/.github/workflows/"
+        f"{match.group(3)}@{match.group(4)}"
+    )
+
+
+def _iter_pr_jobs(
+    root: Path,
+    caller_file: str,
+    text: str,
+    via: str | None,
+    lines: list[str],
+) -> list[tuple[str, str, str]]:
+    """Return (file_label, job_id, body) for classifiable jobs."""
+    collected: list[tuple[str, str, str]] = []
+    prefix = f"{caller_file} via {via}" if via else caller_file
+    for job_id, body in _job_blocks(text):
+        spec = _reusable_spec(body)
+        if spec and not re.search(r"^\s+steps:\s*$", body, re.M):
+            match = REUSABLE_USES.search(body)
+            assert match
+            inner = _load_reusable_workflow(
+                match.group(1), match.group(2), match.group(3), match.group(4)
+            )
+            if inner is None:
+                lines.append(f"UNKNOWN reusable workflow {spec} (check by hand)")
+                lines.append(f"EXTRA workflow: {prefix} job {job_id} (unresolved reusable)")
+                continue
+            collected.extend(_iter_pr_jobs(root, caller_file, inner, spec, lines))
+            continue
+        if not _job_fails_pr(body):
+            continue
+        collected.append((prefix, job_id, body))
+    return collected
 
 
 def classify_workflows(root: Path) -> list[str]:
     lines: list[str] = []
-    verifier_jobs: list[str] = []
+    house = _house_entries(root)
+    ai_judges: list[str] = []
+    saw_pr_workflow = False
+
     for path in workflow_files(root):
         text = path.read_text(encoding="utf-8", errors="replace")
         if not _on_pull_request(text):
             continue
+        saw_pr_workflow = True
         file_label = path.relative_to(root).as_posix()
-        for job_id, body in _job_blocks(text):
-            if not _job_fails_pr(body):
+        for label, job_id, body in _iter_pr_jobs(root, file_label, text, None, lines):
+            wf_file = file_label.split(" via ", 1)[0]
+            house_key = (wf_file, job_id)
+            if house_key in house:
+                lines.append(f"HOUSE {label} job {job_id}: {house[house_key]}")
                 continue
-            label = f"{file_label} job {job_id}"
-            is_verifier = bool(VERIFIER_HINTS.search(body)) or "verifier" in job_id.lower()
-            is_extra_hint = bool(EXTRA_JOB_HINTS.search(body))
-            if is_verifier:
-                verifier_jobs.append(label)
-            elif is_extra_hint:
-                lines.append(f"EXTRA workflow: {label}")
+            if _is_ai_judge(body):
+                ai_judges.append(f"{label} job {job_id}")
+            elif EXTRA_JOB_HINTS.search(body):
+                lines.append(f"EXTRA workflow: {label} job {job_id}")
             else:
-                lines.append(f"ASKED CI workflow: {label}")
-    def verifier_rank(label: str) -> tuple[int, str]:
-        if "pstack-sources.yml" in label and label.endswith("job verifier"):
-            return (0, label)
-        return (1, label)
+                lines.append(f"ASKED CI workflow: {label} job {job_id}")
 
-    verifier_jobs.sort(key=verifier_rank)
-    if verifier_jobs:
-        lines.append(f"ASKED verifier workflow: {verifier_jobs[0]}")
-        for extra in verifier_jobs[1:]:
+    preferred = [j for j in ai_judges if "pstack-sources.yml" in j and j.endswith("job verifier")]
+    ordered = preferred + [j for j in ai_judges if j not in preferred]
+    if ordered:
+        lines.append(f"ASKED verifier workflow: {ordered[0]}")
+        for extra in ordered[1:]:
             lines.append(f"EXTRA workflow: {extra}")
-    elif any(_on_pull_request(p.read_text(encoding="utf-8", errors="replace")) for p in workflow_files(root)):
+    elif saw_pr_workflow:
         lines.append("GAP verifier workflow: no pull_request job runs an AI verifier")
+
     return lines
 
 

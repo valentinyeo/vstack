@@ -11,7 +11,7 @@ Prior art: pstack `create-verification-skill/SKILL.md`, `maintain-verification-s
 
 Each chat that loads this skill runs `skills/pstack-diff/pstack-diff` from the project root once per session (or after verification-touching edits). Exit 0 means the repo matches pstack aside from house deviations. Exit 1 lists `GAP` or `EXTRA` lines — fix them in a PR, not by silencing the tool.
 
-House deviation already baked in: the step-1 verifier may be a GitHub Actions job (vstack's shared verifier workflow) instead of a Cursor cloud agent. Everything else should match pstack.
+House deviations live in `skills/pstack-diff/house.txt`; repos may add a root dot-pstack-house file. Listed gates print `HOUSE` and do not fail the run. The step-1 verifier may be a GitHub Actions job instead of a Cursor cloud agent.
 
 ## Run
 

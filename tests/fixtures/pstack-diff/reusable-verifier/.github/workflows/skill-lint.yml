@@ -1,0 +1,7 @@
+name: Skill lint
+on:
+  pull_request:
+jobs:
+  skill-lint:
+    uses: valentinyeo/house-rules/.github/workflows/skill-lint.yml@deadbeef00000000000000000000000000deadbeef
+    secrets: inherit

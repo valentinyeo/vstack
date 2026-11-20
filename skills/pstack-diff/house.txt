@@ -1,0 +1,1 @@
+.github/workflows/checks.yml:pacer-check code workers never run on Claude (Valentin lanes rule)
