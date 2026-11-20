@@ -40,6 +40,36 @@ seconds, prints the same header and table gh prints, and stops when no check is 
 Exit codes match gh: 0 all passed, 1 a check failed, `--fail-fast` stops on the first
 failure instead of waiting for the rest.
 
+## Budget per chat
+
+One token serves every chat, so the wrapper also counts. A call that reaches GitHub adds one to a
+small counter file per session under `~/.local/state/gh-call-log/budget/`, holding at most an hour
+of minute buckets so the window rolls instead of resetting on the hour; a cache hit adds nothing and
+the log itself is never scanned. The numbers are the table at the top of `tools/gh-wrapper/gh`, so
+the code and the doc read the same:
+
+| Session id | Warn | Refuse |
+|---|---|---|
+| known | 300 an hour | 600 an hour: no upstream call, exit 75 |
+| unknown (`-`) | 300 an hour | never |
+
+Above 300 the call runs and stderr gets one line, `gh budget: <session> used N of 600 GitHub calls
+this hour; slow down or use the cache`, then the concrete next command and the path of
+`USING-GITHUB.md`. Above 600 a read is refused with exit 75 and `... wait until HH:MM UTC`, the minute the oldest
+bucket leaves the rolling hour. Writes
+(merge, create, comment, edit, ready) are counted and never refused. A `warned` or `refused` event
+lands in `calls.tsv` in the marker column, so the owner can see who was slowed.
+
+`gh budget` never reaches gh.real. It prints this session's count, the five busiest sessions this
+hour and the live remaining REST core and GraphQL budget from one cached `rate_limit` call.
+
+## Waiting for CI quietly
+
+`tools/gh-wrapper/wait-checks <repo> <pr>` polls `gh pr checks` once a minute through the cache,
+prints one line and exits 0 when every check passed, 1 when a check failed, 2 at the 30 minute cap.
+`hooks/gh-watch-guard.py` blocks `gh --watch` and shell loops that call gh with a sleep under 60 s
+and names this command instead. The short rules every chat follows are in `USING-GITHUB.md`.
+
 ## Pruning
 
 The old folder grew to 138,964 files and 56 GB with nothing deleting anything. Now every
@@ -137,6 +167,11 @@ such watch now costs at most one upstream call a minute.
 own invocations: ten concurrent `pr checks` making one upstream call, writes never cached,
 exit code and stderr replayed, watch sleeping 60 seconds on `--interval 10`, prune by age and
 by size, and no token in any cache file or log line.
+
+`tests/test_gh_budget.py`, `tests/test_wait_checks.py` and `tests/test_gh_watch_guard.py` cover the
+budget warn and refuse lines, the unknown session that is never refused, writes that are never
+refused, the `gh budget` output, the background wait with a stub runner, and the guard's blocked
+and allowed commands.
 
 ```bash
 timeout 600 python3 -m unittest discover -s tests -p 'test_gh_wrapper.py'

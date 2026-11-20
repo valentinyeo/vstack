@@ -7,6 +7,17 @@ until the reset epoch from the response headers, then tries once more.
 
 Reads of hypertask-ai/hypertask use the installation token file when it
 exists. This module never prints that token.
+
+GitHub calls per chat per hour, counted where a call reaches GitHub: a cache hit is free.
+
+| Session id | Warn | Refuse | On refuse |
+|---|---|---|---|
+| known | 300 | 600 | no upstream call, exit 75 |
+| unknown (`-`) | 300 | never | the call always runs |
+
+Writes (merge, create, comment, edit, ready) are never refused. Each session has one small file
+under `budget/` beside the call log holding at most an hour of minute buckets, so a call reads one
+tiny file and never the log. `gh budget` prints the counters and the live rate limit.
 """
 from __future__ import annotations
 
@@ -28,6 +39,13 @@ PR_BYPASS_FLAGS = {"--web", "-w", "--no-cache"}
 PR_TTL = 60
 PR_TTL_ENV = "GH_WRAPPER_TTL"
 PR_NO_CACHE_ENV = "GH_WRAPPER_NO_CACHE"
+BUDGET_WARN = 300
+BUDGET_REFUSE = 600
+BUDGET_MINUTES = 60
+BUDGET_KEEP_HOURS = 3
+BUDGET_RULES = "~/.local/share/vstack/tools/gh-wrapper/USING-GITHUB.md"
+BUDGET_REPLACEMENT = "~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>"
+
 PRUNE_EVERY = 600
 PRUNE_MAX_AGE = 86400
 PRUNE_CAP = 2 * 1024 ** 3
@@ -431,6 +449,221 @@ def _log_call(argv, method=None, bucket=None, marker="-") -> None:
         pass
 
 
+def budget_dir() -> Path:
+    """The counter folder, beside the call log unless GH_BUDGET_DIR says otherwise."""
+    log = os.environ.get("GH_CALL_LOG", str(Path.home() / ".local/state/gh-call-log/calls.tsv"))
+    return Path(os.environ.get("GH_BUDGET_DIR", str(Path(log).parent / "budget")))
+
+
+def budget_minute(now=None) -> int:
+    """The minute bucket a count belongs to. A rolling hour is the last BUDGET_MINUTES of them."""
+    return int(time.time() if now is None else now) // 60
+
+
+def budget_session() -> str:
+    """The name the log and the budget share; `-` means this call carries no session id."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", log_session())[:32] or "-"
+
+
+def budget_path(session: str) -> Path:
+    return budget_dir() / ("s." + session)
+
+
+def budget_lines(text: str, first: int) -> dict:
+    """{minute: count} from a counter file, keeping only the minutes inside the rolling hour."""
+    rows = {}
+    for line in (text or "").splitlines():
+        head, _sep, tail = line.partition(" ")
+        if head.isdigit() and tail.isdigit() and int(head) >= first:
+            rows[int(head)] = rows.get(int(head), 0) + int(tail)
+    return rows
+
+
+def budget_rows(session: str, now=None) -> list:
+    """[(minute, count)] inside the rolling hour, oldest first."""
+    try:
+        text = budget_path(session).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    rows = budget_lines(text, budget_minute(now) - BUDGET_MINUTES + 1)
+    return sorted(rows.items())
+
+
+def budget_count(session: str, now=None) -> int:
+    return sum(count for _minute, count in budget_rows(session, now))
+
+
+def budget_lock():
+    import fcntl
+    directory = budget_dir()
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    handle = open(directory / ".lock", "a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def budget_prune(now=None) -> None:
+    """Drop counters nobody has touched for a few hours. Runs when a session's file is first made."""
+    cutoff = (budget_minute(now) - 60 * BUDGET_KEEP_HOURS) * 60
+    try:
+        items = list(budget_dir().iterdir())
+    except OSError:
+        return
+    for item in items:
+        if not item.name.startswith("s."):
+            continue
+        try:
+            if item.stat().st_mtime < cutoff:
+                _unlink(str(item))
+        except OSError:
+            continue
+
+
+def budget_charge(session=None, now=None) -> int:
+    """Count one call that reached GitHub, for this session and rolling hour. Returns the new count."""
+    session = session or budget_session()
+    minute = budget_minute(now)
+    first = minute - BUDGET_MINUTES + 1
+    try:
+        lock = budget_lock()
+    except OSError:
+        return budget_count(session, now)
+    try:
+        try:
+            text = budget_path(session).read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+            budget_prune(now)
+        rows = budget_lines(text, first)
+        rows[minute] = rows.get(minute, 0) + 1
+        target = budget_path(session)
+        tmp = target.with_name(target.name + ".%s.tmp" % os.getpid())
+        tmp.write_text("".join("%d %d\n" % (minute, rows[minute]) for minute in sorted(rows)),
+                       encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+        return sum(rows.values())
+    except OSError:
+        return budget_count(session, now)
+    finally:
+        lock.close()
+
+
+def budget_ledger(now=None) -> list:
+    """[(session, count)] for the rolling hour, busiest first, read from the counter files alone."""
+    rows = []
+    try:
+        items = list(budget_dir().iterdir())
+    except OSError:
+        return rows
+    for item in items:
+        if not item.name.startswith("s."):
+            continue
+        name = item.name[2:]
+        count = budget_count(name, now)
+        if count:
+            rows.append((name, count))
+    return sorted(rows, key=lambda row: -row[1])
+
+
+def budget_until(session: str, now=None) -> int:
+    """The epoch when this session's rolling hour falls under the refuse line."""
+    rows = budget_rows(session, now)
+    until = (budget_minute(now) + 1) * 60
+    total = sum(count for _minute, count in rows)
+    for minute, count in rows:
+        if total < BUDGET_REFUSE:
+            break
+        total -= count
+        until = (minute + 1) * 60
+    return until
+
+
+def budget_verdict(argv, now=None):
+    """("", n), ("warn", n) or ("refuse", n) for the next upstream read this call would make."""
+    session = budget_session()
+    count = budget_count(session, now)
+    if session == "-":
+        return "", count
+    if count >= BUDGET_REFUSE:
+        return "refuse", count
+    if count >= BUDGET_WARN:
+        return "warn", count
+    return "", count
+
+
+def budget_next(argv) -> str:
+    """The one better command for this kind of call."""
+    return BUDGET_REPLACEMENT if pr_command(argv) in PR_READ_SUBS else "gh budget"
+
+
+def budget_message(verdict: str, session: str, count: int, argv) -> str:
+    """The one line a slowed call writes: what happened, then the command and the rules to run."""
+    tail = "Next: %s. Rules: %s" % (budget_next(argv), BUDGET_RULES)
+    if verdict == "refuse":
+        until = time.strftime("%H:%M UTC", time.gmtime(budget_until(session)))
+        return "gh budget: %s is over %d GitHub calls this hour; wait until %s. %s" % (
+            session, BUDGET_REFUSE, until, tail)
+    return "gh budget: %s used %d of %d GitHub calls this hour; slow down or use the cache. %s" % (
+        session, count, BUDGET_REFUSE, tail)
+
+
+def graphql_read(argv) -> bool:
+    """`gh api graphql` carrying a query and no mutation: a read that spends the shared pool."""
+    return "graphql" in argv[1:] and not any("mutation" in arg for arg in argv)
+
+
+def budgeted_read(argv) -> bool:
+    """A GitHub read the per-session budget may refuse or warn on before upstream runs."""
+    return graphql_read(argv) or pr_command(argv) in PR_READ_SUBS
+
+
+def reaches_github(argv) -> bool:
+    """This call spends a GitHub request: it is not a local subcommand."""
+    sub = _subcommand(argv)
+    if sub in LOCAL_COMMANDS:
+        return False
+    return not (sub == "auth" and "token" in argv[1:])
+
+
+def rate_limit_line(real: str) -> str:
+    """One line of live headroom from one cached rate_limit call."""
+    try:
+        doc = gh_get("rate_limit", gh_bin=real)
+    except (GhError, OSError, ValueError, subprocess.SubprocessError) as error:
+        return "rate limit unknown: %s\n" % " ".join(str(error).split())[:120]
+    resources = doc.get("resources") if isinstance(doc, dict) else None
+    if not isinstance(resources, dict):
+        return "rate limit unknown: rate_limit answered without resources\n"
+    core = resources.get("core") or {}
+    graphql = resources.get("graphql") or {}
+    reset = core.get("reset")
+    when = time.strftime("%H:%M UTC", time.gmtime(reset)) if isinstance(reset, int) and reset else "unknown"
+    return "REST core %s of %s left; GraphQL %s of %s left; resets %s\n" % (
+        core.get("remaining", "?"), core.get("limit", "?"),
+        graphql.get("remaining", "?"), graphql.get("limit", "?"), when)
+
+
+def budget_mode(real: str) -> int:
+    """`gh budget`: this session's count, the five busiest this hour, and live rate-limit headroom."""
+    session = budget_session()
+    count = budget_count(session)
+    out = sys.stdout
+    if session == "-":
+        out.write("gh budget: no session id, so this chat is never refused; %d GitHub calls this hour\n" % count)
+    else:
+        out.write("gh budget %s: %d of %d GitHub calls this hour, warn at %d\n" % (
+            session, count, BUDGET_REFUSE, BUDGET_WARN))
+    ledger = budget_ledger()
+    if ledger:
+        out.write("top sessions this hour:\n")
+        for name, used in ledger[:5]:
+            out.write("  %-24s %d\n" % (name, used))
+    out.write(rate_limit_line(real))
+    out.flush()
+    return 0
+
+
 # --- gh pr reads: one saved answer serves every chat for a minute -----------------
 #
 # `gh pr checks`, `view`, `list` and `status` are GraphQL, so the api snapshot above never
@@ -639,6 +872,7 @@ def cached_pr(argv, real, runner=None, clock=time.time, ttl=None) -> Outcome:
     try:
         lock = pr_lock(key)
     except OSError:
+        budget_charge(now=now)
         return upstream(real, argv[1:], runner, env)
     try:
         entry = read_pr_entry(key)
@@ -646,8 +880,16 @@ def cached_pr(argv, real, runner=None, clock=time.time, ttl=None) -> Outcome:
         if _fresh(entry, now, ttl):
             _log_call(argv, bucket=_LAST_BUCKET[0], marker="hit")
             return Outcome(entry.get("code") or 0, entry.get("stdout"), entry.get("stderr"))
+        verdict, count = budget_verdict(argv, now=now)
+        if verdict == "refuse":
+            _log_call(argv, bucket=_LAST_BUCKET[0], marker="refused")
+            sys_stderr(budget_message(verdict, budget_session(), count, argv))
+            return Outcome(75, "", "")
+        if verdict == "warn":
+            sys_stderr(budget_message(verdict, budget_session(), count, argv))
         outcome = upstream(real, argv[1:], runner, env)
-        _log_call(argv, bucket=_LAST_BUCKET[0], marker="miss")
+        budget_charge(now=now)
+        _log_call(argv, bucket=_LAST_BUCKET[0], marker="warned" if verdict == "warn" else "miss")
         try:
             write_pr_entry(key, {
                 "key": key,
@@ -824,6 +1066,8 @@ def wrap_main(argv=None) -> int:
         real = gh_binary()
     if os.environ.get("GH_WRAPPER_PRUNE") == "1":
         return prune_mode()
+    if _subcommand(argv) == "budget":
+        return budget_mode(real)
     try:
         prune_cache()
     except Exception:
@@ -839,7 +1083,20 @@ def wrap_main(argv=None) -> int:
     include = "--include" in flags or "-i" in flags
     if "api" not in argv[1:] or not path or not shares_snapshot(method, flags):
         env = child_env(path) if path else os.environ.copy()
-        _log_call(argv, bucket="app" if env.get("GH_TOKEN") else "user")
+        bucket = "app" if env.get("GH_TOKEN") else "user"
+        marker = "-"
+        if budgeted_read(argv):
+            verdict, count = budget_verdict(argv)
+            if verdict == "refuse":
+                _log_call(argv, bucket=bucket, marker="refused")
+                sys_stderr(budget_message(verdict, budget_session(), count, argv))
+                return 75
+            if verdict == "warn":
+                marker = "warned"
+                sys_stderr(budget_message(verdict, budget_session(), count, argv))
+        _log_call(argv, bucket=bucket, marker=marker)
+        if reaches_github(argv):
+            budget_charge()
         return _passthrough(real, argv, env)
     waited = False
     while True:
@@ -852,9 +1109,20 @@ def wrap_main(argv=None) -> int:
             current = int(time.time())
             if entry and 0 <= current - int(entry.get("fetchedAt") or 0) < DEFAULT_TTL:
                 return _emit_cached(entry, include, jq)
+            verdict, count = budget_verdict(argv)
+            if verdict == "refuse":
+                _log_call(argv, marker="refused")
+                sys_stderr(budget_message(verdict, budget_session(), count, argv))
+                return 75
+            marker = "-"
+            if verdict == "warn":
+                marker = "warned"
+                sys_stderr(budget_message(verdict, budget_session(), count, argv))
             etag = entry.get("etag") if entry else ""
             status, headers, body, code, stderr = _fetch_included(real, path, etag, fields)
-            _log_call(argv, "304" if status == 304 else method)
+            _log_call(argv, "304" if status == 304 else method, marker=marker)
+            if status != 304:
+                budget_charge()
             if status == 304 and entry:
                 write_entry(key, entry["body"], headers.get("etag") or etag, current,
                             entry.get("status") or 200, entry.get("headers") or {})
