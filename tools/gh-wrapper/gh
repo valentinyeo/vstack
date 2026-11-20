@@ -50,6 +50,9 @@ PRUNE_EVERY = 600
 PRUNE_MAX_AGE = 86400
 PRUNE_CAP = 2 * 1024 ** 3
 PRUNE_BUDGET = 2.0
+LOG_ROLL_BYTES = 50 * 1024 ** 2
+LOG_ROLL_KEEP = 2
+LOG_ROLL_BYTES_ENV = "GH_CALL_LOG_ROLL_BYTES"
 ENTRY_NAME = re.compile(r"^[0-9a-f]{64}\.(json|lock|[0-9]+\.tmp)$")
 
 
@@ -422,6 +425,82 @@ def _subcommand(argv):
     return ""
 
 
+def _log_roll_limit() -> int:
+    raw = os.environ.get(LOG_ROLL_BYTES_ENV)
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return LOG_ROLL_BYTES
+
+
+def _roll_lock(parent: Path):
+    import fcntl
+
+    parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    handle = open(parent / "roll.lock", "a+")
+    return handle, fcntl
+
+
+def _maybe_roll_log(log_path: str) -> None:
+    """When calls.tsv is huge, gzip it and keep LOG_ROLL_KEEP older copies. Non-blocking."""
+    import gzip
+
+    try:
+        size = os.stat(log_path).st_size
+    except OSError:
+        return
+    if size < _log_roll_limit():
+        return
+    parent = Path(log_path).parent
+    log = Path(log_path)
+    one = log.with_name(log.name + ".1.gz")
+    two = log.with_name(log.name + ".2.gz")
+    tmp = parent / ("%s.%s.roll.tmp" % (log.name, os.getpid()))
+    try:
+        lock_handle, fcntl = _roll_lock(parent)
+    except OSError:
+        return
+    try:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            return
+        try:
+            try:
+                size = os.stat(log_path).st_size
+            except OSError:
+                return
+            if size < _log_roll_limit():
+                return
+            if one.exists():
+                os.replace(str(one), str(two))
+            os.replace(str(log), str(tmp))
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return
+    finally:
+        lock_handle.close()
+    try:
+        with open(tmp, "rb") as src, gzip.open(str(one), "wb") as dst:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        for extra in parent.glob(log.name + ".*.gz"):
+            if extra.name not in (one.name, two.name):
+                _unlink(str(extra))
+    except OSError:
+        pass
+
+
 def _log_call(argv, method=None, bucket=None, marker="-") -> None:
     if any(arg in ("api", "graphql") for arg in argv[1:]):
         parsed_method, path, _jq, _flags, _fields = _api_path(argv)
@@ -440,11 +519,19 @@ def _log_call(argv, method=None, bucket=None, marker="-") -> None:
         bucket = _LAST_BUCKET[0] or ("app" if os.environ.get("GH_TOKEN") else "user")
     caller = classify_caller()
     log = os.environ.get("GH_CALL_LOG", str(Path.home() / ".local/state/gh-call-log/calls.tsv"))
+    row = "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" % (
+        int(time.time()), caller, method, path, bucket, log_session(), marker)
     try:
-        Path(log).parent.mkdir(parents=True, exist_ok=True)
-        with open(log, "a", encoding="utf-8") as handle:
-            handle.write("%s\t%s\t%s\t%s\t%s\t%s\t%s\n" % (
-                int(time.time()), caller, method, path, bucket, log_session(), marker))
+        parent = Path(log).parent
+        lock_handle, fcntl = _roll_lock(parent)
+        try:
+            _maybe_roll_log(log)
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
+            with open(log, "a", encoding="utf-8") as handle:
+                handle.write(row)
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
     except OSError:
         pass
 
