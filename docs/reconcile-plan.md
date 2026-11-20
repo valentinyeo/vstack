@@ -2,7 +2,9 @@
 
 Goal: boards stay true by themselves. No chat moves a card by hand.
 
-Owner: Hypertask Reconciler (vstack chat `live-2a735a3c`). Workers write all code through `plan-pick --run`.
+Reconcile is a service, not a central syncer. Each chat runs it on its own board and label, under its own login. A chat that sees a wrong card reports it to the owner, who fixes the tool for every chat.
+
+Owner: Hypertask Reconciler (vstack chat `live-2a735a3c`). It maintains the script and never runs `--apply` on other chats' cards. Workers write all code through `plan-pick --run`.
 
 ## Why the tool keeps breaking
 
@@ -29,7 +31,7 @@ All of these PRs edit `skills/hypertask-work/reconcile`. They land one at a time
 | 3 | verify-reconcile skill (new files only) | SOFT-2920 | none, lands any time |
 | 4 | one rule model plus an exhaustive model check | SOFT-2921 | 2 |
 | 5 | loud failure without a user bus; under 30 GitHub calls | SOFT-2919 | 4 |
-| 6 | board 15 apply accepts the Hypertask Reconciler login | SOFT-2919 | 5 |
+| 6 | board 15 apply accepts any agent's own login | SOFT-2919 | 5 |
 | 7 | label runs do not block the board lock | SOFT-2853 | 6 |
 
 PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN` would hold a stale card in In Progress. That is bug 1 in reverse. PR 1 stops it.
@@ -72,8 +74,8 @@ PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN`
 
 ## PR 6: board 15 apply login
 
-- [ ] `require_board15_agent` accepts the Hypertask Reconciler agent.
-- [ ] Live: an `--apply --limit 1` run on board 15 under that login moves one card and logs it as Hypertask Reconciler.
+- [ ] `require_board15_agent` accepts any agent login, never a person's. Today it allows only vcc and HT Product Lead.
+- [ ] Live: a chat's own `--label <its label> --apply --limit 1` run on board 15 moves one card and logs it under that chat's agent.
 
 ## PR 7: lock (SOFT-2853)
 
@@ -82,6 +84,7 @@ PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN`
 
 ## After every PR
 
-- Run `verify-reconcile` on boards 15 and 2060.
+- The owner runs `verify-reconcile` on boards 15 and 2060 before the change goes live.
+- Each chat runs `verify-reconcile --label <its label>` in its own loop.
 - Every card a chat reports as wrong becomes a unit fixture first, then a fix.
 - Done means a second dry run after apply plans no moves.
