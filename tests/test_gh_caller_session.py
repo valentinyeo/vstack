@@ -57,7 +57,7 @@ class ScriptSessionTests(unittest.TestCase):
 
     def test_fallback_uses_known_caller(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch.object(self.mod, "classify_caller", return_value="agent-feed"):
+            with mock.patch.object(self.mod, "_classify_caller_proc", return_value=("agent-feed", 99)):
                 with mock.patch.object(self.mod, "script_ancestor_name", return_value=""):
                     self.assertEqual(self.mod.log_session(), "script:agent-feed")
 
@@ -89,7 +89,7 @@ class ScriptSessionTests(unittest.TestCase):
 
     def test_dash_only_when_nothing_known(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch.object(self.mod, "classify_caller", return_value="other"):
+            with mock.patch.object(self.mod, "_classify_caller_proc", return_value=("other", 0)):
                 with mock.patch.object(self.mod, "script_ancestor_name", return_value=""):
                     self.assertEqual(self.mod.log_session(), "-")
 
@@ -99,6 +99,50 @@ class ScriptSessionTests(unittest.TestCase):
                 verdict, count = self.mod.budget_verdict(["pr", "list"], now=0)
         self.assertEqual(verdict, "refuse")
         self.assertEqual(count, 600)
+
+    def _cursor_agent_chain(self, agent_pid):
+        chain = {
+            agent_pid: ["/home/me/.local/bin/cursor-agent", "worker"],
+            agent_pid - 1: ["/bin/bash", "-c", "gh pr list"],
+        }
+        ppid = {agent_pid: agent_pid - 2, agent_pid - 1: agent_pid, agent_pid - 2: 1}
+
+        def fake_cmdline(pid):
+            return chain.get(pid, [])
+
+        def fake_ppid(pid):
+            return ppid.get(pid, 0)
+
+        return fake_cmdline, fake_ppid
+
+    def test_agent_fallback_splits_by_match_pid(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(self.mod.os, "getppid", return_value=4101):
+                with mock.patch.object(self.mod, "_proc_cmdline",
+                                       side_effect=self._cursor_agent_chain(4102)[0]):
+                    with mock.patch.object(self.mod, "_proc_ppid",
+                                           side_effect=self._cursor_agent_chain(4102)[1]):
+                        one = self.mod.log_session()
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch.object(self.mod.os, "getppid", return_value=5101):
+                    with mock.patch.object(self.mod, "_proc_cmdline",
+                                           side_effect=self._cursor_agent_chain(5102)[0]):
+                        with mock.patch.object(self.mod, "_proc_ppid",
+                                               side_effect=self._cursor_agent_chain(5102)[1]):
+                            two = self.mod.log_session()
+        self.assertEqual(one, "agent:cursor-agent:4102")
+        self.assertEqual(two, "agent:cursor-agent:5102")
+        self.assertNotEqual(one, two)
+
+    def test_agent_fallback_no_pid_stays_unbudgeted(self):
+        with mock.patch.dict(os.environ, {"GH_CALLER": "cursor-agent"}, clear=True):
+            self.assertEqual(self.mod.log_session(), "-")
+
+    def test_agent_feed_stays_script_session(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(self.mod, "_classify_caller_proc", return_value=("agent-feed", 88)):
+                with mock.patch.object(self.mod, "script_ancestor_name", return_value=""):
+                    self.assertEqual(self.mod.log_session(), "script:agent-feed")
 
 
 class GraphqlPassthroughTests(unittest.TestCase):

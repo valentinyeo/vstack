@@ -367,57 +367,66 @@ def _api_path(argv):
     return method, path, jq, flags_seen, fields
 
 
-def classify_caller() -> str:
-    env_caller = (os.environ.get("GH_CALLER") or "").strip()
-    if env_caller:
-        return env_caller
-    names = {
-        "agent-board-poll": "agent-board-poll",
-        "agent-board-poll-tick": "agent-board-poll",
-        "ht-supervisor": "ht-supervisor",
-        "bug_drain.py": "bug-drain",
-        "ship_fixes.py": "ship-bug-fixes",
-        "rules_watch.py": "rules-watch",
-        "grok-drain-worker-v2": "drain-worker",
-        "grok-drain-worker-v3": "drain-worker",
-        "push-agent-runtime.sh": "agent-feed",
-        "collect-agent-runtime.mjs": "agent-feed",
-        "collect-agent-status.mjs": "agent-feed",
-        "collect-shipped-windows.mjs": "agent-feed",
-        "cursor-agent": "cursor-agent",
-    }
+AGENT_KIND_CALLERS = frozenset({"cursor-agent", "claude", "codex", "drain-worker"})
+
+_CALLER_NAMES = {
+    "agent-board-poll": "agent-board-poll",
+    "agent-board-poll-tick": "agent-board-poll",
+    "ht-supervisor": "ht-supervisor",
+    "bug_drain.py": "bug-drain",
+    "ship_fixes.py": "ship-bug-fixes",
+    "rules_watch.py": "rules-watch",
+    "grok-drain-worker-v2": "drain-worker",
+    "grok-drain-worker-v3": "drain-worker",
+    "push-agent-runtime.sh": "agent-feed",
+    "collect-agent-runtime.mjs": "agent-feed",
+    "collect-agent-status.mjs": "agent-feed",
+    "collect-shipped-windows.mjs": "agent-feed",
+    "cursor-agent": "cursor-agent",
+}
+
+
+def _classify_caller_proc() -> tuple:
+    """Walk /proc ancestors; return (caller label, pid where that label matched)."""
     pid = os.getppid()
     seen = set()
     agent = ""
+    agent_pid = 0
     for _ in range(14):
         if pid <= 1 or pid in seen:
             break
         seen.add(pid)
-        try:
-            raw = open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0")
-        except OSError:
-            break
-        parts = [part.decode("utf-8", "replace") for part in raw if part and len(part) <= 160]
+        parts = _proc_cmdline(pid)
         if not agent:
             for head in parts[:2]:
-                if head.rsplit("/", 1)[-1] in ("claude", "codex"):
-                    agent = head.rsplit("/", 1)[-1]
+                base = head.rsplit("/", 1)[-1]
+                if base in ("claude", "codex"):
+                    agent = base
+                    agent_pid = pid
                     break
         for index, part in enumerate(parts):
             base = part.rsplit("/", 1)[-1]
-            if base not in names:
+            if base not in _CALLER_NAMES:
                 continue
-            label = names[base]
+            label = _CALLER_NAMES[base]
             if label in ("agent-board-poll", "drain-worker"):
                 for nxt in parts[index + 1:]:
                     if not nxt.startswith("-") and len(nxt) < 40:
-                        return label + ":" + nxt
-            return label
-        try:
-            pid = int(open("/proc/%s/stat" % pid).read().split()[3])
-        except (OSError, IndexError, ValueError):
+                        return label + ":" + nxt, pid
+            return label, pid
+        pid = _proc_ppid(pid)
+        if not pid:
             break
-    return agent or "other"
+    if agent:
+        return agent, agent_pid
+    return "other", 0
+
+
+def classify_caller() -> str:
+    env_caller = (os.environ.get("GH_CALLER") or "").strip()
+    if env_caller:
+        return env_caller
+    return _classify_caller_proc()[0]
 
 
 _SCRIPT_SKIP = frozenset({
@@ -492,7 +501,17 @@ _SECRET = re.compile(r"(gh[pousr]_\w+|github_pat_\w+|Bearer\s+\S+|(?i:token)\S*)
 
 
 def _fallback_script_session() -> str:
-    caller = classify_caller()
+    env_caller = (os.environ.get("GH_CALLER") or "").strip()
+    if env_caller:
+        caller, match_pid = env_caller, 0
+    else:
+        caller, match_pid = _classify_caller_proc()
+    base = caller.split(":", 1)[0]
+    if base in AGENT_KIND_CALLERS:
+        if match_pid <= 0:
+            return ""
+        stable = "agent:%s:%s" % (caller, match_pid)
+        return re.sub(r"[^A-Za-z0-9_.:-]", "_", stable)[:32]
     if known_script_caller(caller):
         stable = caller
     else:

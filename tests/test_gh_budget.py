@@ -278,15 +278,19 @@ class BudgetCommandTests(BudgetCase):
         self.assertEqual(len(self.upstream_calls()), 1, "one cached rate_limit call serves both")
 
     def test_budget_reports_an_unknown_session_honestly(self):
+        mod = load_wrapper()
         env = self.env()
         env.pop("HT_SESSION_NAME", None)
-        result = self.run_gh("budget", env=env)
-        self.assertEqual(result.returncode, 0)
-        text = result.stdout
-        self.assertTrue(
-            "never refused" in text or "(script)" in text,
-            "expected either bare '-' or a script: budget line, got %r" % text,
-        )
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.object(mod, "_classify_caller_proc", return_value=("other", 0)):
+                with mock.patch.object(mod, "script_ancestor_name", return_value=""):
+                    with mock.patch.object(mod, "rate_limit_line", return_value="rate ok\n"):
+                        import io
+                        buf = io.StringIO()
+                        with mock.patch.object(sys, "stdout", buf):
+                            self.assertEqual(mod.budget_mode(str(self.real)), 0)
+                        text = buf.getvalue()
+        self.assertIn("never refused", text)
 
     def test_budget_reports_a_script_session(self):
         env = self.env()
