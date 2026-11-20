@@ -483,7 +483,8 @@ class RepoRun:
             "slug": None,
             "fetch_ok": False,
             "remote_decisions": False,
-            "worktrees": {"removed": [], "held": [], "deferred": 0, "pruned": []},
+            "worktrees": {"removed": [], "held": [], "deferred": 0, "pruned": [],
+                          "outside": 0},
             "branches": {"deleted": [], "kept": [], "deferred": 0},
             "remote": {"deleted": [], "kept": [], "stale": [], "deferred": 0},
             "setting": {"before": None, "set": False, "changed": False},
@@ -546,7 +547,12 @@ class RepoRun:
         if remote_ok:
             self.tidy_remote_branches(base, base_set, github)
             self.tidy_setting(github)
-        result["freed_bytes"] = max(0, free_bytes(self.opts.projects_root) - before)
+        removed = (len(result["worktrees"]["removed"]) + len(result["branches"]["deleted"])
+                   + len(result["remote"]["deleted"]))
+        # statvfs is the whole filesystem, so a dry run frees nothing and a run
+        # that removed nothing reports nothing.
+        if self.opts.apply and removed:
+            result["freed_bytes"] = max(0, free_bytes(self.opts.projects_root) - before)
         return result
 
     # worktrees ---------------------------------------------------------
@@ -570,6 +576,8 @@ class RepoRun:
         for entry, verdict in verdicts:
             kind, reason = verdict
             path = entry["path"]
+            if reason[0] == "outside":
+                self.result["worktrees"]["outside"] += 1
             if kind != "remove":
                 self.result["worktrees"]["held"].append(
                     {"path": path, "reason": reason[0], "detail": reason[1]})
@@ -860,7 +868,7 @@ def summarise(result, apply):
             counts["wip"] += 1
         elif reason in ("in use", "unreadable", "remove-failed"):
             counts["in use"] += 1
-        else:
+        elif reason != "outside":
             counts["unshipped"] += 1
     verb = "removed" if apply else "would-remove"
     freed = result["freed_bytes"] / 1e9
@@ -956,6 +964,10 @@ def main(argv):
         for line in runner.plan:
             print(line)
         print(summarise(result, opts.apply))
+        outside = result["worktrees"]["outside"]
+        if outside:
+            print("OUTSIDE %d worktrees outside %s, reported only (widen with "
+                  "--projects-root)" % (outside, opts.projects_root))
         deferred = deferred_line(result)
         if deferred:
             print(deferred)
@@ -973,6 +985,7 @@ def main(argv):
             "repos": len(results),
             "worktrees_removed": sum(len(r["worktrees"]["removed"]) for r in results),
             "worktrees_held": sum(len(r["worktrees"]["held"]) for r in results),
+            "worktrees_outside": sum(r["worktrees"]["outside"] for r in results),
             "branches_deleted": sum(len(r["branches"]["deleted"]) for r in results),
             "remote_deleted": sum(len(r["remote"]["deleted"]) for r in results),
             "freed_bytes": sum(r["freed_bytes"] for r in results),
