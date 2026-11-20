@@ -17,7 +17,7 @@ Run `/pstack:poteto-mode` for the task. This skill holds only Valentin's own rul
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
 - **Ticket, not chat:** Every unit gets a ticket before work; status, evidence and questions go on it, not in chat. The `hypertask-work` skill owns the ticket rules.
-- **Pace:** Answer each message within a minute. Long work runs in the background.
+- **Pace:** Run `/responsive-mode` with valentin mode and follow it all session.
 
 ## Three tools
 
