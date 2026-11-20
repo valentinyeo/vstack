@@ -6,7 +6,7 @@ on:
     inputs:
       pr_number:
         description: Pull request number to check (required when called as a reusable workflow)
-        required: false
+        required: true
         type: number
 permissions:
   contents: read
