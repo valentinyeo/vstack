@@ -2,6 +2,9 @@ name: Column contract
 on: [push, pull_request]
 permissions:
   contents: read
+concurrency:
+  group: column-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   columns:
     runs-on: ubuntu-latest

@@ -436,5 +436,19 @@ class VerifySkillGrade(unittest.TestCase):
                                                       {"worker": 0, "chat": None}))
 
 
+class WorkflowConcurrency(unittest.TestCase):
+    """A session-start budget check flags both workflows as missing concurrency."""
+
+    def test_checks_and_column_contract_cancel_superseded_runs(self):
+        for name, group in (("checks", "checks"), ("column-contract", "column-contract")):
+            text = (ROOT / ".github" / "workflows" / (name + ".yml")).read_text()
+            self.assertIn("concurrency:", text, name)
+            self.assertIn("cancel-in-progress: true", text, name)
+            self.assertIn("group: " + group + "-${{ github.event.pull_request.number || github.ref }}",
+                          text, name)
+            permissions = text.index("permissions:")
+            self.assertGreater(text.index("concurrency:"), permissions, name)
+
+
 if __name__ == "__main__":
     unittest.main()
