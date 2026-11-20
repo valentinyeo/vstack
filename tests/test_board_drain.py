@@ -290,6 +290,91 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
 
+def write_tool(path, body):
+    path.write_text(f'#!{sys.executable}\n' + body)
+    path.chmod(0o755)
+
+
+class HypertaskPathTest(unittest.TestCase):
+    """A `hypertask` worker shim early on PATH must never win over the real CLI."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.home = self.directory / 'home'
+        self.real_bin = self.home / '.local/bin'
+        self.real_bin.mkdir(parents=True)
+        self.shim_bin = self.directory / 'shim'
+        self.shim_bin.mkdir()
+        self.real_log = self.directory / 'real.log'
+        self.shim_log = self.directory / 'shim.log'
+        self.real_log.write_text('')
+        write_tool(self.shim_bin / 'hypertask',
+                   f'import pathlib, sys\n'
+                   f'pathlib.Path({str(self.shim_log)!r}).write_text(" ".join(sys.argv[1:]))\n'
+                   'sys.stderr.write("hypertask: no board login\\n")\n'
+                   'raise SystemExit(3)\n')
+        write_tool(self.real_bin / 'hypertask',
+                   'import json, os, pathlib, sys\n'
+                   'log = pathlib.Path(os.environ["REAL_HYPERTASK_LOG"])\n'
+                   'log.write_text(log.read_text() + " ".join(sys.argv[1:]) + "\\n")\n'
+                   'print(json.dumps({"tasks": [], "total": 0}))\n')
+
+    def environment(self, **extra):
+        """The shim first on PATH, the real CLI only in HOME/.local/bin."""
+        return {'HOME': str(self.home), 'PATH': f'{self.shim_bin}:/usr/bin:/bin',
+                'REAL_HYPERTASK_LOG': str(self.real_log),
+                'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state'),
+                'RECONCILE_CACHE': str(self.directory / 'cache.json'),
+                **extra}
+
+    def run_script(self, name, *argv, **extra):
+        return subprocess.run([sys.executable, str(SKILL / name), *argv], capture_output=True,
+                              text=True, env=self.environment(**extra), timeout=60)
+
+    def test_drain_check_reads_the_real_cli_not_the_shim(self):
+        done = self.run_script('drain-check', '--board', '2060', '--label', 'Poteto',
+                              '--now', iso(NOW))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn('drain-check: PASS', done.stdout)
+        self.assertFalse(self.shim_log.exists(), done.stdout + done.stderr)
+        self.assertIn('task list', self.real_log.read_text())
+
+    def test_sync_reads_the_real_cli_not_the_shim(self):
+        done = self.run_script('sync', '--board', '2060', '--label', 'Poteto',
+                               '--name', 'HT Test', HT_TOKEN='tok-from-env')
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn('sync: ok', done.stdout)
+        self.assertFalse(self.shim_log.exists(), done.stdout + done.stderr)
+        self.assertIn('task list', self.real_log.read_text())
+
+    def test_both_scripts_fix_the_path_before_their_steps(self):
+        for name, module in (('drain-check', 'board_drain_check_fresh'),
+                             ('sync', 'board_drain_sync_fresh')):
+            with self.subTest(script=name), \
+                    patch.dict(os.environ, {'HOME': str(self.home),
+                                            'PATH': f'{self.shim_bin}:/usr/bin:/bin'}):
+                load(module, SKILL / name)
+                path = os.environ['PATH'].split(os.pathsep)
+                self.assertEqual(path[0], str(self.real_bin))
+                self.assertEqual(path.count(str(self.real_bin)), 1)
+
+    def test_the_real_bin_goes_first_and_only_once(self):
+        before = f'{self.real_bin}{os.pathsep}/usr/bin'
+        with patch.dict(os.environ, {'HOME': str(self.home), 'PATH': before}):
+            loop.ensure_cli_path()
+            self.assertEqual(os.environ['PATH'], before)
+            loop.ensure_cli_path()
+            self.assertEqual(os.environ['PATH'], before)
+
+    def test_a_missing_real_bin_leaves_path_alone(self):
+        with patch.dict(os.environ, {'HOME': str(self.directory / 'nowhere'),
+                                    'PATH': '/usr/bin:/bin'}):
+            loop.ensure_cli_path()
+            self.assertEqual(os.environ['PATH'], '/usr/bin:/bin')
+
+
 class LoopStateTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

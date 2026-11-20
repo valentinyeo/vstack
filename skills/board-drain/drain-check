@@ -23,6 +23,9 @@ loop_state = importlib.util.module_from_spec(state_spec)
 sys.modules[state_loader.name] = loop_state
 state_loader.exec_module(loop_state)
 
+# Before any board read: a worker `hypertask` shim earlier on PATH exits 3.
+loop_state.ensure_cli_path()
+
 TODO = 'Todo'
 DOING = frozenset({'Doing', 'Building'})
 # A ticket in one of these columns has an owner, so an agent must be on it.
