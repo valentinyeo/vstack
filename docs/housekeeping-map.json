@@ -1,0 +1,972 @@
+{
+  "ticket": "VSTA-7",
+  "ticket_was": "SOFT-2940",
+  "ticket_url": "https://app.hypertask.ai/detail/project-13556/7",
+  "measured_at": "2026-11-20T13:55:00+01:00",
+  "host": "hypertask-vps",
+  "target": {
+    "tools": [
+      "vps-state",
+      "repo-tidy",
+      "vps-tidy"
+    ],
+    "branches": {
+      "vps-state": "soft-2935-vps-state",
+      "repo-tidy": "soft-2937-repo-tidy",
+      "vps-tidy": "not built"
+    }
+  },
+  "run_model": {
+    "central_instance": false,
+    "central_timer": false,
+    "how": [
+      "no shared housekeeping instance and no shared timer",
+      "each tool documents a 'Set up your own check' step a chat can paste into its own loop or hooks",
+      "each chat runs vps-state, repo-tidy and vps-tidy from its own loop or hooks",
+      "maintainers never run a tool on another chat's behalf",
+      "the old timers and cron lines still retire: disable, archive, 7-day undo"
+    ],
+    "setup_step": "each tool ships a '## Set up your own check' section with the loop or hook snippet that calls it, and the tool refuses to run without a caller it can name"
+  },
+  "verdict_counts": {
+    "KEEP": 8,
+    "MERGE->vps-state": 1,
+    "MERGE->repo-tidy": 3,
+    "MERGE->vps-tidy": 10,
+    "DELETE": 7
+  },
+  "disk": {
+    "filesystem": "/dev/sda1",
+    "size": "678G",
+    "used": "593G",
+    "available": "85G",
+    "used_percent": 88,
+    "inode_used_percent": 19,
+    "measured_with": "df -h / ; df -BG / ; df -i /",
+    "reclaimable": [
+      {
+        "target": "~/.local/state/gh-shared-cache",
+        "size": "56G",
+        "size_mb": 56727,
+        "reached_by": "no cleaner"
+      },
+      {
+        "target": "~/.local/state/gh-shared-cache-app",
+        "size": "19G",
+        "size_mb": 18567,
+        "reached_by": "no cleaner"
+      },
+      {
+        "target": "~/.cache",
+        "size": "14.3G",
+        "size_mb": 14639,
+        "children": [
+          {
+            "target": "~/.cache/ms-playwright",
+            "size": "3.3G",
+            "size_mb": 3310
+          }
+        ],
+        "reached_by": "disk-guard: zig 1.1G at 2d, node-gyp 132M, superseded playwright only"
+      },
+      {
+        "target": "~/.cache/ms-playwright",
+        "size": "3.3G",
+        "size_mb": 3310,
+        "reached_by": "disk-guard: old versions only"
+      },
+      {
+        "target": "~/.local/share/pnpm",
+        "size": "7.2G",
+        "size_mb": 7368,
+        "reached_by": "factory-cleanup: pnpm store prune"
+      },
+      {
+        "target": "~/projects/worktrees",
+        "size": "11G",
+        "size_mb": 11025,
+        "reached_by": "disk-guard, factory-cleanup, repo-tidy-to-be"
+      },
+      {
+        "target": "~/.local/state/hax",
+        "size": "5.2G",
+        "size_mb": 5321,
+        "reached_by": "no cleaner"
+      },
+      {
+        "target": "~/.local/state/vcc-evidence",
+        "size": "5.0G",
+        "size_mb": 5119,
+        "reached_by": "evidence-prune builds 2d and videos 14d; tmp-cleanup children 30d"
+      },
+      {
+        "target": "~/.local/state/drain",
+        "size": "3.8G",
+        "size_mb": 3861,
+        "reached_by": "no cleaner"
+      },
+      {
+        "target": "~/.npm",
+        "size": "1.3G",
+        "size_mb": 1357,
+        "children": [
+          {
+            "target": "~/.npm/_npx",
+            "size": "1.3G",
+            "size_mb": 1336
+          },
+          {
+            "target": "~/.npm/_cacache",
+            "size": "1M",
+            "size_mb": 1
+          }
+        ],
+        "reached_by": "tmp-cleanup: npm cache clean --force; _npx is reached by disk-guard at 7d"
+      },
+      {
+        "target": "~/projects/multiprompt-worktrees",
+        "size": "1.2G",
+        "size_mb": 1183,
+        "reached_by": "disk-guard, factory-cleanup"
+      },
+      {
+        "target": "~/projects/.worktrees",
+        "size": "1.0G",
+        "size_mb": 1037,
+        "reached_by": "disk-guard"
+      },
+      {
+        "target": "~/projects/hypertask-worker-trees",
+        "size": "4.0K",
+        "size_mb": 0.004,
+        "reached_by": "worktree-reaper (dead), root is empty"
+      },
+      {
+        "target": "docker images",
+        "size": "7.52G",
+        "size_mb": 7519,
+        "reclaimable": "4.79G",
+        "reclaimable_mb": 4791,
+        "reached_by": "disk-guard at 80%+ dangling only"
+      },
+      {
+        "target": "docker build cache",
+        "size": "1.53G",
+        "size_mb": 1527,
+        "reclaimable": "0",
+        "reclaimable_mb": 0,
+        "reached_by": "factory-cleanup until=72h"
+      },
+      {
+        "target": "docker volumes",
+        "size": "1.05G",
+        "size_mb": 1049,
+        "reclaimable": "157M",
+        "reclaimable_mb": 157,
+        "reached_by": "host-disk-sweep only (dead); disk-guard never prunes volumes"
+      },
+      {
+        "target": "/tmp",
+        "size": null,
+        "display_note": "du did not finish in 60s",
+        "entries": 27833,
+        "reached_by": "tmp-cleanup, factory-cleanup"
+      },
+      {
+        "target": "/tmp/claude-1000",
+        "size": "127M",
+        "size_mb": 127,
+        "reached_by": "tmp-cleanup 3d, factory-cleanup 24h"
+      },
+      {
+        "target": "/tmp/tmp.*",
+        "size": "250M",
+        "size_mb": 250,
+        "entries": 78,
+        "reached_by": "host-disk-sweep 2d, factory-cleanup 24h, tmp-cleanup 3d"
+      },
+      {
+        "target": "/tmp/igsh*",
+        "size": "215M",
+        "size_mb": 215,
+        "entries": 29,
+        "reached_by": "factory-cleanup 24h"
+      },
+      {
+        "target": "/tmp/mpa-*",
+        "size": "100M",
+        "size_mb": 100,
+        "entries": 540,
+        "reached_by": "factory-cleanup 24h"
+      },
+      {
+        "target": "/tmp/b15",
+        "size": null,
+        "display_note": "du did not finish in 60s",
+        "entries": 1539,
+        "reached_by": "no cleaner, it is a worktree root"
+      },
+      {
+        "target": "~/projects/ceo/runs files over 5M older than 2d",
+        "size": "0",
+        "size_mb": 0,
+        "reached_by": "factory-cleanup finds nothing"
+      }
+    ],
+    "docker_reclaimable_total_mb": 4948,
+    "worktrees_registered_in_hypertask": 758,
+    "biggest_wins": [
+      "75G in ~/.local/state/gh-shared-cache (56G) plus gh-shared-cache-app (19G), no cleaner names either: 11% of the 678G volume",
+      "7.2G pnpm store, reached by one line inside factory-cleanup",
+      "14.3G of ~/.cache, of which disk-guard reaches 1.2G plus old Playwright versions",
+      "13.2G across three worktree roots (11G, 1.2G, 1.0G), with 758 registrations in one repo",
+      "4.9G of docker reclaimable: 4.79G images and 157M volumes; the 1.53G build cache is not a win because none of it is reclaimable"
+    ]
+  },
+  "items": [
+    {
+      "id": "vps-load-check",
+      "item": "~/.local/bin/vps-load-check + vps-load-check.service",
+      "path": "/home/valentin/.local/bin/vps-load-check",
+      "does": "Writes add/steady/hold with load5 and cores to ~/.local/state/vps-load/status and appends history.log capped at 2000 lines",
+      "runs": "service static, never loaded, no .timer file anywhere; systemctl --user list-units '*vps-load*' returns 0 units. vps-state now rewrites the status file on every run (PR 175), so the file readers see is fresh even though nothing schedules this script",
+      "last_run": "history last line 2026-11-15T00:37:21; status file rewritten 2026-11-20T13:23:59 by vps-state",
+      "callers": [
+        "~/.local/share/house-rules/fleet/runner:424 requires line starting with add",
+        "~/projects/ceo/bin/hax-runner:25 sleeps 300s on hold",
+        "~/projects/ceo/RUNNER.md:64",
+        "~/projects/ceo/red/RUNNER.md"
+      ],
+      "owner": "vstack house-rules/fleet; jobs.json marks delete-planned",
+      "overlaps": "vps-state verdict",
+      "verdict": "MERGE->vps-state",
+      "why": "Move the verdict not the file: vps-state owns the status file from PR 175 and rewrites it each run, so both callers can drop the file read and call vps-state --can-launch worker (exit 0/1/2). No caller may read vps-load/status after that, so no runner depends on a file nothing schedules"
+    },
+    {
+      "id": "host-disk-sweep",
+      "item": "~/.local/bin/host-disk-sweep + host-disk-sweep.service",
+      "path": "/home/valentin/.local/bin/host-disk-sweep",
+      "does": "docker volume prune -f, docker image prune -f, removes /tmp/agent-template-stage.* older than 1 day and /tmp/tmp.* older than 2 days, logs MB freed and warns at 85%",
+      "runs": "service static, no .timer, is-enabled not-found, and no crontab line",
+      "last_run": "2026-10-08T03:30:01, freed 0 MB, now used 82%",
+      "callers": [],
+      "owner": "none, ~/.local/bin only",
+      "overlaps": "tmp-cleanup, factory-cleanup, disk-guard images, vps-tidy",
+      "verdict": "MERGE->vps-tidy",
+      "why": "Dead since 2026-10-08 but docker volume prune is the only volume rule on the box. vps-tidy takes it first, tightened to leaked ht-smoke-* volumes only"
+    },
+    {
+      "id": "tmp-cleanup",
+      "item": "~/.local/bin/tmp-cleanup + tmp-cleanup.service/.timer",
+      "path": "/home/valentin/.local/bin/tmp-cleanup",
+      "does": "Removes /tmp children untouched 3 days excluding claude-*, tmux-*, .X*, systemd-*; same under /tmp/claude-<uid>/*/; vcc-evidence children untouched 30 days; npm cache clean --force; uv cache clean",
+      "runs": "timer active and enabled, Sun 03:30, and valentin's crontab runs the same script Sunday 04:45, so it runs twice every Sunday",
+      "last_run": "2026-11-15T03:30, log last line after: 72%",
+      "callers": [
+        "own tmp-cleanup.timer, Sun 03:30",
+        "crontab -u valentin, 45 4 * * 0",
+        "~/.local/share/house-rules skills/vps-state names it as a housekeeping tool"
+      ],
+      "owner": "none, ~/.local/bin only",
+      "overlaps": "evidence-prune, factory-cleanup, host-disk-sweep, vps-tidy",
+      "verdict": "MERGE->vps-tidy",
+      "why": "The 30-day evidence rule and the four exclusions are the safety spine of vps-tidy, take them verbatim. Its double schedule is why nobody can say which run freed what"
+    },
+    {
+      "id": "worktree-reaper",
+      "item": "~/.local/bin/worktree-reaper + worktree-reaper.service",
+      "path": "/home/valentin/.local/bin/worktree-reaper",
+      "does": "Removes worktrees under ~/projects/hypertask-worker-trees past CAP=20 when the branch is merged or gone; keeps dirty and unpushed trees; rm -rf node_modules .next in kept trees",
+      "runs": "service Type=simple, no timer, not loaded, and no crontab line",
+      "last_run": "2026-09-10T00:37:56, trees_before=115 trees_after=114",
+      "callers": [],
+      "owner": "none, ~/.local/bin only",
+      "overlaps": "repo-tidy, disk-guard worktree rule, factory-cleanup",
+      "verdict": "DELETE",
+      "archive_key": "worktree-reaper",
+      "why": "No timer, no caller, and its root is now empty at 4.0K. Its unique trick, dropping node_modules and .next from a kept tree, goes into the vps-tidy spec",
+      "archive_names": [
+        "worktree-reaper"
+      ]
+    },
+    {
+      "id": "worktree-cleanup-weekly",
+      "item": "~/.local/bin/worktree-cleanup-weekly",
+      "path": "/home/valentin/.local/bin/worktree-cleanup-weekly",
+      "does": "Removes only worktrees holding a CLEANUP_READY lease: merged PR, clean tree, every GitHub and remote-ref query green; quarantine move before removal, per-worktree lock, restore on doubt",
+      "runs": "no unit and no crontab line; called from ~/.local/bin/fleet-watchdog:153 which points at the other copy",
+      "last_run": "~/.local/state/hypertask-worktree-cleanup last written 2026-09-01",
+      "callers": [
+        "~/.local/bin/fleet-watchdog:153"
+      ],
+      "owner": "hypertask-ai/hypertask scripts/worktree-cleanup-weekly.sh",
+      "overlaps": "repo-tidy, all of it",
+      "verdict": "MERGE->repo-tidy",
+      "why": "The only worktree cleaner with a lease. repo-tidy must adopt the lease fields, the quarantine move, the lock, and 'every GitHub and remote-ref query must succeed before cleanup starts'"
+    },
+    {
+      "id": "agent-worktree-refresh",
+      "item": "~/.local/bin/agent-worktree-refresh",
+      "path": "/home/valentin/.local/bin/agent-worktree-refresh",
+      "does": "Fetches hypertask-ai production and detaches a dedicated agent worktree to FETCH_HEAD",
+      "runs": "nothing runs it",
+      "last_run": "unknown, no log",
+      "callers": [],
+      "owner": "none, ~/.local/bin only",
+      "overlaps": "repo-tidy",
+      "verdict": "MERGE->repo-tidy",
+      "why": "The five skip conditions are the value: dirty tree, branch checked out, commits not on any remote, active advisor unit, index.lock"
+    },
+    {
+      "id": "orphan-reaper",
+      "item": "~/.local/bin/orphan-reaper",
+      "path": "/home/valentin/.local/bin/orphan-reaper",
+      "does": "Kills chroma-mcp and agent-browser-chrome with ppid=1 older than MAX_AGE=7200s, logs RAM before and after",
+      "runs": "no unit; valentin's crontab runs it hourly at :25 (25 * * * *), read with sudo -n crontab -l -u valentin on 2026-11-20",
+      "last_run": "2026-08-20T01:25:11 (last kill); log mtime 2026-11-20T13:25",
+      "callers": [
+        "crontab -u valentin, 25 * * * *"
+      ],
+      "owner": "none, ~/.local/bin only",
+      "overlaps": "vps-tidy process rules, proc-watchdog, agent-provider-reaper",
+      "verdict": "MERGE->vps-tidy",
+      "why": "Take the ppid=1 rule, the 2h age, both patterns and the RAM delta line"
+    },
+    {
+      "id": "reap-orphan-devservers",
+      "item": "~/.local/bin/reap-orphan-devservers",
+      "path": "/home/valentin/.local/bin/reap-orphan-devservers",
+      "does": "Kills next dev whose cwd is inside a wt-* worktree, whose top ancestor is init, with no claude or codex cwd in that worktree, older than 30 minutes",
+      "runs": "no unit; valentin's crontab runs it every 15 minutes (*/15 * * * *), read with sudo -n crontab -l -u valentin on 2026-11-20",
+      "last_run": "2026-11-19T20:15:11, killed 2 orphans in /tmp/b15/wt-bombadil",
+      "callers": [
+        "crontab -u valentin, */15 * * * *"
+      ],
+      "owner": "none, ~/.local/bin only",
+      "overlaps": "vps-tidy, proc-watchdog",
+      "verdict": "MERGE->vps-tidy",
+      "why": "The only rule that protects a dev server belonging to a live claude session. All four criteria must survive"
+    },
+    {
+      "id": "qa-browser-reaper",
+      "item": "~/.local/bin/qa-browser-reaper",
+      "path": "/home/valentin/.local/bin/qa-browser-reaper",
+      "does": "Kills any headless_shell, chrome --headless or agent-browser older than 120 minutes",
+      "runs": "no unit; valentin's crontab runs it every 30 minutes (*/30 * * * *), read with sudo -n crontab -l -u valentin on 2026-11-20",
+      "last_run": "2026-11-19T21:30:01",
+      "callers": [
+        "crontab -u valentin, */30 * * * *"
+      ],
+      "owner": "none, ~/.local/bin only",
+      "overlaps": "vps-tidy, proc-watchdog",
+      "verdict": "MERGE->vps-tidy",
+      "why": "Take as-is with the 120 minute cutoff and the note that a legitimate long-lived browser would be killed"
+    },
+    {
+      "id": "agent-provider-reaper",
+      "item": "~/.local/bin/agent-provider-reaper + agent-provider-reaper.service",
+      "path": "/home/valentin/.local/bin/agent-provider-reaper",
+      "does": "Kills codex, claude, hax or node with ppid=1 older than REAP_GRACE_SECONDS=1800 whose HOME or cwd sits in ~/.local/state/hypertask-*/; never a provider attached to a live worker",
+      "runs": "service Type=simple, no timer, inactive, and no crontab line",
+      "last_run": "no log or state found",
+      "callers": [
+        "named in company-skills/agents/Hypertask Product/background-jobs.md"
+      ],
+      "owner": "hypertask-ai/hypertask worker, HTPR-5591",
+      "overlaps": "vps-tidy process rules, proc-watchdog",
+      "verdict": "MERGE->vps-tidy",
+      "why": "Its kill list contains claude. vps-tidy needs the agent-state-dir proof and a hard never-kill-claude-outside-that-proof rule before this retires"
+    },
+    {
+      "id": "hetzner-chat-sweep",
+      "item": "~/.local/bin/hetzner-chat-sweep",
+      "path": "/home/valentin/.local/bin/hetzner-chat-sweep",
+      "does": "Read-only ssh comparison of Hetzner chat replies against the raw transcript, deletes nothing",
+      "runs": "never, no unit, no timer, no crontab line",
+      "last_run": "never",
+      "callers": [],
+      "owner": "IGSH-1822, one-off investigation",
+      "overlaps": "none",
+      "verdict": "DELETE",
+      "archive_key": "hetzner-chat-sweep",
+      "why": "Dead and not a cleaner",
+      "archive_names": [
+        "hetzner-chat-sweep"
+      ]
+    },
+    {
+      "id": "stale-agent-assignee-sweep",
+      "item": "~/.local/bin/stale-agent-assignee-sweep",
+      "path": "/home/valentin/.local/bin/stale-agent-assignee-sweep",
+      "does": "Drops agent assignees from tickets in queue sections unless the ticket is pinned, running or behind an open PR",
+      "runs": "inside ~/.local/bin/pr-feedback-loop:333; pr-feedback.service static and inactive, no pr-feedback.timer",
+      "last_run": "~/.local/state/pr-feedback last written 2026-09-21",
+      "callers": [
+        "~/.local/bin/pr-feedback-loop:333"
+      ],
+      "owner": "hypertask-ai/hypertask worker, HTPR-5685",
+      "overlaps": "none of the three tools",
+      "verdict": "KEEP",
+      "why": "Cleans board state not disk or processes. Also exposes a fault: its loop has no timer and has not run since September"
+    },
+    {
+      "id": "fleet-watchdog",
+      "item": "~/.local/bin/fleet-watchdog",
+      "path": "/home/valentin/.local/bin/fleet-watchdog",
+      "does": "Restarts dead agent workers, breaks the starvation loop, one Telegram alert per key per 6h, and runs worktree cleanup at line 153",
+      "runs": "header says cron every 15 minutes but valentin's crontab (read 2026-11-20) does not list it, and fleet-watch.service does not exist, only fleet-watch.service.d",
+      "last_run": "~/.local/state/fleet-watch/last.txt 2026-11-14T15:07",
+      "callers": [
+        "~/.local/bin/fleet:30 parses its SLUGS and starvation loop"
+      ],
+      "owner": "vstack house-rules/fleet",
+      "overlaps": "repo-tidy through its one worktree call",
+      "verdict": "KEEP",
+      "why": "Fleet control not housekeeping. Its one housekeeping call moves in migration step 3"
+    },
+    {
+      "id": "agent-fleet-watchdog",
+      "item": "~/.local/bin/agent-fleet-watchdog",
+      "path": "/home/valentin/.local/bin/agent-fleet-watchdog",
+      "does": "Alerts on stalled agents and comment loops with one ticket comment plus a toast",
+      "runs": "agent-fleet-watch.service is gone; agent-fleet-watch.service.d/paused-2026-09-21.conf sets ExecStart=/bin/true",
+      "last_run": "2026-08-20T10:30:01",
+      "callers": [],
+      "owner": "none, superseded by fleet-watchdog",
+      "overlaps": "fleet-watchdog",
+      "verdict": "DELETE",
+      "archive_key": "agent-fleet-watchdog",
+      "why": "Paused since 2026-09-21 and replaced",
+      "archive_names": [
+        "agent-fleet-watchdog"
+      ]
+    },
+    {
+      "id": "fleet-watchdog-backups",
+      "item": "agent-fleet-watchdog.bak-1788818272, fleet-watchdog.bak-htpr-6308-1788893561, fleet-watchdog.before-factory-isolation-1789060825",
+      "path": "/home/valentin/.local/bin/",
+      "does": "Nothing, they are copies",
+      "runs": "nothing",
+      "last_run": "n/a",
+      "callers": [],
+      "owner": "none",
+      "overlaps": "their originals",
+      "verdict": "DELETE",
+      "archive_key": "fleet-watchdog-backups",
+      "why": "Backup copies with no caller. ~/.local/bin holds 68 of these in total",
+      "archive_names": [
+        "agent-fleet-watchdog.bak-1788818272",
+        "fleet-watchdog.bak-htpr-6308-1788893561",
+        "fleet-watchdog.before-factory-isolation-1789060825"
+      ]
+    },
+    {
+      "id": "disk-guard",
+      "item": "~/.local/state/disk-guard/disk-guard.py + disk-guard.service/.timer + low-priority.conf + hourly.conf",
+      "path": "/home/valentin/.local/state/disk-guard/disk-guard.py",
+      "does": "At 75% used prunes caches until 70%: docker dangling images at 80%+, tool caches go-build node-gyp zig uv at 2d, npx at 7d, next-build at 2d, worktree node_modules at 3d, superseded Playwright, npm cache; also removes clean inactive old remotely-contained worktrees and idle Claude scratchpads; trash-then-delete, refuses symlinks mount points foreign owners and open files, stops at a time budget",
+      "runs": "disk-guard.timer active and enabled, hourly via disk-guard.timer.d/hourly.conf which replaces the 15 minute OnCalendar",
+      "last_run": "2026-11-20T12:12:14, level clean, used 86.51%, removed 1 worktree",
+      "callers": [
+        "~/projects/hypertask/scripts/heavy-job.sh:11 reads its critical marker to refuse a heavy job at 90%"
+      ],
+      "owner": "hypertask-ai/hypertask .claude/skills/ship/scripts/disk-guard.py; installed copy 62371B at 2026-10-17 vs repo 62762B at 2026-10-23",
+      "overlaps": "all four tools",
+      "verdict": "MERGE->vps-tidy",
+      "also_moves_to": "repo-tidy for its worktree rule",
+      "why": "The only cleaner with thresholds, a trash, an open-file check and a time budget. vps-tidy should be this script plus the others, not a fourth rewrite. The app repo owns the source so the move needs their ticket"
+    },
+    {
+      "id": "evidence-prune",
+      "item": "~/.local/lib/hypertask/evidence-prune + evidence-prune.service/.timer",
+      "path": "/home/valentin/.local/lib/hypertask/evidence-prune/evidence-prune",
+      "does": "In ~/.local/state/vcc-evidence removes .next node_modules build-* .pnpm-store node-v* at 2d, videos at 14d only when the ticket is not open and the board read succeeds, state/*/tmp at 2d; O_NOFOLLOW, device check per path step, inode recheck before removal",
+      "runs": "evidence-prune.timer active and enabled, daily 00:15 plus 30 min jitter, run with --apply",
+      "last_run": "2026-11-20T00:22",
+      "callers": [],
+      "owner": "ship skill, hypertask-ai/hypertask",
+      "overlaps": "tmp-cleanup 30 day rule, vps-tidy",
+      "verdict": "MERGE->vps-tidy",
+      "why": "The board-read-must-succeed rule and the inode recheck are the strongest safety code on the box. Move the file, do not rewrite the logic"
+    },
+    {
+      "id": "factory-cleanup",
+      "item": "~/projects/ceo/bin/factory-cleanup.sh + factory-cleanup.service/.timer",
+      "path": "/home/valentin/projects/ceo/bin/factory-cleanup.sh",
+      "does": "Every 6h removes /tmp/claude-<uid>/<project>/<uuid> untouched 24h with nothing open skipping *-hypertask* and *ht-marketing*; removes /tmp igsh* wazi* mpa-* tmp.* owned by me untouched 24h; removes worktrees of 6 repos 12h after PR closed or HEAD on origin saving dirty ones with wip-save.sh first; removes ~/projects/ceo/runs files over 5M older than 2d; removes .zig-cache, every target with CACHEDIR.TAG, .next/cache untouched 24h; npm cache clean, pnpm store prune, docker builder prune until=72h; files one urgent board 4060 ticket at 85%",
+      "runs": "factory-cleanup.timer active and enabled, 00,06,12,18:30 plus 20 min jitter",
+      "last_run": "2026-11-20T13:13:20, running while measured",
+      "callers": [
+        "~/projects/ceo/bin/runner-cleanup.sh:8 shares its log path"
+      ],
+      "owner": "~/projects/ceo (CEO runners)",
+      "overlaps": "tmp-cleanup, evidence-prune, disk-guard, repo-tidy",
+      "verdict": "MERGE->vps-tidy",
+      "also_moves_to": "repo-tidy for its worktree half",
+      "why": "Take the lsof open-path check, the live-session UUID check, wip-save before removal, the CACHEDIR.TAG proof and the 85% board alarm. The alarm must move or the disk stops filing its own ticket"
+    },
+    {
+      "id": "infra-prune",
+      "item": "~/.local/lib/hypertask/infra-prune + infra-prune.service",
+      "path": "/home/valentin/projects/poteto-2-advisor/bin/infra-prune",
+      "does": "Archives and merges tickets on board 11514 to hold a cap, waking one Sonnet pass only over the cap",
+      "runs": "service exists, infra-prune.timer does not, so it never runs",
+      "last_run": "~/.local/state/fleet-watch/infra-prune-20261114T0640.log",
+      "callers": [
+        "bin/jobs.json row keep=true"
+      ],
+      "owner": "poteto-2-advisor (HYCI)",
+      "overlaps": "none of the three tools",
+      "verdict": "KEEP",
+      "why": "Prunes a board not disk or processes. Another team owns it and their plan marks it delete-planned"
+    },
+    {
+      "id": "proc-watchdog",
+      "item": "~/.local/lib/hypertask/proc-watchdog/proc-watchdog.py + proc-watchdog.service/.timer",
+      "path": "/home/valentin/.local/lib/hypertask/proc-watchdog/proc-watchdog.py",
+      "does": "Stops test build and premerge process trees whose root is older than 2h or whose members pass 6GiB, 8GiB for roots marked PREMERGE_NEXT_BUILD=1; stops ht-premerge-* containers older than 12h; SIGTERM then 10s then SIGKILL; never matches claude tmux services or dev servers; one JSON line per kill; one warning per sweep",
+      "runs": "proc-watchdog.timer active and enabled, every 5 min after 3 min from boot",
+      "last_run": "~/.local/state/proc-watchdog/kills.log last entry 2026-11-20T00:09:12Z",
+      "callers": [
+        "~/projects/hypertask/scripts/premerge-local.sh"
+      ],
+      "owner": "hypertask-ai/hypertask scripts, YPER4-278 and YPER4-280",
+      "overlaps": "vps-tidy process rules, orphan-reaper, qa-browser-reaper, agent-provider-reaper",
+      "verdict": "MERGE->vps-tidy",
+      "incident": "2026-11-20: four python3 -m unittest discover -s scripts runs took 10-15 hours each and proc-watchdog never stopped one. Lines 45-53 match node, bun, vitest, jest, playwright, next and vite only, so a python test tree is invisible. Fix is VSTA-37 (test-timeout guard, separate PR), not this map",
+      "why": "The process half of vps-tidy. The only process killer with a real schedule, a grace period and a structured log, so move it rather than rewrite it. It also cannot see python test trees, which is the 2026-11-20 incident"
+    },
+    {
+      "id": "approved-sweep",
+      "item": "approved-sweep.service",
+      "path": "/home/valentin/.config/systemd/user/approved-sweep.service",
+      "does": "Records unattended approvals and orphan claims on their tickets",
+      "runs": "no timer, inactive",
+      "last_run": "unknown",
+      "callers": [],
+      "owner": "company-skills kit",
+      "overlaps": "none of the three tools",
+      "verdict": "KEEP",
+      "why": "A merge-gate bookkeeping tool not a cleaner. jobs.json marks it delete-planned for its owner"
+    },
+    {
+      "id": "premerge-evidence",
+      "item": "premerge-evidence.service",
+      "path": "/home/valentin/.config/systemd/user/premerge-evidence.service",
+      "does": "Publishes required premerge browser evidence statuses",
+      "runs": "no timer, inactive",
+      "last_run": "unknown",
+      "callers": [
+        "repo workflows read the statuses"
+      ],
+      "owner": "hypertask-ai/hypertask",
+      "overlaps": "none of the three tools",
+      "verdict": "KEEP",
+      "why": "A required-status publisher not a cleaner. Removing it here would break checks other repos rely on"
+    },
+    {
+      "id": "multibot-watchdog-day",
+      "item": "multibot-watchdog-day.service/.timer",
+      "path": "/home/valentin/.local/share/multibot-watchdog-day/observe.py",
+      "does": "Reads real desktop watchdog coverage for IGSH-1170",
+      "runs": "timer active and enabled, hourly",
+      "last_run": "2026-11-20T12:30:32",
+      "callers": [],
+      "owner": "Multibot team",
+      "overlaps": "none",
+      "verdict": "KEEP",
+      "why": "Another team's observation job not a cleaner"
+    },
+    {
+      "id": "launchpadlib-cache-clean",
+      "item": "launchpadlib-cache-clean.service/.timer",
+      "path": "/usr/lib/systemd/user/launchpadlib-cache-clean.service",
+      "does": "Cleans its own ~/.cache/launchpadlib",
+      "runs": "distro unit, timer active, daily 20:00",
+      "last_run": "2026-11-19T20:00:03",
+      "callers": [],
+      "owner": "Ubuntu python3-launchpadlib",
+      "overlaps": "none",
+      "verdict": "KEEP",
+      "why": "Ships with the OS, touches only its own cache, costs nothing"
+    },
+    {
+      "id": "clean-up-skill",
+      "item": "~/.claude/skills/clean-up",
+      "path": "/home/valentin/.claude/skills/clean-up/SKILL.md",
+      "does": "Human-run session cleanup: only this session's worktrees, clean tree, PR merged, local tip equals the PR headRefOid, never stash, never another session's tree, keeps vcc-evidence",
+      "runs": "invoked by hand and from /ship",
+      "last_run": "n/a",
+      "callers": [
+        "/ship checklist, ship-check cleaned"
+      ],
+      "owner": "vstack house-rules",
+      "overlaps": "repo-tidy, entirely",
+      "verdict": "MERGE->repo-tidy",
+      "why": "The headRefOid equality rule and never-another-session's-worktree survive as repo-tidy --mine. The skill becomes a one-line wrapper"
+    },
+    {
+      "id": "worktree-cleanup-weekly-old",
+      "item": "~/.hypertask-worktree-cleanup/bin/worktree-cleanup-weekly",
+      "path": "/home/valentin/.hypertask-worktree-cleanup/bin/worktree-cleanup-weekly",
+      "does": "An older second copy of the leased cleaner, and the copy fleet-watchdog actually calls",
+      "runs": "via fleet-watchdog:153",
+      "last_run": "2026-09-01",
+      "callers": [
+        "~/.local/bin/fleet-watchdog:153"
+      ],
+      "owner": "none",
+      "overlaps": "repo-tidy, its own newer copy",
+      "verdict": "DELETE",
+      "archive_key": "worktree-cleanup-weekly-old",
+      "why": "Two copies differ and the scheduled caller uses the older unowned one. Archive it after step 3",
+      "archive_names": [
+        "~/.hypertask-worktree-cleanup/bin/worktree-cleanup-weekly"
+      ]
+    },
+    {
+      "id": "duplicate-unit-files",
+      "item": "Duplicate unit files: ~/.local/lib/hypertask/evidence-prune/{evidence-prune.service,evidence-prune.timer}, ~/.local/lib/hypertask/proc-watchdog/{proc-watchdog.service,proc-watchdog.timer}, ~/projects/poteto-2-advisor/systemd/infra-prune.service",
+      "path": "/home/valentin/.local/lib/hypertask/",
+      "does": "Copies of unit files that also live in ~/.config/systemd/user",
+      "runs": "n/a, these are install sources",
+      "last_run": "n/a",
+      "callers": [
+        "the --install paths"
+      ],
+      "owner": "each owning repo",
+      "overlaps": "every unit row above",
+      "verdict": "DELETE",
+      "archive_key": "duplicate-unit-files",
+      "why": "Two sources of truth for the same unit. Keep the repo copy as the source, remove the ~/.local/lib copies once installs read from the repo",
+      "archive_names": [
+        "duplicate unit files"
+      ]
+    },
+    {
+      "id": "orphan-dropin-dirs",
+      "item": "~/.config/systemd/user/fleet-watch.service.d/, agent-fleet-watch.service.d/",
+      "path": "/home/valentin/.config/systemd/user/",
+      "does": "Drop-in directories whose unit files no longer exist",
+      "runs": "n/a",
+      "last_run": "n/a",
+      "callers": [],
+      "owner": "none",
+      "overlaps": "fleet-watchdog, agent-fleet-watchdog",
+      "verdict": "DELETE",
+      "archive_key": "orphan-dropin-dirs",
+      "why": "Leftovers. agent-fleet-watch.service.d/paused-2026-09-21.conf keeps a unit alive that is otherwise /bin/true",
+      "archive_names": [
+        "drop-in directories"
+      ]
+    },
+    {
+      "id": "house-rules-cleanup-skills",
+      "item": "house-rules skills that mention cleanup: hypertask-triage/scripts/board-health, hypertask-triage/scripts/agent-feedback, tickets/scripts/blocker-sweep.py, support-manager, solo-dev, tickets",
+      "path": "/home/valentin/.local/share/house-rules/skills/",
+      "does": "Board and process hygiene: scorecards, feedback filing, stale blocker questions, prod data prunes",
+      "runs": "on demand",
+      "last_run": "n/a",
+      "callers": [
+        "the skills that call them"
+      ],
+      "owner": "vstack house-rules",
+      "overlaps": "none of the three tools",
+      "verdict": "KEEP",
+      "why": "They never touch disk or processes"
+    }
+  ],
+  "vps_tidy_spec": {
+    "files": [
+      {
+        "what": "/tmp top-level children",
+        "rule": "untouched 3 days by newest mtime inside the tree",
+        "safety": "skip claude-* tmux-* .X* systemd-*; own uid only",
+        "from": "tmp-cleanup"
+      },
+      {
+        "what": "/tmp/claude-<uid>/<project>/<session>",
+        "rule": "untouched 24h",
+        "safety": "leaf must be a UUID; nothing open per lsof; skip *-hypertask* and *ht-marketing*",
+        "from": "factory-cleanup"
+      },
+      {
+        "what": "/tmp/igsh* /tmp/wazi* /tmp/mpa-* /tmp/tmp.*",
+        "rule": "untouched 24h",
+        "safety": "owned by me (-O); nothing open",
+        "from": "factory-cleanup"
+      },
+      {
+        "what": "/tmp/agent-template-stage.*",
+        "rule": "1 day",
+        "safety": "name must match; rm -rf only inside /tmp",
+        "from": "host-disk-sweep"
+      },
+      {
+        "what": "vcc-evidence whole folder children",
+        "rule": "untouched 30 days",
+        "safety": "never a cache target; on NEVER_CACHE",
+        "from": "tmp-cleanup, disk-guard"
+      },
+      {
+        "what": "vcc-evidence builds",
+        "rule": ".next node_modules build-* .pnpm-store node-v* at 2 days",
+        "safety": "O_NOFOLLOW, device check per path step, inode and mtime recheck before removal",
+        "from": "evidence-prune"
+      },
+      {
+        "what": "vcc-evidence videos",
+        "rule": "14 days",
+        "safety": "board read must succeed and the ticket must not be open",
+        "from": "evidence-prune"
+      },
+      {
+        "what": "~/.local/state/*/tmp",
+        "rule": "2 days",
+        "safety": "parent must be a checked state dir",
+        "from": "evidence-prune"
+      },
+      {
+        "what": "npm cache and uv cache",
+        "rule": "npm cache clean --force; uv cache clean",
+        "safety": "only when the tool is idle",
+        "from": "tmp-cleanup, factory-cleanup"
+      },
+      {
+        "what": "~/.npm/_npx/*",
+        "rule": "untouched 7 days",
+        "safety": "nothing open in it",
+        "from": "disk-guard, factory-cleanup"
+      },
+      {
+        "what": "tool caches go-build node-gyp zig uv",
+        "rule": "untouched 2 days",
+        "safety": "only caches the owning tool rebuilds alone; puppeteer prisma and current Playwright never listed",
+        "from": "disk-guard"
+      },
+      {
+        "what": "Playwright browsers",
+        "rule": "superseded versions only",
+        "safety": "never the current version",
+        "from": "disk-guard"
+      },
+      {
+        "what": ".next build output",
+        "rule": "untouched 2 days",
+        "safety": "",
+        "from": "disk-guard"
+      },
+      {
+        "what": "worktree node_modules",
+        "rule": "untouched 3 days and worktree unchanged 3 days",
+        "safety": "only when git check-ignore -q node_modules passes; never with an open PR; never when a process has cwd fd or root inside",
+        "from": "disk-guard, factory-cleanup"
+      },
+      {
+        "what": "repo build caches .zig-cache target .next/cache",
+        "rule": "untouched 24h",
+        "safety": "target counts only with a CACHEDIR.TAG file",
+        "from": "factory-cleanup"
+      },
+      {
+        "what": "pnpm store and docker builder cache",
+        "rule": "pnpm store prune; docker builder prune --filter until=72h",
+        "safety": "only builders nobody waits on",
+        "from": "factory-cleanup"
+      },
+      {
+        "what": "docker dangling images",
+        "rule": "disk 80%+ used",
+        "safety": "dangling only, never tagged images",
+        "from": "disk-guard"
+      },
+      {
+        "what": "docker volumes",
+        "rule": "only leaked ht-smoke-(build|state|dependencies)-* volumes",
+        "safety": "never a blanket volume prune: 12 volumes are attached to containers",
+        "from": "host-disk-sweep, tightened"
+      },
+      {
+        "what": "~/projects/ceo/runs files over 5M",
+        "rule": "older than 2 days",
+        "safety": "small proof files always stay",
+        "from": "factory-cleanup"
+      },
+      {
+        "what": "orphan worktrees whose main repo is gone",
+        "rule": "report only",
+        "safety": "33 such folders exist and disk-guard refuses all of them",
+        "from": "disk-guard"
+      }
+    ],
+    "global_file_rules": [
+      "--one-file-system plus a st_dev check per path; never cross a mount; never follow a symlink (O_NOFOLLOW)",
+      "never touch .git .config .ssh .claude .codex or vcc-evidence as a cache",
+      "never touch a foreign owner, a special file, or a path a process holds open (lsof plus a /proc cwd fd root scan)",
+      "delete through a trash directory first, so an interrupted run finishes or a mistake is undone",
+      "recheck inode device and mtime immediately before removal; uncertainty blocks deletion",
+      "a time budget per run that resumes where the last run stopped",
+      "one log line per action with bytes freed plus a summary carrying used_percent removed would_free and a keep reason per candidate",
+      "keep the 85% board alarm: one urgent ticket on board 4060, updated not duplicated"
+    ],
+    "processes": [
+      {
+        "what": "test build and premerge trees",
+        "threshold": "root older than 2h or any member over 6GiB, 8GiB for a root marked PREMERGE_NEXT_BUILD=1",
+        "safety": "never match claude tmux a systemd service or a dev server; SIGTERM then 10s then SIGKILL; one JSON line per kill; add a python test-tree pattern, which proc-watchdog lacks today (VSTA-37)",
+        "from": "proc-watchdog"
+      },
+      {
+        "what": "ht-premerge-* containers",
+        "threshold": "older than 12h",
+        "safety": "marker-only, never a plain container",
+        "from": "proc-watchdog"
+      },
+      {
+        "what": "provider processes codex claude hax node",
+        "threshold": "ppid=1, older than 1800s",
+        "safety": "HOME or cwd must sit in ~/.local/state/hypertask-*/; a provider attached to a live worker is never touched; never kill claude outside that proof",
+        "from": "agent-provider-reaper"
+      },
+      {
+        "what": "next dev",
+        "threshold": "older than 30 minutes",
+        "safety": "cwd inside a wt-* worktree, top ancestor init, no claude or codex cwd in the same worktree",
+        "from": "reap-orphan-devservers"
+      },
+      {
+        "what": "chroma-mcp and agent-browser-chrome",
+        "threshold": "ppid=1, older than 7200s",
+        "safety": "logged with RAM before and after",
+        "from": "orphan-reaper"
+      },
+      {
+        "what": "headless chrome and agent-browser",
+        "threshold": "older than 120 minutes",
+        "safety": "a real QA case finishes in minutes; blanket age cutoff",
+        "from": "qa-browser-reaper"
+      }
+    ],
+    "global_process_rules": [
+      "only this user's processes",
+      "judge the whole tree, not the top pid, and never kill a tree with a member whose cwd is protected",
+      "one kill log at ~/.local/state/vps-tidy/kills.log with pid kind reason processes cwd",
+      "one warning per sweep to INFRA MANAGER"
+    ],
+    "shape": {
+      "binary": "vps-tidy with --dry-run (default), --apply, --json, --only files|processes",
+      "schedule": "no central timer and no central instance: each chat runs vps-tidy from its own loop or hooks, and a maintainer never runs it for another chat. Old timers and cron lines still retire: disable, archive, 7-day undo. Nothing is scheduled by this PR",
+      "lock": "one flock so two runs never overlap",
+      "setup_step": "vps-tidy ships a '## Set up your own check' step naming the chat loop or hook that calls it, and refuses a run it cannot attribute to a calling session",
+      "cross_tool": "vps-state reads vps-tidy's status file and prints it; vps-tidy never prints a verdict"
+    }
+  },
+  "migration_order": [
+    {
+      "step": 1,
+      "do": "Land vps-state on main",
+      "check": "vps-state --brief prints a verdict on this host and --can-launch worker exits 0, 1 or 2"
+    },
+    {
+      "step": 2,
+      "do": "Move the two vps-load/status readers to the command, not the file: house-rules fleet/runner:424 and ceo/bin/hax-runner:25 call vps-state --can-launch worker and --can-launch chat. vps-state already rewrites that status file on each run (PR 175), so the file is fresh, but a caller must stop reading it",
+      "check": "grep -rn 'vps-load/status' ~/.local/share/house-rules ~/projects/ceo returns nothing and one runner tick logs the new verdict"
+    },
+    {
+      "step": 3,
+      "do": "Point fleet-watchdog:153 at the repo copy then at repo-tidy --leased",
+      "check": "worktree-cleanup-weekly no longer appears in fleet-watchdog"
+    },
+    {
+      "step": 4,
+      "do": "Land repo-tidy with the lease",
+      "check": "repo-tidy --dry-run prints one keep or remove line per worktree and every removal names merged-or-pushed clean no-open-PR and not in lsof; decisions match disk-guard for one week"
+    },
+    {
+      "step": 5,
+      "do": "Move the /ship clean-up skill onto repo-tidy --mine",
+      "check": "/ship on a scratch ticket reaches ship-check cleaned printing cleaned ok with no manual git worktree remove"
+    },
+    {
+      "step": 6,
+      "do": "Turn off the two worktree rules at their source: disk-guard's worktree pass and factory-cleanup's worktree pass (FC_SKIP_WORKTREES)",
+      "check": "one week of logs shows repo-tidy removed every worktree those two would have removed and neither log has a removal line"
+    },
+    {
+      "step": 7,
+      "do": "Land vps-tidy as disk-guard's body plus the union rules",
+      "check": "vps-tidy --dry-run prints a keep reason for every candidate, frees at least what the four old cleaners last freed in total, and reports used_percent"
+    },
+    {
+      "step": 8,
+      "do": "Move the three cron reapers to vps-tidy --only processes, called from each chat's own loop or hooks instead of the crontab lines",
+      "check": "crontab -u valentin has no reaper line left, the calling chat's loop logs one vps-tidy process pass, and pgrep for the three reapers is empty"
+    },
+    {
+      "step": 9,
+      "do": "Disable, do not delete, the five timers and the four crontab lines, for 7 days",
+      "check": "systemd has no housekeeping timer left, crontab -u valentin has no housekeeping line left, each tool is called by a chat's own loop, and after 7 days df used percent is no higher than the day they were disabled"
+    },
+    {
+      "step": 10,
+      "do": "Archive every DELETE row with mv into ~/.local/state/retired-housekeeping/2026-11-20",
+      "archives": [
+        "worktree-reaper",
+        "hetzner-chat-sweep",
+        "agent-fleet-watchdog",
+        "fleet-watchdog-backups",
+        "worktree-cleanup-weekly-old",
+        "duplicate-unit-files",
+        "orphan-dropin-dirs"
+      ],
+      "check": "every DELETE row resolves inside the archive and none of the names remains in ~/.local/bin or ~/.config/systemd/user"
+    },
+    {
+      "step": 11,
+      "do": "Empty the archive after 7 clean days",
+      "check": "the archive directory is gone and systemctl --user list-timers still starts clean"
+    }
+  ],
+  "faults": [
+    {
+      "fault": "Fleet runner gate asked a file nothing schedules",
+      "detail": "house-rules/fleet/runner:424 and ceo/bin/hax-runner:25 read ~/.local/state/vps-load/status; vps-load-check has no timer and its history stopped 2026-11-15T00:37. vps-state now rewrites the file on every run (PR 175), so the staleness is gone, but both callers still read a file instead of calling the command",
+      "route": "board 2060 ticket, label Poteto"
+    },
+    {
+      "fault": "fleet-watch.service and agent-fleet-watch.service do not exist but their drop-in directories remain",
+      "detail": "poteto-2-advisor/bin/jobs.json still lists fleet-watch with keep=true and a heartbeat; fleet-watch last output 2026-11-14T15:07 and valentin's crontab does not list fleet-watchdog",
+      "route": "board 2060 ticket, label Poteto"
+    },
+    {
+      "fault": "75G in two GitHub caches no housekeeping tool prunes",
+      "detail": "~/.local/state/gh-shared-cache 56G and gh-shared-cache-app 19G on a 678G disk at 88% used",
+      "route": "board 2060 ticket, label Poteto; the gh wrapper handles tokens so this review did not read it"
+    },
+    {
+      "fault": "disk-guard installed copy is behind its repo source",
+      "detail": "live 62371B at 2026-10-17 vs hypertask repo 62762B at 2026-10-23",
+      "route": "board 2060 ticket, label Poteto, for the hypertask app team"
+    },
+    {
+      "fault": "68 .bak and .before copies sit in ~/.local/bin",
+      "detail": "only 3 belong to the cleanup tools in this map; the rest include a 41M gh.bak-elf-20261027",
+      "route": "board 2060 ticket, label Poteto"
+    },
+    {
+      "fault": "Two different copies of worktree-cleanup-weekly exist and the scheduled caller uses the older unowned one",
+      "detail": "~/.local/bin copy 31178B at 2026-10-11 vs ~/.hypertask-worktree-cleanup/bin copy 56069B at 2026-09-02; fleet-watchdog:153 calls the older one",
+      "route": "board 2060 ticket, label Poteto"
+    },
+    {
+      "fault": "pr-feedback-loop has no timer",
+      "detail": "pr-feedback.service is static and inactive, no pr-feedback.timer exists, so stale-agent-assignee-sweep has not run since 2026-09-21",
+      "route": "board 2060 ticket, label Poteto"
+    },
+    {
+      "fault": "A scheduled cleaner ran twice and nobody could say so",
+      "detail": "tmp-cleanup runs from its Sunday 03:30 timer and again from crontab Sunday 04:45. Until the crontab was read this looked like one run",
+      "route": "board 2060 ticket, label Poteto"
+    }
+  ]
+}

@@ -6,6 +6,10 @@ The chat's name is its Multibot name (chat-names.json via MULTIPROMPT_TAB), else
 Its board login is the agent token file named after that name. Has one: use it. Has none: get one named
 exactly like the chat with /board-identity first. One name everywhere: Multibot, Claude, Hypertask.
 
+An `ht` write that only names /mcp/agents is agent setup (its name, its board access), not a board write,
+so it passes: an agent cannot change its own board access, the owner's saved login must. Each `ht` call is
+judged on its own, so a chain that adds a ticket write still blocks.
+
 agent-identity-guard.py --self-test"""
 import json
 import re
@@ -16,7 +20,13 @@ SESSIONS = Path.home() / ".config/hypertask-agents/credentials/sessions"
 WRITE = re.compile(
     r"(^|[;&|(\s/])hypertask\s+(--json\s+)?(task|tasks|comment|comments|page|pages|section|sections|label|labels|decision|blockers)\s+"
     r"(create|add|update|edit|move|move-board|assign|unassign|delete|archive|done|resolve|clear|set|react)\b")
-HT_WRITE = re.compile(r"(^|[;&|(\s/])ht\s+(post|patch|put|delete)\b", re.IGNORECASE)
+HT_WRITE = re.compile(r"(^|[;&|(\s/])ht\s+(post|patch|put|delete)\b([^\n;&|)]*)", re.IGNORECASE)
+PATH_LIKE = re.compile(r"^(?:https?://|/)")
+# Agent setup is /mcp/agents, or /mcp/agents/<one id>, optionally with a query. Nothing may follow the id
+# (no /extra), and the id may not be a dot-segment or hold a percent-encoded dot, so a path can never climb
+# back out of the agent scope (`/mcp/agents/../tasks/1`, `/mcp/agents/%2e%2e/comments`).
+AGENT_SETUP = re.compile(
+    r"^(?:https?://[^/]+)?/mcp/agents(?:/(?!\.{1,2}(?:$|[/?#]))[^/?#%]+(?:\?[^#]*)?)?$", re.IGNORECASE)
 MCP_PREFIX = "mcp__claude_ai_Hypertask__"
 MCP_READ_ONLY = frozenset("list get search read history whoami context count export status".split())
 MCP_BLOCKED = ("BLOCKED by agent-identity-guard: the claude.ai Hypertask connector writes as Valentin. "
@@ -55,6 +65,20 @@ def multibot_name(env=None):
     return entry.get("name") or ""
 
 
+def is_board_write(one_call):
+    """One `ht` write (its own arguments) is a board write unless every path it names is agent setup.
+
+    Naming no path counts as a board write: only a clearly agent-scoped call earns the exemption."""
+    paths = [t.strip("'\"") for t in one_call.split()]
+    paths = [t for t in paths if PATH_LIKE.match(t)]
+    return not (paths and all(AGENT_SETUP.match(p) for p in paths))
+
+
+def ht_board_writes(cmd):
+    """Every `ht` write in the command that is a board write, so a chain cannot smuggle one through."""
+    return [m.group(0) for m in HT_WRITE.finditer(cmd) if is_board_write(m.group(3))]
+
+
 def mcp_verdict(tool_name, tool_input):
     if not (tool_name or "").startswith(MCP_PREFIX):
         return None
@@ -68,7 +92,7 @@ def mcp_verdict(tool_name, tool_input):
 
 
 def verdict(cmd, name, has_login):
-    if not (WRITE.search(cmd) or HT_WRITE.search(cmd)) or "HT_TOKEN=" in cmd or re.search(r"\s(--help|-h)\b", cmd):
+    if not (WRITE.search(cmd) or ht_board_writes(cmd)) or "HT_TOKEN=" in cmd or re.search(r"\s(--help|-h)\b", cmd):
         return None
     if not name:
         return ("BLOCKED by agent-identity-guard: this chat has no name, so this write would post as Valentin. "
@@ -95,6 +119,22 @@ def self_test():
     assert verdict("ht GET /mcp/tasks", "Poteto", False) is None, "an `ht` read passes"
     assert verdict("HT_TOKEN=\"$T\" ht PATCH /mcp/tasks/1 '{}'", "", False) is None, "an `ht` write with a token passes"
     assert verdict("/usr/local/bin/ht delete /mcp/x", "Poteto", False), "the full `ht` path must be caught"
+    setup = 'ht PATCH /mcp/agents/abc \'{"add_project_ids":[13556]}\''
+    assert verdict(setup, "Poteto", False) is None, "agent setup is not a board write"
+    assert verdict(setup, "", False) is None, "agent setup passes for a nameless chat too"
+    assert verdict('ht PATCH /mcp/agents/abc \'{"display_name":"X"}\'', "Poteto", False) is None, "a rename passes"
+    chain = "ht PATCH /mcp/agents/1 '{}'; ht POST /mcp/comments '{}'"
+    assert verdict(chain, "Poteto", False), "a chain keeps the ticket write blocked"
+    assert verdict("ht PATCH /mcp/agents/1 '{}' && ht POST /mcp/comments '{}'", "Poteto", False), "&& chains too"
+    assert verdict("ht PATCH /mcp/agents/x /mcp/comments", "Poteto", False), "a second board path is not exempt"
+    assert verdict("ht PATCH /mcp/agentsx '{}'", "Poteto", False), "a lookalike path is not exempt"
+    assert verdict("ht PATCH /mcp/agents/../tasks/1 '{}'", "Poteto", False), "a dot-segment escape is not exempt"
+    assert verdict("ht PATCH /mcp/agents/%2e%2e/comments '{}'", "Poteto", False), "a percent-encoded dot is not exempt"
+    assert verdict("ht PATCH /mcp/agents/abc/extra '{}'", "Poteto", False), "a deeper agent path is not exempt"
+    assert verdict("ht PATCH /mcp/agents/abc?x=1 '{}'", "Poteto", False) is None, "an agent id with a query passes"
+    assert verdict("ht PATCH https://app.hypertask.ai/mcp/agents/abc '{}'", "Poteto", False) is None, "a full URL passes"
+    assert verdict("ht PATCH", "Poteto", False), "a pathless write is not exempt"
+    assert verdict("h PATCH /mcp/agents/x '{}'", "Poteto", False) is None, "`h` is a skill wrapper, not `ht`"
     assert mcp_verdict(MCP_PREFIX + "hypertask_comments", {"action": "add", "input": {"body": "x"}}) == MCP_BLOCKED
     assert mcp_verdict(MCP_PREFIX + "hypertask_comments", {"action": "add", "input": {"as_agent": "u-1"}}) is None
     assert mcp_verdict(MCP_PREFIX + "hypertask_tasks", {"action": "list", "input": {}}) is None
