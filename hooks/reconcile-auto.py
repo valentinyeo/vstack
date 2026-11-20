@@ -4,10 +4,14 @@
 MULTIPROMPT_TAB set means a Valentin-facing Multibot chat. The project's notes carry one
 `Hypertask board: <id>, label: <label>` line. The hook starts `reconcile --apply --limit 5`
 for that board and label, detached, at most every 10 minutes, and writes one status record
-per board and label. When it cannot run, or the last run failed, it blocks the chat once an
-hour with the one thing to fix. No MULTIPROMPT_TAB means a headless run and the hook passes.
+per board and label. It blocks the chat once an hour, and only for setup this chat is
+missing: the board line, or the token for its own login. A sync that fails is one line in
+`~/.local/state/reconcile-auto/failures.jsonl` for the reconcile owner, never a block.
+No MULTIPROMPT_TAB means a headless run and the hook passes.
 
 reconcile-auto.py --self-test"""
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,37 +29,41 @@ BOARD_LINE = re.compile(r'^Hypertask board:\s*(\d+),\s*label:\s*(.+?)\s*$')
 CHECKUP = '/hypertask-checkup check 5'
 
 
-def slug(text):
-    return re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')
+def load_session():
+    """The one login resolver, from the skill this hook belongs to."""
+    here = Path(__file__).resolve()
+    for folder in (here.parents[1] / 'skills/hypertask-work',
+                   Path.home() / '.local/share/vstack/skills/hypertask-work'):
+        path = folder / 'session_login.py'
+        if path.is_file():
+            loader = importlib.machinery.SourceFileLoader('fleet_session', str(path))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[loader.name] = module
+            loader.exec_module(module)
+            return module
+    raise ImportError('session_login.py not found')
 
 
-def state_dir(home):
-    return Path(home) / '.local/state/reconcile-auto'
+try:
+    session = load_session()
+except ImportError:
+    session = None
 
-
-def record_path(home, board, label):
-    return state_dir(home) / f'{board}-{slug(label)}.json'
-
-
-def log_path(home, board, label):
-    return state_dir(home) / f'{board}-{slug(label)}.log'
+slug = session.slug if session else None
+state_dir = session.state_dir if session else None
+record_path = session.record_path if session else None
+log_path = session.log_path if session else None
+roster_path = session.roster_path if session else None
+chat_names_path = session.chat_names_path if session else None
+token_path = session.token_path if session else None
+chat_name = session.session_name if session else None
+parse_output = session.parse_output if session else None
+failures_path = session.failure_path if session else None
 
 
 def pid_path(home, board, label):
     return state_dir(home) / f'{board}-{slug(label)}.pid'
-
-
-def roster_path(home):
-    return Path(home) / '.local/share/house-rules/fleet/roster.json'
-
-
-def chat_names_path(home):
-    return Path(home) / '.local/state/multiprompt/chat-names.json'
-
-
-def token_path(home, name):
-    return (Path(home) / '.config/hypertask-agents/credentials/sessions'
-            / f'{slug(name)}-agent-token')
 
 
 def git_root(cwd):
@@ -88,25 +96,6 @@ def find_board(cwd):
     return None
 
 
-def chat_name(home, tab):
-    """The roster Multibot name for this tab, else the Multibot chat-name file."""
-    try:
-        rows = json.loads(roster_path(home).read_text()).get('rows') or []
-    except (OSError, ValueError, AttributeError):
-        rows = []
-    for row in rows:
-        if isinstance(row, dict) and row.get('tmux') == tab:
-            name = str(row.get('multibot') or '').strip()
-            if name:
-                return name
-    try:
-        names = json.loads(chat_names_path(home).read_text())
-    except (OSError, ValueError):
-        return ''
-    entry = names.get(tab) if isinstance(names, dict) else None
-    return str(entry.get('name') or '').strip() if isinstance(entry, dict) else ''
-
-
 def read_status(home, board, label):
     try:
         status = json.loads(record_path(home, board, label).read_text())
@@ -131,18 +120,31 @@ def is_running(home, board, label):
     return b'reconcile-auto.py' in command
 
 
-def parse_output(text):
-    """(moved, unknown, summary) from a reconcile run's combined output."""
-    summary = ''
-    for line in text.splitlines():
-        if line.startswith(('PREVIEW ', 'DRY RUN ')):
-            summary = line.strip()
-    if not summary:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        summary = lines[-1] if lines else ''
-    found = re.search(r'unknown=(\d+)', summary)
-    moved = sum(1 for line in text.splitlines() if line.startswith('MOVE '))
-    return moved, int(found[1]) if found else 0, summary
+def failure_line(status):
+    """What the reconcile owner needs to know about one failed sync."""
+    return {'at': status.get('at'), 'board': status.get('board'), 'label': status.get('label'),
+            'ticket': status.get('ticket'), 'session_name': status.get('session_name'),
+            'summary': status.get('summary_line') or '', 'log': status.get('log') or ''}
+
+
+def log_failure(home, status):
+    """One line per failed run, and never a block. The store is best effort."""
+    path = session.failure_path(home)
+    record = failure_line(status)
+    try:
+        old = [json.loads(line) for line in path.read_text().splitlines()[-500:] if line.strip()]
+    except (OSError, ValueError):
+        old = []
+    same = ('at', 'board', 'label', 'session_name')
+    if any(isinstance(row, dict) and all(row.get(k) == record[k] for k in same) for row in old):
+        return path
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as handle:
+            handle.write(json.dumps(record) + '\n')
+    except OSError:
+        pass
+    return path
 
 
 def reconcile_script(home):
@@ -160,13 +162,10 @@ def write_status(home, board, label, name, exit_code, output):
     log = log_path(home, board, label)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(output)
-    record = {'at': time.time(), 'session_name': name, 'board': board, 'label': label,
-              'exit': exit_code, 'moved': moved, 'unknown': unknown,
-              'summary_line': summary, 'log': str(log)}
-    target = record_path(home, board, label)
-    temporary = Path(str(target) + '.tmp')
-    temporary.write_text(json.dumps(record, indent=1))
-    temporary.replace(target)
+    session.write_record(record_path(home, board, label), {
+        'at': time.time(), 'session_name': name, 'board': board, 'label': label, 'ticket': None,
+        'exit': exit_code, 'moved': moved, 'unknown': unknown,
+        'summary_line': summary, 'log': str(log)})
 
 
 def run(argv, env):
@@ -243,50 +242,52 @@ def stamp_block(home, session, now):
     stamp.write_text(str(now))
 
 
-def failure_text(status):
-    log = status.get('log') or ''
-    detail = status.get('summary_line') or 'no output'
-    return (f"last run exit {status.get('exit')} unknown {status.get('unknown')}: {detail}"
-            f'{"; log " + log if log else ""}')
+def failed(status):
+    return status.get('exit') != 0 or (status.get('unknown') or 0) > 0
 
 
 def hook(payload, env, now=None):
-    """The JSON a Stop hook prints for this payload and environment."""
+    """The JSON a Stop hook prints for this payload and environment.
+
+    It blocks only on setup this chat is missing. Every tool failure becomes one
+    line in the failures store for the reconcile owner, never a block.
+    """
     if not env.get('MULTIPROMPT_TAB'):
         return {}
     now = time.time() if now is None else now
     home = Path(env.get('HOME') or str(Path.home()))
     cwd = Path(payload.get('cwd') or env.get('PWD') or os.getcwd())
-    tab = env['MULTIPROMPT_TAB']
     found = find_board(cwd)
-    name = chat_name(home, tab)
-    token = token_path(home, name) if name else None
-    board = label = None
     problem = ''
+    board = label = None
+    login = session.login_for_session(env)
     if found is None:
         problem = (f'no `Hypertask board: <id>, label: <label>` line in AGENTS.md '
                    f'or CLAUDE.md at {cwd}')
+    elif login is None:
+        problem = (f'no Multibot name for tmux {env["MULTIPROMPT_TAB"]!r} in '
+                   f'{roster_path(home)} or {chat_names_path(home)}')
     else:
         board, label, _notes = found
-        if not name:
-            problem = (f'no Multibot name for tmux {tab!r} in {roster_path(home)} '
-                       f'or {chat_names_path(home)}')
-        elif not token.is_file():
+        name, token = login
+        if not token.is_file():
             problem = f'board login token missing at {token}'
-    if not problem:
-        status = read_status(home, board, label)
-        fresh = bool(status) and now - float(status.get('at') or 0) < THROTTLE
-        if status and (status.get('exit') != 0 or (status.get('unknown') or 0) > 0):
-            problem = failure_text(status)
-        if not fresh and not is_running(home, board, label):
-            try:
-                spawn(board, label, name, token, cwd, home, started_env(env))
-            except OSError as error:
-                problem = f'could not start reconcile: {error}'
+        else:
+            status = read_status(home, board, label)
+            if status and failed(status):
+                log_failure(home, status)
+            fresh = bool(status) and now - float(status.get('at') or 0) < THROTTLE
+            if not fresh and not is_running(home, board, label):
+                try:
+                    spawn(board, label, name, token, cwd, home, started_env(env))
+                except OSError as error:
+                    log_failure(home, {'at': now, 'board': board, 'label': label,
+                                       'session_name': name,
+                                       'summary_line': f'could not start reconcile: {error}'})
     if problem:
-        session = payload.get('session_id') or tab
-        if not blocked_recently(home, session, now):
-            stamp_block(home, session, now)
+        where = payload.get('session_id') or env['MULTIPROMPT_TAB']
+        if not blocked_recently(home, where, now):
+            stamp_block(home, where, now)
             return {'decision': 'block',
                     'reason': (f'Board sync is not working for this chat: {problem}. '
                                f'Fix it now (see {CHECKUP}), then continue.')}
@@ -350,12 +351,21 @@ def self_test():
 
             write_status(home, one, label, 'Test Chat', 1, 'MOVE X-1 Todo -> Doing\n')
             answer = hook(dict(payload, session_id='sid-fail'), env, now=time.time())
-            assert answer.get('decision') == 'block', 'a failed run blocks'
-            assert str(log_path(home, one, label)) in answer['reason'], 'the log is named'
+            assert answer == {}, 'a failed sync never blocks the chat'
             assert not calls[before:], 'a fresh failed status starts no run'
+            stored = failures_path(home).read_text().splitlines()
+            assert len(stored) == 1, 'a failed run is one line for the reconcile owner'
+            line = json.loads(stored[0])
+            for field in ('at', 'board', 'label', 'ticket', 'session_name', 'summary', 'log'):
+                assert field in line, f'the failure line names {field}'
+            assert str(log_path(home, one, label)) == line['log'], 'the failure line links its log'
+            hook(dict(payload, session_id='sid-fail'), env, now=time.time())
+            assert len(failures_path(home).read_text().splitlines()) == 1, 'the same run logs once'
 
-            again = hook(dict(payload, session_id='sid-fail'), env, now=time.time())
-            assert again == {}, 'one block an hour per session'
+            write_status(home, one, label, 'Test Chat', 0, 'UNKNOWN X-2 | no facts\nPREVIEW board=2060 tickets=2 unknown=1\n')
+            assert hook(dict(payload, session_id='sid-unknown'), env, now=time.time()) == {}, \
+                'unknowns never block either'
+            assert len(failures_path(home).read_text().splitlines()) == 2, 'unknowns are logged too'
         finally:
             globals()['spawn'] = real_spawn
         trial.cleanup()
@@ -366,6 +376,9 @@ def main():
     argv = sys.argv[1:]
     if argv == ['--self-test']:
         self_test()
+        return 0
+    if session is None:
+        print('{}')
         return 0
     if argv[:1] == ['--run']:
         return run(argv[1:], os.environ)

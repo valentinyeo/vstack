@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import fcntl
 import re
 from datetime import date, datetime, timedelta, timezone
 import importlib.machinery
@@ -690,13 +691,15 @@ class ReconcileTest(unittest.TestCase):
             return subprocess.CompletedProcess([], 0, json.dumps(body), '')
         return respond
 
-    def github_calls_for(self, tasks, argv):
+    def github_calls_for(self, tasks, argv, ticket=None):
         clear_cache()
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
                 patch.object(sys, 'argv', ['reconcile', *argv]), \
                 patch.object(r.time, 'time', return_value=NOW), \
                 patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'read_ticket', return_value=ticket), \
+                patch.object(r, 'product_workers', return_value=set()), \
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
                 patch.object(r, 'process_tickets', return_value=set()), \
@@ -720,6 +723,139 @@ class ReconcileTest(unittest.TestCase):
     def test_a_label_nobody_carries_costs_no_github_calls(self):
         tasks = [{**t, 'createdAt': '2026-11-18T10:00:00Z'} for t in self.labelled_board()]
         self.assertEqual(self.github_calls_for(tasks, ['--label', 'nobody-uses-this']), 0)
+
+    def ticket_run(self, argv, one, api=None, env=None, home=None):
+        """Run one --ticket run against one ticket: (code, stdout, calls)."""
+        calls = {'discover': [], 'moves': []}
+
+        def default_api(*args):
+            if args[:2] == ('task', 'get'):
+                return {'tasks': [one]}
+            if args[:2] == ('task', 'move'):
+                calls['moves'].append(args[2])
+                return {}
+            raise AssertionError(f'unexpected hypertask call {args!r}')
+
+        def discover(keys, **kwargs):
+            calls['discover'].append(keys)
+            return {key: [] for key in keys}
+
+        environment = {'SHIP_SESSION_NAME': 'Poteto', **(env or {})}
+        if home is None:
+            temp = tempfile.TemporaryDirectory()
+            self.addCleanup(temp.cleanup)
+            home = Path(temp.name)
+        with patch.object(r.Path, 'home', return_value=Path(home)), \
+                patch.object(sys, 'argv', ['reconcile', *argv]), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'discover', side_effect=discover), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'product_workers', return_value=set()), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'run', return_value=''), \
+                patch.dict(os.environ, environment), \
+                patch.object(r, 'api', side_effect=api or default_api), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = r.main()
+        return code, out.getvalue(), calls
+
+    def test_a_ticket_run_moves_its_own_card_and_leaves_the_others_alone(self):
+        code, printed, calls = self.ticket_run(['--ticket', 'SOFT-1'], task('Doing'))
+        self.assertEqual(code, 0)
+        self.assertIn('PLAN SOFT-1 Doing -> Todo | no live worker and no PR', printed)
+        self.assertEqual(calls['discover'], [['SOFT-1']], 'one ticket costs one lookup')
+        self.assertNotIn('SOFT-2', printed)
+        self.assertNotIn('SOFT-3', printed)
+        self.assertEqual(calls['moves'], [], 'a plan run moves nothing')
+
+    def test_a_ticket_run_applies_only_its_own_move(self):
+        code, printed, calls = self.ticket_run(['--ticket', 'SOFT-1', '--apply', '--limit', '1'],
+                                               task('Doing'))
+        self.assertEqual(code, 0)
+        self.assertIn('MOVE SOFT-1 Doing -> Todo', printed)
+        self.assertEqual(calls['moves'], ['SOFT-1'])
+
+    def test_a_ticket_run_reads_its_board_from_the_ticket(self):
+        other = {'ticketNumber': 'HTPR-7', 'section': 'In Progress', 'projectId': 15,
+                 'updatedAt': NOW - 8000, 'labels': []}
+        with patch.object(r, 'board_config', wraps=r.board_config) as config:
+            code, printed, calls = self.ticket_run(['--ticket', 'HTPR-7'], other)
+        self.assertEqual(code, 0, printed)
+        self.assertIn('PLAN HTPR-7 In Progress -> Backlog', printed)
+        self.assertIn(15, [call.args[0] for call in config.call_args_list])
+        self.assertEqual(calls['discover'], [['HTPR-7']])
+
+    def test_a_ticket_run_refuses_an_unreadable_ticket(self):
+        def api(*args):
+            raise ValueError('Hypertask request failed')
+
+        code, printed, calls = self.ticket_run(['--ticket', 'SOFT-1'], task(), api=api)
+        self.assertEqual(code, 1)
+        self.assertIn('UNKNOWN SOFT-1 | Hypertask request failed', printed)
+        self.assertEqual(calls['discover'], [], 'nothing is read from GitHub')
+
+    def test_a_ticket_run_refuses_a_key_from_another_board(self):
+        crossed = {'ticketNumber': 'SOFT-9', 'section': 'In Progress', 'projectId': 15,
+                   'updatedAt': NOW - 8000, 'labels': []}
+        code, printed, calls = self.ticket_run(['--ticket', 'SOFT-9'], crossed)
+        self.assertEqual(code, 1)
+        self.assertIn('UNKNOWN SOFT-9', printed)
+        self.assertEqual(calls['discover'], [])
+
+    def test_a_second_run_of_the_same_ticket_is_a_clean_skip(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        with patch.object(r.Path, 'home', return_value=Path(temp.name)):
+            r.lock_path(r.DEFAULT).parent.mkdir(parents=True, exist_ok=True)
+            lock = r.ticket_lock_path(r.DEFAULT, 'SOFT-1').open('a')
+            self.addCleanup(lock.close)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertIsNone(r.acquire_locks(r.DEFAULT, None, 'SOFT-1'),
+                              'the same ticket waits for the running sync')
+            self.assertIsNotNone(r.acquire_locks(r.DEFAULT, None, 'SOFT-2'),
+                                 'a different ticket still syncs')
+            self.assertEqual(r.ticket_lock_path(r.DEFAULT, 'SOFT-1').name,
+                             'reconcile-ticket-soft-1.lock')
+
+    def test_a_ticket_run_costs_a_handful_of_github_calls(self):
+        created = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat() + 'T10:00:00Z'
+        templates = self.labelled_board() + [dict(task('Doing'), ticketNumber=f'SOFT-{n}')
+                                            for n in range(5, 27)]
+        tasks = [{**t, 'createdAt': created} for t in templates]
+        whole = self.github_calls_for(tasks, [])
+        clear_cache()
+        card = self.github_calls_for(tasks, ['--ticket', 'SOFT-2'], ticket=tasks[1])
+        self.assertLessEqual(card, 6, 'a card sync costs a handful of GitHub calls')
+        self.assertLess(card, whole)
+
+    def test_reconcile_auto_dry_drops_apply(self):
+        code, printed, calls = self.ticket_run(
+            ['--ticket', 'SOFT-1', '--apply', '--limit', '1'], task('Doing'),
+            env={'RECONCILE_AUTO_DRY': '1'})
+        self.assertEqual(code, 0)
+        self.assertIn('DRY RUN board=2060 tickets=1 unknown=0', printed)
+        self.assertEqual(calls['moves'], [], 'the dry switch moves nothing')
+
+    def test_a_card_sync_writes_its_own_status_record(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        with patch.dict(os.environ, {'RECONCILE_CARD_PHASE': 'start'}):
+            code, printed, _calls = self.ticket_run(['--ticket', 'SOFT-1'], task('Doing'),
+                                                    home=Path(temp.name))
+            record = json.loads(r.session.card_record_path(
+                Path(temp.name), 2060, 'SOFT-1', 'start').read_text())
+            log = r.session.card_log_path(Path(temp.name), 2060, 'SOFT-1', 'start').read_text()
+        self.assertEqual(code, 0)
+        self.assertEqual((record['board'], record['ticket'], record['phase']),
+                         (2060, 'SOFT-1', 'start'))
+        self.assertEqual(record['exit'], 0)
+        self.assertEqual(record['summary_line'], 'DRY RUN board=2060 tickets=1 unknown=0')
+        self.assertIn('PLAN SOFT-1 Doing -> Todo', log)
+        self.assertEqual(record['log'], str(r.session.card_log_path(
+            Path(temp.name), 2060, 'SOFT-1', 'start')))
+        self.assertEqual(record['session_name'], 'Poteto')
 
     def test_current_head_cross_family_actions_verdict(self):
         workflow = {'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success',
@@ -1269,7 +1405,7 @@ class LeaseTest(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())['pid'], os.getpid())
 
     def test_wrapper_fast_command_and_exit_status(self):
-        env = {**os.environ, 'FLEET_LEASE_DIR': str(self.directory)}
+        env = {**os.environ, 'MULTIPROMPT_TAB': '', 'FLEET_LEASE_DIR': str(self.directory)}
         for code in (0, 7):
             result = subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'SOFT-1', 'run', '--', sys.executable, '-c', f'raise SystemExit({code})'], env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, code, result.stderr)
@@ -1293,8 +1429,75 @@ class LeaseTest(unittest.TestCase):
             self.assertEqual(lease.main(), 0)
         child.terminate.assert_not_called()
 
+    def login(self):
+        token = self.directory / 'test-chat-agent-token'
+        token.write_text('secret\n')
+        return ('Test Chat', token)
+
+    def lease_main(self, argv, spawned=None):
+        """Run one lease action in this process, with its card sync caught, not started."""
+        spawned = self.calls if spawned is None else spawned
+        with patch.object(lease.reconcile, 'LEASES', self.directory), \
+                patch.object(lease.session, 'login_for_session', return_value=self.login()), \
+                patch.object(lease, 'spawn_card', side_effect=lambda command, env: spawned.append((command, dict(env)))), \
+                patch.object(sys, 'argv', ['lease', *argv]):
+            return lease.main()
+
+    def test_start_and_end_each_spawn_one_card_sync(self):
+        self.calls = []
+        self.assertEqual(self.lease_main(['SOFT-1', 'start', '--pid', str(os.getpid())]), 0)
+        self.assertTrue(self.path.is_file(), 'start still writes the lease')
+        self.assertEqual(self.lease_main(['SOFT-1', 'end', '--pid', str(os.getpid())]), 0)
+        self.assertFalse(self.path.is_file(), 'end still removes the lease')
+        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.calls],
+                         ['start', 'end'])
+        for command, env in self.calls:
+            self.assertEqual(command[1:], [str(ROOT / 'skills/hypertask-work/reconcile'),
+                                           '--ticket', 'SOFT-1', '--apply', '--limit', '1'])
+            self.assertEqual(env['HT_TOKEN'], 'secret')
+            self.assertEqual(env['SHIP_SESSION_NAME'], 'Test Chat')
+            self.assertEqual(env['XDG_RUNTIME_DIR'], f'/run/user/{os.getuid()}')
+            self.assertEqual(env['DBUS_SESSION_BUS_ADDRESS'],
+                             f'unix:path=/run/user/{os.getuid()}/bus')
+
+    def test_run_and_watch_sync_at_their_own_start_and_end(self):
+        self.calls = []
+        self.assertEqual(self.lease_main(['SOFT-1', 'run', '--', sys.executable, '-c', 'pass']), 0)
+        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.calls],
+                         ['start', 'end'])
+        self.calls = []
+        with patch.object(lease.reconcile, 'pid_alive', side_effect=[True, False]):
+            self.assertEqual(self.lease_main(['SOFT-1', 'watch', '--pid', '12345']), 0)
+        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.calls],
+                         ['start', 'end'])
+
+    def test_no_login_spawns_nothing_and_the_lease_still_works(self):
+        with patch.object(lease.reconcile, 'LEASES', self.directory), \
+                patch.object(lease.session, 'login_for_session', return_value=None), \
+                patch.object(lease, 'spawn_card') as spawn, \
+                patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
+            self.assertEqual(lease.main(), 0)
+        self.assertTrue(self.path.is_file(), 'a missing login never stops the lease')
+        spawn.assert_not_called()
+        self.assertFalse(lease.sync_card('SOFT-1', 'start', {'HOME': str(self.directory)}))
+
+    def test_a_failed_spawn_never_fails_the_lease(self):
+        with patch.object(lease.reconcile, 'LEASES', self.directory), \
+                patch.object(lease.session, 'login_for_session', return_value=self.login()), \
+                patch.object(lease, 'spawn_card', side_effect=OSError('no fork')), \
+                patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
+            self.assertEqual(lease.main(), 0)
+        self.assertTrue(self.path.is_file())
+
+    def test_a_missing_token_spawns_nothing(self):
+        tokenless = ('Test Chat', self.directory / 'absent-agent-token')
+        with patch.object(lease, 'spawn_card') as spawn:
+            self.assertFalse(lease.sync_card('SOFT-1', 'start', {
+                'HOME': str(self.directory), 'MULTIPROMPT_TAB': 'live-test'}))
+        spawn.assert_not_called()
+
     def test_wrapper_registers_running_child(self):
-        env = {**os.environ, 'FLEET_LEASE_DIR': str(self.directory)}
+        env = {**os.environ, 'MULTIPROMPT_TAB': '', 'FLEET_LEASE_DIR': str(self.directory)}
         code = "import json,os,pathlib; p=pathlib.Path(os.environ['FLEET_LEASE_DIR'])/'SOFT-1.json'; import time; time.sleep(.2); d=json.loads(p.read_text()); assert d['pid']==os.getpid()"
         result = subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'SOFT-1', 'run', '--', sys.executable, '-c', code], env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1420,9 +1623,9 @@ class RateLimitTest(unittest.TestCase):
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'collect', side_effect=r.RateLimit(RESET_TEXT)), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
-            with self.assertRaises(r.RateLimit):
-                r.main()
+            self.assertEqual(r.main(), 0)
         self.assertNotIn('UNKNOWN', out.getvalue())
+        self.assertIn('GitHub rate limit', out.getvalue())
 
 
 class CallBudgetTest(unittest.TestCase):

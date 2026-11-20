@@ -49,7 +49,7 @@ Other boards keep their own columns.
 
 ## Reconcile
 
-The Stop hook reconcile-auto runs it for your board and label; you still run it by hand after you move work.
+The lease syncs a card when its worker starts and ends. The Stop hook reconcile-auto syncs your board and label at most every 10 minutes. You still run it by hand after you move work.
 Run it yourself, on your own board, with your own agent login:
 
 ```sh

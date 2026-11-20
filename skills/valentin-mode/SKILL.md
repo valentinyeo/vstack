@@ -23,16 +23,15 @@ Run `/pstack:poteto-mode` for the task. This skill holds only Valentin's own rul
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, with the brief in a file named brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The always-on pstack models rule holds the lanes. Every brief includes the shared worker rules in docs/worker-brief.md. Never ask him to pay more; bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option.
 
 ### Board rules
 
-Board work follows the `hypertask-work` skill: your own login, a ticket before work, the true column. Get the login with `/board-identity`. Never write as Valentin; a guard blocks it.
-Run `/hypertask-checkup` on a new project and daily in your loop.
+Board work follows the `hypertask-work` skill: own login, ticket first, true column. Get the login with `/board-identity`. Never write as Valentin; a guard blocks it. Run `/hypertask-checkup` on a new project and daily.
 
 ### Board sync
 
-Project notes name it: `Hypertask board: <id>, label: <label>`. A Stop hook runs `reconcile --board <id> --label <label> --apply` after each turn, at most every 10 minutes, as your own login named like your Multibot chat. If it cannot, it stops the chat and names the gap. On `/valentin-mode`, read your status record and fix it.
+Project notes name it: `Hypertask board: <id>, label: <label>`. The lease syncs a card when its worker starts and ends. A Stop hook runs `reconcile --label <label> --apply` after each turn, at most every 10 minutes, as your own login named like your Multibot chat. It stops you only when your setup is missing. Tool failures go to failures.jsonl under ~/.local/state/reconcile-auto for the reconcile owner, Hypertask Reconciler. On `/valentin-mode`, read your record and fix it.
 
 ## Working
 
@@ -42,7 +41,7 @@ Project notes name it: `Hypertask board: <id>, label: <label>`. A Stop hook runs
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verifying:** every app has one `verify-<app>` skill. Every Done when names its proof. A behaviour PR carries proof that fits: screenshot or video for UI, transcript for CLI, response body for API. No proof, no PASS.
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author.
-- **Server and cloud:** this server runs workers, focused tests, the app, the QA phone and boards. GitHub runners run CI and the verifier. No self-hosted runners.
+- **Server and cloud:** this server runs workers, tests, the app, the QA phone and boards. GitHub runners run CI and the verifier. No self-hosted runners.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** new projects begin from Joel Hooks' rat-stack template.

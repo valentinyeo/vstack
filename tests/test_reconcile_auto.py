@@ -117,26 +117,49 @@ class ReconcileAuto(unittest.TestCase):
         self.assertEqual(str(token), str(self.token))
         self.assertEqual(cwd, self.project)
 
-    def test_a_failed_run_blocks_with_its_log(self):
-        target = self.status(exit_code=1, output='MOVE X-1 Todo -> Doing\n')
-        answer = self.answer()
-        self.assertEqual(answer.get('decision'), 'block')
-        self.assertIn(str(hook.log_path(self.home, 2060, 'Test')), answer['reason'])
-        self.assertIn('exit 1', answer['reason'])
+    def failures(self):
+        path = hook.failures_path(self.home)
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_a_failed_run_logs_one_line_and_never_blocks(self):
+        self.status(exit_code=1, output='MOVE X-1 Todo -> Doing\n')
+        self.assertEqual(self.answer(), {})
+        lines = self.failures()
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertEqual(line['board'], 2060)
+        self.assertEqual(line['label'], 'Test')
+        self.assertIsNone(line['ticket'])
+        self.assertEqual(line['session_name'], 'Test Chat')
+        self.assertEqual(line['log'], str(hook.log_path(self.home, 2060, 'Test')))
+        self.assertEqual(line['summary'], 'MOVE X-1 Todo -> Doing')
         self.assertEqual(self.calls, [])
 
-    def test_a_run_with_unknowns_blocks(self):
-        self.status(exit_code=0, unknown=1, output='PREVIEW board=2060 tickets=2 unknown=1\n')
-        answer = self.answer()
-        self.assertEqual(answer.get('decision'), 'block')
-        self.assertIn('unknown 1', answer['reason'])
-
-    def test_the_block_happens_once_an_hour_per_session(self):
+    def test_the_same_failed_run_is_logged_once(self):
         self.status(exit_code=1)
+        for _ in range(3):
+            self.assertEqual(self.answer(), {})
+        self.assertEqual(len(self.failures()), 1)
+
+    def test_a_run_with_unknowns_logs_and_never_blocks(self):
+        self.status(exit_code=0, unknown=1, output='PREVIEW board=2060 tickets=2 unknown=1\n')
+        self.assertEqual(self.answer(), {})
+        self.assertEqual(len(self.failures()), 1)
+        self.assertIn('unknown=1', self.failures()[0]['summary'])
+
+    def test_a_bus_error_logged_never_blocks(self):
+        self.status(exit_code=1, output=(
+            'Could not connect: No such file or directory\n'))
+        self.assertEqual(self.answer(), {})
+        self.assertEqual(len(self.failures()), 1)
+
+    def test_setup_gaps_block_once_an_hour_per_session(self):
+        self.token.unlink()
         now = time.time()
         self.assertEqual(self.answer(session='sid-x', now=now).get('decision'), 'block')
         self.assertEqual(self.answer(session='sid-x', now=now + 60), {})
         self.assertEqual(self.answer(session='sid-x', now=now + 3601).get('decision'), 'block')
+        self.assertFalse(hook.failures_path(self.home).exists(), 'a setup gap is not a tool failure')
 
     def test_the_status_record_shape_and_names(self):
         hook.write_status(self.home, 2060, 'Test', 'Test Chat', 0, (

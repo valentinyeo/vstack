@@ -8,6 +8,8 @@ from functools import lru_cache
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import fcntl
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,20 @@ import subprocess
 import sys
 import threading
 import time
+
+
+def load_session():
+    """The one login resolver and status store, from this skill folder."""
+    path = Path(__file__).resolve().with_name('session_login.py')
+    loader = importlib.machinery.SourceFileLoader('fleet_session', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+session = load_session()
 
 BOARD = 2060
 PROTECTED = {'Valentin Review', 'Done', 'Not now'}
@@ -528,6 +544,14 @@ def api(*args):
     return value
 
 
+def read_ticket(key):
+    """The one ticket a --ticket run syncs. Unreadable facts refuse the run."""
+    rows = api('task', 'get', key).get('tasks') or []
+    if not rows:
+        raise ValueError(f'{key} unreadable')
+    return rows[0]
+
+
 def tickets(section=None, board=DEFAULT):
     rows, cursor, seen = [], None, set()
     while True:
@@ -1031,28 +1055,38 @@ def lock_path(board=DEFAULT):
     return Path.home() / '.local/state/fleet' / name
 
 
-def label_lock_path(board, label):
+def own_lock_path(board, kind, name):
     """Beside the board lock: reconcile-label-verification-backlog.lock."""
     path = lock_path(board)
-    slug = re.sub(r'[^a-z0-9]+', '-', label.lower())
-    return path.with_name(f'{path.name[:-len(".lock")]}-label-{slug}.lock')
+    slug = re.sub(r'[^a-z0-9]+', '-', name.lower())
+    return path.with_name(f'{path.name[:-len(".lock")]}-{kind}-{slug}.lock')
 
 
-def acquire_locks(board=DEFAULT, label=None):
-    """Open handles, or None when another run holds the board.
+def label_lock_path(board, label):
+    return own_lock_path(board, 'label', label)
 
-    A whole-board run excludes everything on the board. A label run shares the
-    board lock and holds its own exclusive one, so two labels sync at once
-    while a whole-board run and any label run still exclude each other.
+
+def ticket_lock_path(board, ticket):
+    return own_lock_path(board, 'ticket', ticket)
+
+
+def acquire_locks(board=DEFAULT, label=None, ticket=None):
+    """Open handles, or None when another run holds this board, label or ticket.
+
+    A whole-board run excludes everything on the board. A label run or a ticket
+    run shares the board lock and holds its own exclusive one, so two labels or
+    two tickets sync at once while a whole-board run still excludes them all.
     """
+    own = ticket or label
     path = lock_path(board)
     path.parent.mkdir(parents=True, exist_ok=True)
     handles = []
     try:
         handles.append(path.open('a'))
-        fcntl.flock(handles[0], (fcntl.LOCK_SH if label else fcntl.LOCK_EX) | fcntl.LOCK_NB)
-        if label:
-            handles.append(label_lock_path(board, label).open('a'))
+        fcntl.flock(handles[0], (fcntl.LOCK_SH if own else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        if own:
+            second = ticket_lock_path(board, ticket) if ticket else label_lock_path(board, label)
+            handles.append(second.open('a'))
             fcntl.flock(handles[1], fcntl.LOCK_EX | fcntl.LOCK_NB)
         return handles
     except BlockingIOError:
@@ -1073,46 +1107,137 @@ def probe_budget():
         raise RateLimit(format_reset(min(spent)) if spent else 'unknown')
 
 
+CARD = {'board': None, 'ticket': None}
+
+
+class Tee:
+    """Everything a card sync prints, kept for its status record."""
+
+    def __init__(self, streams):
+        self.streams, self.parts = tuple(streams), []
+
+    def write(self, text):
+        self.parts.append(text)
+        for stream in self.streams:
+            stream.write(text)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self):
+        return False
+
+    def text(self):
+        return ''.join(self.parts)
+
+
+def card_phase():
+    return session.slug(os.environ.get('RECONCILE_CARD_PHASE') or '')
+
+
+def write_card_record(tee, code):
+    """One status record per lease-synced card, in the hook's status store."""
+    board, ticket, phase = CARD['board'], CARD['ticket'], card_phase()
+    if not (board and ticket and phase):
+        return
+    where = Path.home()
+    log = session.card_log_path(where, board, ticket, phase)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(tee.text())
+    moved, unknown, summary = session.parse_output(tee.text())
+    session.write_record(session.card_record_path(where, board, ticket, phase), {
+        'at': time.time(), 'session_name': os.environ.get('SHIP_SESSION_NAME') or '',
+        'board': board, 'label': None, 'ticket': ticket, 'phase': phase,
+        'exit': int(code), 'moved': moved, 'unknown': unknown,
+        'summary_line': summary, 'log': str(log)})
+
+
 def main():
     reset_github_count()
+    tee = None
+    if card_phase():
+        tee = Tee((sys.stdout, sys.stderr))
+        sys.stdout, sys.stderr = tee, tee
+    code = 1
     try:
-        return board_run()
+        try:
+            code = board_run()
+        except RateLimit as stop:
+            # One line and a clean exit: a spent budget is not a failed run, and no move
+            # from it may land. The timer must not show a red unit for it.
+            moved = f'{APPLIED[0]} moves already applied before it' if APPLIED[0] else 'no moves applied'
+            print(f'reconcile: GitHub rate limit; reset {stop.reset}; {moved}', flush=True)
+            code = 0
+        finally:
+            print(github_summary(), file=sys.stderr, flush=True)
     finally:
-        print(github_summary(), file=sys.stderr, flush=True)
+        if tee is not None:
+            sys.stdout, sys.stderr = tee.streams
+            try:
+                write_card_record(tee, code)
+            except OSError:
+                pass
+    return code
 
 
 def board_run():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--board', type=int, default=BOARD,
+    parser.add_argument('--board', type=int,
                         help='Any board a project names; 2060 and 15 keep their own rules')
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--section', help='Restrict the dry run to one column')
     parser.add_argument('--label', help='Sync only tickets carrying this label')
+    parser.add_argument('--ticket', help='Sync exactly one ticket, on the board it belongs to')
     parser.add_argument('--self-test', action='store_true')
     parser.add_argument('--limit', type=int, default=5, help='Maximum moves per apply run; default 5')
     args = parser.parse_args()
     if args.self_test:
         return subprocess.call([sys.executable, '-m', 'unittest', 'tests.test_hypertask_work'], cwd=Path(__file__).resolve().parents[2])
-    if args.board < 1:
+    if args.ticket:
+        if not re.fullmatch(r'[A-Z][A-Z0-9]*-[1-9]\d*', args.ticket.upper()):
+            parser.error('--ticket takes one ticket key')
+        args.ticket = args.ticket.upper()
+        if args.label or args.section:
+            parser.error('--ticket syncs one ticket; it takes no --label or --section')
+        if args.board is not None:
+            parser.error('--ticket reads its board from the ticket')
+    elif args.board is not None and args.board < 1:
         parser.error('--board must be a positive board id')
     if args.apply and args.section:
         parser.error('--section is read-only')
     if args.limit < 1:
         parser.error('--limit must be positive')
+    if os.environ.get('RECONCILE_AUTO_DRY') and args.apply:
+        # The dry switch of the lease sync: same reads, same plan, nothing moves.
+        print('reconcile: RECONCILE_AUTO_DRY is set; --apply dropped, nothing moves',
+              file=sys.stderr, flush=True)
+        args.apply = False
     # Before any board read: a board read at runtime asks the CLI for its prefix.
     os.environ['PATH'] = f'{Path.home()}/.local/bin:' + os.environ.get('PATH', '')
-    board = board_config(args.board)
+    if args.ticket:
+        # The ticket names its own board, so a card sync never needs a configured one.
+        try:
+            one = read_ticket(args.ticket)
+            board = board_config(int(one['projectId']))
+            ticket_index(one['ticketNumber'], board)
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+            print(f'UNKNOWN {args.ticket} | {error}', flush=True)
+            return 1
+    else:
+        board = board_config(args.board or BOARD)
     options = {} if board.id == BOARD else {'board': board}
     if args.apply and board.id == 15:
         require_board15_agent()
     if args.apply and not product_board(board) and (not os.environ.get('SHIP_SESSION_NAME') or os.environ['SHIP_SESSION_NAME'] == 'Valentins Claude Code'):
         parser.error('--apply requires SHIP_SESSION_NAME for an agent login')
     # Prevent two timer/manual runs from racing the same board. Two different
-    # labels may sync at once; the same label, or any whole-board run, may not.
-    handles = acquire_locks(board, args.label)
+    # labels or tickets may sync at once; the same one, or any whole-board run, may not.
+    CARD.update(board=board.id, ticket=args.ticket)
+    handles = acquire_locks(board, args.label, args.ticket)
     if handles is None:
-        label = f' label={args.label}' if args.label else ''
-        print(f'SKIP board={board.id}{label} | reconciliation already running', flush=True)
+        own = f' ticket={args.ticket}' if args.ticket else (f' label={args.label}' if args.label else '')
+        print(f'SKIP board={board.id}{own} | reconciliation already running', flush=True)
         return 0
     with contextlib.ExitStack() as stack:
         for handle in handles:
@@ -1123,7 +1248,7 @@ def board_run():
             with phase('budget'):
                 probe_budget()
         with phase('tickets'):
-            tasks = tickets(args.section, **options)
+            tasks = [one] if args.ticket else tickets(args.section, **options)
         with phase('sections'):
             sections = {t['section'] for t in tasks}
             if board.columns is not None:
@@ -1131,6 +1256,9 @@ def board_run():
                 sections |= board.columns
             elif not product_board(board):
                 sections |= read_sections(board)
+        if args.ticket:
+            print(f'reconcile: ticket {args.ticket} on board {board.id}',
+                  file=sys.stderr, flush=True)
         if args.label:
             # Before any GitHub lookup: a session's run pays only for its own tickets.
             kept = [t for t in tasks if carries_label(t, args.label)]
@@ -1176,11 +1304,5 @@ def board_run():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except RateLimit as stop:
-        # One line and a clean exit: a spent budget is not a failed run, and no move
-        # from it may land. The timer must not show a red unit for it.
-        moved = f'{APPLIED[0]} moves already applied before it' if APPLIED[0] else 'no moves applied'
-        print(f'reconcile: GitHub rate limit; reset {stop.reset}; {moved}', flush=True)
-        sys.exit(0)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         sys.exit(f'fleet/reconcile: {error}')

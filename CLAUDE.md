@@ -30,6 +30,7 @@ Nobody pushes to main.
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
 | Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
 | Reconcile keeps boards 15 and 2060 truthful | `skills/hypertask-work/reconcile`, `tests/test_hypertask_work.py` |
+| Boards stay true without anyone asking | lease start/end sync, `hooks/reconcile-auto.py`, `bin/hand-moves` |
 | Verifier PASS requires commands and unchanged tracked files | `tests/test_column_verifier.py`, hosted verifier harness |
 | Every verifier reads its verdict through one parser | `scripts/verdict.py`, `tests/test_verdict.py` |
 | Every verifier falls through every allowed model and lane | `scripts/verifier_lanes.py`, `tests/test_run_verifier.py` |
