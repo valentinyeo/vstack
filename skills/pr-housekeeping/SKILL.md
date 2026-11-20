@@ -18,20 +18,20 @@ Run this from the repo you work in, named as your live chat:
 skills/pr-housekeeping/pr-queue --mine "<your live chat name>"
 ```
 
-A nonzero exit is the enforcement: something you own has no owner or has gone quiet. Deal with it before you pick new work. The script only reads `gh` and the live roster, so it writes nothing to GitHub and nothing to a board.
+A nonzero exit is the enforcement: one of your own PRs has gone quiet, or, in a run without `--mine`, a verified PR has no owner. Deal with it before you pick new work. The script only reads `gh` and the live roster, so it writes nothing to GitHub and nothing to a board.
 
 ## Ladder of states
 
 - BOT: CI Boss owns dependabot, renovate and github-actions PRs, so leave it alone.
 - DUPLICATE: message the other PR's owner chat. The older or weaker one closes with a one line reason and the ticket link. Never open a second PR beside a stalled one.
-- CONFLICT: rebase your own branch and push with force-with-lease, on your own branch only.
+- CONFLICT: run Babysit in check mode, rebase your own branch, then push with force-with-lease on your own branch only.
 - BILLING: billing blocks private repos only. Scan the repo history for secrets and client data, then make the repo public. Ask Valentin only when the scan finds something.
 - RED: run Babysit in check mode, fix the failing check on your branch, then push.
 - VERIFIER-FAIL: fix the finding the verifier named, push it, and get a fresh verdict at the new head.
 - MISSING-LINES: add the `Author model:` and `Pacer launch:` lines to the PR body.
-- NO-OWNER: in a run without `--mine`, hand the PR to the chat that owns the repo or its ticket.
+- NO-VERDICT: run Babysit in check mode, then get a verdict at the current head before merging.
 - STALE: finish it, or close it with a reason and note that on the ticket.
-- NO-VERDICT: ask for a verdict at the current head and read it before merging.
+- NO-OWNER: in a run without `--mine`, hand the PR to the chat that owns the repo or its ticket.
 - READY: merge per pstack Shipping, only when the verdict's model family differs from every `Author model:` line and that verdict covers the current head. Never skip a required check or approval.
 - OK: nothing to do this tick.
 
