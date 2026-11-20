@@ -129,6 +129,7 @@ link_one claude-helper-gate.py "$ROOT/hooks/claude-helper-gate.py" "$HOME/.claud
 # changed valentin-mode (VSTA-56). It still needs registering as a
 # UserPromptSubmit hook in each project's .claude/settings.json.
 link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
+link_one long-chat.py "$ROOT/hooks/long-chat.py" "$HOME/.claude/hooks"
 
 # The two lane hooks act only in a chat that loaded valentin-mode, so they are
 # safe to register once in the global ~/.claude/settings.json (VSTA-70). They

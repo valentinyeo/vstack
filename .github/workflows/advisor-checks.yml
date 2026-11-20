@@ -47,5 +47,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_launch_gate.py -v
       - name: test timeout guard self-test
         run: timeout 60 python3 hooks/test-timeout-guard.py --self-test
+      - name: long-chat hook self-test
+        run: timeout 60 python3 hooks/long-chat.py --self-test
       - name: existing skill installer
         run: timeout 300 bash tests/install.sh
