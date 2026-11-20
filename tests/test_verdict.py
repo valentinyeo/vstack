@@ -132,17 +132,11 @@ class VerdictCommand(unittest.TestCase):
 
 
 class SharedByEveryVerifier(unittest.TestCase):
-    def test_every_verifier_reads_its_verdict_through_the_shared_parser(self):
+    def test_the_verifier_reads_its_verdict_through_the_shared_parser(self):
         workflows = ROOT / '.github/workflows'
-        self.assertIn('python3 scripts/verdict.py evidence/verdict.json',
-                      (workflows / 'advisor-checks.yml').read_text())
         self.assertIn('python3 scripts/verdict.py verdict.md',
                       (workflows / 'pstack-sources.yml').read_text())
-        self.assertIn('from verdict import PASSING, find_verdict',
-                      (ROOT / 'scripts/column-verifier.py').read_text())
-        advisor = (ROOT / 'scripts/verification/advisor.py').read_text()
-        self.assertIn('from verdict import find_verdict, json_answer', advisor)
-        self.assertIn('value, why = find_verdict(content)', advisor)
+        self.assertIn('from verdict import find_verdict', (ROOT / 'scripts/run-verifier').read_text())
 
     def test_no_workflow_parses_a_verdict_itself(self):
         # A second inline parser is how job 135627154998 scored a PASS answer FAIL.
