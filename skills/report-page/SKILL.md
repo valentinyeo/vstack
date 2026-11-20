@@ -1,6 +1,9 @@
 ---
 name: report-page
 description: Turn research, a plan, an analysis or a status update into one clean HTML page a busy person can scan in a minute. Bottom line up front, Minto pyramid structure, reading time shown. Writes with web-writing, cleans with unslop and zinsser-english-style, builds from the bundled template, then publishes. Use for /report-page, any report, research write-up, plan, comparison, audit or findings page meant for a person to read.
+disable-model-invocation: true
+skill-word-budget: 900
+skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # report-page
@@ -26,8 +29,8 @@ Rules that follow from the pyramid:
 
 1. **Find the bottom line.** Write the one-sentence answer and the one action before anything else. If you can't, the research isn't done.
 2. **Build the pyramid.** Pick the 2 to 4 key points that prove it. At most 3 top items get a card. Everything else goes in one short table or is left out. Method and evidence go last.
-3. **Write with `web-writing`.** Conclusion first, about half the words of a normal draft, one idea per paragraph, bold keywords, plain headings, no hype.
-4. **Clean with `unslop`** (if installed), then **`zinsser-english-style`.** Cut AI phrasing, clutter and stale phrases. Short sentences, active verbs, concrete words. Use `schneider-deutsch-stil` instead for a German page.
+3. **Write with `../web-writing/SKILL.md`** (read it, the Skill tool refuses a hidden skill). Conclusion first, about half the words of a normal draft, one idea per paragraph, bold keywords, plain headings, no hype.
+4. **Clean with `unslop`** (if installed), then **`../zinsser-english-style/SKILL.md`**, read with the Read tool. Cut AI phrasing, clutter and stale phrases. Short sentences, active verbs, concrete words. Use `../schneider-deutsch-stil/SKILL.md` instead for a German page.
 5. **Build from `template.html`** in this folder. Keep its structure:
    - Verdict box at the top: the answer in bold, then at most one sentence and the next step.
    - Cards for the top items: a title, one proof line with the key number and a source link, and images inline when they help.

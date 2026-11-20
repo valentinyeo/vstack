@@ -1,6 +1,7 @@
 ---
 name: ptacek-copyedit
 description: Copyedit a draft the user wrote themselves without touching their voice. Flags problems pass by pass, never suggests words, never praises. Based on Thomas and Erin Ptacek's "How To Write With An LLM". Use for /ptacek-copyedit, "copyedit this", "find the flaws", or any feedback on writing the user will publish as themselves.
+disable-model-invocation: true
 ---
 
 # Copyedit without ghostwriting
@@ -33,7 +34,7 @@ If the writer asks you to rewrite something, say once that this skill doesn't wr
 5. **Filler.** Very, really, actually, unfortunately, quite, just, and other words sprinkled in without doing work.
 6. **Repetition.** The same word or turn of phrase used again and again, and synonyms swapped in for the same thing.
 
-The Ptaceks recommend Joseph Williams' "Style: Lessons in Clarity and Grace" as the source for more passes. If zinsser-english-style or schneider-deutsch-stil is installed, use its checklist as extra passes, as flags only.
+The Ptaceks recommend Joseph Williams' "Style: Lessons in Clarity and Grace" as the source for more passes. If `../zinsser-english-style/SKILL.md` or `../schneider-deutsch-stil/SKILL.md` is installed, read it with the Read tool (the Skill tool refuses a hidden skill) and use its checklist as extra passes, as flags only.
 
 ## Judging a rewrite
 

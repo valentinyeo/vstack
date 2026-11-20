@@ -1,6 +1,9 @@
 ---
 name: pospeak
 description: Rewrite the last reply (or any text) for a product owner who is not a senior dev, then pass it through unslop and i-have-adhd, and post it again. Persistent for the session. Use when Valentin says "/pospeak", "po speak", "dumb it down", "I don't understand", "too technical", "explain for a product owner", "I'm not a dev", or "repeat that in plain English".
+disable-model-invocation: true
+skill-word-budget: 1300
+skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # PO speak
@@ -41,11 +44,11 @@ Three passes, in this order, every time. Do not skip one because the text "alrea
 
 Keep exact commands, error text, and URLs unchanged. Those are things he pastes or clicks, not things he reads.
 
-7. **Every PR and ticket is a clickable URL, never a bare id.** "HTPR-3895" or "PR #412" on its own is dead text to him. Write the full `https://` link every time: `HTPR-3895 https://app.hypertask.ai/detail/project-15/3895`, `PR #412 https://github.com/<org>/<repo>/pull/412`. Same for branches, deploys, dashboards, screenshots, docs: if it can be a link, post the link. Plain-text URL, not a markdown `[title](url)` link (his terminal renders those unreadable). Look the URL up if you do not have it; do not post the id alone.
+7. **Every PR and ticket is a clickable URL, never a bare id.** "HTPR-3895" or "PR #412" on its own is dead text to him. Write the full `https://` link every time: `HTPR-3895 https://app.hypertask.ai/detail/project-15/3895`, `PR #412 https://github.com/<org>/<repo>/pull/412`. Same for branches, deploys, dashboards, screenshots, docs: if it can be a link, post the link. Plain-text URL, not a markdown `[title] (url)` link (his terminal renders those unreadable). Look the URL up if you do not have it; do not post the id alone.
 
 ### Pass 2: unslop
 
-Apply `~/.claude/skills/unslop/SKILL.md` verbatim. No em dashes, no AI vocabulary, no "serves as", no rule of three, no chatbot phrases, no hedging, active voice, plain words. Have a view.
+Apply ~/.claude/skills/unslop/SKILL.md verbatim. No em dashes, no AI vocabulary, no "serves as", no rule of three, no chatbot phrases, no hedging, active voice, plain words. Have a view.
 
 ### Pass 3: i-have-adhd
 
@@ -80,7 +83,7 @@ For a proposal: verdict first, then 2 to 4 ranked options with a one-line trade-
 ## Examples
 
 Bad (what Fable tends to write):
-> The `verifyEmailToken` handler in `api/auth/verify.ts` was short-circuiting on the `nookies_user` cookie because the JWT `exp` claim was compared against seconds instead of milliseconds, so the middleware treated every fresh token as expired and bounced to `/login`.
+> The `verifyEmailToken` handler in api/auth/verify.ts was short-circuiting on the `nookies_user` cookie because the JWT `exp` claim was compared against seconds instead of milliseconds, so the middleware treated every fresh token as expired and bounced to /login.
 
 Good:
 > **Magic-link login is fixed and live.** Users who clicked a login email were sent back to the login page because the app read the link's expiry time wrong and thought every link had expired. Nothing to decide. Risk: none, only the expiry check changed.
