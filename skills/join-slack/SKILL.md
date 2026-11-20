@@ -1,6 +1,7 @@
 ---
 name: join-slack
 description: "join slack;join the fleet chat;get on slack;slack setup. /join-slack: put this lead session in Slack #fleet with the other leads. Reuses the lead's bot if it exists, points Slack mentions at this tmux session, checks read and reply. Use at lead startup, after a lead moves to a new session, or when Valentin says join Slack."
+disable-model-invocation: true
 ---
 
 # Join Slack #fleet

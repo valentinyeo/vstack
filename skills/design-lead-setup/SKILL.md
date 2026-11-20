@@ -1,6 +1,9 @@
 ---
 name: design-lead-setup
 description: Sets an AI agent up as the design lead for an existing product repo, then runs the work. The agent captures the real app, brings it into Figma with the code's own tokens, audits it against written rules with file:line evidence, files one problem report per case, and shows fixes as edits on the real screen. The owner only approves. Use for /design-lead-setup, "be our design lead", "audit our UI", "set up Figma from our app", or "propose a fix for this screen".
+disable-model-invocation: true
+skill-word-budget: 2900
+skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # /design-lead-setup
@@ -30,7 +33,7 @@ These hold in every phase.
 Do this before any audit. Budget about half a day of agent time.
 
 ### 0.1 Read what the product already says about itself
-1. Find the design docs in the repo (for example `docs/DESIGN.md` or `docs/style-guide.md`), the theme files, the Tailwind or CSS-variable config, and any design lint rules and their suppression or baseline file.
+1. Find the design docs in the repo (for example docs/DESIGN.md or docs/style-guide.md), the theme files, the Tailwind or CSS-variable config, and any design lint rules and their suppression or baseline file.
 2. Find the live branch. Compare it with the default branch. Use the live one for every file:line.
 3. Check the docs against the code. Docs often point at scripts or files that no longer exist. List each broken reference with its line.
 4. Write down the product's hard rules in a few lines (for example "keyboard-first; no new visible chrome; features ship through shortcuts and the command palette"). Hard rules beat taste.
@@ -76,7 +79,7 @@ Every later phase starts by reading this file.
 
 Make the design system something a machine can check, so the same mistakes stop coming back.
 
-1. **Named colour roles.** Every colour in the UI should be a role variable (`bg/page`, `text/muted`, `border/focus`, `accent/primary`, `status/destructive`), defined once per theme. If the code has no palette layer, don't invent one; the roles hold raw values per theme.
+1. **Named colour roles.** Every colour in the UI should be a role variable (bg/page, text/muted, border/focus, accent/primary, status/destructive), defined once per theme. If the code has no palette layer, don't invent one; the roles hold raw values per theme.
 2. **Scales.** One radius scale and one shadow scale, each with a short list of allowed values. Flag off-scale values.
 3. **Lint.** A design lint flags raw hex, off-scale radius and banned utilities in changed files. Existing debt goes in a baseline or suppression file. **Never raise the baseline.** It only goes down.
 4. **Check the lint for loopholes.** For example, a rule that auto-approves every hex found in any theme file makes any new hex in a theme file legal everywhere.

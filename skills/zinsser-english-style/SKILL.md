@@ -1,6 +1,9 @@
 ---
 name: "zinsser-english-style"
 description: "Write or edit English text in the plain style taught by William Zinsser (On Writing Well) and George Orwell (Politics and the English Language): short sentences, strong verbs, concrete words, no clutter, jargon or stale phrases. Use for any English writing or editing task."
+disable-model-invocation: true
+skill-word-budget: 1500
+skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # Plain English after Zinsser and Orwell
@@ -100,4 +103,4 @@ Apply these principles to all English text you write or edit: articles, newslett
 - Keep the register the context needs. A contract or a scientific paper may need precise technical terms; still apply the sentence rules.
 - Don't flatten a deliberate author voice into uniform short sentences. Rhythm comes from variation.
 - When editing someone else's text, never change facts, quotes or meaning for the sake of style.
-- For German text, use the schneider-deutsch-stil skill instead: it adds German-specific rules (Satzklammer, Nominalstil suffixes) this one lacks.
+- For German text, read `../schneider-deutsch-stil/SKILL.md` with the Read tool instead (the Skill tool refuses a hidden skill): it adds German-specific rules (Satzklammer, Nominalstil suffixes) this one lacks.

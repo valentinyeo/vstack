@@ -1,6 +1,9 @@
 ---
 name: unjargon
 description: Remove AI tells, empty jargon, and unnecessary technical detail from writing while preserving meaning. Always apply to explanatory prose, especially software-development explanations, coding plans, bug diagnoses, implementation updates, code reviews, pull-request summaries, release notes, architecture decisions, and agent handoffs that a senior product owner or other non-coder must understand. Translate technical work into plain English, lead with product behavior and impact, explain unavoidable terms, and keep exact code, commands, identifiers, errors, paths, API names, and measurements unchanged when accuracy depends on them.
+disable-model-invocation: true
+skill-word-budget: 2000
+skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # Unjargon

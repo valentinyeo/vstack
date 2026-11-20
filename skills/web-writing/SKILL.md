@@ -1,6 +1,7 @@
 ---
 name: web-writing
 description: Rewrite or write any text meant for the web (landing pages, docs, emails, blog posts, ticket comments, UI copy) so people who scan instead of read still get it. Based on Jakob Nielsen's NN/g study "How Users Read on the Web". Use for /web-writing, "make this scannable", "web copy", "tighten this page", or any draft a person will read on a screen.
+disable-model-invocation: true
 ---
 
 # web-writing

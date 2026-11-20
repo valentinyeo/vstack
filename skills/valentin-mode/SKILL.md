@@ -3,11 +3,13 @@ name: valentin-mode
 description: >-
   Work in Valentin's style on top of pstack, on his projects (Hypertask, Multi Bot, Software Factory, Pecunia, vstack, his personal apps). Starts only when invoked with /valentin-mode, never on its own.
 disable-model-invocation: true
+skill-word-budget: 1000
+skill-word-budget-reason: The index must name where every hidden skill is read, so a session pays only for this entry skill.
 ---
 
 # Valentin mode
 
-If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat, or one without bypass permissions, gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
+If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat without bypass gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
 ## Responsive mode (pasted in when this skill loads)
 
@@ -30,7 +32,7 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, bri
 
 ### Board work
 
-Before any board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
+Before board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
 ### Board drain
 
@@ -64,3 +66,19 @@ Design work follows [designing.md](designing.md).
 
 - **pstack first, write last:** look for the rule in pstack, then in the domain's stack. Add only the gap, and name what you checked in the commit message.
 - **Where a correction lands:** a correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in vstack.
+
+## Skill index
+
+These skills hide from the skill list. Read the path shown; the Skill tool refuses hidden skills. Slash commands still work.
+
+- writing for Valentin, plain words for a non-coder, ticket comments and PR text -> read ../unjargon/SKILL.md
+- rewrite a reply for a product owner, he says "pospeak" or "too technical" -> read ../pospeak/SKILL.md
+- a report, plan or research page for a person to scan -> read ../report-page/SKILL.md
+- text for the web, landing pages, docs, UI copy -> read ../web-writing/SKILL.md
+- any English writing or editing in plain style -> read ../zinsser-english-style/SKILL.md
+- German text -> read ../schneider-deutsch-stil/SKILL.md
+- copyedit a draft he wrote himself without changing his voice -> read ../ptacek-copyedit/SKILL.md
+- set an agent up as design lead for a product repo -> read ../design-lead-setup/SKILL.md
+- put a lead session in Slack #fleet -> read ../join-slack/SKILL.md
+- the chat stays free while workers run -> responsive-mode (already loaded in the first step)
+- ticket and board rules -> the /hypertask skill (not hidden)
