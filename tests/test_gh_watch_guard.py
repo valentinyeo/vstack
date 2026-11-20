@@ -4,7 +4,7 @@
 Two chats polled CI in tight loops on 2026-11-20, one every 30 s and one with `watch -n 30`.
 Every poll is a fresh GraphQL call against one token shared by every chat. The guard refuses
 `gh --watch`, `watch -n <60> gh ...` and shell loops calling gh with a sleep under 60 s, and names
-tools/gh-wrapper/wait-checks as the quiet replacement.
+~/.local/share/vstack/tools/gh-wrapper/wait-checks as the quiet replacement.
 """
 import importlib.util
 import json
@@ -73,9 +73,14 @@ class VerdictTests(unittest.TestCase):
             self.assertIsNone(self.guard.verdict(command), command)
 
     def test_the_message_names_the_quiet_command_and_the_rules(self):
-        self.assertIn("tools/gh-wrapper/wait-checks <repo> <pr>", self.guard.MESSAGE)
+        self.assertIn("~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>", self.guard.MESSAGE)
         self.assertIn(RULES, self.guard.MESSAGE)
         self.assertTrue(self.guard.MESSAGE.startswith("BLOCKED by gh-watch-guard:"))
+
+    def test_guard_message_uses_shared_install_path_not_repo_relative(self):
+        self.assertIn("~/.local/share/vstack/tools/gh-wrapper/wait-checks", self.guard.MESSAGE)
+        self.assertNotIn("tools/gh-wrapper/wait-checks <repo>", self.guard.MESSAGE)
+        self.assertIn("run_in_background", self.guard.MESSAGE)
 
     def test_self_test_mode_passes(self):
         result = subprocess.run([sys.executable, str(GUARD), "--self-test"], capture_output=True,

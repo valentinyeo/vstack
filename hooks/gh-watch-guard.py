@@ -5,8 +5,8 @@
 tight loops: `while true; do gh pr checks 223; sleep 30; done` and `watch -n 30 gh pr checks 223`.
 Each poll is a fresh GraphQL call against one 5000 an hour budget, so one loop starves every other
 chat. This guard blocks gh's own `--watch` and any loop that calls gh with a sleep under 60 seconds,
-and names the quiet replacement, tools/gh-wrapper/wait-checks, which polls once a minute through the
-wrapper cache.
+and names the quiet replacement, ~/.local/share/vstack/tools/gh-wrapper/wait-checks, which polls once
+a minute through the wrapper cache. Start it as a tracked background command, not with & or nohup.
 
 gh-watch-guard.py --self-test
 """
@@ -16,10 +16,13 @@ import shlex
 import sys
 
 RULES = "~/.local/share/vstack/tools/gh-wrapper/USING-GITHUB.md"
-REPLACEMENT = "tools/gh-wrapper/wait-checks <repo> <pr>"
+REPLACEMENT = "~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>"
 MESSAGE = ("BLOCKED by gh-watch-guard: a gh --watch or a gh loop sleeping under 60 s spends the one "
-           "shared GitHub token, so every chat slows down. Wait for CI in the background instead: "
-           + REPLACEMENT + " (one cached call a minute, exits 0 pass, 1 fail). Rules: " + RULES)
+           "shared GitHub token, so every chat slows down. Start "
+           + REPLACEMENT
+           + " as a tracked background command (Claude: Bash with run_in_background), never with & "
+           "or nohup, so its end wakes the chat (one cached call a minute, exits 0 pass, 1 fail). "
+           "Rules: " + RULES)
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 LOOP_WORDS = {"while", "until", "for"}
 DURATION = re.compile(r"^([0-9.]+)([smhd]?)$")

@@ -44,7 +44,7 @@ BUDGET_REFUSE = 600
 BUDGET_MINUTES = 60
 BUDGET_KEEP_HOURS = 3
 BUDGET_RULES = "~/.local/share/vstack/tools/gh-wrapper/USING-GITHUB.md"
-BUDGET_REPLACEMENT = "tools/gh-wrapper/wait-checks <repo> <pr>"
+BUDGET_REPLACEMENT = "~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>"
 
 PRUNE_EVERY = 600
 PRUNE_MAX_AGE = 86400

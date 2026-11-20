@@ -139,7 +139,7 @@ class BudgetWarnTests(BudgetCase):
         self.assertEqual(len(self.upstream_calls()), 1)
         self.assertIn("gh budget: budgettest used 300 of 600 GitHub calls this hour; "
                       "slow down or use the cache.", result.stderr)
-        self.assertIn("tools/gh-wrapper/wait-checks <repo> <pr>", result.stderr)
+        self.assertIn("~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>", result.stderr)
         self.assertIn(RULES, result.stderr)
         self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
         self.assertEqual(self.count(), 301)
