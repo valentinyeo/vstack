@@ -1,0 +1,30 @@
+# Restart re-arm
+
+A chat that restarts finds its old loop dead: session cron jobs die with the process, and a recurring cron expires after 7 days. `skills/board-drain/SKILL.md` says read the status, arm a 15-minute loop over your own view, then record it.
+
+## Sub-features
+
+- `rearm.load`: the chat loads board drain, through the `/board-drain` command or the `Skill` tool.
+- `rearm.status`: it asks `loop-state status --name "<its name>"` before arming, because exit 0 means already armed.
+- `rearm.arm`: it creates a recurring job on the quarter hour (`*/15 * * * *`, `0,15,30,45 * * * *`) whose prompt is the loop prompt from the skill, naming its own board and view. A `Skill` call to `loop` with `15m` and that prompt counts too.
+- `rearm.record`: `loop-state arm` writes `armed_at` in this run, `expires_at` about 7 days later, and the job id the harness handed back.
+
+## How to get to it (user POV)
+
+- A chat restarts, or `drain-check` prints `loop state: not armed`.
+- The user asks it to keep its board work going. It should not need to be told to arm again.
+
+## Driving it with run
+
+Preconditions: the run seeds an expired state file with the pid of a dead process, and refuses to start unless `loop-state status` exits 2 on it.
+
+- Action: `run`. Result: `stream.jsonl` holds the `loop-state status` call, the `CronCreate` (or `loop`) call and the `loop-state arm` call; `state.json` is what the chat left behind.
+- Check `armed`: the create's `recurring` is not false, its cron fires on the quarter hour in every hour, and its prompt contains `full autopilot on this queue` and board `2060`.
+- Check `recorded`: `armed_at` is at or after the run start, `expires_at - armed_at` is 7 days within an hour, and `job` equals the id in the create's tool result.
+
+## Gotchas
+
+- `CronCreate` is deferred behind `ToolSearch` on this Claude Code version. The chat often searches for the tool first; that is normal and does not fail anything.
+- The tool result text is `Scheduled recurring job <id> (Every 15 minutes)...`. The grade reads the id from there. A chat that arms through `/loop` leaves no id, and `recorded` then skips the job comparison only.
+- `--break no-board-drain` runs the same prompt without the command. Expect `loaded`, `status-read`, `armed` and `recorded` to fail: an untouched expired loop.
+- A one-shot job (`recurring: false`) or an hourly cron fails `armed` on purpose. Neither keeps a queue moving through the day.
