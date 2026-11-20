@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""Shared GitHub GET snapshot for the fleet.
+
+One saved response serves every reader for a few minutes. The next refresh
+sends If-None-Match. A 304 keeps the saved body. A rate-limit response waits
+until the reset epoch from the response headers, then tries once more.
+
+Reads of hypertask-ai/hypertask use the installation token file when it
+exists. This module never prints that token.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import time
+from pathlib import Path
+
+DEFAULT_TTL = 300
+MAX_WAIT = 3600
+
+
+class GhError(Exception):
+    pass
+
+
+def cache_dir() -> Path:
+    return Path(os.environ.get("HT_GH_CACHE_DIR", str(Path.home() / ".local/state/gh-shared-cache")))
+
+
+def token_file() -> Path:
+    return Path(os.environ.get("HT_GH_APP_TOKEN_FILE", str(Path.home() / ".local/state/gh-app-token/agents")))
+
+
+def pause_file() -> Path:
+    return cache_dir() / "pause-until"
+
+
+def gh_binary() -> str:
+    override = os.environ.get("HT_GH_BIN")
+    if override:
+        return override
+    if os.path.isfile("/usr/bin/gh.real"):
+        return "/usr/bin/gh.real"
+    return "gh"
+
+
+def hypertask_repo(path: str) -> bool:
+    base = path.split("?", 1)[0].strip("/")
+    parts = base.split("/")
+    return len(parts) >= 3 and parts[0] == "repos" and parts[1] == "hypertask-ai" and bool(parts[2])
+
+
+def app_token_for(path: str):
+    if not hypertask_repo(path):
+        return None
+    try:
+        token = token_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    return token or mint_app_token()
+
+
+def mint_app_token():
+    """The static token file is gone. Ask the live minter instead. None on any failure."""
+    cmd = os.environ.get("HT_GH_APP_TOKEN_CMD") or str(Path.home() / ".local/bin/gh-app-token")
+    try:
+        result = subprocess.run([cmd], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
+
+
+_LAST_BUCKET = [None]
+
+
+def child_env(path: str) -> dict:
+    env = os.environ.copy()
+    token = app_token_for(path)
+    if token:
+        env["GH_TOKEN"] = token
+        env.pop("GITHUB_TOKEN", None)
+    _LAST_BUCKET[0] = "app" if env.get("GH_TOKEN") else "user"
+    return env
+
+
+def request_key(path: str, fields) -> str:
+    extra = "&".join(sorted(str(field) for field in fields))
+    return path if not extra else "%s?%s" % (path, extra)
+
+
+def shares_snapshot(method: str, flags) -> bool:
+    """A plain GET, including query fields and --include, shares one snapshot.
+    Pagination and request bodies do not."""
+    if method != "GET":
+        return False
+    return not ({"--paginate", "--input"} & set(flags))
+
+
+def _cache_path(path: str) -> Path:
+    digest = hashlib.sha256(path.encode("utf-8")).hexdigest()
+    return cache_dir() / f"{digest}.json"
+
+
+def _lock(directory: Path):
+    import fcntl
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    handle = open(directory / ".lock", "a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    return handle
+
+
+def read_entry(path: str):
+    try:
+        doc = json.loads(_cache_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if doc.get("path") != path or not isinstance(doc.get("body"), str):
+        return None
+    return doc
+
+
+def write_entry(path: str, body: str, etag: str, fetched_at: int, status: int = 200, headers=None) -> None:
+    target = _cache_path(path)
+    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(json.dumps({
+        "path": path,
+        "body": body,
+        "etag": etag,
+        "fetchedAt": fetched_at,
+        "status": status,
+        "headers": headers or {},
+    }), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, target)
+
+
+def write_pause(reset_epoch: int) -> None:
+    target = pause_file()
+    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(str(int(reset_epoch)) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, target)
+
+
+def read_pause() -> int:
+    try:
+        return int(pause_file().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def parse_included(raw: str):
+    text = raw or ""
+    status = 0
+    headers = {}
+    while text.startswith("HTTP/"):
+        windows = text.find("\r\n\r\n")
+        unix = text.find("\n\n")
+        if windows >= 0 and (unix < 0 or windows <= unix):
+            index, width = windows, 4
+        elif unix >= 0:
+            index, width = unix, 2
+        else:
+            break
+        head, text = text[:index], text[index + width:]
+        lines = head.splitlines()
+        if lines:
+            bits = lines[0].split()
+            if len(bits) >= 2 and bits[1].isdigit():
+                status = int(bits[1])
+        headers = {}
+        for line in lines[1:]:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                headers[key.strip().lower()] = value.strip()
+    return status, headers, text
+
+
+def reset_epoch(headers: dict, now: int) -> int:
+    raw = str(headers.get("x-ratelimit-reset") or "")
+    if raw.isdigit() and int(raw) > now:
+        return int(raw)
+    return now + 60
+
+
+def backoff_epoch(headers: dict, now: int) -> int:
+    """Primary exhaustion waits for x-ratelimit-reset. A 403 that still has
+    remaining quota is a short secondary limit, not an hour-long stop."""
+    remaining = str(headers.get("x-ratelimit-remaining") or "")
+    if remaining.isdigit() and int(remaining) > 0:
+        retry = str(headers.get("retry-after") or "")
+        if retry.isdigit():
+            return now + min(MAX_WAIT, max(1, int(retry)))
+        return now + 60
+    return reset_epoch(headers, now)
+
+
+def rate_limited(status: int, body: str, stderr: str) -> bool:
+    if status in (403, 429):
+        text = (body + "\n" + stderr).lower()
+        return "rate limit" in text or "abuse detection" in text or status == 429
+    text = (body + "\n" + stderr).lower()
+    return "api rate limit exceeded" in text or "secondary rate limit" in text
+
+
+def _runner(argv, env, timeout):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def gh_get(path: str, runner=None, sleeper=time.sleep, now=None, ttl=DEFAULT_TTL, timeout=60, gh_bin=None):
+    """Return parsed JSON for one GET. Readers inside ttl share one response."""
+    clock = time.time if now is None else now
+    run = runner or _runner
+    binary = gh_bin or gh_binary()
+    _wait_out_pause(sleeper, clock)
+    lock = _lock(cache_dir())
+    try:
+        outcome = _gh_get_locked(path, run, clock, ttl, timeout, binary, True)
+    finally:
+        lock.close()
+    if isinstance(outcome, tuple) and outcome and outcome[0] == "pause":
+        sleeper(min(MAX_WAIT, max(0, outcome[1] - int(clock()))))
+        lock = _lock(cache_dir())
+        try:
+            return _gh_get_locked(path, run, clock, ttl, timeout, binary, False)
+        finally:
+            lock.close()
+    return outcome
+
+
+def _wait_out_pause(sleeper, clock) -> int:
+    current = int(clock())
+    reset = read_pause()
+    if reset > current:
+        sleeper(min(MAX_WAIT, reset - current))
+        current = int(clock())
+    return current
+
+
+def _gh_get_locked(path, run, clock, ttl, timeout, binary, allow_pause):
+    current = int(clock())
+    entry = read_entry(path)
+    if entry and 0 <= current - int(entry.get("fetchedAt") or 0) < ttl:
+        return json.loads(entry["body"])
+
+    def once(etag):
+        argv = [binary, "api", "--include", "--method", "GET"]
+        if etag:
+            argv += ["-H", "If-None-Match: %s" % etag]
+        argv.append(path)
+        return run(argv, child_env(path), timeout)
+
+    etag = entry.get("etag") if entry else ""
+    result = once(etag)
+    status, headers, body = parse_included(result.stdout or "")
+    stderr = result.stderr or ""
+    if status == 304 and entry:
+        write_entry(path, entry["body"], headers.get("etag") or etag, int(clock()))
+        return json.loads(entry["body"])
+    if rate_limited(status, body, stderr):
+        reset = backoff_epoch(headers, int(clock()))
+        write_pause(reset)
+        if allow_pause:
+            return ("pause", reset)
+        raise GhError("GitHub rate limit until %s" % reset)
+    if result.returncode != 0 or status >= 400 or not body.strip():
+        detail = " ".join((stderr or body).split())[:180]
+        raise GhError("gh api GET failed: HTTP %s %s" % (status, detail))
+    write_entry(path, body, headers.get("etag") or "", int(clock()))
+    try:
+        return json.loads(body)
+    except ValueError as error:
+        raise GhError("gh api GET returned no JSON") from error
+
+
+def _api_path(argv):
+    skip = False
+    value_flags = {"-X", "--method", "-f", "--raw-field", "--field", "-F", "-H", "--header",
+                   "-q", "--jq", "--input", "--hostname", "--cache"}
+    method = "GET"
+    path = ""
+    jq = None
+    fields = []
+    flags_seen = set()
+    prev = ""
+    for arg in argv[1:]:
+        if skip:
+            if prev in ("-X", "--method"):
+                method = arg.upper()
+            if prev in ("-q", "--jq"):
+                jq = arg
+            if prev in ("-f", "--raw-field", "--field", "-F"):
+                fields.append(arg)
+            skip = False
+            prev = ""
+            continue
+        if arg in value_flags:
+            skip = True
+            prev = arg
+            flags_seen.add(arg)
+            continue
+        if arg.startswith("-"):
+            flags_seen.add(arg)
+            continue
+        if arg in ("api", "graphql"):
+            flags_seen.add(arg)
+            continue
+        if not path:
+            path = arg
+        continue
+    return method, path, jq, flags_seen, fields
+
+
+def classify_caller() -> str:
+    names = {
+        "agent-board-poll": "agent-board-poll",
+        "agent-board-poll-tick": "agent-board-poll",
+        "ht-supervisor": "ht-supervisor",
+        "bug_drain.py": "bug-drain",
+        "ship_fixes.py": "ship-bug-fixes",
+        "rules_watch.py": "rules-watch",
+        "grok-drain-worker-v2": "drain-worker",
+        "grok-drain-worker-v3": "drain-worker",
+        "push-agent-runtime.sh": "agent-feed",
+        "collect-agent-runtime.mjs": "agent-feed",
+        "collect-agent-status.mjs": "agent-feed",
+        "collect-shipped-windows.mjs": "agent-feed",
+        "cursor-agent": "cursor-agent",
+    }
+    pid = os.getppid()
+    seen = set()
+    agent = ""
+    for _ in range(14):
+        if pid <= 1 or pid in seen:
+            break
+        seen.add(pid)
+        try:
+            raw = open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0")
+        except OSError:
+            break
+        parts = [part.decode("utf-8", "replace") for part in raw if part and len(part) <= 160]
+        if not agent:
+            for head in parts[:2]:
+                if head.rsplit("/", 1)[-1] in ("claude", "codex"):
+                    agent = head.rsplit("/", 1)[-1]
+                    break
+        for index, part in enumerate(parts):
+            base = part.rsplit("/", 1)[-1]
+            if base not in names:
+                continue
+            label = names[base]
+            if label in ("agent-board-poll", "drain-worker"):
+                for nxt in parts[index + 1:]:
+                    if not nxt.startswith("-") and len(nxt) < 40:
+                        return label + ":" + nxt
+            return label
+        try:
+            pid = int(open("/proc/%s/stat" % pid).read().split()[3])
+        except (OSError, IndexError, ValueError):
+            break
+    return agent or os.environ.get("GH_CALLER") or "other"
+
+
+# Purely local subcommands never reach GitHub, so they are not logged.
+# `auth status` does reach GitHub and is logged; `auth token` is local and is not.
+LOCAL_COMMANDS = {"", "--version", "version", "help", "-h", "--help", "completion", "config", "alias",
+                  "extension"}
+_SECRET = re.compile(r"(gh[pousr]_\w+|github_pat_\w+|Bearer\s+\S+|(?i:token)\S*)")
+
+
+def log_session() -> str:
+    name = os.environ.get("HT_SESSION_NAME")
+    if not name:
+        name = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "")[:8]
+    if not name:
+        name = os.environ.get("CODEX_COMPANION_SESSION_ID") or ""
+    return re.sub(r"\s+", "_", name)[:32] or "-"
+
+
+def _subcommand(argv):
+    for arg in argv[1:]:
+        if not arg.startswith("-"):
+            return arg
+    return ""
+
+
+def _log_call(argv, method=None, bucket=None) -> None:
+    if any(arg in ("api", "graphql") for arg in argv[1:]):
+        parsed_method, path, _jq, _flags, _fields = _api_path(argv)
+        method = method or parsed_method
+        if any(mark in path for mark in ("token", "gho_", "github_pat_", "Bearer")):
+            path = "[redacted]"
+        path = path.split("?", 1)[0] or "-"
+    else:
+        sub = _subcommand(argv)
+        if sub in LOCAL_COMMANDS or (sub == "auth" and "token" in argv[1:]):
+            return
+        method = method or sub
+        path = _SECRET.sub("[redacted]", " ".join(argv[1:]))
+        path = re.sub(r"\s+", " ", path)[:160] or "-"
+    if bucket is None:
+        bucket = _LAST_BUCKET[0] or ("app" if os.environ.get("GH_TOKEN") else "user")
+    caller = classify_caller()
+    log = os.environ.get("GH_CALL_LOG", str(Path.home() / ".local/state/gh-call-log/calls.tsv"))
+    try:
+        Path(log).parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as handle:
+            handle.write("%s\t%s\t%s\t%s\t%s\t%s\n" % (
+                int(time.time()), caller, method, path, bucket, log_session()))
+    except OSError:
+        pass
+
+
+def wrap_main(argv=None) -> int:
+    """Process-wide gh entry. Shares GET snapshots, logs real upstream calls, then execs the real gh."""
+    argv = list(sys_argv() if argv is None else argv)
+    real = os.environ.get("GH_REAL", "/usr/bin/gh.real")
+    if not os.path.isfile(real):
+        real = gh_binary()
+    method, path, jq, flags, fields = _api_path(argv)
+    key = request_key(path, fields)
+    include = "--include" in flags or "-i" in flags
+    if "api" not in argv[1:] or not path or not shares_snapshot(method, flags):
+        env = child_env(path) if path else os.environ.copy()
+        _log_call(argv, bucket="app" if env.get("GH_TOKEN") else "user")
+        return _passthrough(real, argv, env)
+    waited = False
+    while True:
+        _wait_out_pause(time.sleep, time.time)
+        lock = _lock(cache_dir())
+        try:
+            if read_pause() > int(time.time()):
+                continue
+            entry = read_entry(key)
+            current = int(time.time())
+            if entry and 0 <= current - int(entry.get("fetchedAt") or 0) < DEFAULT_TTL:
+                return _emit_cached(entry, include, jq)
+            etag = entry.get("etag") if entry else ""
+            status, headers, body, code, stderr = _fetch_included(real, path, etag, fields)
+            _log_call(argv, "304" if status == 304 else method)
+            if status == 304 and entry:
+                write_entry(key, entry["body"], headers.get("etag") or etag, current,
+                            entry.get("status") or 200, entry.get("headers") or {})
+                return _emit_cached(read_entry(key), include, jq)
+            if rate_limited(status, body, stderr) and not waited:
+                write_pause(backoff_epoch(headers, current))
+                waited = True
+                continue
+            if code != 0 or status >= 400 or not body.strip():
+                sys_stderr(stderr or body)
+                return code or 1
+            write_entry(key, body, headers.get("etag") or "", int(time.time()), status, headers)
+            return _emit_cached(read_entry(key), include, jq)
+        finally:
+            lock.close()
+
+
+def _emit_cached(entry, include, jq) -> int:
+    if not entry:
+        return 1
+    if include:
+        return _emit_included(entry.get("status") or 200, entry.get("headers") or {}, entry.get("body") or "")
+    return _emit(entry.get("body") or "", jq)
+
+
+def _emit_included(status, headers, body) -> int:
+    import sys
+    lines = ["HTTP/2.0 %s" % (status or 200)]
+    for key, value in (headers or {}).items():
+        lines.append("%s: %s" % (key, value))
+    text = "\n".join(lines) + "\n\n" + (body or "")
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+    return 0
+
+
+def _fetch_included(real, path, etag, fields=()):
+    argv = [real, "api", "--include", "--method", "GET"]
+    if etag:
+        argv += ["-H", "If-None-Match: %s" % etag]
+    for field in fields:
+        argv += ["-f", field]
+    argv.append(path)
+    result = subprocess.run(argv, capture_output=True, text=True, env=child_env(path))
+    status, headers, body = parse_included(result.stdout or "")
+    return status, headers, body, result.returncode, result.stderr or ""
+
+
+def _emit(body: str, jq) -> int:
+    import sys
+    if not jq:
+        sys.stdout.write(body if body.endswith("\n") or not body else body + "\n")
+        return 0
+    result = subprocess.run(["jq", "-r", "-c", "-S", jq], input=body, capture_output=True, text=True)
+    sys.stdout.write(result.stdout or "")
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr or "")
+    return result.returncode
+
+
+def _passthrough(real, argv, env) -> int:
+    result = subprocess.run([real, *argv[1:]], env=env)
+    return result.returncode
+
+
+def sys_argv():
+    import sys
+    return sys.argv
+
+
+def sys_stderr(text: str) -> None:
+    import sys
+    if text:
+        sys.stderr.write(text if text.endswith("\n") else text + "\n")
+
+
+if __name__ == "__main__":
+    raise SystemExit(wrap_main())
