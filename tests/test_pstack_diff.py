@@ -209,6 +209,21 @@ class PstackDiffTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("GAP pstack: no install under", result.stderr)
 
+    def test_product_security_invariant_not_rule_restatement(self):
+        result = run_diff(FIXTURES / "product-invariants")
+        self.assertNotIn("EXTRA rule restatement:", result.stdout, result.stdout)
+
+    def test_verifier_needs_chain_not_double_extra(self):
+        result = run_diff(FIXTURES / "verifier-stages")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verifier workflow:", result.stdout)
+        extras = [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("EXTRA workflow:") and "pstack-verifier" in line
+        ]
+        self.assertEqual(extras, [], result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

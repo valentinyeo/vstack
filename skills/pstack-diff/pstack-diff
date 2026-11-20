@@ -132,6 +132,17 @@ def _job_fails_pr(job_body: str) -> bool:
     return True
 
 
+def _job_needs(job_body: str) -> list[str]:
+    needs: list[str] = []
+    for match in re.finditer(r"^\s+needs:\s*(.+)$", job_body, re.M):
+        value = match.group(1).strip().split("#", 1)[0].strip()
+        if value.startswith("[") and value.endswith("]"):
+            needs.extend(re.findall(r"[\w.-]+", value[1:-1]))
+        else:
+            needs.append(value)
+    return needs
+
+
 def _clones_root() -> Path:
     override = os.environ.get("PSTACK_DIFF_CLONES")
     if override:
@@ -231,6 +242,11 @@ def classify_workflows(root: Path) -> list[str]:
             continue
         saw_pr_workflow = True
         file_label = path.relative_to(root).as_posix()
+        direct_ai = {
+            job_id
+            for job_id, body in _job_blocks(text)
+            if _is_ai_judge(body) and not _reusable_spec(body)
+        }
         for label, job_id, body in _iter_pr_jobs(root, file_label, text, None, lines):
             wf_file = file_label.split(" via ", 1)[0]
             house_key = (wf_file, job_id)
@@ -238,6 +254,8 @@ def classify_workflows(root: Path) -> list[str]:
                 lines.append(f"HOUSE {label} job {job_id}: {house[house_key]}")
                 continue
             if _is_ai_judge(body):
+                if wf_file == file_label and any(n in direct_ai for n in _job_needs(body)):
+                    continue
                 ai_judges.append(f"{label} job {job_id}")
             elif EXTRA_JOB_HINTS.search(body):
                 lines.append(f"EXTRA workflow: {label} job {job_id}")
@@ -260,13 +278,24 @@ def _rule_line(line: str) -> bool:
     lower = line.lower()
     if "verify-" in lower and "skill" in lower:
         return False
-    if re.search(r"\bpass\b", lower) and re.search(r"\bfail\b", lower):
+    if re.search(r"\bpass\+notes\b", lower):
         return True
-    if "verdict" in lower:
+    if "verdict" in lower and re.search(r"\bpass\b|\bfail\b|advisory|judge", lower):
         return True
-    if "verifier" in lower and re.search(r"\bpass\b|\bfail\b|model family|required check", lower):
+    if re.search(r"author model:", lower) and re.search(r"judge|verifier|verdict", lower):
         return True
-    if "required check" in lower:
+    if re.search(r"required checks?", lower) and re.search(
+        r"pr-checks|branch.protection|before merge|pstack-verifier|\bverifier\b",
+        lower,
+    ):
+        return True
+    if re.search(r"\bverifier\b", lower) and re.search(r"\bpass\b|\bfail\b|model family", lower):
+        return True
+    if (
+        re.search(r"\bpass\b", lower)
+        and re.search(r"\bfail", lower)
+        and re.search(r"merge|pull request|\bpr\b|check|verifier|judge", lower)
+    ):
         return True
     return False
 
