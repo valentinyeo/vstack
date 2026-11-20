@@ -67,7 +67,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there, each page included. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
-- **Long chats:** save the handover, then start a fresh chat with its loop on.
+- **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
 
 ## Designing
 

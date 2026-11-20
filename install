@@ -131,6 +131,10 @@ link_one claude-helper-gate.py "$ROOT/hooks/claude-helper-gate.py" "$HOME/.claud
 link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
 link_one long-chat.py "$ROOT/hooks/long-chat.py" "$HOME/.claude/hooks"
 
+# long-chat acts only when valentin-mode is loaded, so it is safe to register
+# once in the global ~/.claude/settings.json (VSTA-97). Per-project copies would
+# run the hook twice in vstack chats.
+
 # The two lane hooks act only in a chat that loaded valentin-mode, so they are
 # safe to register once in the global ~/.claude/settings.json (VSTA-70). They
 # import their sibling modules by path, so those are linked too.
