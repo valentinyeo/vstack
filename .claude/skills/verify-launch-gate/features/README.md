@@ -33,3 +33,4 @@ Every part of the gate `run` drives, one file each, and the check in [grade.py](
 | [fail-open.md](fail-open.md) | `fail-open` | A probe failure allows the launch and warns once |
 | [live-host.md](live-host.md) | `live` | The real host answers, and its exit code agrees with its brief line |
 | [doctor.md](doctor.md) | `doctor` | The hook was worth driving |
+| [heal.md](heal.md) | `heal` | A stale settings line upgrades on one hook run and stays put on the next |
