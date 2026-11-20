@@ -606,9 +606,13 @@ def names_ticket(pull, key, board=DEFAULT):
     url = r'https://app\.hypertask\.ai/detail/project-' + str(board.id) + '/' + index + r'(?=$|[\s?#)\]>,.])'
     field = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Ticket:(?:\*\*)?[ \t]*\[?(?:' +
              exact + '|' + url + ')')
+    close = r'close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved'
+    close_line = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:' + close + r')(?:\*\*)?[ \t].*?(?:' +
+                exact + '|' + url + ')')
     return bool(re.search(exact, pull.get('title') or '', re.I) or
                 re.search(branch, pull.get('headRefName') or '', re.I) or
-                re.search(field, body, re.I | re.M))
+                re.search(field, body, re.I | re.M) or
+                re.search(close_line, body, re.I | re.M))
 
 
 def today():

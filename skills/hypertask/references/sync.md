@@ -35,6 +35,8 @@ Moves backed by a live worker or an open or merged PR go first. Moves back to To
 
 `--ticket` shares the board lock and holds its own per-ticket lock. It reads the ticket before anything else, costs a handful of GitHub calls, prints `UNKNOWN` and refuses every move when the ticket cannot be read, and refuses a key from another board's prefix.
 
+A PR names a ticket when the key or its board URL appears in the title, in the branch name, on a `Ticket:` body line, or on a body line that starts with a GitHub closing keyword (`Closes`, `Fixes`, `Resolves`, and their forms) followed by that key or URL; a mention anywhere else does not.
+
 ## Setup, per project
 
 Board sync is per project and per chat. Nothing user-wide runs it.

@@ -132,6 +132,24 @@ class ReconcileTest(unittest.TestCase):
                        {'headRefName': 'vsta-53-fix'}, {'headRefName': 'fix/vsta-53'}):
                 self.assertTrue(r.names_ticket(pr, 'VSTA-53', board=board))
 
+    def test_closing_keywords_on_their_own_line_name_tickets(self):
+        pr = json.loads((ROOT / 'tests/fixtures/reconcile' / 'multiprompt-1140.json').read_text())
+        with self.subTest('multiprompt PR 1140 links both closed tickets'):
+            self.assertTrue(r.names_ticket(pr, 'SOFT-2946'))
+            self.assertTrue(r.names_ticket(pr, 'SOFT-2929'))
+        with self.subTest('several keys on one closes line'):
+            body = 'Closes SOFT-1, SOFT-2 and SOFT-3'
+            for key in ('SOFT-1', 'SOFT-2', 'SOFT-3'):
+                self.assertTrue(r.names_ticket({'body': body}, key))
+        for pr in ({'body': '**Closes** SOFT-1'}, {'body': '- Fixes SOFT-1'},
+                   {'body': 'resolved SOFT-1'}, {'body': 'Ticket: SOFT-10\nCloses SOFT-1'}):
+            with self.subTest(pr=pr):
+                self.assertTrue(r.names_ticket(pr, 'SOFT-1'))
+        for pr in ({'body': 'This closes SOFT-1 in prose'},
+                   {'body': 'See SOFT-1 in the changelog\nCloses SOFT-10'}):
+            with self.subTest(pr=pr):
+                self.assertFalse(r.names_ticket(pr, 'SOFT-1'))
+
     def test_bad_keys_do_not_crash_matching_or_search(self):
         self.assertFalse(r.names_ticket({'body': 'unrelated'}, 'BROKEN'))
         with patch.object(r, 'run') as run:
