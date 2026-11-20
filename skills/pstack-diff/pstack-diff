@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Compare a repo's verification setup with pstack's recipe (read-only, stdlib only).
+
+    pstack-diff [--json] [REPO_ROOT]
+
+Exit 0 when every line is ASKED; 1 when any GAP or EXTRA is present.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+PSTACK_ROOT = Path.home() / ".claude/plugins/cache/cursor-plugins/pstack"
+
+
+def latest_pstack() -> Path:
+    versions = [p for p in PSTACK_ROOT.glob("*") if p.is_dir()]
+    if not versions:
+        raise SystemExit(f"GAP pstack: no install under {PSTACK_ROOT}")
+    return max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".") if n.isdigit()))
+
+
+def verify_skills(root: Path) -> list[str]:
+    lines: list[str] = []
+    skills_root = root / ".claude/skills"
+    found: list[str] = []
+    if skills_root.is_dir():
+        for child in sorted(skills_root.iterdir()):
+            if not child.name.startswith("verify-") or not child.is_dir():
+                continue
+            skill = child / "SKILL.md"
+            features = child / "features"
+            if skill.is_file() and features.is_dir():
+                found.append(child.name)
+    if not found:
+        lines.append("GAP verify-skill: no .claude/skills/verify-<app>/SKILL.md with features/")
+    elif len(found) == 1:
+        lines.append(f"ASKED verify-skill: {found[0]}")
+    else:
+        lines.append(
+            f"EXTRA verify-skill: expected exactly one, found {len(found)} ({', '.join(found)})"
+        )
+    return lines
+
+
+def workflow_files(root: Path) -> list[Path]:
+    workflows = root / ".github/workflows"
+    if not workflows.is_dir():
+        return []
+    return sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml"))
+
+
+def _on_pull_request(text: str) -> bool:
+    if re.search(r"^on:\s*pull_request\b", text, re.M):
+        return True
+    if re.search(r"^on:\s*\[[^\]]*pull_request", text, re.M):
+        return True
+    block = re.search(r"^on:\s*\n((?:[ \t]+[^\n]+\n)+)", text, re.M)
+    if block and re.search(r"^\s+pull_request:", block.group(1), re.M):
+        return True
+    return False
+
+
+def _job_blocks(text: str) -> list[tuple[str, str]]:
+    match = re.search(r"^jobs:\s*\n", text, re.M)
+    if not match:
+        return []
+    rest = text[match.end() :]
+    jobs: list[tuple[str, str]] = []
+    current_name = None
+    current_lines: list[str] = []
+    for line in rest.splitlines():
+        if re.match(r"^  [A-Za-z0-9_.-]+:\s*$", line):
+            if current_name is not None:
+                jobs.append((current_name, "\n".join(current_lines)))
+            current_name = line.strip()[:-1]
+            current_lines = []
+        elif current_name is not None:
+            if re.match(r"^[A-Za-z0-9_.-]+:\s*$", line) and not line.startswith(" "):
+                break
+            current_lines.append(line)
+    if current_name is not None:
+        jobs.append((current_name, "\n".join(current_lines)))
+    return jobs
+
+
+def _job_fails_pr(job_body: str) -> bool:
+    if re.search(r"^\s+if:\s*false\s*$", job_body, re.M):
+        return False
+    if re.search(r"^\s+continue-on-error:\s*true\s*$", job_body, re.M):
+        return False
+    return True
+
+
+VERIFIER_HINTS = re.compile(
+    r"pick-verifier-model|run-verifier|column-verifier\.py|verification/advisor\.py|"
+    r"independent verification|Post independent verdict|post verifier verdict|"
+    r"PASS, PASS\+NOTES, or FAIL|scripts/verdict\.py",
+    re.I,
+)
+
+EXTRA_JOB_HINTS = re.compile(
+    r"pacer-check|scorecard|repro-must-fail|coverage.*ratchet|ratchet.*coverage|"
+    r"freeze|budget|cap gate",
+    re.I,
+)
+
+
+def classify_workflows(root: Path) -> list[str]:
+    lines: list[str] = []
+    verifier_jobs: list[str] = []
+    for path in workflow_files(root):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not _on_pull_request(text):
+            continue
+        file_label = path.relative_to(root).as_posix()
+        for job_id, body in _job_blocks(text):
+            if not _job_fails_pr(body):
+                continue
+            label = f"{file_label} job {job_id}"
+            is_verifier = bool(VERIFIER_HINTS.search(body)) or "verifier" in job_id.lower()
+            is_extra_hint = bool(EXTRA_JOB_HINTS.search(body))
+            if is_verifier:
+                verifier_jobs.append(label)
+            elif is_extra_hint:
+                lines.append(f"EXTRA workflow: {label}")
+            else:
+                lines.append(f"ASKED CI workflow: {label}")
+    def verifier_rank(label: str) -> tuple[int, str]:
+        if "pstack-sources.yml" in label and label.endswith("job verifier"):
+            return (0, label)
+        return (1, label)
+
+    verifier_jobs.sort(key=verifier_rank)
+    if verifier_jobs:
+        lines.append(f"ASKED verifier workflow: {verifier_jobs[0]}")
+        for extra in verifier_jobs[1:]:
+            lines.append(f"EXTRA workflow: {extra}")
+    elif any(_on_pull_request(p.read_text(encoding="utf-8", errors="replace")) for p in workflow_files(root)):
+        lines.append("GAP verifier workflow: no pull_request job runs an AI verifier")
+    return lines
+
+
+def _rule_line(line: str) -> bool:
+    lower = line.lower()
+    if "verify-" in lower and "skill" in lower:
+        return False
+    if re.search(r"\bpass\b", lower) and re.search(r"\bfail\b", lower):
+        return True
+    if "verdict" in lower:
+        return True
+    if "verifier" in lower and re.search(r"\bpass\b|\bfail\b|model family|required check", lower):
+        return True
+    if "required check" in lower:
+        return True
+    return False
+
+
+RULE_FILES = ("AGENTS.md", "CLAUDE.md")
+
+
+def rule_restatements(root: Path) -> list[str]:
+    lines: list[str] = []
+    paths: list[Path] = []
+    for name in RULE_FILES:
+        path = root / name
+        if path.is_file():
+            paths.append(path)
+    skills = root / ".claude/skills"
+    if skills.is_dir():
+        for child in sorted(skills.iterdir()):
+            if child.name.startswith("verify-") or not child.is_dir():
+                continue
+            skill = child / "SKILL.md"
+            if skill.is_file():
+                paths.append(skill)
+    for path in paths:
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if _rule_line(line):
+                rel = path.relative_to(root).as_posix()
+                lines.append(f"EXTRA rule restatement: {rel}:{number} (link to pstack instead)")
+    return lines
+
+
+def analyze(root: Path) -> list[str]:
+    latest = latest_pstack()
+    lines = [f"ASKED pstack recipe: {latest.name}"]
+    lines.extend(verify_skills(root))
+    lines.extend(classify_workflows(root))
+    lines.extend(rule_restatements(root))
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
+    parser.add_argument("root", nargs="?", default=".", type=Path)
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+    lines = analyze(root)
+    gaps = [line for line in lines if line.startswith("GAP ")]
+    extras = [line for line in lines if line.startswith("EXTRA ")]
+    asked = [line for line in lines if line.startswith("ASKED ")]
+    code = 1 if gaps or extras else 0
+    if args.json:
+        payload = {"exit": code, "asked": asked, "gaps": gaps, "extras": extras, "lines": lines}
+        print(json.dumps(payload, indent=2))
+    else:
+        for line in lines:
+            print(line)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

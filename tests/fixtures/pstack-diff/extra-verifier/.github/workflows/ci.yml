@@ -1,0 +1,17 @@
+name: ci
+on:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/run-verifier
+  second-judge:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/column-verifier.py
+      - run: python3 scripts/verdict.py verdict.md
