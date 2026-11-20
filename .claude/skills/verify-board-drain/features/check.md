@@ -25,4 +25,5 @@ Preconditions: `BOARD_DRAIN_STATE_DIR` points at the scratch state, so the check
 
 - The test chat is told `arming, syncing and checking is enough`. It may report findings on board 2060; it may not act on them. An acting chat fails `no-writes`.
 - `drain-check` exits 2 on a crash or a usage error and 1 on findings. The check grades the call, not the exit code, because a real finding on the test label is not a failure of board drain.
+- A measured run got `drain-check: hypertask --json failed: plan-pick worker: no board login` because `hypertask` resolved to a worker shim on `PATH`; `sync` in the same chat logged in fine. `checked` still passes on the call. Read `status-before-exit` first when every board call in a run fails.
 - A chat that runs `drain-check` without `--state-name` proves less: it never reads its own loop. That fails `checked`.

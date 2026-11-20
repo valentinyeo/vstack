@@ -318,6 +318,15 @@ class VerifyBoardDrainRunScript(unittest.TestCase):
         self.assertNotIn('/board-drain', branch,
                          'the break must never tell the chat /board-drain')
 
+    def test_break_removes_board_drain_itself(self):
+        """Dropping the command alone cannot fail: the skill loads on a restart prompt."""
+        branch = '\n'.join(self.break_branch())
+        self.assertIn('CLAUDE_ARGS+=(--disable-slash-commands)', branch,
+                      'the break must take the skills away, else it cannot fail')
+        normal = RUN.read_text().split('else', 1)[1]
+        self.assertNotIn('--disable-slash-commands', normal,
+                         'the real run must keep its skills')
+
     def test_run_script_seeds_a_dead_loop(self):
         text = RUN.read_text()
         self.assertIn('BOARD_DRAIN_STATE_DIR="$W/state"', text)

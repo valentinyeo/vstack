@@ -26,5 +26,6 @@ Preconditions: the run seeds an expired state file with the pid of a dead proces
 
 - `CronCreate` is deferred behind `ToolSearch` on this Claude Code version. The chat often searches for the tool first; that is normal and does not fail anything.
 - The tool result text is `Scheduled recurring job <id> (Every 15 minutes)...`. The grade reads the id from there. A chat that arms through `/loop` leaves no id, and `recorded` then skips the job comparison only.
-- `--break no-board-drain` runs the same prompt without the command. Expect `loaded`, `status-read`, `armed` and `recorded` to fail: an untouched expired loop.
+- `--break no-board-drain` runs the same prompt without the command and with `--disable-slash-commands`. Expect `loaded` to fail and the expired loop to stay untouched.
+- Dropping the command alone is not a break on this server. The installed description ends "Use at session start, after a restart or handover", so the prompt "you just restarted after a crash" makes the chat load board drain by itself, and a measured run passed every check without being told. That is VSTA-4 working, not a rubber stamp: the break has to take the skill away.
 - A one-shot job (`recurring: false`) or an hourly cron fails `armed` on purpose. Neither keeps a queue moving through the day.

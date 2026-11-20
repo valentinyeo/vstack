@@ -131,24 +131,26 @@ if [ "$seed_exit" -ne 2 ]; then
   exit 3
 fi
 
-# 6. Prompt. It never names the tools; board-drain has to.
+# 6. Prompt and flags. The prompt never names a script; board-drain has to.
 JOB=$(cat <<'EOF'
 You are VBD Test Chat and just restarted after a crash. Make sure your board work keeps going. Do not start code workers or change tickets in this test; arming, syncing and checking is enough.
 EOF
 )
+CLAUDE_ARGS=(--model sonnet --permission-mode bypassPermissions
+             --output-format stream-json --verbose --max-turns 30)
 if [ -n "$BREAK" ]; then
-  # The broken run is the same job with no slash command, so the chat is never
-  # told to load board drain.
+  # Board drain is gone for the broken run: no command in the prompt, and no
+  # skills, so the chat cannot load the skill and re-arm its loop. Dropping the
+  # command alone cannot fail: the installed description says "use after a
+  # restart", so a restarted chat loads board drain by itself. Hooks stay on.
   printf '%s\n' "$JOB" > "$E/prompt.txt"
+  CLAUDE_ARGS+=(--disable-slash-commands)
 else
   printf '/board-drain %s\n' "$JOB" > "$E/prompt.txt"
 fi
 PROMPT=$(cat "$E/prompt.txt")
 
-# 7. One fresh headless chat in the scratch repo. Both runs use the same
-# claude flags; the broken run only drops the slash command from the prompt.
-CLAUDE_ARGS=(--model sonnet --permission-mode bypassPermissions
-             --output-format stream-json --verbose --max-turns 30)
+# 7. One fresh headless chat in the scratch repo.
 echo "run: one test chat, 5 to 15 minutes; evidence $E" >&2
 set +e
 (cd "$W" && BOARD_DRAIN_STATE_DIR="$W/state" HT_TOKEN="$TOKEN" \
