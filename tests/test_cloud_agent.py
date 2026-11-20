@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'skills/cloud-agent/cloud-agent'
@@ -344,6 +345,41 @@ class PreflightTests(unittest.TestCase):
             repo = make_repo(Path(directory) / 'repo')
             (repo / 'scratch.txt').write_text('local notes\n')
             self.assertIsNone(self.m.preflight(repo))
+
+
+class CursorLaunchFailureTests(unittest.TestCase):
+    """launch_cursor must return failed rows, not crash, when the pane never reaches a step."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load_script()
+
+    def test_prompt_bar_timeout_emits_one_json_line_and_exits_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory) / 'repo')
+            ok = subprocess.CompletedProcess([], 0, '', '')
+            pane_snippet = 'cursor-agent booting\nstill no Composer label\n'
+
+            def fake_run(args, cwd=None, timeout=None):
+                if args and 'capture-pane' in args:
+                    return subprocess.CompletedProcess(args, 0, pane_snippet, '')
+                return ok
+
+            with patch.object(self.m, 'run', side_effect=fake_run), \
+                    patch.object(self.m, 'poll', return_value=None), \
+                    patch.object(self.m, 'quiet'):
+                row = self.m.launch_cursor(repo, 'Do the thing.', 'composer-2.5', True, 60)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = self.m.emit(row)
+            lines = out.getvalue().strip().splitlines()
+            self.assertEqual(len(lines), 1, out.getvalue())
+            parsed = json.loads(lines[0])
+            self.assertEqual(parsed['status'], 'failed')
+            self.assertEqual(parsed['vendor'], 'cursor')
+            self.assertEqual(code, 1)
+            self.assertIn('never appeared', parsed['error'] or '')
+            self.assertIn('Composer 2.5', parsed['error'] or '')
 
 
 class CliTests(unittest.TestCase):

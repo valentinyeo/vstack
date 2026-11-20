@@ -418,7 +418,7 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
         pane = poll(read, lambda text: label in text or cursor_limit_hit(text), CURSOR_PROMPT_SECONDS)
         if pane is None:
             return failed('cursor', f'the cursor prompt bar with "{label}" never appeared in '
-                                   f'{CURSOR_PROMPT_SECONDS}s: {saying(read())[-600:]}')
+                                   f'{CURSOR_PROMPT_SECONDS}s: {(read() or "")[-600:]}')
         if label not in pane and cursor_limit_hit(pane):
             return limit('cursor')
 
@@ -430,7 +430,7 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
                     CURSOR_CLOUD_SECONDS)
         if pane is None:
             return failed('cursor', 'the cursor prompt never offered "Move to cloud agent": '
-                                   f'{saying(read())[-600:]}')
+                                   f'{(read() or "")[-600:]}')
         if 'Move to cloud agent' not in pane:
             return limit('cursor')
 
@@ -450,7 +450,7 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
             if pane and cursor_limit_hit(submitted_tail(pane)):
                 return limit('cursor')
             return failed('cursor', f'no cloud agent URL in the cursor pane {CURSOR_SUBMIT_SECONDS}s '
-                                    f'after pressing Enter: {saying(read())[-600:]}')
+                                    f'after pressing Enter: {(read() or "")[-600:]}')
         if no_wait:
             return outcome('cursor', 'started', agent_url=agent_url, task_id=task_id)
 
