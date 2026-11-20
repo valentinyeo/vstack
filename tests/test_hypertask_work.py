@@ -2003,6 +2003,143 @@ class CallBudgetTest(unittest.TestCase):
             self.assertEqual(r.verifier_policy('valentinyeo/another-repo', HEAD), {})
         self.assertEqual(run.call_count, 1)
 
+    def test_quiet_sync_uses_one_probe_and_matches_full_plan(self):
+        t1 = {**task('Doing'), 'ticketNumber': 'SOFT-1', 'updatedAt': NOW - 8000}
+        t2 = {**task('Todo'), 'ticketNumber': 'SOFT-2', 'updatedAt': NOW - 9000}
+        pulls = {'SOFT-1': [], 'SOFT-2': []}
+        saved = {'at': NOW - 60, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
+                 'tickets': {'SOFT-1': {'updated_at': t1['updatedAt'], 'pulls': [], 'facts': {}},
+                            'SOFT-2': {'updated_at': t2['updatedAt'], 'pulls': [], 'facts': {}}}}
+        clear_cache()
+        r.write_board_facts(2060, saved)
+        discover = None
+        gh_calls = []
+
+        def track_run(*args, **kwargs):
+            if args[:3] == ('gh', 'api', 'search/issues'):
+                gh_calls.append(args)
+                return json.dumps({'items': []})
+            return json.dumps({'data': {}})
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t1, t2]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=saved), \
+                patch.object(r, 'discover', return_value=pulls) as discover, \
+                patch.object(r, 'prefetch'), contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()) as quiet_out, \
+                patch.object(r, 'run', side_effect=track_run):
+            r.reset_github_count()
+            r.PULLS.clear()
+            quiet_code = r.main()
+            quiet_plan = quiet_out.getvalue()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t1, t2]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=None), \
+                patch.object(r, 'discover', return_value=pulls), patch.object(r, 'prefetch'), \
+                contextlib.redirect_stdout(io.StringIO()) as full_out:
+            r.reset_github_count()
+            full_code = r.main()
+            full_plan = full_out.getvalue()
+        self.assertEqual(quiet_code, full_code)
+        for line in full_plan.splitlines():
+            if line.startswith(('PLAN', 'KEEP')):
+                self.assertIn(line, quiet_plan)
+        self.assertEqual(len(gh_calls), 1)
+        discover.assert_not_called()
+
+    def test_changed_pr_refreshes_facts_and_moves_card(self):
+        key = 'SOFT-1'
+        t = {**task('Doing'), 'ticketNumber': key, 'updatedAt': NOW - 8000}
+        stale_pull = pull(state='OPEN', checks='red')
+        fresh_pull = pull(state='OPEN', checks='green')
+        repo_pull = {'url': stale_pull.url, 'title': f'{key} work', 'body': f'Ticket: {key}',
+                     'headRefName': f'{key.lower()}-work', 'state': 'OPEN', 'number': 1,
+                     'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+        saved = {'at': NOW - 60, 'probe_since': '2026-01-01T00:00:00Z', 'repos': ['valentinyeo/another-repo'],
+                 'tickets': {key: {'updated_at': t['updatedAt'], 'pulls': [repo_pull],
+                                   'facts': {'valentinyeo/another-repo#1': {
+                                       'url': stale_pull.url, 'state': stale_pull.state,
+                                       'checks': stale_pull.checks, 'passed': stale_pull.passed}}}}}
+        r.write_board_facts(2060, saved)
+        item = {'html_url': stale_pull.url, 'title': repo_pull['title'], 'body': repo_pull['body'],
+                'number': 1, 'state': 'open'}
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=saved), \
+                patch.object(r, 'github_search_batch', return_value={key: [repo_pull]}), \
+                patch.object(r, 'read_pull_batch', side_effect=lambda refs: (
+                    r.PULLS.update(found := {('valentinyeo/another-repo', 1): fresh_pull}) or found)), \
+                patch.object(r, 'run', return_value=json.dumps({'items': [item]})), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        self.assertIn(f'PLAN {key} Doing -> AI Review', out.getvalue())
+
+    def test_budget_refusal_keeps_saved_facts_and_exits_cleanly(self):
+        key = 'SOFT-1'
+        t = {**task('Doing'), 'ticketNumber': key}
+        saved = {'at': NOW - 60, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
+                 'tickets': {key: {'updated_at': t['updatedAt'], 'pulls': [], 'facts': {}}}}
+        r.write_board_facts(2060, saved)
+
+        def refuse(*args, **kwargs):
+            raise r.BudgetRefused('gh budget: testchat is over 600 GitHub calls this hour')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=saved), \
+                patch.object(r, 'probe_changed_prs', side_effect=refuse), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        text = out.getvalue()
+        self.assertIn('gh budget:', text)
+        self.assertIn('kept saved facts, planned nothing new', text)
+        self.assertNotIn('UNKNOWN', text)
+
+    def test_stale_saved_facts_force_a_full_sync(self):
+        saved = {'at': NOW - r.FACTS_MAX_AGE - 1, 'probe_since': '2020-01-01T00:00:00Z', 'tickets': {}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[task()]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'read_board_facts', return_value=saved), \
+                patch.object(r, 'probe_changed_prs') as probe, \
+                patch.object(r, 'discover', return_value={'SOFT-1': []}) as discover, \
+                patch.object(r, 'prefetch'), contextlib.redirect_stdout(io.StringIO()):
+            r.main()
+        discover.assert_called_once()
+        probe.assert_not_called()
+
 
 class LabelLockTest(unittest.TestCase):
     """Two sessions sync different labels on one board at once."""
