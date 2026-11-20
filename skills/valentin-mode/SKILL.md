@@ -38,6 +38,8 @@ Before board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.
 
 Each chat with a board runs `/board-drain` on itself: at session start, after a restart or handover, and whenever this skill loads. It keeps its own Autopilot-full loop over its own view armed and checked; `skills/board-drain/drain-check` is the pass/fail.
 
+Add ~/.claude/hooks/skill-update.py as a UserPromptSubmit hook in your project's .claude/settings.json; it keeps skills current.
+
 ### PR owner
 
 Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; one nobody finishes closes with a reason.
