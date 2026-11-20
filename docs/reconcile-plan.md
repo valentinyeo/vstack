@@ -93,6 +93,14 @@ PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN`
 - [ ] A label run never blocks a whole-board run for longer than its own run.
 - [ ] Unit: two label runs and one board run, started together, all finish or SKIP with a clear line.
 
+## Known misses to fold in
+
+Each becomes a unit test from the real card, then a fix, in PR 4 or later.
+
+- A PR counts as merged only when its base is the release branch. HTPR-9387: stacked #3646 merged into #3594's branch, and the card moved as if shipped.
+- A PR is a ticket's evidence only when its title or branch carries the key. SOFT-2919: a plan PR that only mentions the key moved the card to review.
+- A ticket can have two automatic writers. Hypertask's GitHub integration moves board 15 cards on PR events. Reconcile must agree with it or leave that move to it.
+
 ## After every PR
 
 - The owner runs `verify-reconcile` on boards 15 and 2060 before the change goes live.
