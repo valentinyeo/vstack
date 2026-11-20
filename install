@@ -117,6 +117,11 @@ link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
 # programs. Any chat runs it from its own loop; this script only links the tool.
 link_one vps-tidy "$ROOT/skills/vps-tidy/vps-tidy" "$HOME/.local/bin"
 
+# skill-update keeps the shared checkout current and tells a chat to re-read a
+# changed valentin-mode (VSTA-56). It still needs registering as a
+# UserPromptSubmit hook in each project's .claude/settings.json.
+link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
+
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"
 else

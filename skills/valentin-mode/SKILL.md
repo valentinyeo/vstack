@@ -28,7 +28,7 @@ If no rules appear under Responsive mode below, load the `responsive-mode` skill
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. On a new project, add vstack's `hooks/plan-pick-only.py` (Bash) and `hooks/claude-helper-gate.py` (Agent) to its `.claude/settings.json`. Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Each project wires the hooks in [setup.md](setup.md). Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option.
 
 ### Board work
 
@@ -36,7 +36,7 @@ Before board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself: at session start, after a restart or handover, and whenever this skill loads. It keeps its own Autopilot-full loop over its own view armed and checked; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, after a restart or handover, and whenever this skill loads. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
 
 ### PR owner
 
