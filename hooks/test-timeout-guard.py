@@ -21,8 +21,17 @@ MESSAGE = ("BLOCKED by test-timeout-guard: {runner} can hang for hours. Run ever
            "(30 minutes, full builds), then run it again.")
 
 WRAPPERS = {"env", "timeout", "nohup", "setsid", "sudo", "command", "nice", "stdbuf", "xargs", "exec"}
-TAKES_VALUE = {"-n", "-u", "-g", "-a", "-i", "-o", "-e", "-I", "-P", "-s", "-k",
-               "--adjustment", "--user", "--group", "--signal", "--kill-after"}
+# Each wrapper owns its own options. Sharing one set let `env -i pytest` swallow the runner as a
+# value, which is the one kind of miss this guard exists to prevent.
+TAKES_VALUE = {
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+    "sudo": {"-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "-U", "-r", "-t", "--role", "--type"},
+    "nice": {"-n", "--adjustment"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "xargs": {"-n", "-I", "-L", "-P", "-s", "-d", "-a", "-E"},
+    "exec": {"-a"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 DURATION = re.compile(r"[0-9.]+[smhd]?")
 PY_RUNNERS = {"unittest", "pytest", "py.test"}
@@ -61,9 +70,10 @@ def strip_wrappers(args):
         if name not in WRAPPERS:
             break
         args = args[1:]
+        takes_value = TAKES_VALUE.get(name, set())
         while args and args[0].startswith("-"):
             option = args[0]
-            args = args[2:] if option in TAKES_VALUE else args[1:]
+            args = args[2:] if option in takes_value else args[1:]
             if option == "--":
                 break
         if name == "timeout" and args and DURATION.fullmatch(args[0]):
