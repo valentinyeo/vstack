@@ -819,6 +819,23 @@ class ReconcileTest(unittest.TestCase):
             self.assertEqual(r.ticket_lock_path(r.DEFAULT, 'SOFT-1').name,
                              'reconcile-ticket-soft-1.lock')
 
+    def test_an_unreadable_ticket_leaves_a_failure_line_for_the_owner(self):
+        def api(*args):
+            raise ValueError('Hypertask request failed')
+
+        environment = {'RECONCILE_CARD_PHASE': 'end', 'SHIP_SESSION_NAME': 'Matt Live Stream'}
+        home = Path(tempfile.mkdtemp())
+        code, printed, _calls = self.ticket_run(['--ticket', 'SOFT-1'], task(), api=api,
+                                                env=environment, home=home)
+        self.assertEqual(code, 1)
+        lines = r.session.read_failures(home)
+        self.assertEqual(len(lines), 1, 'the owner sees a card sync that could not read its ticket')
+        self.assertEqual(lines[0]['ticket'], 'SOFT-1')
+        self.assertEqual(lines[0]['session_name'], 'Matt Live Stream')
+        self.assertEqual(lines[0]['summary'], 'Hypertask request failed')
+        self.assertFalse(r.session.card_record_path(home, 2060, 'SOFT-1', 'end').exists(),
+                         'no record claims a board the run never read')
+
     def test_a_ticket_run_costs_a_handful_of_github_calls(self):
         created = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat() + 'T10:00:00Z'
         templates = self.labelled_board() + [dict(task('Doing'), ticketNumber=f'SOFT-{n}')

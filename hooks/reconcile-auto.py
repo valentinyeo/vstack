@@ -129,22 +129,13 @@ def failure_line(status):
 
 def log_failure(home, status):
     """One line per failed run, and never a block. The store is best effort."""
-    path = session.failure_path(home)
     record = failure_line(status)
-    try:
-        old = [json.loads(line) for line in path.read_text().splitlines()[-500:] if line.strip()]
-    except (OSError, ValueError):
-        old = []
     same = ('at', 'board', 'label', 'session_name')
-    if any(isinstance(row, dict) and all(row.get(k) == record[k] for k in same) for row in old):
-        return path
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('a') as handle:
-            handle.write(json.dumps(record) + '\n')
-    except OSError:
-        pass
-    return path
+    if any(isinstance(row, dict) and all(row.get(k) == record[k] for k in same)
+           for row in session.read_failures(home)):
+        return session.failure_path(home)
+    session.append_failure(home, record)
+    return session.failure_path(home)
 
 
 def reconcile_script(home):
@@ -171,6 +162,7 @@ def write_status(home, board, label, name, exit_code, output):
 def run(argv, env):
     """The detached worker: run reconcile once, then write the status record."""
     board, label, name, token, cwd = argv
+    board = int(board)
     home = Path(env.get('HOME') or str(Path.home()))
     pid = pid_path(home, board, label)
     pid.parent.mkdir(parents=True, exist_ok=True)

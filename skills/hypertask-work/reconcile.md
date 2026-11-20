@@ -21,6 +21,7 @@ That record carries `at`, `session_name`, `board`, `ticket`, `phase`, `exit`, `m
 It is for proving a sync on the real server with no board writes.
 A failed run is one JSON line in `~/.local/state/reconcile-auto/failures.jsonl`.
 The after-turn hook writes those lines, and they never stop a chat.
+A card sync that cannot read its ticket writes no record; its one line goes there instead.
 `--apply` previews first, then permits five moves.
 `--limit N` changes that per-run cap.
 A plan over the cap applies only the first N moves.

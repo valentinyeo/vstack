@@ -1223,6 +1223,12 @@ def board_run():
             ticket_index(one['ticketNumber'], board)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
             print(f'UNKNOWN {args.ticket} | {error}', flush=True)
+            if card_phase():
+                # A card sync that cannot read its ticket leaves a line for the owner.
+                session.append_failure(Path.home(), {
+                    'at': time.time(), 'board': None, 'label': None, 'ticket': args.ticket,
+                    'session_name': os.environ.get('SHIP_SESSION_NAME') or '',
+                    'summary': str(error), 'log': None})
             return 1
     else:
         board = board_config(args.board or BOARD)

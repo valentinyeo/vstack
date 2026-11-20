@@ -179,6 +179,18 @@ class ReconcileAuto(unittest.TestCase):
         self.assertEqual(record['summary_line'], 'PREVIEW board=2060 tickets=4 unknown=2')
         self.assertTrue(hook.log_path(self.home, 2060, 'Test').is_file())
 
+    def test_the_run_child_stores_the_board_as_a_number(self):
+        real = hook.reconcile_script
+        hook.reconcile_script = lambda home: None
+        self.addCleanup(setattr, hook, 'reconcile_script', real)
+        code = hook.run(['2060', 'Test', 'Test Chat', str(self.token), str(self.project)],
+                        {'HOME': str(self.home)})
+        record = json.loads(hook.record_path(self.home, 2060, 'Test').read_text())
+        self.assertEqual(code, 0)
+        self.assertEqual(record['board'], 2060)
+        self.assertEqual(record['exit'], 1)
+        self.assertIn('no reconcile script', record['summary_line'])
+
     def test_install_links_the_hook_into_claude(self):
         text = INSTALL.read_text()
         self.assertIn('link_one reconcile-auto.py "$ROOT/hooks/reconcile-auto.py" '

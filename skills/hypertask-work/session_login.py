@@ -92,6 +92,28 @@ def failure_path(home):
     return state_dir(home) / 'failures.jsonl'
 
 
+def read_failures(home, limit=500):
+    """The newest failure lines, for the reconcile owner and for dedupe."""
+    try:
+        lines = failure_path(home).read_text().splitlines()[-limit:]
+        return [json.loads(line) for line in lines if line.strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def append_failure(home, record):
+    """One JSON line for the reconcile owner. A store that cannot be written
+    never fails its caller: the sync itself matters more than its report."""
+    path = failure_path(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as handle:
+            handle.write(json.dumps(record) + '\n')
+        return True
+    except OSError:
+        return False
+
+
 def write_record(path, record):
     """One status record, whole or not at all."""
     path = Path(path)
