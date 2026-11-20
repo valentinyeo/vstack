@@ -40,6 +40,7 @@ class VerifyValentinModeGrade(unittest.TestCase):
         code, output, target = self.grade_fixture('pass')
         self.assertEqual(code, 0, output)
         self.assert_check(output, 'PASS', 'loaded')
+        self.assert_check(output, 'PASS', 'responsive')
         self.assert_check(output, 'PASS', 'session')
         self.assert_check(output, 'PASS', 'login')
         self.assert_check(output, 'PASS', 'pacer')
@@ -51,7 +52,9 @@ class VerifyValentinModeGrade(unittest.TestCase):
         verdict = json.loads((target / 'verdict.json').read_text())
         self.assertEqual(verdict['verdict'], 'PASS')
         self.assertEqual(verdict['session_id'], 'sid-pass')
-        self.assertEqual(len(verdict['checks']), 6)
+        self.assertEqual(len(verdict['checks']), 7)
+        self.assertEqual([check['name'] for check in verdict['checks']][:2],
+                         ['loaded', 'responsive'])
         self.assertEqual((target / 'verdict.txt').read_text(), output)
 
     def test_no_plan_pick_fixture_fails_pacer(self):
@@ -78,6 +81,40 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assert_check(output, 'PASS', 'board sync')
         self.assertIn('PASS board sync: dry run then apply, apply clean', output)
         self.assertFalse(any(line.startswith('FAIL ') for line in output.splitlines()), output)
+
+    def test_var_path_fixture_grades_pass(self):
+        """A reconcile called through a shell variable is still a board sync."""
+        code, output, _target = self.grade_fixture('var-path')
+        self.assertEqual(code, 0, output)
+        self.assert_check(output, 'PASS', 'board sync')
+        self.assertIn('PASS board sync: dry run then apply, apply clean', output)
+        self.assertFalse(any(line.startswith('FAIL ') for line in output.splitlines()), output)
+
+    def test_no_responsive_fixture_fails_only_responsive(self):
+        code, output, _target = self.grade_fixture('no-responsive')
+        self.assertEqual(code, 1, output)
+        self.assert_check(output, 'FAIL', 'responsive')
+        self.assertIn('FAIL responsive: responsive mode not loaded', output)
+        failed = [line for line in output.splitlines() if line.startswith('FAIL ')]
+        self.assertEqual(failed, ['FAIL responsive: responsive mode not loaded'], output)
+
+    def test_responsive_slash_command_prompt_grades_pass(self):
+        """A user prompt starting with /responsive-mode is the other accepted way in."""
+        target = self.temp_dir() / 'slash'
+        shutil.copytree(FIXTURES / 'no-responsive', target)
+        events = [json.loads(line) for line in
+                  (target / 'stream.jsonl').read_text().splitlines() if line.strip()]
+        events.insert(1, {'type': 'user', 'session_id': 'sid-no-responsive',
+                          'message': {'content': [{'type': 'text',
+                                                   'text': '/responsive-mode stay responsive'}]}})
+        (target / 'stream.jsonl').write_text(
+            '\n'.join(json.dumps(event) for event in events) + '\n')
+        result = subprocess.run([sys.executable, str(GRADE), str(target)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assert_check(result.stdout, 'PASS', 'responsive')
+        self.assertIn('PASS responsive: responsive mode started by /responsive-mode',
+                      result.stdout)
 
     def test_not_loaded_fixture_fails_loaded(self):
         code, output, _target = self.grade_fixture('not-loaded')
