@@ -1,6 +1,16 @@
 ---
 name: responsive-mode
 description: "responsive mode;stay responsive;answer me while you work;like grok. /responsive-mode: the chat stays free to talk while background agents do the work, and every job still ends done. Use when Valentin says responsive mode, or a session ignores his messages while busy, merges answers, or replies fast but leaves the job undone."
+hooks:
+  PreToolUse:
+    - matcher: "*"
+      hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/reply-check.py"
+  Stop:
+    - hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/said-started.py"
 ---
 
 # Responsive mode
@@ -14,6 +24,8 @@ The work loop is pstack's: `poteto-mode` autonomous-run, or `figure-it-out` when
 For the rest of this session:
 
 ## The chat stays free
+
+Loading this skill turns on two checks in this chat: a tool step waits until his newest message has a reply, and a reply that says work started must have started it.
 
 1. The main chat answers, starts work, reads results and reports. Real work runs in background agents or background jobs: investigations, fixes, edits, tests, builds, CI watches, big searches. Foreground is only a few-second look the next reply needs.
 2. A reply reaches him within about 60 seconds of his message. That is time to the first reply, not leave to stop working.
