@@ -2,6 +2,8 @@
 name: verify-valentin-mode
 description: >-
   Prove that a fresh Claude Code chat on this server really uses valentin mode's three tools: its own board login, the subscription pacer (plan-pick --run) and the board sync (reconcile). Starts one headless test chat with a tiny task in a scratch project, then grades the evidence PASS or FAIL per tool. Use after any change to skills/valentin-mode, skills/hypertask-work or plan-pick, and as the proof on such a PR.
+skill-word-budget: 900
+skill-word-budget-reason: The Doctor names the debug-log check and the missing-folder stop, so a maintainer proves a hook ran without a new chat.
 ---
 
 # Verify valentin mode
@@ -41,7 +43,9 @@ A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worke
 
 Read the `loaded` line first. It needs the `/valentin-mode` prompt, the command in the chat's command list, and an installed copy with the Three tools section and `disable-model-invocation: true` (saved as installed-valentin-mode.md). Any Skill call for valentin-mode fails it: the chat started it by itself. Then read `responsive`: it passes when /valentin-mode pasted responsive mode's body in at load (a paste that stopped before the body's last sentence fails), or on a Skill call for responsive-mode, or a user prompt starting `/responsive-mode`.
 
-The chat reads the installed copy in ~/.local/share/vstack, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main.
+`checks loaded` reads debug.log for a run of each hook the frontmatter declares: `skills/responsive-mode/reply-check.py` (PreToolUse), `skills/responsive-mode/said-started.py` (Stop). A hook that never ran leaves no line and fails it.
+
+The chat reads the installed copy in ~/.local/share/vstack, not this checkout. On a PR, install the branch first (`git checkout <branch> && ./install` there), then restore main. `VSTACK_DIR=<checkout>` grades a branch without installing, and the evidence copy comes from that tree.
 
 ## Drive
 
@@ -61,6 +65,7 @@ Every run keeps `~/.local/state/verify-valentin-mode/<run-id>/`:
 | launches.jsonl | pacer lines for this chat's session id |
 | agent-log.json, comments.json | who wrote on SOFT-2849 |
 | hello.txt | the worker's output |
+| debug.log | every hook the chat ran |
 | verdict.txt, verdict.json | one PASS/FAIL line per check, then the verdict |
 
 Grading reads side effects, never the chat's claims. On a PR or ticket, attach both verdict.txt files, never the raw stream.
@@ -78,3 +83,4 @@ Every change to `skills/valentin-mode`, `skills/hypertask-work` or plan-pick run
 - Never run a test chat with user hooks off (`--setting-sources`): the guard against writing as Valentin goes too. Two early runs on 19 Nov wrote on SOFT-2849 as him. The guard still misses `ht` writes and the claude.ai connector (SOFT-2857).
 - A `reconcile --apply` without `--label vvm-test` fails the check: it can move real tickets (see the `/hypertask` skill).
 - One check at a time: the board sync lock is per board (SOFT-2853).
+- A missing skill folder under `${VSTACK_DIR:-~/.local/share/vstack}/skills` stops `run` before any chat starts; the last line names the folder.
