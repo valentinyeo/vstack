@@ -18,16 +18,42 @@ import os
 from pathlib import Path
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 
+_PROJECT_HOOKS_MODULE = None
+
+
+def ph():
+    """Load hooks/project_hooks.py when install, check or heal need it."""
+    global _PROJECT_HOOKS_MODULE
+    if _PROJECT_HOOKS_MODULE is not None:
+        return _PROJECT_HOOKS_MODULE
+    here = Path(__file__).resolve().parent
+    for candidate in (
+        here / 'project_hooks.py',
+        here.parent / 'hooks' / 'project_hooks.py',
+        Path.home() / '.claude/hooks/project_hooks.py',
+    ):
+        if not candidate.is_file():
+            continue
+        loader = importlib.machinery.SourceFileLoader('project_hooks', str(candidate))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        _PROJECT_HOOKS_MODULE = module
+        return module
+    raise ModuleNotFoundError('project_hooks.py')
+
+
 PROBE_TIMEOUT = 5
+HOOK_BASENAME = 'launch-gate.py'
+HOOK_PREFIX = 'launch-gate'
 HOOK_FILE = '$HOME/.claude/hooks/launch-gate.py'
-# Fail open when the file is missing: a broken link exits 2 from python, and Claude
-# Code reads exit 2 as a block, so the chat can run no Bash at all. exec keeps stdin.
-HOOK_COMMAND = 'sh -c \'f="{}"; [ -f "$f" ] || exit 0; exec python3 "$f"\''.format(HOOK_FILE)
+HOOK_COMMAND = (
+    "sh -c 'f=\"" + HOOK_FILE + "\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'"
+)
 OLD_COMMAND = HOOK_FILE
 MESSAGE = ('BLOCKED by launch-gate: server is full ({brief}). Start nothing new. '
            'Finish, merge or clean up what you have, tell the user you are holding, '
@@ -196,51 +222,16 @@ def hook(payload):
     return (2 if action == 'block' else 0), text or ''
 
 
-def project_dir(given):
-    if given:
-        return Path(given[0]).expanduser().resolve()
-    try:
-        done = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True,
-                              text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        done = None
-    if done is not None and done.returncode == 0 and done.stdout.strip():
-        return Path(done.stdout.strip())
-    return Path.cwd()
-
-
 def read_settings(path):
-    """The settings object at path, or None when the file is absent. ValueError when broken."""
-    try:
-        text = path.read_text()
-    except OSError:
-        return None
-    return json.loads(text)
+    return ph().read_settings(path)
 
 
 def gate_items(settings):
-    """Every hook item in this settings object that registers launch-gate.py."""
-    hooks = settings.get('hooks') if isinstance(settings, dict) else None
-    entries = hooks.get('PreToolUse') if isinstance(hooks, dict) else None
-    found = []
-    for entry in entries if isinstance(entries, list) else []:
-        items = entry.get('hooks') if isinstance(entry, dict) else None
-        for item in items if isinstance(items, list) else []:
-            command = item.get('command') if isinstance(item, dict) else None
-            if isinstance(command, str) and 'launch-gate.py' in command:
-                found.append(item)
-    return found
+    return ph().gate_items(settings, HOOK_BASENAME)
 
 
 def upgrade_launch_gate_commands(settings):
-    """Replace old launch-gate hook commands with HOOK_COMMAND. Return True when any changed."""
-    items = gate_items(settings)
-    stale = [item for item in items if item.get('command') != HOOK_COMMAND]
-    if not stale:
-        return False
-    for item in stale:
-        item['command'] = HOOK_COMMAND
-    return True
+    return ph().upgrade_hook_commands(settings, HOOK_BASENAME, HOOK_COMMAND)
 
 
 def hook_project_dir(payload):
@@ -259,26 +250,15 @@ def hook_project_dir(payload):
 
 
 def write_settings_atomic(path, settings):
-    """Write settings to path with a temp file and os.replace, keeping the file mode."""
-    text = json.dumps(settings, indent=2) + '\n'
-    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o644
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix='.settings.local.', suffix='.tmp')
-    try:
-        with os.fdopen(fd, 'w') as handle:
-            handle.write(text)
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    ph().write_settings_atomic(path, settings)
 
 
 def heal_project_settings(payload):
     """Upgrade a stale launch-gate command in the project's settings.local.json. Errors stay quiet."""
+    try:
+        ph()
+    except ModuleNotFoundError:
+        return
     directory = hook_project_dir(payload)
     if directory is None:
         return
@@ -309,77 +289,20 @@ def heal_project_settings(payload):
 
 
 def registered(settings):
-    """This settings object registers the launch-gate hook, in either command form."""
-    return bool(gate_items(settings))
-
-
-def refuse(path, why):
-    print('launch-gate: cannot use {}: {}'.format(path, why), file=sys.stderr)
-    return 1
-
-
-def write_settings(path, settings):
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(settings, indent=2) + '\n')
-    except OSError as error:
-        refuse(path, 'it could not be written: {}'.format(error))
-        return False
-    return True
+    return ph().registered(settings, HOOK_BASENAME)
 
 
 def install_for_project(given):
-    directory = project_dir(given)
-    path = directory / '.claude/settings.local.json'
-    existed = path.is_file()
-    try:
-        settings = read_settings(path)
-    except ValueError:
-        return refuse(path, 'it is not valid JSON; fix it and run this again')
-    settings = {} if settings is None else settings
-    if not isinstance(settings, dict):
-        return refuse(path, 'the top level is not a JSON object')
-    if upgrade_launch_gate_commands(settings):
-        if not write_settings(path, settings):
-            return 1
-        print('launch-gate: upgraded the Bash hook in {}'.format(path))
-        return 0
-    if gate_items(settings):
-        print('launch-gate: already registered in {}; nothing changed'.format(path))
-        return 0
-    hooks = settings.setdefault('hooks', {})
-    if not isinstance(hooks, dict):
-        return refuse(path, '"hooks" is not an object')
-    entries = hooks.setdefault('PreToolUse', [])
-    if not isinstance(entries, list):
-        return refuse(path, '"hooks.PreToolUse" is not a list')
-    entries.append({'matcher': 'Bash',
-                    'hooks': [{'type': 'command', 'command': HOOK_COMMAND}]})
-    if not write_settings(path, settings):
-        return 1
-    print('launch-gate: {} the Bash hook in {}'.format(
-        'created' if not existed else 'registered', path))
-    return 0
+    return ph().install_for_project(
+        given, prefix=HOOK_PREFIX, hook_substring=HOOK_BASENAME,
+        hook_file=HOOK_FILE, hook_command=HOOK_COMMAND)
 
 
 def check_project(given):
-    directory = project_dir(given)
-    for path in (directory / '.claude/settings.json', directory / '.claude/settings.local.json',
-                 Path.home() / '.claude/settings.json'):
-        try:
-            settings = read_settings(path)
-        except ValueError:
-            continue
-        if registered(settings):
-            print('launch-gate: {} registers the Bash hook, in {}'.format(directory, path))
-            if any(item.get('command') != HOOK_COMMAND for item in gate_items(settings)):
-                print('launch-gate: {} has the old command, which blocks every Bash call when '
-                      'the file is missing. Upgrade it with: python3 {} '
-                      '--install-for-project {}'.format(directory, HOOK_FILE, directory))
-            return 0
-    print('launch-gate: {} has no launch-gate hook. Install it with: python3 {} '
-          '--install-for-project {}'.format(directory, HOOK_FILE, directory))
-    return 1
+    return ph().check_project(
+        given, prefix=HOOK_PREFIX, hook_substring=HOOK_BASENAME,
+        hook_file=HOOK_FILE, hook_command=HOOK_COMMAND,
+        hook_label='launch-gate hook')
 
 
 def self_test():
@@ -417,7 +340,7 @@ def self_test():
         assert check_project([where]) == 0, 'check sees the hook it just installed'
         path = Path(where) / '.claude/settings.local.json'
         assert path.is_file(), 'settings file exists'
-        assert [item['command'] for item in gate_items(read_settings(path))] == [HOOK_COMMAND], \
+        assert [item['command'] for item in gate_items(ph().read_settings(path))] == [HOOK_COMMAND], \
             'install writes the fail-open command'
     with tempfile.TemporaryDirectory() as where:
         path = Path(where) / '.claude/settings.local.json'

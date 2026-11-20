@@ -107,6 +107,7 @@ link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
 link_one reconcile-auto.py "$ROOT/hooks/reconcile-auto.py" "$HOME/.claude/hooks"
 link_one test-timeout-guard.py "$ROOT/hooks/test-timeout-guard.py" "$HOME/.claude/hooks"
 link_one pstack-new-gates.py "$ROOT/hooks/pstack-new-gates.py" "$HOME/.claude/hooks"
+link_one project_hooks.py "$ROOT/hooks/project_hooks.py" "$HOME/.claude/hooks"
 link_one gh-watch-guard.py "$ROOT/hooks/gh-watch-guard.py" "$HOME/.claude/hooks"
 
 # vps-state answers "can this server take another chat or worker", and the
