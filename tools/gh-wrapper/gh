@@ -636,7 +636,10 @@ def cached_pr(argv, real, runner=None, clock=time.time, ttl=None) -> Outcome:
     if _fresh(entry, now, ttl):
         _log_call(argv, bucket=_LAST_BUCKET[0], marker="hit")
         return Outcome(entry.get("code") or 0, entry.get("stdout"), entry.get("stderr"))
-    lock = pr_lock(key)
+    try:
+        lock = pr_lock(key)
+    except OSError:
+        return upstream(real, argv[1:], runner, env)
     try:
         entry = read_pr_entry(key)
         now = int(clock())
@@ -645,16 +648,19 @@ def cached_pr(argv, real, runner=None, clock=time.time, ttl=None) -> Outcome:
             return Outcome(entry.get("code") or 0, entry.get("stdout"), entry.get("stderr"))
         outcome = upstream(real, argv[1:], runner, env)
         _log_call(argv, bucket=_LAST_BUCKET[0], marker="miss")
-        write_pr_entry(key, {
-            "key": key,
-            "argv": list(argv[1:]),
-            "repo": repo,
-            "token": token,
-            "stdout": outcome.out,
-            "stderr": outcome.err,
-            "code": outcome.code,
-            "fetchedAt": int(clock()),
-        })
+        try:
+            write_pr_entry(key, {
+                "key": key,
+                "argv": list(argv[1:]),
+                "repo": repo,
+                "token": token,
+                "stdout": outcome.out,
+                "stderr": outcome.err,
+                "code": outcome.code,
+                "fetchedAt": int(clock()),
+            })
+        except OSError:
+            pass  # a full or read only cache folder must never break the call itself
         return outcome
     finally:
         lock.close()
