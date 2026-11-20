@@ -12,7 +12,7 @@ Run `"$HOME/.local/bin/vps-state"` from any directory. It reads /proc live on ev
 
 ## Set up your own check
 
-Nobody runs this for you, and no central enforcer runs it for you either. Set up your own check, once, for your own chat.
+No central enforcer runs this for you. Set up your own check, once, for your own chat.
 
 1. In your own loop or launcher, run `"$HOME/.local/bin/vps-state" --can-launch worker` before you start a worker, or `--can-launch chat` before a chat. Exit 0 means start. Exit 1 means start one and ask again before a second. Exit 2 means hold. Further rules are in [What HOLD obliges](#what-hold-obliges).
 2. Switch on the launch gate for your own project, so the rule holds even when you forget it. Run this once in each project you work in:
