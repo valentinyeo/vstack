@@ -35,7 +35,7 @@ A chat with a board drains it. Its agent notes name the board: `Hypertask board:
 
 ### PR owner
 
-From pstack Autopilot-full: one owner carries each PR from build to merge. Whoever opens a PR stays on it through green checks, fixes, merge and live proof. Your loop checks each open PR has a worker pushing it; a stalled one gets a fresh worker, never a new PR beside it. A PR nobody will finish gets closed with a reason. The PR Housekeeping chat audits the whole queue, never replacing an owner.
+From pstack Autopilot-full: one owner carries each PR from build to merge. Whoever opens a PR stays on it through green checks, fixes, merge and live proof. Your loop checks each open PR has a worker pushing it; a stalled one gets a fresh worker, never a new PR beside it. A PR nobody will finish gets closed with a reason.
 
 ## Working
 
