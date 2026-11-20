@@ -41,7 +41,7 @@ If no rules appear under Responsive mode below, load `responsive-mode` before an
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Each project wires the hooks in [setup.md](setup.md). Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Wire hooks per [setup.md](setup.md). Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option. When `~/.local/bin/token-ladder pools --json` shows claude `pace_ratio` above 1.1, the chat only writes briefs, reads one result line and answers Valentin; code, tests, rebases, log reading and PR babysitting go to plan-pick workers.
 
 ### Board work
 
