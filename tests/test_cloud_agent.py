@@ -347,6 +347,104 @@ class PreflightTests(unittest.TestCase):
             self.assertIsNone(self.m.preflight(repo))
 
 
+class CursorEnterSubmitTests(unittest.TestCase):
+    """launch_cursor must not send Enter until the paste lands, and may retry Enter up to three times."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load_script()
+
+    def _stub_launch(self, repo, brief, pane_for, **timer_patches):
+        """Patch tmux run(), timers and sleep; pane_for(enter_count) returns fake capture-pane text."""
+        ok = subprocess.CompletedProcess([], 0, '', '')
+        enter_count = 0
+        defaults = dict(CURSOR_PROMPT_SECONDS=0, CURSOR_CLOUD_SECONDS=0, CURSOR_PASTE_LAND_SECONDS=0,
+                        CURSOR_PASTE_SETTLE_SECONDS=0, CURSOR_ENTER_CONFIRM_SECONDS=0,
+                        CURSOR_SUBMIT_SECONDS=0)
+        defaults.update(timer_patches)
+
+        def fake_run(args, cwd=None, timeout=None):
+            nonlocal enter_count
+            if args and 'capture-pane' in args:
+                return subprocess.CompletedProcess(args, 0, pane_for(enter_count), '')
+            if args and 'send-keys' in args and args[-1] == 'Enter':
+                enter_count += 1
+                return ok
+            return ok
+
+        patches = [patch.object(self.m, 'run', side_effect=fake_run),
+                   patch.object(self.m, 'quiet'),
+                   patch.object(self.m.time, 'sleep'),
+                   patch.multiple(self.m, **defaults)]
+        return patches, lambda: enter_count
+
+    def test_paste_token_after_first_enter_gets_a_second_enter_then_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory) / 'repo')
+            brief = 'Do the thing with enough words here.'
+            flat = self.m.flatten(brief)
+            pasted = f'Composer 2.5\n^ Move to cloud agent\n& [Pasted text #1 +2 lines] {flat[-12:]}'
+
+            def pane_for(enter_count):
+                if enter_count < 2:
+                    return pasted
+                return pasted + '\n  ' + PANE.strip()
+
+            patches, enters = self._stub_launch(repo, brief, pane_for)
+            with contextlib.ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                row = self.m.launch_cursor(repo, brief, 'composer-2.5', True, 60)
+            self.assertEqual(enters(), 2)
+            self.assertEqual(row['status'], 'started')
+            self.assertIn('bc-', row['task_id'] or '')
+
+    def test_checking_git_status_after_first_enter_sends_only_one_enter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory) / 'repo')
+            brief = 'Ship the fix.'
+            flat = self.m.flatten(brief)
+            base = f'Composer 2.5\n^ Move to cloud agent\n& [Pasted text #1] {flat}\n'
+
+            def pane_for(enter_count):
+                if enter_count == 0:
+                    return base
+                return base + 'Checking git status\n  ' + PANE.strip()
+
+            patches, enters = self._stub_launch(repo, brief, pane_for)
+            with contextlib.ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                row = self.m.launch_cursor(repo, brief, 'composer-2.5', True, 60)
+            self.assertEqual(enters(), 1)
+            self.assertEqual(row['status'], 'started')
+
+    def test_never_confirmed_gets_three_enters_then_one_json_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory) / 'repo')
+            brief = 'Still waiting.'
+            flat = self.m.flatten(brief)
+            stuck = f'Composer 2.5\n^ Move to cloud agent\n& [Pasted text #1] {flat}\n'
+
+            def pane_for(enter_count):
+                return stuck
+
+            patches, enters = self._stub_launch(repo, brief, pane_for)
+            with contextlib.ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                row = self.m.launch_cursor(repo, brief, 'composer-2.5', True, 60)
+            self.assertEqual(enters(), 3)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = self.m.emit(row)
+            lines = out.getvalue().strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(code, 1)
+            self.assertEqual(row['status'], 'failed')
+            self.assertIn('3 Enter presses sent', row['error'] or '')
+
+
 class CursorLaunchFailureTests(unittest.TestCase):
     """launch_cursor must return failed rows, not crash, when the pane never reaches a step."""
 
