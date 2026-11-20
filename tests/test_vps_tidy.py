@@ -11,7 +11,7 @@ The frozen contract these tests hold the tool to:
              [--ps-file FILE] [--proc-root DIR] [--root DIR] [--grace SECONDS]
              [--statvfs-json FILE]
 
-    parts: tmp, caches, docker, evidence, processes   (files = tmp,caches,docker,evidence)
+    parts: tmp, caches, docker, evidence, processes, tmux   (files = tmp,caches,docker,evidence)
     exit:  0 ran, 2 usage error, 3 could not run (lock held)
     env:   VPS_TIDY_ROOT, VPS_TIDY_PROC, VPS_TIDY_BOARD_CMD
     log:   <home>/.local/state/vps-tidy/<UTC>.jsonl, kills.log, status.json
@@ -29,6 +29,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -76,6 +77,8 @@ class Sandbox:
         self._write_tool('docker', 'docker')
         self.ps_file.write_text(self.ps_text())
         self.board_cmd = None
+        self.tmux_servers = []
+        self.tmux_dir = self.tmp / 'tmux-{}'.format(UID)
 
     # -- layout helpers ---------------------------------------------------
     def make(self, relative, body='x', seconds_old=None, base=None):
@@ -177,7 +180,12 @@ class Sandbox:
         path.chmod(0o755)
         return path
 
-    def env(self, board_cmd=None):
+    def roster_rows(self, rows):
+        path = self.home / '.local/share/house-rules/fleet/roster.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'rows': rows}) + '\n')
+
+    def env(self, board_cmd=None, tmux_ages=None):
         env = dict(os.environ)
         env['HOME'] = str(self.home)
         env['VPS_TIDY_ROOT'] = str(self.root)
@@ -185,9 +193,57 @@ class Sandbox:
         env['PATH'] = str(self.bin) + os.pathsep + env.get('PATH', '')
         if board_cmd is not None:
             env['VPS_TIDY_BOARD_CMD'] = str(self.board_script(board_cmd))
+        for key, value in (tmux_ages or {}).items():
+            env[key] = str(value)
         return env
 
-    def run(self, *args, timeout=120, statvfs=None, env=None):
+    def tmux_socket(self, name):
+        self.tmux_dir.mkdir(parents=True, exist_ok=True)
+        return str(self.tmux_dir / name)
+
+    def start_tmux(self, sock, session='s1', command='sleep 600'):
+        if shutil.which('tmux') is None:
+            raise unittest.SkipTest('tmux is not installed')
+        cmd = ['tmux', '-S', sock, 'new', '-d', '-s', session]
+        if command is not None:
+            cmd.append(command)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.tmux_servers.append(sock)
+
+    def seed_cmdline(self, pid, argv):
+        proc_dir = self.proc / str(pid)
+        proc_dir.mkdir(parents=True, exist_ok=True)
+        (proc_dir / 'cmdline').write_bytes(
+            '\0'.join(argv).encode() + (b'\0' if argv else b''))
+
+    def seed_stat(self, pid, ppid, comm='proc'):
+        proc_dir = self.proc / str(pid)
+        proc_dir.mkdir(parents=True, exist_ok=True)
+        (proc_dir / 'stat').write_text(
+            '{} ({}) S {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n'
+            .format(pid, comm, ppid))
+
+    def pane_pid(self, sock, session):
+        out = subprocess.run(
+            ['tmux', '-S', sock, 'list-panes', '-t', session, '-F', '#{pane_pid}'],
+            capture_output=True, text=True, check=True)
+        return int(out.stdout.strip().splitlines()[0])
+
+    def dead_tmux_socket(self, name, seconds_old=7200):
+        import socket as socket_mod
+        self.tmux_dir.mkdir(parents=True, exist_ok=True)
+        path = self.tmux_dir / name
+        handle = socket_mod.socket(socket_mod.AF_UNIX)
+        try:
+            if path.exists():
+                path.unlink()
+            handle.bind(str(path))
+        finally:
+            handle.close()
+        age(path, seconds_old)
+        return str(path)
+
+    def run(self, *args, timeout=120, statvfs=None, env=None, tmux_ages=None):
         cmd = [sys.executable, str(SCRIPT), '--root', str(self.root),
                '--proc-root', str(self.proc), '--ps-file', str(self.ps_file)]
         cmd += list(args)
@@ -195,11 +251,11 @@ class Sandbox:
             path = self.root / 'statvfs.json'
             path.write_text(json.dumps(statvfs))
             cmd += ['--statvfs-json', str(path)]
-        return subprocess.run(cmd, env=env or self.env(), capture_output=True, text=True,
-                              timeout=timeout)
+        return subprocess.run(cmd, env=env or self.env(tmux_ages=tmux_ages),
+                              capture_output=True, text=True, timeout=timeout)
 
-    def payload(self, *args, **kwargs):
-        done = self.run('--json', *args, **kwargs)
+    def payload(self, *args, tmux_ages=None, **kwargs):
+        done = self.run('--json', *args, tmux_ages=tmux_ages, **kwargs)
         assert done.returncode == 0, done.stdout + done.stderr
         return json.loads(done.stdout)
 
@@ -220,6 +276,13 @@ class Sandbox:
             try:
                 proc.kill()
                 proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        for sock in self.tmux_servers:
+            try:
+                subprocess.run(['tmux', '-S', sock, 'kill-server'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=10)
             except (OSError, subprocess.SubprocessError):
                 pass
         self._tmp.cleanup()
@@ -721,6 +784,337 @@ class ProcessRules(Base):
         payload = self.box.payload('--only', 'processes', '--apply')
         self.assertEqual([item for item in payload['items'] if item['part'] != 'processes'], [])
         self.assertTrue((self.box.tmp / 'stale').exists())
+
+
+class TmuxRules(Base):
+    AGES = {'VPS_TIDY_TMUX_SERVER_AGE': 1, 'VPS_TIDY_TMUX_DEAD_SOCKET_AGE': 1,
+            'VPS_TIDY_TMUX_SESSION_AGE': 1}
+
+    def setUp(self):
+        super().setUp()
+        if shutil.which('tmux') is None:
+            self.skipTest('tmux is not installed')
+
+    def test_stale_idle_private_server_is_closed_on_apply(self):
+        sock = self.box.tmux_socket('delta-test-stale')
+        self.box.start_tmux(sock, command='sleep 600')
+        time.sleep(1.2)
+        payload = self.box.payload('--only', 'tmux', '--apply', tmux_ages=self.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'close-server')
+        self.assertEqual(item['result'], 'closed')
+        self.assertFalse(tmux_alive(sock))
+
+    def test_young_private_server_is_kept(self):
+        sock = self.box.tmux_socket('delta-test-young')
+        self.box.start_tmux(sock, command='sleep 600')
+        ages = dict(self.AGES)
+        ages['VPS_TIDY_TMUX_SERVER_AGE'] = DAY
+        payload = self.box.payload('--only', 'tmux', tmux_ages=ages)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
+    def test_private_server_with_busy_pane_is_kept(self):
+        sock = self.box.tmux_socket('delta-test-busy')
+        self.box.start_tmux(sock, command='python3 -c "import time; time.sleep(600)"')
+        time.sleep(1.2)
+        payload = self.box.payload('--only', 'tmux', tmux_ages=self.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
+    def test_dead_socket_is_removed_on_apply(self):
+        path = self.box.dead_tmux_socket('delta-test-dead')
+        payload = self.box.payload('--only', 'tmux', '--apply', tmux_ages=self.AGES)
+        item = next(i for i in payload['items'] if i.get('path') == path)
+        self.assertEqual(item['action'], 'remove')
+        self.assertEqual(item['result'], 'removed')
+        self.assertFalse(os.path.exists(path))
+
+    def test_default_session_protected_prefix_is_kept(self):
+        sock = self.box.tmux_socket('default')
+        self.box.start_tmux(sock, session='live-test-protected', command='sleep 600')
+        time.sleep(1.2)
+        payload = self.box.payload('--only', 'tmux', tmux_ages=self.AGES)
+        item = next(i for i in payload['items'] if i.get('session') == 'live-test-protected')
+        self.assertEqual(item['action'], 'keep')
+
+    def test_old_idle_default_session_closes_on_apply(self):
+        sock = self.box.tmux_socket('default')
+        self.box.start_tmux(sock, session='stale-idle-shell', command=None)
+        time.sleep(2.0)
+        pane_pid = self.box.pane_pid(sock, 'stale-idle-shell')
+        self.box.seed_cmdline(pane_pid, ['/bin/bash'])
+        payload = self.box.payload('--only', 'tmux', '--apply', tmux_ages=self.AGES)
+        item = next(i for i in payload['items'] if i.get('session') == 'stale-idle-shell')
+        self.assertEqual(item['action'], 'close-session')
+        self.assertEqual(item['result'], 'closed')
+        out = subprocess.run(['tmux', '-S', sock, 'has-session', '-t', 'stale-idle-shell'],
+                             capture_output=True)
+        self.assertNotEqual(out.returncode, 0)
+
+    def test_dry_run_reports_would_close_without_acting(self):
+        sock = self.box.tmux_socket('delta-test-dry')
+        self.box.start_tmux(sock, command='sleep 600')
+        time.sleep(1.2)
+        payload = self.box.payload('--only', 'tmux', tmux_ages=self.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['result'], 'would-close')
+        self.assertTrue(tmux_alive(sock))
+        self.assertEqual(payload['summary']['removed'], 0)
+
+    def test_attached_private_server_is_kept(self):
+        sock = self.box.tmux_socket('delta-test-attached')
+        self.box.start_tmux(sock, session='follow', command='sleep 600')
+        time.sleep(1.2)
+        mod = load_script()
+        ctx_opts = {'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                    'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+                    'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+                    'caller': None}
+        ctx = mod.Context(ctx_opts)
+        real_rows = mod.tmux_session_rows
+
+        def rows(side_ctx, side_sock):
+            sessions, err, complete = real_rows(side_ctx, side_sock)
+            if err:
+                return sessions, err, complete
+            patched = []
+            for row in sessions:
+                row = dict(row)
+                if row.get('name') == 'follow':
+                    row['attached'] = 1
+                patched.append(row)
+            return patched, None, complete
+
+        with unittest.mock.patch.object(mod, 'tmux_session_rows', side_effect=rows):
+            mod.scan_tmux(ctx)
+        item = next(i for i in ctx.items if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertIn('attached', item['reason'].lower())
+        self.assertTrue(tmux_alive(sock))
+
+    def test_private_server_tail_follow_is_kept(self):
+        log = self.box.make('build.log', body='line\n')
+        sock = self.box.tmux_socket('delta-test-tail')
+        self.box.start_tmux(sock, command='tail -f {}'.format(log))
+        time.sleep(1.2)
+        payload = self.box.payload('--only', 'tmux', tmux_ages=self.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+
+    def test_unreadable_proc_keeps_stale_sleep_server(self):
+        sock = self.box.tmux_socket('delta-test-proc')
+        self.box.start_tmux(sock, command='sleep 600')
+        time.sleep(1.2)
+        mode = self.box.proc.stat().st_mode
+        os.chmod(self.box.proc, 0)
+        try:
+            payload = self.box.payload('--only', 'tmux', tmux_ages=self.AGES)
+        finally:
+            os.chmod(self.box.proc, mode)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
+    def test_old_socket_on_live_server_not_removed_on_apply(self):
+        sock = self.box.tmux_socket('delta-test-live-sock')
+        self.box.start_tmux(sock, command='sleep 600')
+        time.sleep(1.2)
+        age(sock, 7200)
+        mod = load_script()
+        calls = []
+
+        def fake_command(ctx, target_sock, extra, timeout=10):
+            calls.append(extra)
+            if extra == ['list-sessions']:
+                return None, 'timed out'
+            return mod.tmux_command(ctx, target_sock, extra, timeout=timeout)
+
+        ctx_opts = {'apply': True, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                    'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+                    'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+                    'caller': None}
+        ctx = mod.Context(ctx_opts)
+        with unittest.mock.patch.object(mod, 'tmux_command', side_effect=fake_command):
+            mod.scan_tmux(ctx)
+        actions = [item['action'] for item in ctx.items if item.get('socket') == sock]
+        self.assertNotIn('remove', actions)
+        self.assertTrue(tmux_alive(sock))
+
+
+class TmuxProbeContract(unittest.TestCase):
+    def test_confirmed_dead_rejects_timeout_only(self):
+        mod = load_script()
+        ctx = mod.Context(self._ctx_opts())
+        plan = [(None, 'timed out'), (None, 'error connecting to /tmp/x')]
+        with unittest.mock.patch.object(mod, 'tmux_command', side_effect=plan):
+            self.assertFalse(mod.tmux_server_confirmed_dead(ctx, '/tmp/x'))
+
+    def test_confirmed_dead_needs_two_no_server_probes(self):
+        mod = load_script()
+        ctx = mod.Context(self._ctx_opts())
+        msg = 'error connecting to /tmp/x'
+        plan = [(None, msg), (None, msg)]
+        with unittest.mock.patch.object(mod, 'tmux_command', side_effect=plan):
+            self.assertTrue(mod.tmux_server_confirmed_dead(ctx, '/tmp/x'))
+
+    def test_confirmed_dead_stops_when_server_answers(self):
+        mod = load_script()
+        ctx = mod.Context(self._ctx_opts())
+        plan = [(None, 'no server running on /tmp/x'), ('', None)]
+        with unittest.mock.patch.object(mod, 'tmux_command', side_effect=plan):
+            self.assertFalse(mod.tmux_server_confirmed_dead(ctx, '/tmp/x'))
+
+    def test_batch_dead_probe_sleeps_once_for_many_sockets(self):
+        mod = load_script()
+        ctx = mod.Context(self._ctx_opts())
+        sleep_calls = []
+
+        def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        probes = []
+
+        def fake_command(ctx, sock, extra, timeout=10, env=None):
+            probes.append((sock, extra))
+            if extra == ['list-sessions']:
+                return None, 'no server running on ' + sock
+            return None, 'unexpected'
+
+        with unittest.mock.patch.object(mod, 'tmux_command', side_effect=fake_command):
+            with unittest.mock.patch.object(mod.time, 'sleep', side_effect=fake_sleep):
+                dead = mod.confirm_dead_sockets_batch(
+                    ctx, ['/tmp/a', '/tmp/b', '/tmp/c'])
+        self.assertEqual(dead, {'/tmp/a', '/tmp/b', '/tmp/c'})
+        self.assertEqual(len(sleep_calls), 1)
+        self.assertEqual(len([p for p in probes if p[1] == ['list-sessions']]), 6)
+
+    def _ctx_opts(self):
+        return {'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                'ps_file': None, 'proc_root': '/proc', 'root': None, 'grace': 10,
+                'statvfs_json': None, 'caller': None}
+
+
+class TmuxRoundThree(unittest.TestCase):
+    def setUp(self):
+        if shutil.which('tmux') is None:
+            self.skipTest('tmux is not installed')
+        self.box = Sandbox()
+
+    def tearDown(self):
+        self.box.cleanup()
+
+    def test_roster_name_protects_private_server_with_sleep_pane(self):
+        self.box.roster_rows([{'name': 'valentinyeocom', 'status': 'live'}])
+        sock = self.box.tmux_socket('delta-roster-name')
+        self.box.start_tmux(sock, session='valentinyeocom', command='sleep 600')
+        time.sleep(1.2)
+        payload = self.box.payload('--only', 'tmux', tmux_ages=TmuxRules.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
+    def test_roster_pattern_protects_poteto_cursors(self):
+        self.box.roster_rows([{'name': 'poteto-cursor-{n}', 'status': 'live'}])
+        mod = load_script()
+        ctx = mod.Context({
+            'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
+            'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+            'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+            'caller': None})
+        protected, patterns = mod.protected_session_names(ctx)
+        self.assertTrue(mod.session_name_protected('poteto-cursor-3', protected, patterns))
+
+    def test_private_server_bash_c_pane_is_kept(self):
+        sock = self.box.tmux_socket('delta-bash-c')
+        self.box.start_tmux(sock, command="bash -c 'sleep 600'")
+        time.sleep(1.2)
+        pane_pid = self.box.pane_pid(sock, 's1')
+        host_stat = pathlib.Path('/proc') / str(pane_pid) / 'stat'
+        try:
+            host_ppid = int(host_stat.read_text().split(')')[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            host_ppid = pane_pid - 1
+        self.box.seed_stat(pane_pid, host_ppid, 'sleep')
+        self.box.seed_cmdline(pane_pid, ['sleep', '600'])
+        self.box.seed_stat(host_ppid, 1, 'bash')
+        self.box.seed_cmdline(host_ppid, ['/bin/bash', '-c', 'sleep 600'])
+        payload = self.box.payload('--only', 'tmux', tmux_ages=TmuxRules.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
+    def test_unparsed_pane_row_keeps_private_server(self):
+        sock = self.box.tmux_socket('delta-bad-pane')
+        self.box.start_tmux(sock, command='sleep 600')
+        time.sleep(1.2)
+        mod = load_script()
+        real_panes = mod.tmux_pane_rows
+
+        def bad_panes(ctx, side_sock):
+            rows, err, complete = real_panes(ctx, side_sock)
+            if err:
+                return rows, err, complete
+            return rows, None, False
+
+        ctx_opts = {'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                    'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+                    'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+                    'caller': None}
+        ctx = mod.Context(ctx_opts)
+        ages = {'VPS_TIDY_TMUX_SERVER_AGE': '1', 'VPS_TIDY_TMUX_DEAD_SOCKET_AGE': '1',
+                'VPS_TIDY_TMUX_SESSION_AGE': '1'}
+        with unittest.mock.patch.dict(os.environ, ages, clear=False):
+            with unittest.mock.patch.object(mod, 'tmux_pane_rows', side_effect=bad_panes):
+                mod.scan_tmux(ctx)
+        item = next(i for i in ctx.items if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertIn('incomplete', item['reason'].lower())
+
+    def test_processes_run_before_tmux_with_dead_sockets(self):
+        worktree = self.box.make('home/projects/worktrees/wt-tmux-budget/app/package.json',
+                                 '{}').parent
+        proc = self.box.spawn(cwd=worktree)
+        self.box.add_process(proc.pid, 1, 'node /x/.bin/next dev', etimes=3 * 3600,
+                             cwd=worktree)
+        for idx in range(8):
+            self.box.dead_tmux_socket('delta-dead-{}'.format(idx), seconds_old=7200)
+        payload = self.box.payload(tmux_ages=TmuxRules.AGES)
+        proc_items = [i for i in payload['items'] if i['part'] == 'processes']
+        tmux_items = [i for i in payload['items'] if i['part'] == 'tmux']
+        self.assertTrue(proc_items)
+        self.assertTrue(tmux_items)
+
+    def test_kill_server_uses_cleared_tmux_env(self):
+        mod = load_script()
+        captured = []
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            captured.append(kwargs.get('env'))
+            class Done:
+                returncode = 0
+                stdout = ''
+                stderr = ''
+            return Done()
+
+        ctx = mod.Context({'apply': True, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                           'ps_file': None, 'proc_root': '/proc', 'root': None, 'grace': 10,
+                           'statvfs_json': None, 'caller': None})
+        with unittest.mock.patch.dict(os.environ, {'TMUX': '/tmp/fake'}, clear=False):
+            with unittest.mock.patch('subprocess.run', side_effect=fake_run):
+                mod.tmux_command(ctx, '/tmp/x', ['kill-server'], env=mod.tmux_kill_env())
+        self.assertEqual(len(captured), 1)
+        env = captured[0]
+        self.assertNotIn('TMUX', env)
+        self.assertEqual(env.get('MULTIPROMPT_ALLOW_TMUX_KILL_SERVER'), '1')
+
+
+def tmux_alive(sock):
+    return subprocess.run(['tmux', '-S', sock, 'list-sessions'],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
 class Shape(Base):

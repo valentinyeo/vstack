@@ -19,7 +19,7 @@ Run it from any directory. It needs no board login, no timer and no shared insta
 ~/.local/bin/vps-tidy --json             # the same plan as data
 ```
 
-Parts: tmp, evidence, caches, docker, processes. `--only files` means the first four.
+Parts: tmp, evidence, caches, docker, processes, tmux. `--only files` means the first four (not tmux). A full run finishes `processes` before `tmux` so orphan reaping keeps its time budget.
 
 Every run prints one line per candidate with its rule and a keep reason, then the disk figure, what it removed, and what it would free. `--apply` deletes through a trash directory, rechecks inode, device and mtime first, sends `SIGTERM` and then `SIGKILL` after 10 seconds, and writes one JSON line per action to a run log under the state directory.
 
@@ -50,6 +50,7 @@ That keeps your own temp files and orphaned programs in check without a central 
 - vcc-evidence as a cache: a video stays unless the board read succeeds and the ticket is not open.
 - Another user's files or processes. Only your uid.
 - claude, tmux, codex, pi and interactive shells, and any process tree holding one of them.
+- Live chat tmux: `live-*`, `term-*`, `projects*`, `mp-*`, fleet roster row names (including `{n}` and `{*}` patterns), attached sessions, and any server younger than 24 hours or with a busy pane. Private servers treat `tail` and scripted shells as busy; dead sockets batch one sleep for every candidate, then two matching no-server probes.
 - A symlink, a mount point, a foreign owner, a special file, or a path a process holds open.
 - Anything under a config, ssh, claude or codex directory: those names are on its never-touch list.
 
