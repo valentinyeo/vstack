@@ -8,16 +8,23 @@ Every poll is a fresh GraphQL call against one token shared by every chat. The g
 """
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / "hooks/gh-watch-guard.py"
 RULES = "~/.local/share/vstack/tools/gh-wrapper/USING-GITHUB.md"
+REGISTERED = (
+    'sh -c \'f="$HOME/.claude/hooks/gh-watch-guard.py"; [ -f "$f" ] || exit 0; '
+    'exec python3 "$f"\''
+)
 
 BLOCKED = (
+    'bash -c "gh pr checks 1 --watch"',
     "gh pr checks 223 --watch",
     "gh pr checks 2455 --repo hypertask-ai/hypertask --watch --interval 300",
     "gh pr checks 16 -R hypertask-ai/docs-rs --watch --interval 30",
@@ -47,6 +54,14 @@ ALLOWED = (
     "watch -n 90 gh pr view 223",
     'grep -n "gh pr checks --watch" tools/gh-wrapper/README.md',
     'echo "while true; do gh pr checks 1; sleep 30; done"',
+    'echo "never use gh pr checks --watch"',
+    'git commit -m "block gh --watch loops"',
+    (
+        "cat > brief.txt <<'E'\n"
+        "sleeping under 60 s\n"
+        "never gh --watch in production\n"
+        "E"
+    ),
     "for f in a b c; do sleep 5; done",
     "git status",
     "",
@@ -87,6 +102,52 @@ class VerdictTests(unittest.TestCase):
                                 text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("self-test ok", result.stdout)
+
+
+class InstallTests(unittest.TestCase):
+    def guard(self, *args, cwd=None, home=None):
+        env = None
+        if home is not None:
+            env = {**os.environ, 'HOME': str(home)}
+        return subprocess.run(
+            [sys.executable, str(GUARD), *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+        )
+
+    def test_install_and_check_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as where:
+            project = Path(where)
+            self.assertEqual(self.guard('--install-for-project', str(project)).returncode, 0)
+            self.assertEqual(self.guard('--check-project', str(project)).returncode, 0)
+            path = project / '.claude/settings.local.json'
+            settings = json.loads(path.read_text())
+            matches = [
+                item
+                for entry in settings['hooks']['PreToolUse']
+                for item in entry.get('hooks', [])
+                if 'gh-watch-guard.py' in item.get('command', '')
+            ]
+            self.assertEqual([item['command'] for item in matches], [REGISTERED])
+            again = self.guard('--install-for-project', str(project))
+            self.assertEqual(again.returncode, 0)
+            self.assertIn('nothing', again.stdout.lower())
+            self.assertEqual(len(matches), 1)
+
+    def test_install_keeps_unrelated_hooks(self):
+        with tempfile.TemporaryDirectory() as where:
+            project = Path(where)
+            (project / '.claude').mkdir(parents=True)
+            other = {'matcher': 'Write', 'hooks': [{'type': 'command', 'command': '/other.py'}]}
+            path = project / '.claude/settings.local.json'
+            path.write_text(json.dumps({'hooks': {'PreToolUse': [other]}}))
+            self.assertEqual(self.guard('--install-for-project', str(project)).returncode, 0)
+            settings = json.loads(path.read_text())
+            self.assertEqual(settings['hooks']['PreToolUse'][0], other)
+            self.assertEqual(len(settings['hooks']['PreToolUse']), 2)
 
 
 class HookContractTests(unittest.TestCase):

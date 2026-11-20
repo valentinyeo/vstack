@@ -16,7 +16,7 @@ Write every registered command to fail open when its file is missing, and to blo
 | `skill-update.py` | UserPromptSubmit | Keeps the shared skills current and says when valentin-mode changed, so the chat re-reads it. | each project |
 | `gh-watch-guard.py` | PreToolUse, Bash | `gh --watch` and gh poll loops sleeping under 60 s are blocked. CI waits through `~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>` as a tracked background command (Bash `run_in_background`), not `&` or nohup. | each project |
 
-Run `python3 ~/.claude/hooks/launch-gate.py --install-for-project` once per project (writes `.claude/settings.local.json`); `--check-project` exits 0 when wired.
+Run `python3 ~/.claude/hooks/launch-gate.py --install-for-project` and `python3 ~/.claude/hooks/gh-watch-guard.py --install-for-project` once per project (each writes `.claude/settings.local.json`); `--check-project` exits 0 when wired.
 
 ## Wire the two lane hooks once, globally
 
