@@ -117,7 +117,7 @@ Own board only; a URL for another board proves nothing.
 The reconcile process and its parents never count, because their brief names tickets.
 Any other command that names a ticket only looks at it, so it never counts: a search, `grep`, `rg`, `ps`, `pgrep`, `sed`, `awk`, `cat`, `tail`, `journalctl`, `gh`, `git`, `hypertask`, an editor, a shell or script run in its worktree, and a `shell -c` string that only runs those.
 Leases still win; the process fallback only adds liveness.
-Board 15 counts its worker service, a live lease, and a live process.
+Board 15 counts its worker service, a live lease, a live process, and a `plan-pick` brief.
 `FLEET_PROC_DIR` overrides the process directory for tests.
 
 PASS requires a structured `verify-verdict` comment.
@@ -217,6 +217,11 @@ An open PR or a live worker moves a ticket even inside the two-hour grace.
 The grace only protects an idle ticket.
 An In Progress ticket with no live worker and no open PR moves to Backlog after two hours.
 Tickets in Backlog stay.
+An open PR's state comes from the search that found it.
+Board 15 makes no per-PR read, so a dry run costs one search call per twelve tickets plus the branch searches.
+A live `plan-pick` counts as a live worker for the ticket named in its brief.
+The brief is `brief.txt` in that process's own directory.
+It counts the `Ticket HTPR-n:` line, or else the ticket URL in that brief.
 UX needed and UX Sign-off stay.
 Agent Blocked (Infra) and Valentin Review stay.
 QA and every Flag column stay.
@@ -233,6 +238,9 @@ Claiming, launching, and running count as active.
 Progress expires after fifteen minutes.
 A live lease or a process that names the ticket also counts.
 Unreadable worker facts refuse all moves.
+A cron, timer or nohup run has no session bus.
+For its own `systemctl --user` calls the run then defaults `XDG_RUNTIME_DIR` to `/run/user/<uid>` and `DBUS_SESSION_BUS_ADDRESS` to `unix:path=$XDG_RUNTIME_DIR/bus`.
+A `systemctl` that still fails prints one warning line and counts as no service workers, so no ticket turns UNKNOWN.
 
 The board-15 service template installs no timer.
 Its environment file is `~/.config/fleet/reconcile-board15.env`.

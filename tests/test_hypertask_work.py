@@ -925,6 +925,54 @@ else:
                 r.require_board15_agent()
 
 
+class Board15CallBudgetTest(unittest.TestCase):
+    """Board 15 reads each PR's state once, from the search that found it."""
+
+    def setUp(self):
+        clear_cache()
+        r.PULLS.clear()
+
+    def test_a_board15_dry_run_stays_under_thirty_github_calls(self):
+        created = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat() + 'T10:00:00Z'
+        tasks = [{'ticketNumber': f'HTPR-{n}', 'section': 'In Progress', 'projectId': 15,
+                  'updatedAt': NOW - 8000, 'createdAt': created} for n in range(1, 41)]
+        calls = []
+
+        def node(n):
+            return {'url': f'https://github.com/hypertask-ai/hypertask/pull/{n}',
+                    'title': f'HTPR-{n} work', 'body': '', 'headRefName': f'htpr-{n}-work',
+                    'state': 'OPEN', 'number': n,
+                    'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+
+        def gh(args, **kwargs):
+            call = ' '.join(args)
+            calls.append(call)
+            if 'is:open' in call or 'is:merged' in call or ' head:' in call:
+                page = {'issueCount': 0, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+                return subprocess.CompletedProcess(args, 0, json.dumps({'data': {'search': page}}), '')
+            keys = list(dict.fromkeys(int(n) for n in re.findall(r'HTPR-(\d+)', call)))
+            body = {'data': {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': [node(key)]}
+                             for n, key in enumerate(keys)}}
+            return subprocess.CompletedProcess(args, 0, json.dumps(body), '')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--board', '15']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'product_workers', return_value=set()), \
+                patch.object(r, 'worker_alive', return_value=False), \
+                patch.object(r.subprocess, 'run', side_effect=gh), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(r.main(), 0)
+        self.assertIn('DRY RUN board=15 tickets=40 unknown=0', out.getvalue())
+        self.assertIn('PLAN HTPR-1 In Progress -> AI Review | open PR', out.getvalue())
+        self.assertFalse([call for call in calls if 'pr view' in call], calls)
+        self.assertIn('reconcile: github calls=', err.getvalue())
+        self.assertLess(sum(r.github_calls()), 30, err.getvalue())
+
+
 class AnyBoardTest(unittest.TestCase):
     """Any board a project names: its own prefix and columns, 2060's safe rules."""
 
@@ -1014,6 +1062,10 @@ class AnyBoardTest(unittest.TestCase):
 class ProductWorkerTest(unittest.TestCase):
     def setUp(self):
         r.product_workers.cache_clear()
+        clear = getattr(getattr(r, 'running_services', None), 'cache_clear', None)
+        if clear:
+            clear()
+            self.addCleanup(clear)
 
     def test_queue_requires_active_service_and_recent_ticket_work(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1036,6 +1088,7 @@ class ProductWorkerTest(unittest.TestCase):
                     patch.object(r, 'pid_alive', return_value=True), \
                     patch.object(r, 'worker_state_directory', return_value=state):
                 self.assertEqual(r.product_workers(NOW), {'HTPR-1', 'HTPR-6', 'HTPR-7'})
+            r.running_services.cache_clear()
             with patch.object(r, 'run', side_effect=[listed, shown]), \
                     patch.object(r, 'pid_alive', return_value=False):
                 self.assertEqual(r.product_workers(NOW + 1), set())
@@ -1048,10 +1101,77 @@ class ProductWorkerTest(unittest.TestCase):
             with self.assertRaises((ValueError, sqlite3.Error)):
                 r.product_workers(NOW)
 
-    def test_service_read_failure_fails_closed(self):
-        with patch.object(r, 'run', side_effect=RuntimeError('systemctl failed')):
-            with self.assertRaises(RuntimeError):
-                r.product_workers(NOW)
+    def test_service_read_failure_becomes_no_service_workers(self):
+        with patch.object(r, 'run', side_effect=RuntimeError('systemctl --user failed: Failed to connect to bus')), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(r.product_workers(NOW), set())
+        warnings = [line for line in err.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('systemd user manager unreachable', warnings[0])
+
+
+class ProductWorkerEnvironmentTest(unittest.TestCase):
+    """A cron or timer run has no session bus, and that must not fail the board."""
+
+    def setUp(self):
+        r.product_workers.cache_clear()
+        self.addCleanup(r.product_workers.cache_clear)
+        clear = getattr(getattr(r, 'running_services', None), 'cache_clear', None)
+        if clear:
+            clear()
+            self.addCleanup(clear)
+
+    def test_a_run_without_a_session_bus_defaults_the_socket_for_systemctl(self):
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(r.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 0, '', '')) as call:
+            self.assertEqual(r.product_workers(NOW), set())
+            self.assertNotIn('XDG_RUNTIME_DIR', os.environ)
+        runtime = f'/run/user/{os.getuid()}'
+        environment = call.call_args.kwargs.get('env') or {}
+        self.assertEqual(call.call_args.args[0][:3], ('systemctl', '--user', 'list-units'))
+        self.assertEqual(environment.get('XDG_RUNTIME_DIR'), runtime)
+        self.assertEqual(environment.get('DBUS_SESSION_BUS_ADDRESS'), f'unix:path={runtime}/bus')
+
+    def test_an_explicit_bus_and_runtime_directory_win(self):
+        with patch.dict(os.environ, {'XDG_RUNTIME_DIR': '/run/user/42',
+                                     'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/x'}, clear=True), \
+                patch.object(r.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 0, '', '')) as call:
+            self.assertEqual(r.product_workers(NOW), set())
+        environment = call.call_args.kwargs.get('env') or {}
+        self.assertEqual(environment.get('XDG_RUNTIME_DIR'), '/run/user/42')
+        self.assertEqual(environment.get('DBUS_SESSION_BUS_ADDRESS'), 'unix:path=/x')
+
+    def test_a_broken_systemctl_is_one_warning_and_no_unknowns(self):
+        created = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat() + 'T10:00:00Z'
+        tasks = [{'ticketNumber': 'HTPR-7', 'section': 'AI Review', 'projectId': 15,
+                  'updatedAt': NOW - 8000, 'createdAt': created}]
+
+        def respond(args, **kwargs):
+            call = ' '.join(args)
+            if args[0] == 'systemctl':
+                return subprocess.CompletedProcess(args, 1, '', 'Failed to connect to bus: No medium found')
+            page = {'issueCount': 0, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+            if 'is:open' in call or 'is:merged' in call or ' head:' in call:
+                return subprocess.CompletedProcess(args, 0, json.dumps({'data': {'search': page}}), '')
+            body = {'data': {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': []}
+                             for n in range(len(re.findall(r'q(\d+):search', call)))}}
+            return subprocess.CompletedProcess(args, 0, json.dumps(body), '')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--board', '15']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r.subprocess, 'run', side_effect=respond), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(r.main(), 0)
+        self.assertIn('DRY RUN board=15 tickets=1 unknown=0', out.getvalue())
+        self.assertIn('KEEP HTPR-7 AI Review -> AI Review', out.getvalue())
+        self.assertEqual(len([line for line in err.getvalue().splitlines()
+                              if 'systemd user manager unreachable' in line]), 1)
 
 
 class ProcessLivenessTest(unittest.TestCase):
@@ -1200,6 +1320,65 @@ class ProcessLivenessTest(unittest.TestCase):
         with patch.object(r, 'live_lease', return_value=False):
             self.assertEqual(r.target(r.Facts('Doing', 8000, r.worker_alive('SOFT-1', NOW))),
                              ('Doing', 'live worker: lease or process'))
+
+
+class PlanPickWorkerTest(unittest.TestCase):
+    """A bare plan-pick names its ticket only in the brief.txt beside its cwd."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.proc = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        clear = getattr(getattr(r, 'plan_pick_tickets', None), 'cache_clear', None)
+        if clear:
+            clear()
+            self.addCleanup(clear)
+        patcher = patch.object(r, 'PROC', self.proc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def spawn(self, pid, argv, brief=None, state='S'):
+        entry = self.proc / str(pid)
+        entry.mkdir(parents=True)
+        (entry / 'stat').write_text(f'{pid} (cmd) {state} 1 1 1\n')
+        (entry / 'cmdline').write_bytes(b'\0'.join(os.fsencode(word) for word in argv) + b'\0')
+        (entry / 'cwd').mkdir()
+        if brief is not None:
+            (entry / 'cwd' / 'brief.txt').write_text(brief)
+
+    def alive(self, key):
+        with patch.object(r, 'product_workers', return_value=set()):
+            return r.worker_alive(key, NOW, r.BOARDS[15])
+
+    def test_bare_plan_pick_holds_the_ticket_on_its_brief(self):
+        self.spawn(5001, ['python3', '/home/v/.local/bin/plan-pick', '--run'],
+                   'Goal: x\nTicket HTPR-9512: https://app.hypertask.ai/detail/project-15/9512\n')
+        self.spawn(5002, ['timeout', '120m', '/home/v/.local/bin/plan-pick', '--run'],
+                   'See https://app.hypertask.ai/detail/project-15/9513\n')
+        self.assertTrue(self.alive('HTPR-9512'))
+        self.assertTrue(self.alive('HTPR-9513'))
+        self.assertFalse(self.alive('HTPR-9511'))
+        self.assertFalse(self.alive('HTPR-951'))
+
+    def test_a_command_that_only_mentions_plan_pick_is_not_a_worker(self):
+        self.spawn(5003, ['bash', '-c', 'grep -rn plan-pick /tmp/ft-runs'],
+                   'Ticket HTPR-9514: https://app.hypertask.ai/detail/project-15/9514\n')
+        self.spawn(5006, ['cat', 'plan-pick'],
+                   'Ticket HTPR-9516: https://app.hypertask.ai/detail/project-15/9516\n')
+        self.assertFalse(self.alive('HTPR-9514'))
+        self.assertFalse(self.alive('HTPR-9516'))
+
+    def test_a_zombie_plan_pick_is_not_a_worker(self):
+        self.spawn(5007, ['/home/v/.local/bin/plan-pick', '--run'],
+                   'Ticket HTPR-9517: https://app.hypertask.ai/detail/project-15/9517\n', state='Z')
+        self.assertFalse(self.alive('HTPR-9517'))
+
+    def test_a_plan_pick_without_a_brief_or_with_a_foreign_brief_proves_nothing(self):
+        self.spawn(5004, ['/home/v/.local/bin/plan-pick', '--run'])
+        self.spawn(5005, ['/home/v/.local/bin/plan-pick', '--run'],
+                   'See https://app.hypertask.ai/detail/project-2060/9515\n')
+        self.assertFalse(self.alive('HTPR-9514'))
+        self.assertFalse(self.alive('HTPR-9515'))
 
 
 class LeaseTest(unittest.TestCase):

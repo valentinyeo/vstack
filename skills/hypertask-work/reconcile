@@ -49,6 +49,7 @@ NON_WORKERS = {'grep', 'rg', 'ps', 'pgrep', 'pkill', 'sed', 'awk', 'cat', 'less'
                'head', 'journalctl', 'gh', 'git', 'hypertask'}
 KEY_WORD = re.compile(r'[A-Z][A-Z0-9]*-\d+')
 SHELL_SEPARATOR = re.compile(r'&&|\|\||[;|\n&]')
+PLAN_PICK = 'plan-pick'
 
 
 @dataclass(frozen=True)
@@ -324,8 +325,63 @@ def worker_alive(key, now, board=DEFAULT):
     """A lease, a live command line, or a product worker proves a live worker."""
     if product_board(board):
         return (live_product_worker(key, now) or live_lease(key, now)
-                or key.upper() in process_tickets(board))
+                or key.upper() in process_tickets(board) or key.upper() in plan_pick_tickets(board))
     return live_lease(key, now) or key.upper() in process_tickets(board)
+
+
+def runs_plan_pick(argv):
+    index = 0
+    while index < len(argv):
+        text = argv[index].strip().split()[0] if argv[index].strip() else ''
+        if (not text or text.startswith('-') or Path(text).name in WRAPPERS
+                or re.fullmatch(r'\d+[smhd]?', text) or re.fullmatch(r'[A-Za-z_]\w*=.*', text)):
+            index += 1
+            continue
+        return Path(text).name == PLAN_PICK
+    return False
+
+
+def process_running(pid, directory=None):
+    """A /proc entry is live unless it is a zombie or already exited."""
+    try:
+        fields = ((directory or PROC) / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
+    except (OSError, IndexError):
+        return False
+    return bool(fields) and fields[0] not in ('Z', 'X')
+
+
+@lru_cache(maxsize=2)
+def plan_pick_tickets(board=DEFAULT):
+    """A bare plan-pick names its ticket only in the brief.txt beside its cwd."""
+    found, ignore = set(), process_chain()
+    named = re.compile(r'^[ \t]*Ticket[ \t]+(' + re.escape(board.prefix) + r'-[1-9]\d*)(?![\w-])', re.I | re.M)
+    url = re.compile(r'https://app\.hypertask\.ai/detail/project-' + str(board.id) + r'/([1-9]\d*)(?!\w)')
+    try:
+        entries = sorted(PROC.iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if (not entry.name.isdigit() or int(entry.name) in ignore
+                or not process_running(entry.name)):
+            continue
+        try:
+            argv = [os.fsdecode(part) for part in (entry / 'cmdline').read_bytes().split(b'\0') if part]
+        except OSError:
+            continue
+        if not runs_plan_pick(argv):
+            continue
+        try:
+            brief = (entry / 'cwd' / 'brief.txt').read_text()
+        except OSError:
+            continue
+        match = named.search(brief)
+        if match:
+            found.add(match[1].upper())
+            continue
+        match = url.search(brief)
+        if match:
+            found.add(board.prefix + '-' + match[1])
+    return found
 
 
 def worker_state_directory(slug, pid):
@@ -336,12 +392,20 @@ def worker_state_directory(slug, pid):
     return Path.home() / '.local/state' / f'hypertask-{slug}'
 
 
-@lru_cache(maxsize=1)
-def product_workers(now):
-    units = run('systemctl', '--user', 'list-units', '--all', '--plain', '--no-legend',
-                'hypertask-agent-worker@*.service')
-    live = set()
-    for line in units.splitlines():
+def systemctl(*args):
+    """A timer or cron run has no session bus; name the socket the user manager answers on."""
+    environment = {**os.environ}
+    environment['XDG_RUNTIME_DIR'] = environment.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}'
+    environment['DBUS_SESSION_BUS_ADDRESS'] = environment.get('DBUS_SESSION_BUS_ADDRESS') or \
+        f"unix:path={environment['XDG_RUNTIME_DIR']}/bus"
+    return run('systemctl', '--user', *args, env=environment)
+
+
+def worker_services():
+    listed = systemctl('list-units', '--all', '--plain', '--no-legend',
+                       'hypertask-agent-worker@*.service')
+    services = []
+    for line in listed.splitlines():
         parts = line.split()
         if not parts:
             continue
@@ -349,12 +413,29 @@ def product_workers(now):
         match = re.fullmatch(r'hypertask-agent-worker@([\w.-]+)\.service', unit)
         if not match:
             raise ValueError('unrecognized product worker unit')
-        properties = dict(line.split('=', 1) for line in run('systemctl', '--user', 'show', unit,
-                          '--property=MainPID', '--property=ActiveState').splitlines() if '=' in line)
+        properties = dict(item.split('=', 1) for item in systemctl(
+            'show', unit, '--property=MainPID', '--property=ActiveState').splitlines() if '=' in item)
         pid = int(properties['MainPID'])
-        if properties['ActiveState'] != 'active' or not pid_alive(pid):
-            continue
-        path = worker_state_directory(match[1], pid) / 'queue.sqlite3'
+        if properties['ActiveState'] == 'active' and pid_alive(pid):
+            services.append((match[1], pid))
+    return services
+
+
+@lru_cache(maxsize=1)
+def running_services():
+    try:
+        return tuple(worker_services())
+    except (OSError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f'reconcile: warning: systemd user manager unreachable ({error}); no service workers',
+              file=sys.stderr, flush=True)
+        return ()
+
+
+@lru_cache(maxsize=1)
+def product_workers(now):
+    live = set()
+    for slug, pid in running_services():
+        path = worker_state_directory(slug, pid) / 'queue.sqlite3'
         try:
             with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
                 rows = db.execute("""SELECT ticket,progress_at,started_at FROM deliveries
@@ -470,12 +551,12 @@ def github_summary():
     return f'reconcile: github calls={graphql + rest} (graphql={graphql}, rest={rest})'
 
 
-def run(*args):
+def run(*args, env=None):
     with TIMING_LOCK:
         TIMING.setdefault(CURRENT[0], [0.0, 0])[1] += 1
         if args[0] == 'gh':
             GITHUB['graphql' if 'graphql' in args or args[1:2] == ('pr',) else 'rest'] += 1
-    result = subprocess.run(args, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(args, capture_output=True, text=True, timeout=180, env=env)
     if result.returncode:
         # Only gh's error channel: a failed batch still carries resolved PRs on
         # stdout, and a comment there may quote a rate limit without being one.
@@ -921,19 +1002,24 @@ def read_product_pull(number):
     return Pull(detail['url'], detail['state'], '', False)
 
 
+def product_pull(node):
+    """Board 15 needs a PR's state only, and its discovery search already carries it."""
+    return Pull(node['url'], node['state'], '', False)
+
+
 def prefetch(pulls, board=DEFAULT):
     """Read every PR once, a batch at a time. A failed read is retried and reported
     by collect, so it still prints UNKNOWN for its own ticket only.
     """
     def load(batch):
         try:
-            [read_product_pull(n) for _, n in batch] if product_board(board) else read_pull_batch(batch)
+            read_pull_batch(batch)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
             pass
     PULLS.clear()
     refs = sorted({(p['repository']['nameWithOwner'], p['number'])
                    for found in pulls.values() for p in found
-                   if not product_board(board) or p['state'] == 'OPEN'})
+                   if not product_board(board)})
     for n in range(0, len(refs), PULL_BATCH):
         load(refs[n:n + PULL_BATCH])
 
@@ -950,11 +1036,12 @@ def is_verification(task):
     return carries_label(task, VERIFICATION)
 
 
-def collect(task, pulls, now, board=DEFAULT):
+def collect(task, pulls, now, board=DEFAULT, refresh=False):
     ticket_index(task['ticketNumber'], board)
     alive = worker_alive(task['ticketNumber'], now, board)
     if product_board(board):
-        details = tuple(read_product_pull(p['number']) for p in pulls if p['state'] == 'OPEN')
+        details = tuple(read_product_pull(p['number']) if refresh else product_pull(p)
+                        for p in pulls if p['state'] == 'OPEN')
     else:
         details = tuple(pull_facts(p) for p in pulls)
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
@@ -1006,7 +1093,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
     read_product_pull.cache_clear()
     ready = []
     for fresh, facts in fresh_tasks:
-        latest = collect(fresh, pulls[fresh['ticketNumber']], time.time(), **options)
+        latest = collect(fresh, pulls[fresh['ticketNumber']], time.time(), refresh=True, **options)
         if target(latest, board, names) != target(facts, board, names):
             print(f'SKIP {fresh["ticketNumber"]} | facts changed since preview', flush=True)
             continue
@@ -1018,7 +1105,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
             continue
         if board.id == 15:
             read_product_pull.cache_clear()
-        final = collect(current, pulls[current['ticketNumber']], time.time(), **options)
+        final = collect(current, pulls[current['ticketNumber']], time.time(), refresh=True, **options)
         if target(final, board, names) != target(facts, board, names):
             print(f'SKIP {task["ticketNumber"]} | facts changed during preflight', flush=True)
             continue
