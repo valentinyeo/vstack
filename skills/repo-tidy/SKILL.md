@@ -36,7 +36,7 @@ Nobody registers this for you. Pick either or both.
         "hooks": [
           {
             "type": "command",
-            "command": "~/.local/share/vstack/hooks/repo-tidy-stop"
+            "command": "sh -c 'f=\"$HOME/.local/share/vstack/hooks/repo-tidy-stop\"; [ -f \"$f\" ] || exit 0; exec \"$f\"'"
           }
         ]
       }
@@ -50,6 +50,9 @@ checkout path above works with no install step. A shared install also links it
 at ~/.claude/hooks/repo-tidy-stop, which is the older path settings call. Never
 run this repo's ./install for it: that repoints shared skills for every chat on
 this host.
+
+Keep the `[ -f "$f" ] || exit 0`. Without it, a moved or deleted checkout makes
+the shell fail and a Stop hook that fails blocks the turn from ending.
 
 ## The gates
 

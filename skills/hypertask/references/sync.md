@@ -50,7 +50,7 @@ Board sync is per project and per chat. Nothing user-wide runs it.
            "hooks": [
              {
                "type": "command",
-               "command": "/usr/bin/python3 \"$HOME/.claude/hooks/reconcile-auto.py\""
+               "command": "sh -c 'f=\"$HOME/.claude/hooks/reconcile-auto.py\"; [ -f \"$f\" ] || exit 0; exec /usr/bin/python3 \"$f\"'"
              }
            ]
          }
@@ -59,7 +59,7 @@ Board sync is per project and per chat. Nothing user-wide runs it.
    }
    ```
 
-   Never add it to `~/.claude/settings.json`: several chats share this machine and each owns its own setup. `install` links `hooks/reconcile-auto.py` into `~/.claude/hooks` so the path exists; it never edits a settings file.
+   Never add it to `~/.claude/settings.json`: several chats share this machine and each owns its own setup. `install` links `hooks/reconcile-auto.py` into `~/.claude/hooks` so the path exists; it never edits a settings file. Keep the `[ -f "$f" ] || exit 0`: a missing link makes python exit 2, and a Stop hook that exits 2 holds the turn open.
 3. Run the checkup (`checkup.md`). It verifies the entry is present and the status record is fresh.
 
 ## What the hook does

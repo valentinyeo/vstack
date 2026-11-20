@@ -27,7 +27,7 @@ On 2026-11-20 four `python3 -m unittest discover -s scripts` runs hung for 10 to
 
 A rule in a document is not a check. The hook file is already there; registering it in a project is your step, once per project.
 
-1. The shared vstack install already linked the hook: `hooks/test-timeout-guard.py` sits at `$HOME/.claude/hooks/test-timeout-guard.py`. Never run `./install` yourself. From a worktree it repoints every chat's skills at your branch, and it now refuses to run anywhere but `$HOME/.local/share/vstack`. If the file is missing, say so and wait; do not run `./install` to fix it.
+1. The shared vstack install already linked the hook: `hooks/test-timeout-guard.py` sits at `$HOME/.claude/hooks/test-timeout-guard.py`. Never run `./install` yourself. From a worktree it repoints every chat's skills at your branch, and it now refuses to run anywhere but `$HOME/.local/share/vstack`. If the file is missing, say so; the command below then lets every call through instead of blocking you, so no check runs until the install is fixed. Do not run `./install` to fix it.
 2. Add this to your own project's `.claude/settings.json`. Merge it into the `PreToolUse` list you already have; do not replace that list.
 
 ```json
@@ -39,7 +39,7 @@ A rule in a document is not a check. The hook file is already there; registering
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/python3 \"$HOME/.claude/hooks/test-timeout-guard.py\"",
+            "command": "sh -c 'f=\"$HOME/.claude/hooks/test-timeout-guard.py\"; [ -f \"$f\" ] || exit 0; exec /usr/bin/python3 \"$f\"'",
             "timeout": 5
           }
         ]
@@ -48,6 +48,8 @@ A rule in a document is not a check. The hook file is already there; registering
   }
 }
 ```
+
+The `[ -f "$f" ] || exit 0` is not noise. A missing or broken link makes python exit 2, and Claude Code reads exit 2 as a block, so a bare `python3 $HOME/.claude/hooks/test-timeout-guard.py` entry stops the chat running any Bash at all. This form exits 0 when the file is gone and still blocks at 2 when the guard says so.
 
 Then prove it in your own chat: run `pytest` and get the block, run `timeout 600 pytest` and watch it start. If the second command is also blocked, your settings file has the old copy of the hook.
 

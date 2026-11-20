@@ -23,7 +23,11 @@ import sys
 import tempfile
 
 PROBE_TIMEOUT = 5
-HOOK_COMMAND = '$HOME/.claude/hooks/launch-gate.py'
+HOOK_FILE = '$HOME/.claude/hooks/launch-gate.py'
+# Fail open when the file is missing: a broken link exits 2 from python, and Claude
+# Code reads exit 2 as a block, so the chat can run no Bash at all. exec keeps stdin.
+HOOK_COMMAND = 'sh -c \'f="{}"; [ -f "$f" ] || exit 0; exec python3 "$f"\''.format(HOOK_FILE)
+OLD_COMMAND = HOOK_FILE
 MESSAGE = ('BLOCKED by launch-gate: server is full ({brief}). Start nothing new. '
            'Finish, merge or clean up what you have, tell the user you are holding, '
            'run vps-state again in 10 minutes. Only the user can lift this: LAUNCH_GATE=off.')
@@ -213,22 +217,38 @@ def read_settings(path):
     return json.loads(text)
 
 
-def registered(settings):
-    """This settings object registers the launch-gate hook."""
+def gate_items(settings):
+    """Every hook item in this settings object that registers launch-gate.py."""
     hooks = settings.get('hooks') if isinstance(settings, dict) else None
     entries = hooks.get('PreToolUse') if isinstance(hooks, dict) else None
+    found = []
     for entry in entries if isinstance(entries, list) else []:
         items = entry.get('hooks') if isinstance(entry, dict) else None
         for item in items if isinstance(items, list) else []:
             command = item.get('command') if isinstance(item, dict) else None
             if isinstance(command, str) and 'launch-gate.py' in command:
-                return True
-    return False
+                found.append(item)
+    return found
+
+
+def registered(settings):
+    """This settings object registers the launch-gate hook, in either command form."""
+    return bool(gate_items(settings))
 
 
 def refuse(path, why):
     print('launch-gate: cannot use {}: {}'.format(path, why), file=sys.stderr)
     return 1
+
+
+def write_settings(path, settings):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2) + '\n')
+    except OSError as error:
+        refuse(path, 'it could not be written: {}'.format(error))
+        return False
+    return True
 
 
 def install_for_project(given):
@@ -242,7 +262,16 @@ def install_for_project(given):
     settings = {} if settings is None else settings
     if not isinstance(settings, dict):
         return refuse(path, 'the top level is not a JSON object')
-    if registered(settings):
+    items = gate_items(settings)
+    old = [item for item in items if item.get('command') != HOOK_COMMAND]
+    if old:
+        for item in old:
+            item['command'] = HOOK_COMMAND
+        if not write_settings(path, settings):
+            return 1
+        print('launch-gate: upgraded the Bash hook in {}'.format(path))
+        return 0
+    if items:
         print('launch-gate: already registered in {}; nothing changed'.format(path))
         return 0
     hooks = settings.setdefault('hooks', {})
@@ -253,11 +282,8 @@ def install_for_project(given):
         return refuse(path, '"hooks.PreToolUse" is not a list')
     entries.append({'matcher': 'Bash',
                     'hooks': [{'type': 'command', 'command': HOOK_COMMAND}]})
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(settings, indent=2) + '\n')
-    except OSError as error:
-        return refuse(path, 'it could not be written: {}'.format(error))
+    if not write_settings(path, settings):
+        return 1
     print('launch-gate: {} the Bash hook in {}'.format(
         'created' if not existed else 'registered', path))
     return 0
@@ -273,9 +299,13 @@ def check_project(given):
             continue
         if registered(settings):
             print('launch-gate: {} registers the Bash hook, in {}'.format(directory, path))
+            if any(item.get('command') != HOOK_COMMAND for item in gate_items(settings)):
+                print('launch-gate: {} has the old command, which blocks every Bash call when '
+                      'the file is missing. Upgrade it with: python3 {} '
+                      '--install-for-project {}'.format(directory, HOOK_FILE, directory))
             return 0
     print('launch-gate: {} has no launch-gate hook. Install it with: python3 {} '
-          '--install-for-project {}'.format(directory, HOOK_COMMAND, directory))
+          '--install-for-project {}'.format(directory, HOOK_FILE, directory))
     return 1
 
 
@@ -303,10 +333,28 @@ def self_test():
     else:
         os.environ['LAUNCH_GATE'] = saved
     assert hook({'tool_name': 'Write', 'tool_input': {}}) == (0, ''), 'only Bash is gated'
+    payload = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': 'pytest -q'}})
     with tempfile.TemporaryDirectory() as where:
+        absent = subprocess.run(['sh', '-c', HOOK_COMMAND], input=payload, capture_output=True,
+                                text=True, timeout=30,
+                                env={'HOME': where, 'PATH': os.environ.get('PATH', '')})
+        assert absent.returncode == 0, 'a missing hook file must not block: ' + absent.stderr
+        assert absent.stderr == '', absent.stderr
         assert install_for_project([where]) == 0, 'install writes project settings'
         assert check_project([where]) == 0, 'check sees the hook it just installed'
-        assert (Path(where) / '.claude/settings.local.json').is_file(), 'settings file exists'
+        path = Path(where) / '.claude/settings.local.json'
+        assert path.is_file(), 'settings file exists'
+        assert [item['command'] for item in gate_items(read_settings(path))] == [HOOK_COMMAND], \
+            'install writes the fail-open command'
+    with tempfile.TemporaryDirectory() as where:
+        path = Path(where) / '.claude/settings.local.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'hooks': {'PreToolUse': [
+            {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': OLD_COMMAND}]}]}}))
+        assert check_project([where]) == 0, 'check accepts the old command form'
+        assert install_for_project([where]) == 0, 'install upgrades the old command'
+        found = gate_items(read_settings(path))
+        assert [item['command'] for item in found] == [HOOK_COMMAND], 'the old command is replaced'
     print('launch-gate self-test ok')
 
 
