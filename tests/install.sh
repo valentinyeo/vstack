@@ -18,6 +18,11 @@ for run in 1 2; do
   done
 done
 
+hook="$TEST_HOME/.claude/hooks/test-timeout-guard.py"
+[ -L "$hook" ]
+[ "$(readlink -f "$hook")" = "$ROOT/hooks/test-timeout-guard.py" ]
+printf 'PASS hook linked: .claude/hooks/test-timeout-guard.py\n'
+
 rm "$TEST_HOME/.pi/agent/skills/valentin-mode"
 ln -s "$TEST_HOME/missing" "$TEST_HOME/.pi/agent/skills/valentin-mode"
 rm "$TEST_HOME/.claude/skills/valentin-mode"

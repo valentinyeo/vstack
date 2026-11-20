@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Drive the real test-timeout guard with real PreToolUse JSON, then prove a real
+# timeout kills a real sleep. Usage: run [--hook PATH]
+# Nothing here talks to a board, a network or a model. One run costs about 6 seconds.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$HERE/../../.." && pwd)
+HOOK="$REPO/hooks/test-timeout-guard.py"
+GRADE="$HERE/grade.py"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --hook)
+      if [ "$#" -lt 2 ]; then echo "run: --hook needs a value" >&2; exit 2; fi
+      HOOK=$2; shift 2 ;;
+    *)
+      echo "run: unknown argument: $1" >&2
+      exit 2 ;;
+  esac
+done
+
+case "$HOOK" in
+  /*) : ;;
+  *) HOOK="$(cd "$(dirname "$HOOK")" && pwd)/$(basename "$HOOK")" ;;
+esac
+
+# 1. Evidence directory and its meta.
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+E="$HOME/.local/state/verify-test-timeout/$RUN_ID"
+suffix=2
+while [ -e "$E" ]; do
+  E="$HOME/.local/state/verify-test-timeout/$RUN_ID-$suffix"
+  suffix=$((suffix + 1))
+done
+mkdir -p "$E"
+GIT_SHA=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)
+python3 - "$E/meta.json" "$HOOK" "$GIT_SHA" <<'PY'
+import json
+import sys
+
+path, hook, sha = sys.argv[1:4]
+open(path, 'w').write(json.dumps({'hook': hook, 'git_sha': sha, 'timeout_seconds': 5}, indent=2) + '\n')
+PY
+
+# 2. Doctor: one read-only check, or stop before driving anything.
+DOCTOR="$E/doctor.txt"
+: > "$DOCTOR"
+if [ -f "$HOOK" ]; then
+  printf 'PASS hook: %s exists\n' "$HOOK" >> "$DOCTOR"
+else
+  printf 'FAIL hook: %s is missing\n' "$HOOK" >> "$DOCTOR"
+  cat "$DOCTOR" >&2
+  echo "run: doctor failed; evidence $E" >&2
+  exit 3
+fi
+
+# 3. The two payloads, in the exact shape Claude Code sends a PreToolUse Bash hook.
+python3 - "$E" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+evidence = Path(sys.argv[1])
+payloads = {
+    'blocked': 'python3 -m unittest discover -s scripts',
+    'allowed': "timeout 600 python3 -m unittest discover -s tests -p 'test_*.py'",
+}
+for name, command in payloads.items():
+    (evidence / (name + '.json')).write_text(
+        json.dumps({'tool_name': 'Bash', 'tool_input': {'command': command}}, indent=2) + '\n')
+PY
+
+feed() {
+  name=$1
+  set +e
+  python3 "$HOOK" < "$E/$name.json" > "$E/$name.out" 2> "$E/$name.err"
+  printf '%s\n' "$?" > "$E/$name.exit"
+  set -e
+  echo "run: $name -> exit $(cat "$E/$name.exit")"
+}
+
+# 4. The hung command from 2026-11-20 must be refused, and a wrapped one must pass.
+feed blocked
+feed allowed
+
+# 5. A real timeout must really kill a real runner.
+echo "run: timeout 5 against a 60 second sleep" >&2
+started=$(date +%s.%N)
+set +e
+timeout 5 python3 -c 'import time; time.sleep(60)' > "$E/killed.out" 2>&1
+printf '%s\n' "$?" > "$E/killed.exit"
+set -e
+ended=$(date +%s.%N)
+python3 -c 'import sys; print(round(float(sys.argv[2]) - float(sys.argv[1]), 2))' \
+  "$started" "$ended" > "$E/killed.seconds"
+echo "run: killed -> exit $(cat "$E/killed.exit") after $(cat "$E/killed.seconds")s"
+
+# 6. Grade and report.
+set +e
+"$GRADE" "$E" > "$E/grade.stdout" 2> "$E/grade.stderr"
+GRADE_EXIT=$?
+set -e
+if [ -f "$E/verdict.txt" ]; then
+  cat "$E/verdict.txt"
+else
+  cat "$E/grade.stderr" >&2
+fi
+echo "Evidence: $E"
+
+# run deletes nothing: every evidence directory stays for the PR.
+exit "$GRADE_EXIT"
