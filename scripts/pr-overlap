@@ -35,8 +35,11 @@ is_bot = _prq.is_bot
 
 
 def read_guarded(path):
+    p = Path(path)
+    if not p.is_file():
+        raise SystemExit(f'pr-overlap: guarded paths file not found: {p}')
     lines = []
-    for line in Path(path).read_text().splitlines():
+    for line in p.read_text().splitlines():
         line = line.split('#', 1)[0].strip()
         if line:
             lines.append(line)
@@ -56,10 +59,20 @@ def parse_created(value):
     return value or ''
 
 
+def is_older(other, this):
+    """True when other opened before this, or same second with a lower PR number."""
+    oc = parse_created(other.get('created_at'))
+    tc = parse_created(this.get('created_at'))
+    if oc < tc:
+        return True
+    if oc == tc and other['number'] < this['number']:
+        return True
+    return False
+
+
 def findings(this, all_prs, guarded, key_fn, bot_fn):
     """Return collision findings where this PR is newer than the blocking PR."""
     this_no = this['number']
-    this_created = parse_created(this.get('created_at'))
     this_files = set(this.get('files') or ())
     this_ticket = key_fn(this.get('title'), (this.get('head') or {}).get('ref'))
     if bot_fn((this.get('user') or {}).get('login')):
@@ -71,8 +84,7 @@ def findings(this, all_prs, guarded, key_fn, bot_fn):
             continue
         if bot_fn((other.get('user') or {}).get('login')):
             continue
-        other_created = parse_created(other.get('created_at'))
-        if other_created >= this_created:
+        if not is_older(other, this):
             continue
         other_files = set(other.get('files') or ())
         overlap = guarded_hits(this_files & other_files, guarded)
@@ -127,6 +139,8 @@ def list_open_pulls(owner, repo, token):
         url = (f'https://api.github.com/repos/{owner}/{repo}/pulls'
                f'?state=open&per_page=100&page={page}')
         batch = api_request(url, token)
+        if not isinstance(batch, list):
+            raise SystemExit('pr-overlap: GitHub pulls response is not a list')
         if not batch:
             break
         pulls.extend(batch)
@@ -143,6 +157,8 @@ def pull_files(owner, repo, number, token):
         url = (f'https://api.github.com/repos/{owner}/{repo}/pulls/{number}/files'
                f'?per_page=100&page={page}')
         batch = api_request(url, token)
+        if not isinstance(batch, list):
+            raise SystemExit('pr-overlap: GitHub pull files response is not a list')
         if not batch:
             break
         files.extend(item['filename'] for item in batch)
@@ -220,7 +236,7 @@ def self_test():
 def main():
     parser = argparse.ArgumentParser(description='block a newer PR that overlaps an older open one')
     parser.add_argument('--repo', help='owner/name')
-    parser.add_argument('--pr', type=int, help='PR number to check')
+    parser.add_argument('--pr', default=None, help='PR number to check')
     parser.add_argument('--guarded-file', default=str(GUARDED_DEFAULT))
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
@@ -228,13 +244,21 @@ def main():
         self_test()
         return 0
     repo = args.repo or os.environ.get('GITHUB_REPOSITORY')
-    pr_number = args.pr
-    if pr_number is None:
+    pr_raw = args.pr
+    if pr_raw is None or pr_raw == '':
         env = os.environ.get('PR_NUMBER')
-        if env:
-            pr_number = int(env)
-    if not repo or pr_number is None:
-        parser.error('--repo and --pr are required unless --self-test')
+        if env is not None and env != '':
+            pr_raw = env
+    if not pr_raw:
+        print('pr-overlap: no PR number; pass --pr N', file=sys.stderr)
+        return 2
+    try:
+        pr_number = int(pr_raw)
+    except ValueError:
+        print('pr-overlap: no PR number; pass --pr N', file=sys.stderr)
+        return 2
+    if not repo:
+        parser.error('--repo is required unless --self-test')
     token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
     if not token:
         print('pr-overlap: set GITHUB_TOKEN or GH_TOKEN', file=sys.stderr)
@@ -243,6 +267,10 @@ def main():
         this, rows, guarded = load_live(repo, pr_number, token, args.guarded_file)
     except urllib.error.HTTPError as err:
         print(f'pr-overlap: GitHub API {err.code}: {err.reason}', file=sys.stderr)
+        return 2
+    except SystemExit as err:
+        if err.args and isinstance(err.args[0], str):
+            print(err.args[0], file=sys.stderr)
         return 2
     found = findings(this, rows, guarded, ticket_key, is_bot)
     if not found:
