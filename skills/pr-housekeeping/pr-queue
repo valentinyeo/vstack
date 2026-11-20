@@ -70,8 +70,8 @@ STATES = ('BOT', 'DUPLICATE', 'CONFLICT', 'BILLING', 'RED', 'VERIFIER-FAIL', 'MI
           'NO-VERDICT', 'STALE', 'NO-OWNER', 'READY', 'OK')
 NEXT_ACTION = {
     'BOT': 'A bot wrote this one, so CI Boss looks after it and no chat has to act.',
-    'DUPLICATE': 'Message the owner chat of the older pull request for this ticket and close this one '
-                 'with a one line reason and the ticket link.',
+    'DUPLICATE': 'Message the other owner chat, then close the older or weaker pull request for this '
+                 'ticket with a one line reason and the ticket link.',
     'CONFLICT': 'Rebase your own branch on its base, push it with force with lease, and let the checks run again.',
     'BILLING': 'Billing blocks private repos only, so scan the repo history for secrets and client data, '
                'then make the repo public and ask Valentin only when the scan finds something.',
@@ -484,6 +484,11 @@ def main(argv):
                       billing_probe=lambda repo, sha: probes.get((repo, sha), []))
     if args.mine:
         rows = [row for row in rows if (row['owner_chat'] or '').lower() == args.mine.lower()]
+        if not rows:
+            named = [chat for chat in chats if chat['name'].lower() == args.mine.lower()]
+            if named and not named[0].get('repo'):
+                print(f'pr-queue: {args.mine} is live but git cannot read a checkout for it, so only a '
+                      'branch name can make a PR its own; 0 rows proves nothing', file=sys.stderr)
     scoped_by = 'across ' + args.owner
     if args.repo and args.mine:
         scoped_by = f'in {args.repo} owned by {args.mine}'
