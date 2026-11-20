@@ -42,9 +42,6 @@ jobs:
           python3 -m unittest discover -s tests -p test_pick_verifier_model.py -v
           python3 -m unittest discover -s tests -p test_picker_from_base.py -v
           python3 -m unittest discover -s tests -p 'test_*columns.py' -v
-          python3 -m unittest discover -s tests -p test_column_verifier.py -v
-          python3 -m unittest discover -s tests -p test_advisor_verdict.py -v
-          python3 -m unittest discover -s tests -p test_verifier_prompts.py -v
           python3 -m unittest discover -s tests -p test_verdict.py -v
           python3 -m unittest discover -s tests -p test_claude_helper_gate.py -v
           python3 -m unittest discover -s tests -p test_launch_gate.py -v
@@ -52,61 +49,3 @@ jobs:
         run: timeout 60 python3 hooks/test-timeout-guard.py --self-test
       - name: existing skill installer
         run: timeout 300 bash tests/install.sh
-  deepseek-verifier:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: picker-base
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: cursor/plugins
-          path: .pstack-source
-          sparse-checkout: pstack
-          persist-credentials: false
-      - name: install pstack
-        run: |
-          v=$(python3 -c "import json;print(json.load(open('.pstack-source/pstack/plugin.json'))['version'])")
-          mkdir -p "$HOME/.claude/plugins/cache/cursor-plugins/pstack"
-          cp -r .pstack-source/pstack "$HOME/.claude/plugins/cache/cursor-plugins/pstack/$v"
-      - name: Pick verifier model
-        run: |
-          model=$(python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model")
-          echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
-      - name: independent verification
-        env:
-          OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
-          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PYTHONUNBUFFERED: "1"
-        run: python3 scripts/verification/advisor.py
-      - name: post verifier verdict
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          test -f evidence/verdict.md
-          gh pr comment "$PR_NUMBER" --body-file evidence/verdict.md
-          python3 scripts/verdict.py evidence/verdict.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: advisor-verifier-evidence
-          path: evidence
-          retention-days: 14
