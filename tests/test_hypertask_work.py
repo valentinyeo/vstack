@@ -930,11 +930,98 @@ class Board15Test(unittest.TestCase):
                 'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
 
     def facts(self, card, now, alive=False):
-        states = {pull['number']: pull['state'] for pull in card['pulls']}
-        with patch.object(r, 'worker_alive', return_value=alive), \
-                patch.object(r, 'read_product_pull', side_effect=lambda number: r.Pull(
-                    f'https://github.com/hypertask-ai/hypertask/pull/{number}', states[number], '', False)):
+        """The facts a board-15 read gives, from the pulls its search already returned."""
+        with patch.object(r, 'worker_alive', return_value=alive):
             return r.collect(card, card['pulls'], now, board=r.BOARDS[15])
+
+    def board15_tasks(self, count=4, column='Backlog'):
+        """Cards created today, so no ticket needs the old-head lookup."""
+        created = datetime.now(timezone.utc).isoformat()
+        return [{**self.card(f'HTPR-{n}', column, NOW - 8000), 'createdAt': created}
+                for n in range(1, count + 1)]
+
+    def fixture_github15(self, tasks):
+        """A board-15 fixture's GitHub: one open PR per ticket, nothing else."""
+        pulls = {t['ticketNumber']: {'title': f'{t["ticketNumber"]} work', 'body': '',
+                                     'headRefName': f'{t["ticketNumber"].lower()}-work',
+                                     'state': 'OPEN',
+                                     'number': r.ticket_index(t['ticketNumber'], r.BOARDS[15]),
+                                     'url': 'https://github.com/hypertask-ai/hypertask/pull/' + str(n),
+                                     'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+                 for n, t in enumerate(tasks, 1)}
+
+        def respond(args, **kwargs):
+            call = ' '.join(args)
+            if 'is:open' in call or 'is:merged' in call:
+                page = {'issueCount': 0, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'search': page}}), '')
+            if args[1:3] == ('pr', 'view'):
+                # A per-PR read is what this board must not need on a dry run.
+                return subprocess.CompletedProcess([], 0, json.dumps({
+                    'url': f'https://github.com/hypertask-ai/hypertask/pull/{args[3]}', 'state': 'OPEN'}), '')
+            keys = list(dict.fromkeys(re.findall(r'HTPR-\d+', call)))
+            body = {'data': {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': [pulls[key]]}
+                             for n, key in enumerate(keys)}}
+            return subprocess.CompletedProcess([], 0, json.dumps(body), '')
+        return respond
+
+    def board15_run(self, tasks, workers=None, respond=None):
+        """(exit code, stdout, github calls) for one whole board-15 dry run."""
+        r.PULLS.clear()
+        r.reset_github_count()
+        read_workers = workers or (lambda now: set())
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--board', '15']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'product_workers', side_effect=read_workers), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r.subprocess, 'run', side_effect=respond or self.fixture_github15(tasks)), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = r.main()
+        return code, out.getvalue(), sum(r.github_calls())
+
+    def test_a_missing_bus_gets_defaults_before_worker_facts(self):
+        uid = os.getuid()
+        seen = {}
+
+        def workers(now):
+            seen.update(os.environ)
+            return set()
+
+        with patch.dict(os.environ, {}, clear=True):
+            code, printed, _calls = self.board15_run(self.board15_tasks(), workers=workers)
+            self.assertEqual(seen.get('XDG_RUNTIME_DIR'), f'/run/user/{uid}')
+            self.assertEqual(seen.get('DBUS_SESSION_BUS_ADDRESS'), f'unix:path=/run/user/{uid}/bus')
+            self.assertEqual(os.environ.get('XDG_RUNTIME_DIR'), f'/run/user/{uid}',
+                             'the default is left in place for the child processes')
+        self.assertEqual(code, 0, printed)
+        self.assertIn('unknown=0', printed)
+
+    def test_unreadable_worker_facts_print_one_line_and_plan_nothing(self):
+        def broken(now):
+            raise RuntimeError('systemctl --user failed: Failed to connect to bus: No medium found')
+
+        code, printed, _calls = self.board15_run(self.board15_tasks(), workers=broken)
+        self.assertEqual(code, 1)
+        self.assertEqual(printed.strip().splitlines(), [
+            'reconcile: worker facts unreadable: systemctl --user failed: '
+            'Failed to connect to bus: No medium found; nothing moved'])
+        for line in ('UNKNOWN', 'PLAN', 'KEEP', 'DRY RUN'):
+            self.assertNotIn(line, printed)
+
+    def test_a_board_15_fixture_run_costs_no_more_than_its_pulls(self):
+        tasks = self.board15_tasks()
+        code, printed, calls = self.board15_run(tasks)
+        self.assertEqual(code, 0, printed)
+        self.assertIn('DRY RUN board=15 tickets=4 unknown=0', printed)
+        self.assertIn('PLAN HTPR-1 Backlog -> AI Review | open PR', printed)
+        # One search page and the two branch scans. The four open PRs cost nothing
+        # more, because the search result already carries their state.
+        self.assertLessEqual(calls, len(tasks), f'{len(tasks)} open PRs cost {calls} github calls')
 
     def test_service_path_finds_agent_cli_before_validation(self):
         with tempfile.TemporaryDirectory() as directory:
