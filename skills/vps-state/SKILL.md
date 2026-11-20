@@ -12,10 +12,17 @@ Run `"$HOME/.local/bin/vps-state"` from any directory. It reads /proc live on ev
 
 ## Set up your own check
 
-Nobody runs this for you. Do it once, for your own chat.
+Nobody runs this for you, and no central enforcer runs it for you either. Set up your own check, once, for your own chat.
 
 1. In your own loop or launcher, run `"$HOME/.local/bin/vps-state" --can-launch worker` before you start a worker, or `--can-launch chat` before a chat. Exit 0 means start. Exit 1 means start one and ask again before a second. Exit 2 means hold. Further rules are in [What HOLD obliges](#what-hold-obliges).
-2. Optional: have the answer print as your session opens. Add this to your own project's `.claude/settings.json`. `install` puts the hook file at that path. It does not register it for you.
+2. Switch on the launch gate for your own project, so the rule holds even when you forget it. Run this once in each project you work in:
+
+   ```sh
+   python3 ~/.claude/hooks/launch-gate.py --install-for-project
+   ```
+
+   It adds the hook to that project's .claude/settings.local.json and changes nothing else. The hook asks the host before every Bash call that starts a worker, a build or a test run, and blocks the call at HOLD. --check-project exits 0 when the project is gated. A block is the HOLD rule below: start nothing, finish or merge what you have, tell the user, ask the host again in 10 minutes. Only the user lifts it, with LAUNCH_GATE=off.
+3. Optional: have the answer print as your session opens. Add this to your own project's `.claude/settings.json`. `install` puts the hook file at that path. It does not register it for you.
 
 ```json
 {
@@ -34,6 +41,7 @@ If that file already has a `SessionStart` list, add this entry to the list.
 1. Before you start a chat, a worker, a build or a test run.
 2. While you hold, every 10 minutes, to watch the numbers move.
 3. When the machine feels slow, or you need disk back.
+4. When the launch gate blocks a call and you want to see why.
 
 ## How to read the verdict
 
