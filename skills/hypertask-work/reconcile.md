@@ -107,7 +107,7 @@ Stale leases expire after fifteen minutes.
 
 A lease is not the only sign of a live worker.
 One run reads every local command line under `/proc` once.
-A live process counts for a ticket when it is an agent CLI (`hax`, `pi`, `codex`, `cursor-agent`, `claude`, `opencode` or `gemini`, behind any wrapper) and its arguments hold the exact ticket URL,
+A live process counts for a ticket when it is a real worker, an agent CLI (`hax`, `pi`, `codex`, `cursor-agent`, `claude`, `opencode` or `gemini`, behind any wrapper) or the `lease KEY run --` wrapper, and its arguments hold the exact ticket URL,
 `https://app.hypertask.ai/detail/project-<board>/<n>`,
 or the exact ticket key as a whole token.
 Word boundaries keep `SOFT-27` away from `SOFT-2730`, and the key `SOFT-2730b` proves nothing.
@@ -115,7 +115,7 @@ This catches workers started outside the lease wrapper: `hax -p`, `pi -p`, `code
 `cursor-agent`, and `claude -p`.
 Own board only; a URL for another board proves nothing.
 The reconcile process and its parents never count, because their brief names tickets.
-Any other command that names a ticket only looks at it, so it never counts: a search, `grep`, `git`, an editor, a shell or script run in its worktree.
+Any other command that names a ticket only looks at it, so it never counts: a search, `grep`, `rg`, `ps`, `pgrep`, `sed`, `awk`, `cat`, `tail`, `journalctl`, `gh`, `git`, `hypertask`, an editor, a shell or script run in its worktree, and a `shell -c` string that only runs those.
 Leases still win; the process fallback only adds liveness.
 Board 15 keeps its worker-service facts and does not read processes.
 `FLEET_PROC_DIR` overrides the process directory for tests.

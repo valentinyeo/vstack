@@ -43,6 +43,12 @@ VALUE_FLAGS = {
     'python': {'-c', '-m'}, 'python3': {'-c', '-m'},
 }
 AGENTS = {'hax', 'pi', 'codex', 'cursor-agent', 'claude', 'opencode', 'gemini'}
+LEASE_TOOL = 'lease'
+# These read a ticket; they never work one, however their arguments spell it.
+NON_WORKERS = {'grep', 'rg', 'ps', 'pgrep', 'pkill', 'sed', 'awk', 'cat', 'less', 'tail',
+               'head', 'journalctl', 'gh', 'git', 'hypertask'}
+KEY_WORD = re.compile(r'[A-Z][A-Z0-9]*-\d+')
+SHELL_SEPARATOR = re.compile(r'&&|\|\||[;|\n&]')
 
 
 @dataclass(frozen=True)
@@ -250,9 +256,11 @@ def is_worker(argv):
         if text.startswith('-'):
             flag = text.split('=', 1)[0]
             if flag in VALUE_FLAGS.get(wrapper or '', ()) and '=' not in text and index + 1 < len(argv):
-                nxt = argv[index + 1].strip().split()[0]
-                if wrapper in SHELLS or Path(nxt).name in AGENTS:
-                    return Path(nxt).name in AGENTS
+                nxt = argv[index + 1]
+                if wrapper in SHELLS:
+                    return any(is_worker(words) for words in shell_commands(nxt))
+                if Path(nxt.strip().split()[0]).name in AGENTS:
+                    return True
                 index += 2
                 continue
             index += 1
@@ -260,8 +268,26 @@ def is_worker(argv):
         if re.fullmatch(r'\d+[smhd]?', text) or re.fullmatch(r'[A-Za-z_]\w*=.*', text):
             index += 1
             continue
+        if name in NON_WORKERS:
+            return False
+        if name == LEASE_TOOL:
+            return lease_run(argv, index)
         return name in AGENTS
     return False
+
+
+def shell_commands(text):
+    """Each simple command inside a `shell -c` string, so `cd x && pi -p URL` still counts."""
+    return [part.split() for part in SHELL_SEPARATOR.split(text)]
+
+
+def lease_run(argv, index):
+    """`lease KEY run -- COMMAND` is the wrapper the house rules start workers through."""
+    words = [word.strip() for word in argv[index + 1:index + 4] if word.strip()]
+    if not (len(words) >= 2 and words[1] == 'run' and KEY_WORD.fullmatch(words[0])):
+        return False
+    wrapped = [word.strip() for word in argv[index + 4:] if word.strip() and word.strip() != '--']
+    return not wrapped or Path(wrapped[0]).name not in NON_WORKERS
 
 
 @lru_cache(maxsize=2)
