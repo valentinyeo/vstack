@@ -13,9 +13,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - run: python3 -m unittest discover -s tests -p test_verify_reconcile.py -v
       - run: bash tests/install.sh
+      - name: No new verification gates
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          ref=$(python3 -c 'import json; print(json.load(open(".skill-lint.json"))["pstack-ref"])')
+          version=$(python3 -c 'import json; print(json.load(open(".skill-lint.json"))["pstack-version"])')
+          git init -q "$RUNNER_TEMP/cursor-plugins"
+          git -C "$RUNNER_TEMP/cursor-plugins" remote add origin https://github.com/cursor/plugins
+          git -C "$RUNNER_TEMP/cursor-plugins" fetch --quiet --depth 1 origin "$ref"
+          git -C "$RUNNER_TEMP/cursor-plugins" checkout --quiet FETCH_HEAD
+          mkdir -p "$RUNNER_TEMP/pstack"
+          ln -s "$RUNNER_TEMP/cursor-plugins/pstack" "$RUNNER_TEMP/pstack/$version"
+          python3 skills/pstack-diff/pstack-diff --base "$BASE" --pstack "$RUNNER_TEMP/pstack"
 
   pacer-check:
     if: github.event_name == 'pull_request'

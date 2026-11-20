@@ -18,9 +18,12 @@ House deviations live in `skills/pstack-diff/house.txt`; repos may add a root do
 ```bash
 python3 skills/pstack-diff/pstack-diff
 python3 skills/pstack-diff/pstack-diff --json
+python3 skills/pstack-diff/pstack-diff --base origin/main
 ```
 
-`--json` prints `{exit, asked, gaps, extras, lines}` for scripts.
+`--json` prints `{exit, asked, gaps, extras, base_extras, lines}` for scripts.
+
+`--base REF` compares the tree against the merge base of REF and HEAD. An EXTRA line that base already has prints as `BASE` and does not fail the run. Only an EXTRA line this branch adds exits 1, so an old extra never blocks an unrelated PR. The `checks` workflow runs it against the PR base, and `hooks/pstack-new-gates.py` runs it on `gh pr create` when the branch touches a workflow or a verify skill.
 
 By default the newest installed pstack is the reference. Set `PSTACK_DIFF_PSTACK` or pass `--pstack DIR` to use another install; the flag wins. Tests set it to a fixture, so they never read a home directory.
 

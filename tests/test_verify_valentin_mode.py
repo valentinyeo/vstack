@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -307,6 +308,37 @@ class VerifyValentinModeGrade(unittest.TestCase):
         result = self.grade_checks_loaded(HOOKED_VALENTIN, debug)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('FAIL checks loaded:', result.stdout)
+
+
+class VerifyValentinModeSelfAudit(unittest.TestCase):
+    """The planted extra gate is the only finding, and removing it clears the repo."""
+
+    FIXTURE = SKILL / 'fixtures/extra-gate'
+    TOOL = ROOT / 'skills/pstack-diff/pstack-diff'
+    PSTACK = ROOT / 'tests/fixtures/pstack-diff/pstack'
+
+    def test_planted_gate_then_clean_without_it(self):
+        holder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, holder, ignore_errors=True)
+        repo = holder / 'extra-gate'
+        shutil.copytree(self.FIXTURE, repo)
+        env = os.environ.copy()
+        env['PSTACK_DIFF_PSTACK'] = str(self.PSTACK)
+
+        before = subprocess.run([sys.executable, str(self.TOOL), str(repo)],
+                                capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(before.returncode, 1, before.stdout + before.stderr)
+        self.assertIn('EXTRA workflow: .github/workflows/ci.yml job scorecard', before.stdout)
+        self.assertEqual([line for line in before.stdout.splitlines()
+                          if line.startswith('EXTRA ')],
+                         ['EXTRA workflow: .github/workflows/ci.yml job scorecard'])
+
+        workflow = repo / '.github/workflows/ci.yml'
+        workflow.write_text(workflow.read_text().split('  scorecard:')[0])
+        after = subprocess.run([sys.executable, str(self.TOOL), str(repo)],
+                               capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+        self.assertNotIn('EXTRA ', after.stdout)
 
 
 class VerifyValentinModeRunScript(unittest.TestCase):

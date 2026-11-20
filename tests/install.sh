@@ -18,10 +18,12 @@ for run in 1 2; do
   done
 done
 
-hook="$TEST_HOME/.claude/hooks/test-timeout-guard.py"
-[ -L "$hook" ]
-[ "$(readlink -f "$hook")" = "$ROOT/hooks/test-timeout-guard.py" ]
-printf 'PASS hook linked: .claude/hooks/test-timeout-guard.py\n'
+for name in test-timeout-guard.py pstack-new-gates.py; do
+  hook="$TEST_HOME/.claude/hooks/$name"
+  [ -L "$hook" ]
+  [ "$(readlink -f "$hook")" = "$ROOT/hooks/$name" ]
+  printf 'PASS hook linked: .claude/hooks/%s\n' "$name"
+done
 
 rm "$TEST_HOME/.pi/agent/skills/valentin-mode"
 ln -s "$TEST_HOME/missing" "$TEST_HOME/.pi/agent/skills/valentin-mode"
