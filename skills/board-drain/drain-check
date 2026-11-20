@@ -244,7 +244,8 @@ def rows_for(args):
     return board, kept, loaded
 
 
-def check(args, now):
+def read_view(args, now):
+    """One read of the view: the board, every row, the notes, the findings, the workable rows."""
     board, rows, loaded = rows_for(args)
     todos = [row for row in rows if row['task'].get('section') == TODO]
     doings = [row for row in rows if row['task'].get('section') in DOING]
@@ -264,8 +265,6 @@ def check(args, now):
             blocked_lines.append(f'blocked: {task["ticketNumber"]} by {", ".join(stuck)}')
         else:
             workable.append(row)
-    for line in waiting_lines + blocked_lines:
-        print(line)
     if workable and not live:
         findings.append(('loop off', f'loop off: {len(workable)} workable Todo, nothing in Doing. '
                                      f'Re-arm your loop and start a worker on '
@@ -286,11 +285,22 @@ def check(args, now):
         if spent is not None and spent > STALE:
             findings.append(('stale', f'stale: {row["task"]["ticketNumber"]} workable in Todo '
                                       f'for {int(spent // 3600)}h.'))
-    if args.state_name:
-        code, text = loop_state.status(args.state_name, now)
+    # The watcher records its own name and reads the view without a loop state to judge.
+    state_name = getattr(args, 'state_name', None)
+    if state_name:
+        code, text = loop_state.status(state_name, now)
         if code:
             findings.append(('loop state', f'loop state: {text}'))
-        findings += [('sync', line) for line in sync_findings(args.state_name, now)]
+        findings += [('sync', line) for line in sync_findings(state_name, now)]
+    return {'board': board, 'rows': rows, 'workable': workable,
+            'notes': waiting_lines + blocked_lines, 'findings': findings}
+
+
+def check(args, now):
+    view = read_view(args, now)
+    workable, findings = view['workable'], view['findings']
+    for line in view['notes']:
+        print(line)
     held = hold_line(workable, findings, args.no_load)
     shown, printed_hold, failing = [], False, 0
     for kind, text in findings:

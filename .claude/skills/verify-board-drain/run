@@ -109,7 +109,7 @@ def iso(moment):
 
 
 now = datetime.now(timezone.utc)
-state = {'name': name, 'every': '15m',
+state = {'name': name, 'every': '6h',
          'armed_at': iso(now - timedelta(days=8)),
          'expires_at': iso(now - timedelta(hours=2)),
          'job': 'dead0000', 'owner_pid': dead, 'host': socket.gethostname()}
@@ -151,7 +151,7 @@ fi
 PROMPT=$(cat "$E/prompt.txt")
 
 # 7. One fresh headless chat in the scratch repo.
-echo "run: one test chat, 5 to 15 minutes; evidence $E" >&2
+echo "run: one test chat, about 5 to 20 minutes; evidence $E" >&2
 set +e
 (cd "$W" && BOARD_DRAIN_STATE_DIR="$W/state" HT_TOKEN="$TOKEN" \
   SHIP_SESSION_NAME="$NAME" timeout 900 "$HOME/.local/bin/claude" \
@@ -185,7 +185,7 @@ PY
 
 # 10. Grade and report.
 set +e
-"$GRADE" "$E" --board "$BOARD"
+"$GRADE" "$E" --board "$BOARD" --label "$LABEL"
 GRADE_EXIT=$?
 set -e
 echo "Evidence: $E"

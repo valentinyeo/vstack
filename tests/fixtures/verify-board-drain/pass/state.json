@@ -1,9 +1,9 @@
 {
   "name": "VBD Test Chat",
-  "every": "15m",
+  "every": "6h",
   "armed_at": "2026-11-20T10:01:12Z",
   "expires_at": "2026-11-27T10:01:12Z",
-  "job": "7f3a91c2",
+  "job": "safe4c1d2",
   "owner_pid": 3355042,
   "host": "vbd-host",
   "last_sync": {

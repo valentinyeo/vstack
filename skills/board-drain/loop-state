@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import subprocess
 import sys
 import time
 
@@ -24,6 +25,8 @@ NODES = frozenset({'node', 'nodejs'})
 WEEK = 7 * 86400
 SOON = 86400
 SYNC_STALE = 45 * 60
+PACER_FLOOR = 7200
+PLAN_PICK = Path.home() / '.local/bin' / 'plan-pick'
 ERRORS = (ValueError, KeyError, TypeError, OSError)
 
 
@@ -104,16 +107,76 @@ def owner_pid(start=None):
     return os.getppid()
 
 
-def arm(name, every='15m', expires=None, job=None, now=None, board=None, label=None):
+def stored(name):
+    """The state file's object, {} when there is none or it is unreadable."""
+    try:
+        state = json.loads(state_path(name).read_text())
+    except (OSError, TypeError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def store(name, state):
+    target = state_path(name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(state, indent=2) + '\n')
+    return state
+
+
+def record_watch(name, pid, now=None):
+    """Record the watcher this chat leaves running; a dead pid is a dead loop."""
+    moment = time.time() if now is None else now
+    state = stored(name)
+    state.setdefault('name', name)
+    state['watch_pid'] = int(pid)
+    state['watch_started'] = iso(moment)
+    return store(name, state)
+
+
+def clear_watch(name):
+    """The watcher exited; keep the rest of the record and drop its pid."""
+    state = stored(name)
+    if 'watch_pid' not in state:
+        return state
+    state['watch_pid'] = None
+    return store(name, state)
+
+
+def loop_interval(timeout=20):
+    """Seconds from plan-pick --loop-interval; PACER_FLOOR on any error or missing binary."""
+    if not PLAN_PICK.is_file():
+        return PACER_FLOOR
+    try:
+        done = subprocess.run([str(PLAN_PICK), '--loop-interval'],
+                              capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return PACER_FLOOR
+    if done.returncode != 0:
+        return PACER_FLOOR
+    parts = (done.stdout or '').strip().split(None, 1)
+    if not parts:
+        return PACER_FLOOR
+    try:
+        seconds = int(parts[0])
+    except ValueError:
+        return PACER_FLOOR
+    return max(PACER_FLOOR, seconds)
+
+
+def arm(name, every='2h', expires=None, job=None, now=None, board=None, label=None):
     """Record the armed loop, plus the board and label it drains when the chat passes them."""
     moment = time.time() if now is None else now
     expiry = reconcile.stamp(expires) if expires else moment + WEEK
+    prior = stored(name)
     state = {'name': name, 'every': every, 'armed_at': iso(moment), 'expires_at': iso(expiry),
              'job': job, 'owner_pid': owner_pid(), 'host': socket.gethostname()}
     if board is not None:
         state['board'] = board
     if label is not None:
         state['label'] = label
+    for key in ('last_sync', 'watch_pid', 'watch_started'):
+        if key in prior:
+            state[key] = prior[key]
     target = state_path(name)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(state, indent=2) + '\n')
@@ -121,13 +184,10 @@ def arm(name, every='15m', expires=None, job=None, now=None, board=None, label=N
 
 
 def status(name, now=None):
-    """(0 armed, 3 expires within a day, 2 not armed) with the one line to show."""
+    """(0 armed, 3 expires within a day, 2 not armed or watcher dead) with its line."""
     moment = time.time() if now is None else now
-    try:
-        state = json.loads(state_path(name).read_text())
-    except (OSError, TypeError, ValueError):
-        return 2, 'not armed'
-    if not isinstance(state, dict):
+    state = stored(name)
+    if not state:
         return 2, 'not armed'
     try:
         expires = reconcile.stamp(state['expires_at'])
@@ -138,6 +198,10 @@ def status(name, now=None):
             return 2, 'not armed'
     except ERRORS:
         return 2, 'not armed'
+    # A cleared watch_pid means the watcher exited on purpose; a recorded dead one
+    # means the chat has nothing to wake it. No watcher ever recorded is today's rule.
+    if state.get('watch_pid') is not None and not reconcile.pid_alive(state['watch_pid']):
+        return 2, 'watcher dead'
     remaining = int(expires - moment)
     if remaining <= 0:
         return 2, 'not armed'
@@ -150,27 +214,16 @@ def record_sync(name, ok, reason, now=None):
     """Record this chat's last board sync. A record alone never arms the loop."""
     moment = time.time() if now is None else now
     record = {'at': iso(moment), 'ok': bool(ok), 'reason': reason or ''}
-    target = state_path(name)
-    try:
-        state = json.loads(target.read_text())
-        if not isinstance(state, dict):
-            state = {}
-    except (OSError, TypeError, ValueError):
-        state = {}
+    state = stored(name)
     state.setdefault('name', name)
     state['last_sync'] = record
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(state, indent=2) + '\n')
+    store(name, state)
     return record
 
 
 def sync_state(name):
     """The last_sync this chat recorded, or None when it never recorded one."""
-    try:
-        state = json.loads(state_path(name).read_text())
-    except (OSError, TypeError, ValueError):
-        return None
-    record = state.get('last_sync') if isinstance(state, dict) else None
+    record = stored(name).get('last_sync')
     return record if isinstance(record, dict) else None
 
 
@@ -181,11 +234,13 @@ def clear(name):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for command in ('arm', 'status', 'clear'):
+    for command in ('arm', 'status', 'clear', 'watch'):
         sub = commands.add_parser(command)
         sub.add_argument('--name', required=True)
+        if command == 'watch':
+            sub.add_argument('--pid', type=int, required=True, help='The watcher process id')
         if command == 'arm':
-            sub.add_argument('--every', default='15m')
+            sub.add_argument('--every', default='2h')
             sub.add_argument('--expires', help='ISO expiry; default is 7 days (recurring cron limit)')
             sub.add_argument('--job', help='The cron or job id this chat armed')
             sub.add_argument('--board', type=int, help='The board this loop drains')
@@ -201,6 +256,10 @@ def main(argv=None):
         if args.command == 'clear':
             clear(args.name)
             print('cleared')
+            return 0
+        if args.command == 'watch':
+            state = record_watch(args.name, args.pid)
+            print(f'watching, started {state["watch_started"]}')
             return 0
         code, text = status(args.name)
         print(text)

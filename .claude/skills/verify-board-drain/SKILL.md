@@ -1,7 +1,7 @@
 ---
 name: verify-board-drain
 description: >-
-  Prove that a fresh Claude Code chat, restarted after a crash, turns its own board drain loop back on by itself: reads its loop status, arms a 15-minute loop over its view, records it, syncs and passes drain-check. Starts one headless test chat in a scratch project with an expired loop, then grades the side effects PASS or FAIL per check. Use after any change to skills/board-drain or its scripts, as the proof on such a PR, and whenever a chat's loop looks dead.
+  Prove that a fresh Claude Code chat, restarted after a crash, turns its own board drain loop back on by itself: reads its loop status, arms its loop over its view (a background watcher plus a safety cron, or a plan-paced cron at least every 2 hours), records it, syncs and passes drain-check. Starts one headless test chat in a scratch project with an expired loop, then grades the side effects PASS or FAIL per check. Use after any change to skills/board-drain or its scripts, as the proof on such a PR, and whenever a chat's loop looks dead.
 ---
 
 # Verify board drain
@@ -40,7 +40,7 @@ One run takes 3 to 10 minutes.
 
 ## Doctor
 
-Read `loaded` first, then `status-read`: a chat that never ran `loop-state status` skipped the skill's first step. Then `armed`: the job fires every 15 minutes, carries the loop prompt from the skill, and names board 2060.
+Read `loaded` first, then `status-read`: a chat that never ran `loop-state status` skipped the skill's first step. Then `armed`: either a `Bash` call with `run_in_background` true running `skills/board-drain/watch` with `--board 2060 --label vvm-test`, plus a safety cron of at most 6 hours; or a recurring cron on the plan pace (at least every 2 hours) with the loop prompt and board 2060. The watcher shape is the skill's Claude Code arm; its recorded job id is the safety cron's.
 
 The chat reads the installed copy in `~/.local/share/vstack/skills/board-drain`; on a PR, install the branch first, then restore main. The scratch repo carries this checkout's scripts too.
 
@@ -77,9 +77,9 @@ Every change to `skills/board-drain` or its scripts runs it here. CI runs only `
 ## Gotchas
 
 - **CronCreate is available in `claude -p`.** Checked on 2.1.329: the init tool list has it, and a probe scheduled a job. It often arrives through `ToolSearch` first.
-- **Second way in:** a `Skill` call to `loop` with `15m` and the same prompt, since `/loop` wraps cron. It leaves no job id, so `recorded` skips that comparison.
+- **Two arms, two shapes.** Claude Code starts the watcher in the background and keeps a safety cron; Codex keeps a plan-paced cron (at least every 2 hours). `armed` passes either; a watcher on another board fails on purpose.
 - **A session-only cron dies with the chat.** The state file survives a restart; a live job does not.
-- **Order matters.** `loop-state arm` rewrites the file and drops `last_sync`; `sync` merges into it. Arming after syncing fails `synced`; drain-check reports it as `sync stale`.
+- **Order matters.** Sync after arming still works because `loop-state arm` keeps `last_sync`.
 - **The command drop alone cannot fail.** The installed description says "use after a restart", so a restarted chat loads board drain without being told. That is VSTA-4 working; the break removes the skill too.
 - **Keep user hooks on.** Dropping hooks (`--setting-sources`) drops the guard against writing as Valentin.
 - **One run at a time.** The board 2060 reconcile takes a lock; two runs at once get `already running`.
