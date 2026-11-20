@@ -11,13 +11,23 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "skills/pstack-diff/pstack-diff"
 FIXTURES = Path(__file__).resolve().parent / "fixtures/pstack-diff"
 CLONES = FIXTURES / "clones"
+PSTACK = FIXTURES / "pstack"
 
 
-def run_diff(repo: Path, *extra: str, clones: Path | None = None) -> subprocess.CompletedProcess:
+def run_diff(
+    repo: Path,
+    *extra: str,
+    clones: Path | None = None,
+    pstack: Path | None = PSTACK,
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = os.environ.get("HOME", str(Path.home()))
     if clones is not None:
         env["PSTACK_DIFF_CLONES"] = str(clones)
+    if pstack is None:
+        env.pop("PSTACK_DIFF_PSTACK", None)
+    else:
+        env["PSTACK_DIFF_PSTACK"] = str(pstack)
     return subprocess.run(
         [sys.executable, str(TOOL), *extra, str(repo)],
         capture_output=True,
@@ -76,6 +86,21 @@ class PstackDiffTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ASKED verify-skill: verify-app, verify-other", result.stdout)
         self.assertNotIn("EXTRA verify-skill", result.stdout)
+
+    def test_pstack_flag_wins_over_env(self):
+        result = run_diff(
+            FIXTURES / "clean",
+            "--pstack",
+            str(PSTACK),
+            pstack=FIXTURES / "no-such-pstack",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED pstack recipe: 0.15.43", result.stdout)
+
+    def test_missing_pstack_dir_names_the_gap(self):
+        result = run_diff(FIXTURES / "clean", pstack=FIXTURES / "no-such-pstack")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("GAP pstack: no install under", result.stderr)
 
 
 if __name__ == "__main__":

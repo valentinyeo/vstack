@@ -22,6 +22,8 @@ python3 skills/pstack-diff/pstack-diff --json
 
 `--json` prints `{exit, asked, gaps, extras, lines}` for scripts.
 
+By default the newest installed pstack is the reference. Set `PSTACK_DIFF_PSTACK` or pass `--pstack DIR` to use another install; the flag wins. Tests set it to a fixture, so they never read a home directory.
+
 ## What to do with output
 
 - **ASKED** — expected; no action.

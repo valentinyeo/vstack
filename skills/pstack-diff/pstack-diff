@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Compare a repo's verification setup with pstack's recipe (read-only, stdlib only).
 
-    pstack-diff [--json] [REPO_ROOT]
+    pstack-diff [--json] [--pstack DIR] [REPO_ROOT]
 
-Exit 0 when every line is ASKED; 1 when any GAP or EXTRA is present.
+--pstack names the directory holding pstack installs; PSTACK_DIFF_PSTACK does the
+same. Without either it reads the newest installed pstack. Exit 0 when every line
+is ASKED; 1 when any GAP or EXTRA is present.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import sys
 from pathlib import Path
 
 PSTACK_ROOT = Path.home() / ".claude/plugins/cache/cursor-plugins/pstack"
+PSTACK_ENV = "PSTACK_DIFF_PSTACK"
 _SKILL_DIR = Path(__file__).resolve().parent
 
 REUSABLE_USES = re.compile(
@@ -40,10 +43,18 @@ EXTRA_JOB_HINTS = re.compile(
 )
 
 
-def latest_pstack() -> Path:
-    versions = [p for p in PSTACK_ROOT.glob("*") if p.is_dir()]
+def pstack_root(flag: str | None = None) -> Path:
+    """--pstack first, then PSTACK_DIFF_PSTACK, then the installed cache."""
+    chosen = flag or os.environ.get(PSTACK_ENV)
+    if chosen:
+        return Path(chosen).expanduser()
+    return PSTACK_ROOT
+
+
+def latest_pstack(root: Path) -> Path:
+    versions = [p for p in root.glob("*") if p.is_dir()]
     if not versions:
-        raise SystemExit(f"GAP pstack: no install under {PSTACK_ROOT}")
+        raise SystemExit(f"GAP pstack: no install under {root}")
     return max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".") if n.isdigit()))
 
 
@@ -280,8 +291,8 @@ def rule_restatements(root: Path) -> list[str]:
     return lines
 
 
-def analyze(root: Path) -> list[str]:
-    latest = latest_pstack()
+def analyze(root: Path, pstack: Path) -> list[str]:
+    latest = latest_pstack(pstack)
     lines = [f"ASKED pstack recipe: {latest.name}"]
     lines.extend(verify_skills(root))
     lines.extend(classify_workflows(root))
@@ -292,10 +303,15 @@ def analyze(root: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
+    parser.add_argument(
+        "--pstack",
+        default=None,
+        help=f"directory holding pstack installs; default ${PSTACK_ENV} or the newest installed",
+    )
     parser.add_argument("root", nargs="?", default=".", type=Path)
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    lines = analyze(root)
+    lines = analyze(root, pstack_root(args.pstack))
     gaps = [line for line in lines if line.startswith("GAP ")]
     extras = [line for line in lines if line.startswith("EXTRA ")]
     asked = [line for line in lines if line.startswith("ASKED ")]
