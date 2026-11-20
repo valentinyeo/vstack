@@ -6,13 +6,64 @@ on:
     branches: [main]
 permissions:
   contents: read
-  pull-requests: write
 concurrency:
-  group: skill-lint-caller-${{ github.event.pull_request.number || github.ref }}
+  group: skill-lint-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   skill-lint:
-    uses: valentinyeo/house-rules/.github/workflows/skill-lint.yml@6b3d15a26ecf02760fe39ef75fb8ab7b7235c52d
-    with:
-      lint-ref: 6b3d15a26ecf02760fe39ef75fb8ab7b7235c52d
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          path: change
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: valentinyeo/house-rules
+          ref: 6b3d15a26ecf02760fe39ef75fb8ab7b7235c52d
+          path: lint-source
+          persist-credentials: false
+      - name: Read caller's pinned sources
+        id: pins
+        working-directory: change
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          pins = json.load(open('.skill-lint.json'))
+          for key in ('pstack-ref', 'catalog-ref'):
+              assert re.fullmatch('[0-9a-f]{40}', pins[key]), f'{key}: pin a full commit SHA'
+          assert re.fullmatch(r'\d+(\.\d+)+', pins['pstack-version'])
+          assert pins['catalog-repository'] in ('valentinyeo/house-rules', 'valentinyeo/vstack')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in pins.items():
+                  output.write(f'{key}={value}\n')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: cursor/plugins
+          ref: ${{ steps.pins.outputs.pstack-ref }}
+          path: pstack-source
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pins.outputs.catalog-repository }}
+          ref: ${{ steps.pins.outputs.catalog-ref }}
+          path: catalog
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install PyYAML==6.0.2
+      - name: Lint changed skills with the shared script
+        working-directory: change
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          test -n "$BASE"
+          test "$BASE" != 0000000000000000000000000000000000000000
+          if [ -f house-rules.md ]; then house=house-rules.md; else house=../catalog/house-rules.md; fi
+          python3 ../lint-source/scripts/skill-lint --base "$BASE" --pstack ../pstack-source/pstack/skills --house-rules "$house" --catalog ../catalog/skills
