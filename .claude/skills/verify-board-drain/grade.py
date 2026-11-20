@@ -20,10 +20,15 @@ PROMPT_START = '/board-drain'
 LOOP_SKILL = 'loop'
 MARKER = 'full autopilot on this queue'
 FIFTEEN = 15
+SAFETY_HOURS = 6
+MINUTES_A_DAY = 24 * 60
 WEEK = timedelta(days=7)
 WEEK_SLACK = timedelta(hours=1)
 
 SEPARATORS = re.compile(r';|&&|\|\||\n')
+QUOTES = re.compile(r'["\']')
+# The watcher started as a tracked background job is the Claude Code arm.
+WATCH_SCRIPT = re.compile(r'(?:skills/board-drain/watch|(?<![\w./-])\./watch)(?![\w-])')
 ASSIGNMENT = re.compile(r'(?<![\w$])([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|"\']+)')
 SCRIPTS = frozenset({'loop-state', 'drain-check', 'reconcile'})
 WRITES = (
@@ -284,6 +289,53 @@ def cron_creates(events):
             if tool_use.get('name') == 'CronCreate']
 
 
+def unquoted(command):
+    """The command without its quotes, so --label "two words" reads as a flag value."""
+    return QUOTES.sub('', command)
+
+
+def background_watch(events):
+    """Every Bash call that starts the watcher: (tool_use, command without quotes)."""
+    found = []
+    for tool_use in tool_uses(events):
+        if tool_use.get('name') != 'Bash':
+            continue
+        command = unquoted(command_of(tool_use))
+        if WATCH_SCRIPT.search(command.strip()):
+            found.append((tool_use, command))
+    return found
+
+
+def watch_on_view(watches, board, label):
+    """True when one of these watcher calls is this chat's own view, in the background."""
+    return any(tool_input(tool_use).get('run_in_background') is True
+               and flag_value(command, 'board', board)
+               and flag_value(command, 'label', label)
+               for tool_use, command in watches)
+
+
+def cron_firings(cron):
+    """Every firing of a 5-field cron as minutes past midnight, or None when unreadable."""
+    fields = cron.split() if isinstance(cron, str) else []
+    if len(fields) != 5:
+        return None
+    try:
+        hours = expand_field(fields[1], 0, 23)
+        minutes = expand_field(fields[0], 0, 59)
+    except (ValueError, TypeError):
+        return None
+    return sorted(hour * 60 + minute for hour in hours for minute in minutes)
+
+
+def fires_within(firings, hours):
+    """True when no gap between firings is longer than this many hours."""
+    if not firings:
+        return False
+    gaps = [later - earlier for earlier, later in zip(firings, firings[1:])]
+    gaps.append(firings[0] + MINUTES_A_DAY - firings[-1])
+    return max(gaps) <= hours * 60
+
+
 def cron_job_id(events, tool_use):
     """The job id CronCreate printed for this call, or None."""
     block = tool_results(events).get(tool_use.get('id'))
@@ -293,9 +345,28 @@ def cron_job_id(events, tool_use):
     return match.group(1) if match else None
 
 
-def check_armed(events, board):
-    """PASS when the chat armed a 15-minute loop over its own view.
+def safety_cron(events):
+    """(the safety cron, its job id, the reasons the other crons are no safety net)."""
+    reasons = []
+    for tool_use in cron_creates(events):
+        fields = tool_input(tool_use)
+        if fields.get('recurring') is False:
+            reasons.append('a one-shot safety job instead of a recurring one')
+            continue
+        firings = cron_firings(fields.get('cron'))
+        if firings is None or not fires_within(firings, SAFETY_HOURS):
+            reasons.append('a safety job that does not fire within %d hours: %s'
+                           % (SAFETY_HOURS, fields.get('cron')))
+            continue
+        return tool_use, cron_job_id(events, tool_use), reasons
+    return None, None, reasons
 
+
+def check_armed(events, board, label='vvm-test'):
+    """PASS when the chat armed a loop over its own view, one of two ways.
+
+    Either a cron firing every 15 minutes (Codex, and Claude Code by /loop), or a
+    tracked background `watch` on this chat's board and label plus a safety cron.
     Returns (result, cron job id or None).
     """
     reasons = []
@@ -311,6 +382,18 @@ def check_armed(events, board):
             reasons.append('a job whose prompt is not the board-drain loop prompt')
             continue
         return (PASS, 'CronCreate armed the loop every 15 minutes'), cron_job_id(events, tool_use)
+    watches = background_watch(events)
+    if watch_on_view(watches, board, label):
+        tool_use, job, safety_reasons = safety_cron(events)
+        if tool_use is not None:
+            return (PASS, 'a background watcher on this view, with a safety cron'), job
+        # The watcher's own gap is the one worth naming, ahead of the cron reasons.
+        reasons = (safety_reasons or ['a watcher with no safety cron']) + reasons
+    elif watches:
+        backgrounded = any(tool_input(use).get('run_in_background') is True
+                           for use, _command in watches)
+        reasons = [('a watch job for another view' if backgrounded
+                    else 'a watch call that did not run in the background')] + reasons
     for tool_use in tool_uses(events):
         skill = skill_name(tool_use)
         if skill is None or skill not in (LOOP_SKILL, 'vstack:' + LOOP_SKILL):
@@ -376,11 +459,11 @@ def check_no_writes(events):
     return PASS, 'no ticket moves, no comments, no plan-pick workers'
 
 
-def grade(evidence, board):
+def grade(evidence, board, label='vvm-test'):
     events = read_jsonl(evidence / 'stream.jsonl')
     started_at = parse_time(read_text(evidence / 'started_at').strip())
 
-    armed, job = check_armed(events, board)
+    armed, job = check_armed(events, board, label)
     checks = [
         ('loaded', check_loaded(evidence, events)),
         ('status-read', check_status_read(events)),
@@ -397,6 +480,7 @@ def main(argv):
     parser = argparse.ArgumentParser(description='Grade a verify-board-drain run.')
     parser.add_argument('evidence', help='evidence directory written by run')
     parser.add_argument('--board', default='2060')
+    parser.add_argument('--label', default='vvm-test')
     args = parser.parse_args(argv)
 
     evidence = Path(args.evidence).expanduser()
@@ -407,7 +491,7 @@ def main(argv):
         print('grade.py: no stream.jsonl in %s' % evidence, file=sys.stderr)
         return 2
 
-    session_id, checks = grade(evidence, args.board)
+    session_id, checks = grade(evidence, args.board, args.label)
     verdict = PASS if all(result[0] == PASS for _name, result in checks) else FAIL
 
     lines = ['%s %s: %s' % (result[0], name, result[1]) for name, result in checks]

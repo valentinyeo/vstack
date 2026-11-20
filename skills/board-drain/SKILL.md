@@ -5,7 +5,7 @@ description: "board drain;drain my board;drain loop;is my loop armed;work my vie
 
 # Board drain
 
-Prior art: pstack poteto-mode Autopilot-full runs one owner per item, a verifier that never wrote the code, an audit loop for stuck agents. The `/hypertask` skill owns columns and the reconcile; neither says which queue a chat drains or what counts as waiting on Valentin. Each chat drains only its own view.
+Prior art: pstack poteto-mode Autopilot-full runs one owner per item and a verifier that never wrote the code. The `/hypertask` skill owns columns and the reconcile; neither says which queue a chat drains or what counts as waiting on Valentin.
 
 ## The loop is Autopilot-full
 
@@ -23,12 +23,12 @@ Two mappings: owners start through `~/.local/bin/plan-pick --run`, wrapped in `.
 Loops die silently: a session cron dies with the chat, a recurring one expires in 7 days. Arm at session start, after a restart or handover, when valentin-mode loads, and on any drain-check fail:
 
 1. `./loop-state status --name "<your Multibot name>"`. Exit 0: already armed.
-2. Otherwise, Claude Code: start `./watch --board <id> --label <label> --name "<name>"` as a tracked background Bash job, `run_in_background` with a 7200000 ms timeout. It polls your view every 3 minutes; its exit on a change is your next tick.
+2. Otherwise, Claude Code: start `./watch --board <id> --label <label> --name "<name>"` as a tracked background Bash job, `run_in_background` with a 7200000 ms timeout. It polls every 3 minutes; its exit is your tick.
 3. Arm a safety cron every 6 hours that runs the loop prompt if the watcher dies, recorded with: `./loop-state arm --name "<name>" --every 6h --job <job id> --board <id> --label <label>`.
 4. Codex or a harness without tracked background jobs: keep the loop prompt on a 15-minute recurring job (`/loop 15m <prompt>`), recorded with `--every 15m`.
 5. Every tick ends by starting a fresh watcher (step 2).
 
-The 2h heartbeat wakes a silent chat twice a day.
+Its 2h heartbeat wakes a silent chat 12 times a day; it also runs the board sync every 15 minutes, so your tick's Sync is a check, not the only sync.
 
 Never delete the loop for an empty Todo; a tick with nothing new stays quiet.
 
@@ -45,7 +45,7 @@ Never delete the loop for an empty Todo; a tick with nothing new stays quiet.
 
 Only a set waiting-on mark naming Valentin, or a blocker comment, counts; a chat's memory does not. An unmarked ticket is workable. Mark a real wait.
 
-A ticket BlockedBy an open ticket stays outside the drain by its links, not by memory. drain-check reads `task relations` once per unmarked Todo ticket and prints `blocked: <KEY> by <KEY>, <KEY>`; that line is news, not a fail.
+A ticket BlockedBy an open ticket stays out of the drain by its links, not by memory. drain-check reads `task relations` once per unmarked Todo ticket and prints `blocked: <KEY> by <KEY>, <KEY>`; that line is news, not a fail.
 
 ## drain-check fails
 

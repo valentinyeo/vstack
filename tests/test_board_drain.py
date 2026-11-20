@@ -721,7 +721,7 @@ class WatchTest(unittest.TestCase):
         clock = clock or Clock()
         clock.on_sleep = on_sleep
         argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
-                '--fixture', str(self.fixture), *extra]
+                '--fixture', str(self.fixture), '--no-sync', *extra]
         out, err = io.StringIO(), io.StringIO()
         with patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -812,7 +812,8 @@ class WatchTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             code = watch.main(
                 ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
-                 '--fixture', str(self.fixture)], clock=clock.time, sleep=clock.sleep)
+                 '--fixture', str(self.fixture), '--no-sync'],
+                clock=clock.time, sleep=clock.sleep)
         self.assertEqual(code, 1, out.getvalue())
         self.assertIn('watch: FAIL', out.getvalue())
         self.assertEqual(clock.now - NOW, 2 * 180)  # three attempts, two waits between
@@ -842,6 +843,101 @@ class WatchTest(unittest.TestCase):
     def _mark_waiting(self, rows, comments):
         rows[0]['comments'] = comments
         self.rows(rows)
+
+
+class WatchSyncTest(unittest.TestCase):
+    """The watcher runs the chat's own sync, so a merged PR's card still moves."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.fixture = self.directory / 'view.json'
+        self.rows([vsta('VSTA-1', section='Done')])
+        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def rows(self, rows):
+        self.fixture.write_text(json.dumps(rows))
+
+    def run_watch(self, *extra, syncs=None, on_sync=None):
+        """syncs: one (exit code, reason) per sync call, in order; extra calls succeed."""
+        queue, calls, clock = list(syncs or []), [], Clock()
+
+        def fake_sync(argv):
+            calls.append({'argv': list(argv), 'at': clock.now - NOW})
+            code, reason = queue.pop(0) if queue else (0, '')
+            loop.record_sync('Watch Test', not code, reason, now=clock.now)
+            if on_sync:
+                on_sync(clock.now - NOW)
+            return code
+
+        out = io.StringIO()
+        with patch.object(watch.sync, 'main', side_effect=fake_sync), \
+                patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
+                contextlib.redirect_stdout(out):
+            code = watch.main(['--board', '13556', '--label', 'Board Drain Loop',
+                               '--name', 'Watch Test', '--fixture', str(self.fixture), *extra],
+                              clock=clock.time, sleep=clock.sleep)
+        return code, out.getvalue(), calls
+
+    def test_the_watcher_calls_the_sync_scripts_own_code(self):
+        self.assertEqual(Path(watch.sync.__file__).resolve(), (SKILL / 'sync').resolve())
+
+    def test_the_sync_runs_at_start_and_every_sync_every_seconds(self):
+        code, out, calls = self.run_watch('--every', '60', '--heartbeat', '240',
+                                          '--sync-every', '120')
+        self.assertEqual(code, 0, out)
+        self.assertEqual([call['at'] for call in calls], [0, 120, 240])
+
+    def test_the_default_sync_runs_every_fifteen_minutes(self):
+        code, out, calls = self.run_watch('--every', '60', '--heartbeat', '1800')
+        self.assertEqual(code, 0, out)
+        self.assertEqual([call['at'] for call in calls], [0, 900, 1800])
+
+    def test_no_sync_never_runs_it(self):
+        code, out, calls = self.run_watch('--every', '60', '--heartbeat', '240', '--no-sync')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(calls, [])
+
+    def test_once_never_syncs(self):
+        code, out, calls = self.run_watch('--once')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(calls, [])
+        self.assertEqual(json.loads(out)['tickets']['VSTA-1']['column'], 'Done')
+
+    def test_the_sync_runs_as_this_chat(self):
+        _code, out, calls = self.run_watch('--every', '60', '--heartbeat', '60',
+                                           '--sync-every', '600')
+        self.assertEqual(calls[0]['argv'], ['--board', '13556', '--label', 'Board Drain Loop',
+                                            '--name', 'Watch Test'], out)
+
+    def test_a_failed_sync_wakes_the_chat_at_once(self):
+        code, out, calls = self.run_watch(
+            '--every', '60', '--heartbeat', '600',
+            syncs=[(1, 'board 13556 unreachable')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip(), 'changed: sync failed: board 13556 unreachable')
+        self.assertEqual(len(calls), 1, out)
+
+    def test_a_sync_that_moved_a_card_wakes_the_chat_on_the_next_snapshot(self):
+        def move(tick):
+            if tick:
+                self.rows([vsta('VSTA-1', section='Done'), vsta('VSTA-80')])
+
+        code, out, calls = self.run_watch('--every', '60', '--heartbeat', '600',
+                                          '--sync-every', '120', on_sync=move)
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertEqual([call['at'] for call in calls], [0, 120])
+
+    def test_a_failed_sync_records_the_failure_for_drain_check(self):
+        _code, _out, _calls = self.run_watch('--every', '60', '--heartbeat', '600',
+                                             syncs=[(1, 'preview printed: usage')])
+        record = loop.sync_state('Watch Test')
+        self.assertFalse(record['ok'])
+        self.assertEqual(record['reason'], 'preview printed: usage')
 
 
 class RelationsCliTest(unittest.TestCase):

@@ -185,7 +185,7 @@ PY
 
 # 10. Grade and report.
 set +e
-"$GRADE" "$E" --board "$BOARD"
+"$GRADE" "$E" --board "$BOARD" --label "$LABEL"
 GRADE_EXIT=$?
 set -e
 echo "Evidence: $E"

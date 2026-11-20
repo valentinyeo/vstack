@@ -249,6 +249,110 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assert_check(output, 'PASS', 'armed')
 
+    def arm_with_watcher(self, target, board='2060', label='vvm-test', safety='0 */6 * * *',
+                         background=True, script='skills/board-drain/watch'):
+        """The pass stream with a tracked background watcher instead of a 15-minute cron."""
+        job = 'safe4c1d2'
+        state_path = target / 'state.json'
+        state = json.loads(state_path.read_text())
+        state['every'] = '6h'
+        if safety is None:
+            state.pop('job', None)
+        else:
+            state['job'] = job
+        state_path.write_text(json.dumps(state, indent=2) + '\n')
+        watcher = {'type': 'assistant', 'session_id': 'sid-vbd', 'message': {
+            'role': 'assistant', 'content': [{
+                'type': 'tool_use', 'id': 'w1', 'name': 'Bash',
+                'input': {'command': '%s --board %s --label "%s" '
+                                     '--name "VBD Test Chat" --every 180'
+                                     % (script, board, label),
+                          'description': 'Watch the view', 'run_in_background': background,
+                          'timeout': 7200000}}]}}
+        safety_events = []
+        if safety is not None:
+            prompt = ('/pstack:poteto-mode full autopilot on this queue: every workable ticket '
+                      'in my view https://app.hypertask.ai/view/vbd-test. each item is '
+                      'independent. done when skills/board-drain/drain-check --board 2060 '
+                      '--label vvm-test passes.')
+            safety_events = [
+                {'type': 'assistant', 'session_id': 'sid-vbd', 'message': {
+                    'role': 'assistant', 'content': [{
+                        'type': 'tool_use', 'id': 'c1', 'name': 'CronCreate',
+                        'input': {'cron': safety, 'prompt': prompt, 'recurring': True}}]}},
+                {'type': 'user', 'session_id': 'sid-vbd', 'message': {
+                    'role': 'user', 'content': [{
+                        'type': 'tool_result', 'tool_use_id': 'c1',
+                        'content': 'Scheduled recurring job %s (Every 6 hours). Session-only.'
+                                   % job, 'is_error': False}]}}]
+
+        def swap(events):
+            kept = []
+            for event in events:
+                content = event.get('message', {}).get('content') or []
+                names = {block.get('name') for block in content if isinstance(block, dict)}
+                if 'CronCreate' in names:
+                    continue
+                if any(block.get('type') == 'tool_result' and block.get('tool_use_id') == 't2'
+                       for block in content if isinstance(block, dict)):
+                    continue
+                kept.append(event)
+            return kept + [watcher] + safety_events
+        self.rewrite_stream(target, swap)
+
+    def test_background_watcher_with_a_safety_cron_passes_armed(self):
+        """A tracked watcher job on this view, plus a safety cron, is an armed loop."""
+        target = self.copy_fixture('pass')
+        self.arm_with_watcher(target)
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 0, output)
+        self.assert_check(output, 'PASS', 'armed')
+        self.assertIn('PASS armed: a background watcher on this view, with a safety cron', output)
+        self.assertIn('PASS recorded: armed in this run, expires in about 7 days, '
+                      'job safe4c1d2 recorded', output)
+
+    def test_a_local_watch_call_passes_armed(self):
+        """A chat run from the skill directory starts the watcher as ./watch."""
+        target = self.copy_fixture('pass')
+        self.arm_with_watcher(target, script='./watch')
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 0, output)
+        self.assert_check(output, 'PASS', 'armed')
+
+    def test_a_watcher_without_a_safety_cron_fails_armed(self):
+        """Nothing restarts the loop when the watcher dies without a safety cron."""
+        target = self.copy_fixture('pass')
+        self.arm_with_watcher(target, safety=None)
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 1, output)
+        self.assertIn('FAIL armed: armed a watcher with no safety cron', output)
+
+    def test_a_watch_call_for_another_board_fails_armed(self):
+        """A watcher polling someone else's view never wakes this chat."""
+        target = self.copy_fixture('pass')
+        self.arm_with_watcher(target, board='9999')
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 1, output)
+        self.assertIn('FAIL armed: armed a watch job for another view', output)
+
+    def test_a_foreground_watch_call_fails_armed(self):
+        """A watcher the chat waits on is not a loop; the call must run in the background."""
+        target = self.copy_fixture('pass')
+        self.arm_with_watcher(target, background=False)
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 1, output)
+        self.assertIn('FAIL armed: armed a watch call that did not run in the background',
+                      output)
+
+    def test_a_daily_safety_cron_fails_armed(self):
+        """A safety net that fires once a day leaves the queue idle for almost a day."""
+        target = self.copy_fixture('pass')
+        self.arm_with_watcher(target, safety='0 0 * * *')
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 1, output)
+        self.assertIn('FAIL armed: armed a safety job that does not fire within 6 hours: '
+                      '0 0 * * *', output)
+
     def test_var_path_fixture_reads_loop_state(self):
         """loop-state called through a shell variable is still a status read."""
         target = self.copy_fixture('pass')
