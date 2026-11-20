@@ -9,7 +9,7 @@
           },
           {
             "type": "command",
-            "command": "python3 ~/.local/share/vstack/hooks/long-chat.py",
+            "command": "sh -c 'f=\"$HOME/.claude/hooks/long-chat.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
             "timeout": 10
           }
         ]
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.local/share/vstack/hooks/long-chat.py",
+            "command": "sh -c 'f=\"$HOME/.claude/hooks/long-chat.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
             "timeout": 10
           }
         ]
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.local/share/vstack/hooks/long-chat.py",
+            "command": "sh -c 'f=\"$HOME/.claude/hooks/long-chat.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
             "timeout": 10
           }
         ]
