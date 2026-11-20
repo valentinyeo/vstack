@@ -44,8 +44,8 @@ The project's own agent notes (its AGENTS file or CLAUDE file) name its board in
 - **Verifying:** every app has one `verify-<app>` skill. Every ticket's Done when names its proof. A behaviour PR carries proof that fits the change: a screenshot or video for UI, a transcript for CLI, a response body for API. No proof means FAIL.
 - **Verifier:** from a different model family than every author. Every PR body carries one `Author model: <family>/<model>` line per author; the picker reads it.
 - **Server and cloud:** this server runs workers, focused tests, the app, the QA phone, git and boards. GitHub-hosted runners run the full suite, CI, reviews and the verifier. Never a self-hosted runner.
-- **GitHub billing:** a check failing with "recent account payments have failed" parks the PR. Never verify it here or merge around it. Note it once on the ticket and move on.
-- **Public repos:** start with `new-public-repo`, never GitHub's template or fork button. No commit carries a real email.
+- **Open source by default:** every repo is public unless a strong reason keeps it private, such as client data or secrets. Start one with `new-public-repo`, never GitHub's template or fork button. No commit carries a real email.
+- **GitHub billing:** billing blocks only private repos; public repos run checks free. A check failing with "recent account payments have failed" means the repo should go public: scan its history for secrets and client data, then make it public. If something must stay private, the PR waits: note it once on the ticket, never verify it here or merge around it.
 - **Cloudflare:** a new project begins from Joel Hooks' rat-stack template.
 - **Long chats:** save the handover, then start a fresh chat with its loop on.
 - **Formal where bugs cost most:** the first PR touching money math, sync, retries or a queue gets a ticket for pstack `create-formal-verification-skill`.
