@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Compare an app with Rat Stack's pinned stack. Prints KEEP, BUMP, DROP, ADD and layout gaps.
+
+Usage: rat-diff <app-dir> [--sha <commit>] [--rat <local clone>] [--ref main] [--json out.json]
+Rat Stack source: github.com/joelhooks/rat-stack at ONE commit.
+  --sha <commit>  pin that commit (wins over --ref). Pass the commit you cloned so the pin cannot drift.
+  --rat <path>    read the commit from a local clone with git, no gh api. Without --sha it uses the clone's HEAD.
+Without --rat the commit is read through `gh api`.
+"""
+import argparse, base64, json, os, re, subprocess, sys
+
+REPO = "joelhooks/rat-stack"
+CACHE = os.path.expanduser("~/.cache/rat-diff")
+SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".turbo", ".wrangler", ".alchemy", "vendor",
+             ".venv", "venv", "__pycache__", "site-packages", ".next", ".astro", "coverage"}
+# Rat Stack files every app must have, from its repo root.
+LAYOUT = ["AGENTS.md", "VISION.md", "pnpm-workspace.yaml", "lefthook.yml", ".env.schema",
+          "oxlint.config.ts", "oxfmt.config.ts", "tsconfig.base.json", "apps/infra", "apps/web",
+          "packages/core", ".github/workflows/ci.yml"]
+# Files that mean a tool Rat Stack does not use.
+FOREIGN_FILES = {"wrangler.toml": "Wrangler config. Alchemy declares Workers in apps/infra/alchemy.run.ts",
+                 "wrangler.jsonc": "Wrangler config. Alchemy declares Workers",
+                 "package-lock.json": "npm lockfile. Rat Stack installs with pnpm only",
+                 "yarn.lock": "yarn lockfile. pnpm only", "bun.lockb": "bun lockfile. pnpm only",
+                 "biome.json": "Biome. Rat Stack lints with Oxlint + Ultracite and formats with Oxfmt",
+                 ".eslintrc": "ESLint. Oxlint only", "eslint.config.js": "ESLint. Oxlint only",
+                 ".prettierrc": "Prettier. Oxfmt only", "tailwind.config.js": "Tailwind. StyleX only",
+                 "tailwind.config.ts": "Tailwind. StyleX only", "next.config.js": "Next.js. Foldkit only",
+                 "astro.config.mjs": "Astro. Foldkit only", ".env": "Raw .env. varlock .env.schema only"}
+CORE_PKGS = {"package.json", "apps/web/package.json", "apps/infra/package.json", "packages/core/package.json"}
+# Known drops and their Rat Stack home. Unknown drops: no home, cut or port by hand.
+REPLACE = {"hono": "Effect HttpApi via @rat-stack/capability toHttpApi", "express": "Effect HttpApi via toHttpApi",
+           "@hono/zod-validator": "Schema on the Contract", "zod": "effect Schema",
+           "@modelcontextprotocol/sdk": "capability toToolkit projection + cli `mcp` command",
+           "agents": "capability toToolkit projection; lifecycles as XState machines",
+           "wrangler": "alchemy + @alchemy.run/cloudflare in apps/infra/alchemy.run.ts",
+           "esbuild": "vite (apps/web) or Alchemy's Worker bundling", "tsx": "node >=24 runs .ts directly",
+           "@biomejs/biome": "oxlint + ultracite + oxfmt", "eslint": "oxlint + ultracite", "prettier": "oxfmt",
+           "@cloudflare/vitest-pool-workers": "@alchemy.run/test + @effect/vitest",
+           "react": "foldkit", "react-dom": "foldkit", "next": "foldkit ssr + prerender",
+           "astro": "foldkit ssr + prerender", "tailwindcss": "@stylexjs/stylex",
+           "axios": "effect HttpClient", "node-fetch": "effect HttpClient", "dotenv": "varlock .env.schema",
+           "jest": "@effect/vitest", "playwright-core": "no Rat Stack home: test behaviour with @effect/vitest + jsdom",
+           "drizzle-orm": "keep, through packages/database cartridge"}
+NON_JS = {"go.mod": "Go", "Cargo.toml": "Rust", "build.zig": "Zig", "pyproject.toml": "Python",
+          "requirements.txt": "Python", "build.gradle.kts": "Kotlin/Android"}
+# Loose scripts with no manifest. Small ones: port onto Effect or cut. A native main app is out of scope.
+LOOSE_EXT = {".py": "Python", ".go": "Go", ".sh": "shell", ".bash": "shell", ".rs": "Rust", ".zig": "Zig",
+             ".kt": "Kotlin", ".rb": "Ruby", ".pl": "Perl", ".php": "PHP", ".ps1": "PowerShell"}
+CDN_SCAN_EXT = {".html", ".htm", ".tsx", ".jsx", ".ts", ".js", ".mjs", ".astro", ".vue", ".svelte"}
+CDN_TAG = re.compile(r"""<(script|link)\b[^>]*?\b(?:src|href)\s*=\s*["'{`]*\s*["'`]?(https?:)?//([^"'`\s>}]+)""", re.I)
+# keyword in the URL -> library, Rat Stack replacement
+CDN_LIBS = [("tailwind", "Tailwind", "@stylexjs/stylex"), ("chart", "Chart.js", "SVG drawn in Foldkit views"),
+            ("htmx", "htmx", "Foldkit Messages + Commands over RPC"), ("alpine", "Alpine.js", "Foldkit"),
+            ("react", "React", "foldkit"), ("preact", "Preact", "foldkit"), ("vue", "Vue", "foldkit"),
+            ("jquery", "jQuery", "foldkit"), ("bootstrap", "Bootstrap", "@stylexjs/stylex"),
+            ("d3", "D3", "SVG drawn in Foldkit views"), ("lodash", "lodash", "Effect modules"),
+            ("moment", "moment", "Effect DateTime"), ("dayjs", "dayjs", "Effect DateTime"),
+            ("axios", "axios", "effect HttpClient"), ("mermaid", "Mermaid", "NO HOME: cut or pre-render"),
+            ("leaflet", "Leaflet", "NO HOME: cut, or keep with a written reason"),
+            ("fonts.g", "Google Fonts", "self-hosted @font-face; keep the app's own fonts"),
+            ("fontawesome", "Font Awesome", "inline SVG icons"), ("lucide", "Lucide", "inline SVG icons")]
+
+
+def gh(path):
+    out = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    if out.returncode:
+        sys.exit(f"gh api {path} failed: {out.stderr.strip()[:200]}")
+    return json.loads(out.stdout)
+
+
+def git(clone, *args, check=True):
+    out = subprocess.run(["git", "-C", clone, *args], capture_output=True, text=True)
+    if check and out.returncode:
+        sys.exit(f"git {' '.join(args)} failed in {clone}: {out.stderr.strip()[:200]}")
+    return out.stdout
+
+
+def rat_stack(ref, sha=None, clone=None):
+    if clone:
+        sha = git(clone, "rev-parse", "--verify", f"{sha or 'HEAD'}^{{commit}}").strip()
+    else:
+        sha = gh(f"repos/{REPO}/commits/{sha or ref}")["sha"]
+    cache = os.path.join(CACHE, f"{sha}.json")
+    if os.path.exists(cache):
+        return json.load(open(cache))
+    if clone:
+        paths = git(clone, "ls-tree", "-r", "--name-only", sha).splitlines()
+        read = lambda p: json.loads(git(clone, "show", f"{sha}:{p}"))
+    else:
+        tree = gh(f"repos/{REPO}/git/trees/{sha}?recursive=1")["tree"]
+        paths = [t["path"] for t in tree]
+        read = lambda p: json.loads(base64.b64decode(gh(f"repos/{REPO}/contents/{p}?ref={sha}")["content"]))
+    pkgs = [p for p in paths if p.endswith("package.json") and p.count("/") <= 2
+            and not p.startswith(("vendor/", "tools/"))]
+    deps = {}
+    for p in pkgs:
+        body = read(p)
+        for kind in ("dependencies", "devDependencies", "peerDependencies"):
+            for name, ver in body.get(kind, {}).items():
+                if name.startswith("@rat-stack/") or ver.startswith("workspace:"):
+                    continue
+                deps.setdefault(name, {"version": ver, "in": []})["in"].append(p)
+    data = {"sha": sha, "deps": deps, "paths": sorted(set(paths))}
+    os.makedirs(CACHE, exist_ok=True)
+    json.dump(data, open(cache, "w"))
+    return data
+
+
+def app_scan(root):
+    deps, files = {}, set()
+    for d, subdirs, names in os.walk(root):
+        rel = os.path.relpath(d, root)
+        subdirs[:] = [s for s in subdirs if s not in SKIP_DIRS and not (rel == ".husky" and s == "_")]
+        for n in names:
+            files.add(n if rel == "." else f"{rel}/{n}")
+            if n == "package.json":
+                try:
+                    body = json.load(open(os.path.join(d, n)))
+                except ValueError:
+                    continue
+                for kind in ("dependencies", "devDependencies", "peerDependencies"):
+                    for name, ver in body.get(kind, {}).items():
+                        deps.setdefault(name, {"version": ver, "in": []})["in"].append(
+                            os.path.join(rel, n).lstrip("./"))
+    return deps, files
+
+
+def read_text(root, rel, limit=1_500_000):
+    try:
+        if os.path.getsize(os.path.join(root, rel)) > limit:
+            return ""
+        return open(os.path.join(root, rel), errors="replace").read()
+    except OSError:
+        return ""
+
+
+def detect(root, files):
+    """Things package.json cannot show: loose scripts, CDN tags, self-hosted CI, Cloudflare Pages."""
+    loose = sorted((f, LOOSE_EXT[os.path.splitext(f)[1].lower()]) for f in files
+                   if os.path.splitext(f)[1].lower() in LOOSE_EXT)
+    cdn = []
+    for f in sorted(files):
+        if os.path.splitext(f)[1].lower() not in CDN_SCAN_EXT or f.endswith((".min.js", ".d.ts")):
+            continue
+        for m in CDN_TAG.finditer(read_text(root, f)):
+            url = m.group(3)
+            low = url.lower()
+            if re.search(r"\.(png|ico|svg|jpe?g|webp|gif|avif)(\?|$)", low):
+                continue
+            lib, repl = next(((n, r) for k, n, r in CDN_LIBS if k in low), ("unknown library", "cut, or vendor through pnpm with a written reason"))
+            hit = {"file": f, "tag": m.group(1).lower(), "url": url[:90], "library": lib, "replace_with": repl}
+            same = next((c for c in cdn if c["file"] == f and c["library"] == lib), None)
+            if not same:
+                cdn.append(hit)
+            elif len(hit["url"]) > len(same["url"]):
+                same.update(hit)
+    selfhosted = []
+    for f in sorted(files):
+        if f.startswith(".github/workflows/") and f.endswith((".yml", ".yaml")):
+            for n, line in enumerate(read_text(root, f).splitlines(), 1):
+                if re.match(r"\s*runs-on\s*:", line) and "self-hosted" in line:
+                    selfhosted.append({"file": f, "line": n, "text": line.strip()})
+    pages = []
+    for f in sorted(files):
+        base = os.path.basename(f)
+        text = read_text(root, f) if base in ("wrangler.toml", "wrangler.jsonc", "wrangler.json", "package.json") else ""
+        if base == "_routes.json":
+            pages.append({"file": f, "marker": "_routes.json (Pages routing rules)"})
+        elif base == "_worker.js":
+            pages.append({"file": f, "marker": "_worker.js (Pages advanced mode)"})
+        elif "pages_build_output_dir" in text:
+            pages.append({"file": f, "marker": "pages_build_output_dir"})
+        elif base == "package.json" and re.search(r"wrangler\s+pages", text):
+            pages.append({"file": f, "marker": "wrangler pages in scripts"})
+        elif re.search(r"(^|/)functions/.+\.(ts|js|tsx|mjs)$", f):
+            pages.append({"file": f, "marker": "functions/ dir (Pages Functions)"})
+    return loose, cdn, selfhosted, pages
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("app")
+    ap.add_argument("--ref", default="main")
+    ap.add_argument("--sha", help="Rat Stack commit to pin; wins over --ref")
+    ap.add_argument("--rat", help="local Rat Stack clone; read the commit with git instead of gh api")
+    ap.add_argument("--json")
+    a = ap.parse_args()
+    root = os.path.abspath(a.app)
+    rat = rat_stack(a.ref, a.sha, a.rat)
+    deps, files = app_scan(root)
+    rd = rat["deps"]
+
+    keep = sorted(n for n in deps if n in rd and deps[n]["version"] == rd[n]["version"])
+    bump = sorted(n for n in deps if n in rd and deps[n]["version"] != rd[n]["version"])
+    drop = sorted(n for n in deps if n not in rd)
+    add = sorted(n for n in rd if n not in deps)
+    tops = {f.split("/")[0] for f in files} | {"/".join(f.split("/")[:2]) for f in files}
+    layout_missing = [p for p in LAYOUT if p not in files and p not in tops]
+    foreign = sorted((f, why) for f in files for k, why in FOREIGN_FILES.items()
+                     if f == k or f.endswith("/" + k))
+    non_js = sorted((f, lang) for f in files for k, lang in NON_JS.items() if f == k or f.endswith("/" + k))
+
+    loose, cdn, selfhosted, pages = detect(root, files)
+    report = {"app": root, "rat_stack_sha": rat["sha"], "keep": keep,
+              "bump": [{"name": n, "from": deps[n]["version"], "to": rd[n]["version"]} for n in bump],
+              "drop": [{"name": n, "version": deps[n]["version"], "in": deps[n]["in"],
+                        "replace_with": REPLACE.get(n, "NO HOME: cut it, or port by hand onto Effect")} for n in drop],
+              "add": [{"name": n, "version": rd[n]["version"], "rat_stack_in": rd[n]["in"]} for n in add],
+              "layout_missing": layout_missing,
+              "foreign_files": [{"file": f, "why": w} for f, w in foreign],
+              "non_js": [{"file": f, "lang": l} for f, l in non_js],
+              "loose_non_js": [{"file": f, "lang": l} for f, l in loose],
+              "cdn_tags": cdn, "self_hosted_ci": selfhosted, "pages_markers": pages}
+    if a.json:
+        json.dump(report, open(a.json, "w"), indent=1)
+
+    print(f"rat-diff {os.path.basename(root)} vs {REPO}@{rat['sha']}")
+    print(f"KEEP {len(keep)}: " + ", ".join(keep))
+    print(f"BUMP {len(bump)}:")
+    for b in report["bump"]:
+        print(f"  {b['name']} {b['from']} -> {b['to']}")
+    print(f"DROP {len(drop)} (Rat Stack does not use these; replace or delete):")
+    for d in report["drop"]:
+        print(f"  {d['name']} {d['version']}  [{', '.join(d['in'])}]  -> {d['replace_with']}")
+    core = [d for d in report["add"] if any(p in CORE_PKGS for p in d["rat_stack_in"])]
+    extra = [d for d in report["add"] if d not in core]
+    print(f"ADD core {len(core)} (every app takes these, exact version):")
+    for d in core:
+        print(f"  {d['name']} {d['version']}")
+    print(f"ADD by cartridge {len(extra)} (take only with the cartridge or app that uses it):")
+    for d in extra:
+        print(f"  {d['name']} {d['version']}  [{', '.join(d['rat_stack_in'][:3])}]")
+    print(f"LAYOUT missing {len(layout_missing)}: " + ", ".join(layout_missing))
+    print(f"FOREIGN files {len(foreign)}:")
+    for f, w in foreign:
+        print(f"  {f}: {w}")
+    print(f"NON-JS manifests {len(non_js)} (native main app = out of scope; else port or cut):")
+    for f, l in non_js:
+        print(f"  {f}: {l}")
+    print(f"LOOSE non-JS files {len(loose)} (no manifest; small helper = port to Effect or cut, never keep):")
+    for f, l in loose:
+        print(f"  {f}: {l}")
+    print(f"CDN tags {len(cdn)} (not in package.json; each library needs a Rat Stack home):")
+    for c in cdn:
+        print(f"  {c['file']}: <{c['tag']}> {c['library']} {c['url']}  -> {c['replace_with']}")
+    print(f"SELF-HOSTED CI {len(selfhosted)} (forbidden; move to GitHub-hosted runners):")
+    for c in selfhosted:
+        print(f"  {c['file']}:{c['line']}: {c['text']}")
+    print(f"PAGES markers {len(pages)} (Cloudflare Pages app; Rat Stack deploys Workers):")
+    for c in pages:
+        print(f"  {c['file']}: {c['marker']}")
+
+if __name__ == "__main__":
+    main()
