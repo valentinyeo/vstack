@@ -17,10 +17,9 @@ FAIL = 'FAIL'
 
 SKILL_NAMES = ('board-drain', 'vstack:board-drain')
 PROMPT_START = '/board-drain'
-LOOP_SKILL = 'loop'
 MARKER = 'full autopilot on this queue'
-FIFTEEN = 15
 SAFETY_HOURS = 6
+MIN_LOOP_HOURS = 2
 MINUTES_A_DAY = 24 * 60
 WEEK = timedelta(days=7)
 WEEK_SLACK = timedelta(hours=1)
@@ -38,7 +37,6 @@ WRITES = (
     (re.compile(r'(?<![\w-])plan-pick[^\n;&|]*\s--run(?![\w-])'), 'plan-pick --run'),
 )
 JOB_ID = re.compile(r'Scheduled recurring job ([A-Za-z0-9_-]+)')
-FIFTEEN_MINUTES = re.compile(r'(?<![\w.])15\s*(?:m|min|mins|minute|minutes)(?![\w])')
 
 
 def parse_time(value):
@@ -240,48 +238,11 @@ def expand_field(field, low, high):
     return values
 
 
-def spaced_every_fifteen(minutes):
-    """True for four firings an hour, 15 minutes apart, wherever they start.
-
-    Claude Code's /loop offsets its cron to avoid the top of the hour, so
-    7,22,37,52 is a 15-minute loop just as 0,15,30,45 is.
-    """
-    if len(minutes) != 4:
-        return False
-    ordered = sorted(minutes)
-    gaps = [later - earlier for earlier, later in zip(ordered, ordered[1:])]
-    gaps.append(ordered[0] + 60 - ordered[-1])
-    return all(gap == FIFTEEN for gap in gaps)
-
-
-def every_fifteen_minutes(cron):
-    """True when a 5-field cron fires every 15 minutes of every hour."""
-    if not isinstance(cron, str):
-        return False
-    fields = cron.split()
-    if len(fields) != 5:
-        return False
-    try:
-        minutes = expand_field(fields[0], 0, 59)
-        hours = expand_field(fields[1], 0, 23)
-    except (ValueError, TypeError):
-        return False
-    return spaced_every_fifteen(minutes) and hours == set(range(24))
-
-
 def prompt_ok(prompt, board):
     """The loop prompt names the queue and this chat's own view."""
     if not isinstance(prompt, str) or MARKER not in prompt.lower():
         return False
     return str(board) in prompt
-
-
-def loop_skill_prompt(tool_use, board):
-    """A Skill call to loop carries the interval and the prompt in its input."""
-    text = ' '.join(value for value in tool_input(tool_use).values() if isinstance(value, str))
-    if not FIFTEEN_MINUTES.search(text):
-        return False
-    return prompt_ok(text, board)
 
 
 def cron_creates(events):
@@ -336,6 +297,15 @@ def fires_within(firings, hours):
     return max(gaps) <= hours * 60
 
 
+def fires_no_sooner_than(firings, hours):
+    """True when every gap between firings is at least this many hours."""
+    if not firings:
+        return False
+    gaps = [later - earlier for earlier, later in zip(firings, firings[1:])]
+    gaps.append(firings[0] + MINUTES_A_DAY - firings[-1])
+    return min(gaps) >= hours * 60
+
+
 def cron_job_id(events, tool_use):
     """The job id CronCreate printed for this call, or None."""
     block = tool_results(events).get(tool_use.get('id'))
@@ -365,43 +335,42 @@ def safety_cron(events):
 def check_armed(events, board, label='vvm-test'):
     """PASS when the chat armed a loop over its own view, one of two ways.
 
-    Either a cron firing every 15 minutes (Codex, and Claude Code by /loop), or a
-    tracked background `watch` on this chat's board and label plus a safety cron.
+    Either a tracked background `watch` on this chat's board and label plus a safety
+  cron at most every 6 hours, or a recurring cron on the plan pace (at least every
+  2 hours). A cron that fires more often than every 2 hours FAILS.
     Returns (result, cron job id or None).
     """
     reasons = []
-    for tool_use in cron_creates(events):
-        fields = tool_input(tool_use)
-        if fields.get('recurring') is False:
-            reasons.append('a one-shot job instead of a recurring loop')
-            continue
-        if not every_fifteen_minutes(fields.get('cron')):
-            reasons.append('a job that does not fire every 15 minutes: %s' % fields.get('cron'))
-            continue
-        if not prompt_ok(fields.get('prompt'), board):
-            reasons.append('a job whose prompt is not the board-drain loop prompt')
-            continue
-        return (PASS, 'CronCreate armed the loop every 15 minutes'), cron_job_id(events, tool_use)
     watches = background_watch(events)
     if watch_on_view(watches, board, label):
         tool_use, job, safety_reasons = safety_cron(events)
         if tool_use is not None:
             return (PASS, 'a background watcher on this view, with a safety cron'), job
-        # The watcher's own gap is the one worth naming, ahead of the cron reasons.
-        reasons = (safety_reasons or ['a watcher with no safety cron']) + reasons
-    elif watches:
+        reason = (safety_reasons or ['a watcher with no safety cron'])[0]
+        return (FAIL, 'armed ' + reason), None
+    if watches:
         backgrounded = any(tool_input(use).get('run_in_background') is True
                            for use, _command in watches)
-        reasons = [('a watch job for another view' if backgrounded
-                    else 'a watch call that did not run in the background')] + reasons
-    for tool_use in tool_uses(events):
-        skill = skill_name(tool_use)
-        if skill is None or skill not in (LOOP_SKILL, 'vstack:' + LOOP_SKILL):
+        reason = ('a watch job for another view' if backgrounded
+                  else 'a watch call that did not run in the background')
+        return (FAIL, 'armed ' + reason), None
+    for tool_use in cron_creates(events):
+        fields = tool_input(tool_use)
+        if fields.get('recurring') is False:
+            reasons.append('a one-shot job instead of a recurring loop')
             continue
-        if not loop_skill_prompt(tool_use, board):
-            reasons.append('a /loop call without 15m and the board-drain loop prompt')
+        firings = cron_firings(fields.get('cron'))
+        if firings is None:
+            reasons.append('a job with an unreadable cron: %s' % fields.get('cron'))
             continue
-        return (PASS, '/loop armed the loop every 15 minutes'), None
+        if not fires_no_sooner_than(firings, MIN_LOOP_HOURS):
+            reasons.append('a job that fires more often than every %d hours drains '
+                           'the Claude plan: %s' % (MIN_LOOP_HOURS, fields.get('cron')))
+            continue
+        if not prompt_ok(fields.get('prompt'), board):
+            reasons.append('a job whose prompt is not the board-drain loop prompt')
+            continue
+        return (PASS, 'CronCreate armed the loop on the plan pace'), cron_job_id(events, tool_use)
     if reasons:
         return (FAIL, 'armed ' + reasons[0]), None
     return (FAIL, 'the chat never armed a loop'), None

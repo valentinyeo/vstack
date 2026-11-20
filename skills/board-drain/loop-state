@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import subprocess
 import sys
 import time
 
@@ -24,6 +25,8 @@ NODES = frozenset({'node', 'nodejs'})
 WEEK = 7 * 86400
 SOON = 86400
 SYNC_STALE = 45 * 60
+PACER_FLOOR = 7200
+PLAN_PICK = Path.home() / '.local/bin' / 'plan-pick'
 ERRORS = (ValueError, KeyError, TypeError, OSError)
 
 
@@ -139,16 +142,41 @@ def clear_watch(name):
     return store(name, state)
 
 
-def arm(name, every='15m', expires=None, job=None, now=None, board=None, label=None):
+def loop_interval(timeout=20):
+    """Seconds from plan-pick --loop-interval; PACER_FLOOR on any error or missing binary."""
+    if not PLAN_PICK.is_file():
+        return PACER_FLOOR
+    try:
+        done = subprocess.run([str(PLAN_PICK), '--loop-interval'],
+                              capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return PACER_FLOOR
+    if done.returncode != 0:
+        return PACER_FLOOR
+    parts = (done.stdout or '').strip().split(None, 1)
+    if not parts:
+        return PACER_FLOOR
+    try:
+        seconds = int(parts[0])
+    except ValueError:
+        return PACER_FLOOR
+    return max(PACER_FLOOR, seconds)
+
+
+def arm(name, every='2h', expires=None, job=None, now=None, board=None, label=None):
     """Record the armed loop, plus the board and label it drains when the chat passes them."""
     moment = time.time() if now is None else now
     expiry = reconcile.stamp(expires) if expires else moment + WEEK
+    prior = stored(name)
     state = {'name': name, 'every': every, 'armed_at': iso(moment), 'expires_at': iso(expiry),
              'job': job, 'owner_pid': owner_pid(), 'host': socket.gethostname()}
     if board is not None:
         state['board'] = board
     if label is not None:
         state['label'] = label
+    for key in ('last_sync', 'watch_pid', 'watch_started'):
+        if key in prior:
+            state[key] = prior[key]
     target = state_path(name)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(state, indent=2) + '\n')
@@ -212,7 +240,7 @@ def main(argv=None):
         if command == 'watch':
             sub.add_argument('--pid', type=int, required=True, help='The watcher process id')
         if command == 'arm':
-            sub.add_argument('--every', default='15m')
+            sub.add_argument('--every', default='2h')
             sub.add_argument('--expires', help='ISO expiry; default is 7 days (recurring cron limit)')
             sub.add_argument('--job', help='The cron or job id this chat armed')
             sub.add_argument('--board', type=int, help='The board this loop drains')

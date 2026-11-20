@@ -51,9 +51,9 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         for check in ('loaded', 'status-read', 'armed', 'recorded', 'synced',
                       'checked', 'no-writes'):
             self.assert_check(output, 'PASS', check)
-        self.assertIn('PASS armed: CronCreate armed the loop every 15 minutes', output)
+        self.assertIn('PASS armed: a background watcher on this view, with a safety cron', output)
         self.assertIn('PASS recorded: armed in this run, expires in about 7 days, '
-                      'job 7f3a91c2 recorded', output)
+                      'job safe4c1d2 recorded', output)
         self.assertFalse(any(line.startswith('FAIL ') for line in output.splitlines()), output)
         verdict = json.loads((target / 'verdict.json').read_text())
         self.assertEqual(verdict['verdict'], 'PASS')
@@ -91,41 +91,35 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn('PASS loaded: the chat was started with /board-drain', output)
 
-    def test_loop_skill_call_passes_armed_without_a_job_check(self):
-        """Claude Code's /loop carries the interval and prompt when CronCreate is not used."""
+    def test_loop_skill_15m_fails_armed(self):
+        """A /loop arm at 15m drains the Claude plan and no longer counts as armed."""
         target = self.copy_fixture('pass')
 
-        def swap_arm(events):
+        def drop_watcher(events):
+            drop = {'w1', 'c1', 't3'}
             kept = []
             for event in events:
                 content = event.get('message', {}).get('content') or []
-                names = {block.get('name') for block in content if isinstance(block, dict)}
-                if names & {'CronCreate'}:
+                if any(block.get('tool_use_id') in drop for block in content
+                       if isinstance(block, dict)):
                     continue
-                if any(block.get('type') == 'tool_result'
-                       and block.get('tool_use_id') == 't2' for block in content):
+                if any(block.get('id') in drop for block in content if isinstance(block, dict)):
                     continue
                 kept.append(event)
-                if names & {'Skill'}:
-                    kept.append({'type': 'assistant', 'session_id': 'sid-vbd', 'message': {
-                        'role': 'assistant', 'content': [{
-                            'type': 'tool_use', 'id': 't9', 'name': 'Skill',
-                            'input': {'skill': 'loop', 'args':
-                                      '15m /pstack:poteto-mode full autopilot on this queue: '
-                                      'every workable ticket in my view '
-                                      'https://app.hypertask.ai/view/vbd-test. done when '
-                                      'skills/board-drain/drain-check --board 2060 '
-                                      '--label vvm-test passes.'}}]}})
+            kept.append({'type': 'assistant', 'session_id': 'sid-vbd', 'message': {
+                'role': 'assistant', 'content': [{
+                    'type': 'tool_use', 'id': 't9', 'name': 'Skill',
+                    'input': {'skill': 'loop', 'args':
+                              '15m /pstack:poteto-mode full autopilot on this queue: '
+                              'every workable ticket in my view '
+                              'https://app.hypertask.ai/view/vbd-test. done when '
+                              'skills/board-drain/drain-check --board 2060 '
+                              '--label vvm-test passes.'}}]}})
             return kept
-        self.rewrite_stream(target, swap_arm)
-        state_path = target / 'state.json'
-        state = json.loads(state_path.read_text())
-        state.pop('job')
-        state_path.write_text(json.dumps(state, indent=2) + '\n')
+        self.rewrite_stream(target, drop_watcher)
         code, output, _target = self.grade(target)
-        self.assertEqual(code, 0, output)
-        self.assertIn('PASS armed: /loop armed the loop every 15 minutes', output)
-        self.assertIn('PASS recorded: armed in this run, expires in about 7 days', output)
+        self.assertEqual(code, 1, output)
+        self.assertIn('FAIL armed: the chat never armed a loop', output)
 
     def test_wrong_job_fails_recorded(self):
         """An arming the chat never recorded is not an armed loop."""
@@ -137,7 +131,7 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         code, output, _target = self.grade(target)
         self.assertEqual(code, 1, output)
         self.assertIn('FAIL recorded: the state file holds job something-else, '
-                      'not the arming job 7f3a91c2', output)
+                      'not the arming job safe4c1d2', output)
 
     def test_short_expiry_fails_recorded(self):
         """A re-arm shorter than the 7-day cron limit is not the documented loop."""
@@ -194,6 +188,7 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         target = self.copy_fixture('pass')
 
         def one_shot(events):
+            events = self.replace_watcher_with_cron(events, '0 */2 * * *', 'twoh3')
             for event in events:
                 for block in event.get('message', {}).get('content') or []:
                     if isinstance(block, dict) and block.get('name') == 'CronCreate':
@@ -208,46 +203,74 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         target = self.copy_fixture('pass')
 
         def hourly(events):
-            for event in events:
-                for block in event.get('message', {}).get('content') or []:
-                    if isinstance(block, dict) and block.get('name') == 'CronCreate':
-                        block['input']['cron'] = '0 * * * *'
-            return events
+            return self.replace_watcher_with_cron(events, '0 * * * *', 'hour1')
         self.rewrite_stream(target, hourly)
         code, output, _target = self.grade(target)
         self.assertEqual(code, 1, output)
-        self.assertIn('FAIL armed: armed a job that does not fire every 15 minutes: 0 * * * *',
-                      output)
+        self.assertIn('FAIL armed: armed a job that fires more often than every 2 hours drains '
+                      'the Claude plan: 0 * * * *', output)
 
-    def test_offset_quarter_hour_cron_passes_armed(self):
-        """A measured /loop arm used 7,22,37,52: 15 minutes apart, off the hour."""
+    def test_fifteen_minute_cron_fails_armed(self):
+        """A 15-minute cron drains the Claude plan."""
         target = self.copy_fixture('pass')
 
-        def offset(events):
-            for event in events:
-                for block in event.get('message', {}).get('content') or []:
-                    if isinstance(block, dict) and block.get('name') == 'CronCreate':
-                        block['input']['cron'] = '7,22,37,52 * * * *'
-            return events
-        self.rewrite_stream(target, offset)
+        def quarter(events):
+            return self.replace_watcher_with_cron(events, '*/15 * * * *', 'qtr15')
+        self.rewrite_stream(target, quarter)
         code, output, _target = self.grade(target)
-        self.assertEqual(code, 0, output)
-        self.assert_check(output, 'PASS', 'armed')
+        self.assertEqual(code, 1, output)
+        self.assertIn('drains the Claude plan: */15 * * * *', output)
 
-    def test_quarter_hour_list_passes_armed(self):
-        """Any minute expression on the quarter hour counts as every 15 minutes."""
+    def test_two_hour_cron_passes_armed(self):
+        """Codex fallback: a plan-paced cron at least every 2 hours."""
         target = self.copy_fixture('pass')
 
-        def listed(events):
-            for event in events:
-                for block in event.get('message', {}).get('content') or []:
-                    if isinstance(block, dict) and block.get('name') == 'CronCreate':
-                        block['input']['cron'] = '0,15,30,45 * * * *'
-            return events
-        self.rewrite_stream(target, listed)
+        def every_two(events):
+            return self.replace_watcher_with_cron(events, '0 */2 * * *', 'twoh1')
+        self.rewrite_stream(target, every_two)
+        state_path = target / 'state.json'
+        state = json.loads(state_path.read_text())
+        state['every'] = '2h'
+        state['job'] = 'twoh1'
+        state_path.write_text(json.dumps(state, indent=2) + '\n')
         code, output, _target = self.grade(target)
         self.assertEqual(code, 0, output)
-        self.assert_check(output, 'PASS', 'armed')
+        self.assertIn('PASS armed: CronCreate armed the loop on the plan pace', output)
+
+    def replace_watcher_with_cron(self, events, cron, job):
+        """Drop the watcher arm from the pass fixture and leave only a fallback cron."""
+        drop = {'w1', 'c1', 't3'}
+        kept = []
+        prompt = ('/pstack:poteto-mode full autopilot on this queue: every workable ticket '
+                  'in my view https://app.hypertask.ai/view/vbd-test. each item is '
+                  'independent. done when skills/board-drain/drain-check --board 2060 '
+                  '--label vvm-test passes.')
+        for event in events:
+            content = event.get('message', {}).get('content') or []
+            if any((block.get('tool_use_id') or block.get('id')) in drop
+                   for block in content if isinstance(block, dict)):
+                continue
+            kept.append(event)
+        kept.extend([
+            {'type': 'assistant', 'session_id': 'sid-vbd', 'message': {
+                'role': 'assistant', 'content': [{
+                    'type': 'tool_use', 'id': 'f1', 'name': 'CronCreate',
+                    'input': {'cron': cron, 'prompt': prompt, 'recurring': True}}]}},
+            {'type': 'user', 'session_id': 'sid-vbd', 'message': {
+                'role': 'user', 'content': [{
+                    'type': 'tool_result', 'tool_use_id': 'f1',
+                    'content': 'Scheduled recurring job %s (Every 2 hours).' % job,
+                    'is_error': False}]}},
+            {'type': 'assistant', 'session_id': 'sid-vbd', 'message': {
+                'role': 'assistant', 'content': [{
+                    'type': 'tool_use', 'id': 'f2', 'name': 'Bash',
+                    'input': {'command': 'skills/board-drain/loop-state arm --name "VBD Test Chat" '
+                                         '--every 2h --job %s --board 2060 --label vvm-test' % job}}]}},
+            {'type': 'user', 'session_id': 'sid-vbd', 'message': {
+                'role': 'user', 'content': [{
+                    'type': 'tool_result', 'tool_use_id': 'f2',
+                    'content': 'armed, expires in 7d0h', 'is_error': False}]}}])
+        return kept
 
     def arm_with_watcher(self, target, board='2060', label='vvm-test', safety='0 */6 * * *',
                          background=True, script='skills/board-drain/watch'):
@@ -287,13 +310,18 @@ class VerifyBoardDrainGrade(unittest.TestCase):
                                    % job, 'is_error': False}]}}]
 
         def swap(events):
+            drop = {'w1', 'c1', 't2'}
             kept = []
             for event in events:
                 content = event.get('message', {}).get('content') or []
+                if any((block.get('tool_use_id') or block.get('id')) in drop
+                       for block in content if isinstance(block, dict)):
+                    continue
                 names = {block.get('name') for block in content if isinstance(block, dict)}
                 if 'CronCreate' in names:
                     continue
-                if any(block.get('type') == 'tool_result' and block.get('tool_use_id') == 't2'
+                if any(block.get('name') == 'Bash'
+                       and 'watch' in (block.get('input') or {}).get('command', '')
                        for block in content if isinstance(block, dict)):
                     continue
                 kept.append(event)
@@ -303,7 +331,6 @@ class VerifyBoardDrainGrade(unittest.TestCase):
     def test_background_watcher_with_a_safety_cron_passes_armed(self):
         """A tracked watcher job on this view, plus a safety cron, is an armed loop."""
         target = self.copy_fixture('pass')
-        self.arm_with_watcher(target)
         code, output, _target = self.grade(target)
         self.assertEqual(code, 0, output)
         self.assert_check(output, 'PASS', 'armed')
@@ -382,6 +409,7 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         target = self.copy_fixture('pass')
 
         def vague(events):
+            events = self.replace_watcher_with_cron(events, '0 */2 * * *', 'twoh2')
             for event in events:
                 for block in event.get('message', {}).get('content') or []:
                     if isinstance(block, dict) and block.get('name') == 'CronCreate':

@@ -33,7 +33,7 @@ def sibling(name, filename):
 # drain-check owns every read, every verdict and loop-state; nothing is copied here.
 drain = sibling('board_drain_check', 'drain-check')
 loop_state = drain.loop_state
-# The 15-minute tick is gone, so the watcher runs the tick's sync itself.
+# The watcher runs the tick's sync itself; the chat wakes on change or heartbeat.
 sync = sibling('board_drain_sync', 'sync')
 
 
@@ -45,10 +45,11 @@ def window(seconds):
 
 
 def heartbeat_seconds(args):
-    """Default is one poll short of the harness limit, so the watcher ends first."""
+    """Default is one poll short of the plan pace (capped at 2h), so the watcher ends first."""
     if args.heartbeat is not None:
         return args.heartbeat
-    return LIMIT - args.every
+    paced = min(loop_state.loop_interval(), LIMIT)
+    return paced - args.every
 
 
 def waiting_mark(task):

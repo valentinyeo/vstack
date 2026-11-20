@@ -657,6 +657,25 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
         self.assertEqual(loop.sync_state('HT Test'), {'at': iso(NOW), 'ok': True, 'reason': ''})
 
+    def test_arm_keeps_last_sync_and_watch_fields(self):
+        loop.record_sync('HT Test', True, 'ok', now=NOW)
+        loop.record_watch('HT Test', os.getpid(), now=NOW)
+        prior = loop.stored('HT Test')
+        state = loop.arm('HT Test', every='6h', job='cron-1', board=13556,
+                         label='Board Drain Loop', now=NOW)
+        self.assertEqual(state['last_sync'], prior['last_sync'])
+        self.assertEqual(state['watch_pid'], prior['watch_pid'])
+        self.assertEqual(state['watch_started'], prior['watch_started'])
+
+    def test_loop_interval_reads_plan_pick(self):
+        with patch.object(loop, 'PLAN_PICK', SKILL / 'loop-state'), \
+                patch.object(loop.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess(
+                ['plan-pick', '--loop-interval'], 0, '14400 claude pace ahead', '')
+            self.assertEqual(loop.loop_interval(), 14400)
+        with patch.object(loop.subprocess, 'run', side_effect=OSError('missing')):
+            self.assertEqual(loop.loop_interval(), loop.PACER_FLOOR)
+
     def test_a_dead_watcher_reads_watcher_dead(self):
         loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
         loop.record_watch('HT Test', dead_pid(), now=NOW)
@@ -780,11 +799,21 @@ class WatchTest(unittest.TestCase):
         self.assertIn('changed: VSTA-5 Doing -> Done', out)
 
     def test_a_quiet_view_exits_on_the_heartbeat_before_the_harness_limit(self):
-        code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')])
+        with patch.object(watch.loop_state, 'loop_interval', return_value=loop.PACER_FLOOR):
+            code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')])
         self.assertEqual(code, 0, out)
         self.assertEqual(out.strip(), 'heartbeat: no change in 2h')
         self.assertEqual(clock.now - NOW, 7020)
         self.assertLess(clock.now - NOW, 7200)
+
+    def test_the_default_heartbeat_follows_the_plan_pacer(self):
+        """A 1h plan pace caps under 2h and sets the heartbeat one poll short of it."""
+        paced = 3600 - 180
+        with patch.object(watch.loop_state, 'loop_interval', return_value=3600):
+            code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip(), 'heartbeat: no change in 57m')
+        self.assertEqual(clock.now - NOW, paced)
 
     def test_an_explicit_heartbeat_is_honoured(self):
         code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')],
