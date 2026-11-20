@@ -226,13 +226,16 @@ def check_loaded(evidence):
 
 RESPONSIVE_HEADING = '## Responsive mode (pasted in when this skill loads)'
 RESPONSIVE_BODY = 'The main chat talks. Background agents work.'
+RESPONSIVE_END = 'the push lands on the remote with no nudge.'
 
 
 def responsive_injected(events):
-    """True when valentin mode's load pasted responsive mode's body into the chat.
+    """True when valentin mode's load pasted responsive mode's whole body in.
 
     The skill runs a shell line at load time; the body text appears only when
-    that line ran, so an unexpanded line does not count.
+    that line ran, so an unexpanded line does not count. The paste must reach
+    the body's last sentence too, because a paste cut off part way leaves a
+    chat that looks loaded and has lost the end-of-turn rule.
     """
     for event in events:
         if event.get('type') != 'user':
@@ -240,7 +243,7 @@ def responsive_injected(events):
         for block in content_blocks(event, 'text'):
             text = block.get('text')
             if (isinstance(text, str) and RESPONSIVE_HEADING in text
-                    and RESPONSIVE_BODY in text):
+                    and RESPONSIVE_BODY in text and RESPONSIVE_END in text):
                 return True
     return False
 
