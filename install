@@ -55,18 +55,53 @@ link_one() {
 
 shopt -s nullglob
 for s in "$SRC"/*/; do
-  [ -f "$s/SKILL.md" ] || continue
   name=$(basename "$s")
+  # hypertask-work holds only scripts now; its SKILL.md moved to skills/hypertask.
+  # The reconcile and lease tools keep their old path, so the folder stays linked.
+  if [ ! -f "$s/SKILL.md" ] && [ "$name" != hypertask-work ]; then
+    continue
+  fi
   target=$(cd "$s" && pwd -P)
   for dest in "${dests[@]}"; do
     link_one "$name" "$target" "$dest"
   done
 done
 
+# Retired skills that now live inside another skill. Move a real folder to the
+# dupes store; never delete it. A link is the old install, so drop the link.
+for name in ticket hypertask-checkup; do
+  for dest in "${dests[@]}"; do
+    t="$dest/$name"
+    if [ -L "$t" ]; then
+      rm -f "$t"
+      echo "vstack install: removed retired link $t" >&2
+      continue
+    fi
+    if [ ! -e "$t" ]; then
+      continue
+    fi
+    bucket="$DUPES${dest#"$HOME"}"
+    mkdir -p "$bucket"
+    mv "$t" "$bucket/$name"
+    moved=1
+    echo "vstack install: moved $t to $bucket/$name" >&2
+  done
+done
+
+# These hooks need a ~/.claude/hooks path. This script never edits a settings
+# file: each chat adds the Stop hook to its own project's .claude/settings.json.
+
 # Claude settings call this guard at its ~/.claude/hooks path; the copy lives here (SOFT-2845).
 link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.claude/hooks"
 link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
 link_one reconcile-auto.py "$ROOT/hooks/reconcile-auto.py" "$HOME/.claude/hooks"
+
+# vps-state answers "can this server take another chat or worker", and the
+# SessionStart hook can print that answer as a session opens. This script only
+# links the script and the hook file. Each chat registers the hook in its own
+# project's .claude/settings.json, as skills/vps-state/SKILL.md says.
+link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
+link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
 
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"

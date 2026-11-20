@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "session_id": "sid-pass"}
+{"type": "assistant", "session_id": "sid-pass", "message": {"content": [{"type": "tool_use", "id": "t-view", "name": "Bash", "input": {"command": "hypertask view create --project 2060 --title \"VVM Test Agent\" --label vvm-test"}}]}}
+{"type": "user", "session_id": "sid-pass", "message": {"content": [{"type": "tool_result", "tool_use_id": "t-view", "is_error": false, "content": "public view created"}]}}
+{"type": "assistant", "session_id": "sid-pass", "message": {"content": [{"type": "tool_use", "id": "t-dry", "name": "Bash", "input": {"command": "skills/hypertask-work/reconcile --board 2060 --label vvm-test"}}]}}
+{"type": "user", "session_id": "sid-pass", "message": {"content": [{"type": "tool_result", "tool_use_id": "t-dry", "is_error": false, "content": "DRY RUN board=2060 tickets=2 unknown=0"}]}}
+{"type": "assistant", "session_id": "sid-pass", "message": {"content": [{"type": "tool_use", "id": "t-apply", "name": "Bash", "input": {"command": "skills/hypertask-work/reconcile --board 2060 --label vvm-test --apply --limit 5"}}]}}
+{"type": "user", "session_id": "sid-pass", "message": {"content": [{"type": "tool_result", "tool_use_id": "t-apply", "is_error": false, "content": "PREVIEW board=2060 tickets=2 unknown=0"}]}}

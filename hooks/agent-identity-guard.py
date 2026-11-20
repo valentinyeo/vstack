@@ -4,7 +4,7 @@ REST helper, or the claude.ai Hypertask connector.
 
 The chat's name is its Multibot name (chat-names.json via MULTIPROMPT_TAB), else its Claude session name.
 Its board login is the agent token file named after that name. Has one: use it. Has none: get one named
-exactly like the chat with /board-identity first. One name everywhere: Multibot, Claude, Hypertask.
+exactly like the chat with the /hypertask skill first. One name everywhere: Multibot, Claude, Hypertask.
 
 An `ht` write that only names /mcp/agents is agent setup (its name, its board access), not a board write,
 so it passes: an agent cannot change its own board access, the owner's saved login must. Each `ht` call is
@@ -96,18 +96,18 @@ def verdict(cmd, name, has_login):
         return None
     if not name:
         return ("BLOCKED by agent-identity-guard: this chat has no name, so this write would post as Valentin. "
-                "Name the chat, run /board-identity for a login with that name, then write with its token.")
+                "Name the chat, run the /hypertask skill for a login with that name, then write with its token.")
     if has_login:
         return (f"BLOCKED by agent-identity-guard: \"{name}\" has its own board login. Plain `hypertask` or `ht` "
                 "writes as Valentin. Run the same command with its token (--token from your login file) instead.")
     return (f"BLOCKED by agent-identity-guard: \"{name}\" has no board login, so this write would post as Valentin. "
-            f"Run /board-identity first and name the login exactly \"{name}\", then link it with "
+            f"Run the /hypertask skill first and name the login exactly \"{name}\", then link it with "
             f"`mp-agent-sync link --tmux $MULTIPROMPT_TAB --id <agent id>`. Then write with its token.")
 
 
 def self_test():
     w = "hypertask task create --project 2060 --title x"
-    assert verdict(w, "Poteto", False) and "board-identity" in verdict(w, "Poteto", False), "no login must block"
+    assert verdict(w, "Poteto", False) and "/hypertask" in verdict(w, "Poteto", False), "no login must block"
     assert "own board login" in verdict(w, "HT Finance", True), "own login must use its token"
     assert verdict("hypertask task list --project 2060", "Poteto", False) is None, "reads pass"
     assert verdict("~/.local/bin/hypertask " + w[10:], "Poteto", False), "the full CLI path must be caught"

@@ -32,7 +32,7 @@ class AgentIdentityGuard(unittest.TestCase):
     def test_a_write_as_valentin_from_a_named_chat_is_refused(self):
         code, why = self.run_guard(WRITE, name='Poteto')
         self.assertEqual(code, 2)
-        self.assertIn('board-identity', why)
+        self.assertIn('/hypertask', why)
 
     def test_a_write_with_an_agent_login_passes(self):
         for command in ('HT_TOKEN="$T" ' + WRITE, 'hypertask --token "$T" task create --project 2060 --title x'):
