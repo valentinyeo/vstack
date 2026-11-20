@@ -93,7 +93,10 @@ def main():
         return 0
     if not isinstance(data, dict) or data.get("tool_name") != "Bash":
         return 0
-    why = verdict((data.get("tool_input") or {}).get("command") or "")
+    tool_input = data.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return 0
+    why = verdict(tool_input.get("command") or "")
     if not why:
         return 0
     print(why, file=sys.stderr)

@@ -45,7 +45,9 @@ class PlanPickOnly(unittest.TestCase):
 
     def test_other_tools_and_unreadable_input_pass(self):
         for payload in [json.dumps({'tool_name': 'Write', 'tool_input': {'command': 'codex exec -C /tmp/x b'}}),
-                        'not json', json.dumps({'tool_name': 'Bash'})]:
+                        'not json', json.dumps({'tool_name': 'Bash'}),
+                        json.dumps({'tool_name': 'Bash', 'tool_input': 'x'}),
+                        json.dumps({'tool_name': 'Bash', 'tool_input': None})]:
             with self.subTest(payload=payload):
                 self.assertEqual(run(payload=payload).returncode, 0)
 
