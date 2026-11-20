@@ -26,6 +26,7 @@ Nobody pushes to main.
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | The verifier's model family differs from every `Author model:` line in the PR body | `scripts/pick-verifier-model`, `tests/test_pick_verifier_model.py` |
+| Each chat tidies its own open PRs | `skills/pr-housekeeping/pr-queue`, `tests/test_pr_queue.py` |
 | A separate verifier posts a verdict before merge | Review procedure; branch protection is not configured here |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
