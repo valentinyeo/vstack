@@ -783,7 +783,9 @@ class TmuxRules(Base):
     def test_young_private_server_is_kept(self):
         sock = self.box.tmux_socket('delta-test-young')
         self.box.start_tmux(sock, command='sleep 600')
-        payload = self.box.payload('--only', 'tmux', tmux_ages=self.AGES)
+        ages = dict(self.AGES)
+        ages['VPS_TIDY_TMUX_SERVER_AGE'] = DAY
+        payload = self.box.payload('--only', 'tmux', tmux_ages=ages)
         item = next(i for i in payload['items'] if i.get('socket') == sock)
         self.assertEqual(item['action'], 'keep')
         self.assertTrue(tmux_alive(sock))
