@@ -74,6 +74,11 @@ class ReconcileTest(unittest.TestCase):
         r.FAILED_REPOS.clear()
         r.reset_github_count()
         self.addCleanup(r.PULLS.clear)
+        for patcher in (
+                patch.object(r, 'process_tickets', return_value=set()),
+                patch.object(r, 'product_workers', return_value=set())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_parked_and_unknown_columns_never_move(self):
         for column in ('Not now', 'Some future column', ''):
@@ -1466,6 +1471,42 @@ class LeaseTest(unittest.TestCase):
         self.directory = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
         self.path = self.directory / 'SOFT-1.json'
+        self.spawned = []
+        for patcher in (
+                patch.object(lease.reconcile, 'LEASES', self.directory),
+                patch.object(lease.session, 'login_for_session',
+                              return_value=self.login()),
+                patch.object(lease, 'spawn_card',
+                             side_effect=lambda command, env: self.spawned.append(
+                                 (command, dict(env))))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def login(self):
+        token = self.directory / 'test-chat-agent-token'
+        token.write_text('secret\n')
+        return ('Test Chat', token)
+
+    @staticmethod
+    def write_start_fails_child_gone():
+        """Model child dead before the first lease write; end still clears."""
+        def fake(key, action, pid, directory=None, now=None):
+            if action == 'start':
+                raise ValueError('worker PID does not exist')
+        return fake
+
+    @staticmethod
+    def write_child_gone_before_beat():
+        """Start and end succeed; every beat sees a dead worker (race-safe under load)."""
+        def fake(key, action, pid, directory=None, now=None):
+            if action == 'start':
+                return
+            if action == 'beat':
+                raise ValueError('worker PID does not exist')
+            if action == 'end':
+                return
+            raise AssertionError(f'unexpected lease write {action!r}')
+        return fake
 
     def seed(self, **overrides):
         value = dict(pid=os.getpid(), host=socket.gethostname(), started=NOW - 100, last_beat=NOW)
@@ -1538,7 +1579,8 @@ class LeaseTest(unittest.TestCase):
         child.poll.return_value = 0
         with patch.object(sys, 'argv', ['lease', 'SOFT-1', 'run', '--', 'true']), \
                 patch.object(lease.subprocess, 'Popen', return_value=child), \
-                patch.object(lease, 'write', side_effect=[ValueError('worker PID does not exist'), None]):
+                patch.object(lease, 'sync_card'), \
+                patch.object(lease, 'write', side_effect=self.write_start_fails_child_gone()):
             self.assertEqual(lease.main(), 0)
         child.terminate.assert_not_called()
 
@@ -1547,33 +1589,25 @@ class LeaseTest(unittest.TestCase):
         child.poll.side_effect = [None, 0]
         with patch.object(sys, 'argv', ['lease', 'SOFT-1', 'run', '--', 'true']), \
                 patch.object(lease.subprocess, 'Popen', return_value=child), \
-                patch.object(lease, 'write', side_effect=[None, ValueError('worker PID does not exist'), None]):
+                patch.object(lease, 'sync_card'), \
+                patch.object(lease, 'write', side_effect=self.write_child_gone_before_beat()):
             self.assertEqual(lease.main(), 0)
         child.terminate.assert_not_called()
 
-    def login(self):
-        token = self.directory / 'test-chat-agent-token'
-        token.write_text('secret\n')
-        return ('Test Chat', token)
-
-    def lease_main(self, argv, spawned=None):
+    def lease_main(self, argv):
         """Run one lease action in this process, with its card sync caught, not started."""
-        spawned = self.calls if spawned is None else spawned
-        with patch.object(lease.reconcile, 'LEASES', self.directory), \
-                patch.object(lease.session, 'login_for_session', return_value=self.login()), \
-                patch.object(lease, 'spawn_card', side_effect=lambda command, env: spawned.append((command, dict(env)))), \
-                patch.object(sys, 'argv', ['lease', *argv]):
+        with patch.object(sys, 'argv', ['lease', *argv]):
             return lease.main()
 
     def test_start_and_end_each_spawn_one_card_sync(self):
-        self.calls = []
+        self.spawned = []
         self.assertEqual(self.lease_main(['SOFT-1', 'start', '--pid', str(os.getpid())]), 0)
         self.assertTrue(self.path.is_file(), 'start still writes the lease')
         self.assertEqual(self.lease_main(['SOFT-1', 'end', '--pid', str(os.getpid())]), 0)
         self.assertFalse(self.path.is_file(), 'end still removes the lease')
-        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.calls],
+        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.spawned],
                          ['start', 'end'])
-        for command, env in self.calls:
+        for command, env in self.spawned:
             self.assertEqual(command[1:], [str(ROOT / 'skills/hypertask-work/reconcile'),
                                            '--ticket', 'SOFT-1', '--apply', '--limit', '1'])
             self.assertEqual(env['HT_TOKEN'], 'secret')
@@ -1583,14 +1617,14 @@ class LeaseTest(unittest.TestCase):
                              f'unix:path=/run/user/{os.getuid()}/bus')
 
     def test_run_and_watch_sync_at_their_own_start_and_end(self):
-        self.calls = []
+        self.spawned = []
         self.assertEqual(self.lease_main(['SOFT-1', 'run', '--', sys.executable, '-c', 'pass']), 0)
-        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.calls],
+        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.spawned],
                          ['start', 'end'])
-        self.calls = []
+        self.spawned = []
         with patch.object(lease.reconcile, 'pid_alive', side_effect=[True, False]):
             self.assertEqual(self.lease_main(['SOFT-1', 'watch', '--pid', '12345']), 0)
-        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.calls],
+        self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.spawned],
                          ['start', 'end'])
 
     def sync_start(self, assignees, take_code=0):
@@ -1607,9 +1641,6 @@ class LeaseTest(unittest.TestCase):
 
         with patch.object(lease.shutil, 'which', return_value='/bin/hypertask'), \
                 patch.object(lease.subprocess, 'run', side_effect=fake), \
-                patch.object(lease.reconcile, 'LEASES', self.directory), \
-                patch.object(lease.session, 'login_for_session', return_value=self.login()), \
-                patch.object(lease, 'spawn_card'), \
                 patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
             self.assertEqual(lease.main(), 0)
         return calls
@@ -1638,29 +1669,28 @@ class LeaseTest(unittest.TestCase):
         self.assertTrue(self.path.is_file(), 'the lease is still written')
 
     def test_no_login_spawns_nothing_and_the_lease_still_works(self):
-        with patch.object(lease.reconcile, 'LEASES', self.directory), \
-                patch.object(lease.session, 'login_for_session', return_value=None), \
-                patch.object(lease, 'spawn_card') as spawn, \
+        self.spawned = []
+        with patch.object(lease.session, 'login_for_session', return_value=None), \
                 patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
             self.assertEqual(lease.main(), 0)
         self.assertTrue(self.path.is_file(), 'a missing login never stops the lease')
-        spawn.assert_not_called()
-        self.assertFalse(lease.sync_card('SOFT-1', 'start', {'HOME': str(self.directory)}))
+        self.assertEqual(self.spawned, [])
+        with patch.object(lease.session, 'login_for_session', return_value=None):
+            self.assertFalse(lease.sync_card('SOFT-1', 'start', {'HOME': str(self.directory)}))
 
     def test_a_failed_spawn_never_fails_the_lease(self):
-        with patch.object(lease.reconcile, 'LEASES', self.directory), \
-                patch.object(lease.session, 'login_for_session', return_value=self.login()), \
-                patch.object(lease, 'spawn_card', side_effect=OSError('no fork')), \
+        with patch.object(lease, 'spawn_card', side_effect=OSError('no fork')), \
                 patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
             self.assertEqual(lease.main(), 0)
         self.assertTrue(self.path.is_file())
 
     def test_a_missing_token_spawns_nothing(self):
-        tokenless = ('Test Chat', self.directory / 'absent-agent-token')
-        with patch.object(lease, 'spawn_card') as spawn:
+        self.spawned = []
+        missing = ('Test Chat', self.directory / 'absent-agent-token')
+        with patch.object(lease.session, 'login_for_session', return_value=missing):
             self.assertFalse(lease.sync_card('SOFT-1', 'start', {
                 'HOME': str(self.directory), 'MULTIPROMPT_TAB': 'live-test'}))
-        spawn.assert_not_called()
+        self.assertEqual(self.spawned, [])
 
     def test_wrapper_registers_running_child(self):
         env = {**os.environ, 'MULTIPROMPT_TAB': '', 'FLEET_LEASE_DIR': str(self.directory)}
