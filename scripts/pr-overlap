@@ -150,6 +150,11 @@ def list_open_pulls(owner, repo, token):
     return pulls
 
 
+def get_open_pull(owner, repo, number, token):
+    url = f'https://api.github.com/repos/{owner}/{repo}/pulls/{number}'
+    return api_request(url, token)
+
+
 def pull_files(owner, repo, number, token):
     files = []
     page = 1
@@ -184,6 +189,14 @@ def load_live(repo, pr_number, token, guarded_path):
     owner, name = repo.split('/', 1)
     guarded = read_guarded(guarded_path)
     raw_pulls = list_open_pulls(owner, name, token)
+    listed = {raw['number'] for raw in raw_pulls}
+    if pr_number not in listed:
+        # The pulls list can lag behind GET /pulls/{number} right after metadata
+        # or head updates (for example a body edit followed by a sync push).
+        raw = get_open_pull(owner, name, pr_number, token)
+        if raw.get('state') != 'open':
+            raise SystemExit(f'pr-overlap: PR #{pr_number} is not open in {repo}')
+        raw_pulls.append(raw)
     rows = []
     file_cache = {}
     for raw in raw_pulls:
