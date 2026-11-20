@@ -9,7 +9,7 @@ skill-word-budget-reason: The index must name where every hidden skill is read, 
 
 # Valentin mode
 
-If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat without bypass gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
+If no rules appear under Responsive mode below, load `responsive-mode` before any other tool. A Codex, Cursor or pi chat without bypass gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
 ## Responsive mode (pasted in when this skill loads)
 
@@ -45,7 +45,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 ## Working
 
 - **Hypertask gaps:** file one at once with `hypertask feedback` (see the `/hypertask` skill), then send him the link.
-- **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class gets fixed in that repo at the highest level: architecture, then lint or test, docs last. Add a row to its rule table.
+- **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs last. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verifying:** every app has one `verify-<app>` skill. Every Done when names its proof. A behaviour PR carries proof that fits: screenshot or video for UI, transcript for CLI, response body for API. No proof, no PASS.
@@ -64,21 +64,23 @@ Design work follows [designing.md](designing.md).
 
 ## Changing the rules
 
-- **pstack first, write last:** look for the rule in pstack, then in the domain's stack. Add only the gap, and name what you checked in the commit message.
+- **pstack first, write last:** look for the rule in pstack, then in the domain's stack. Add only the gap; name what you checked in the commit message.
 - **Where a correction lands:** a correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in vstack.
 
 ## Skill index
 
-These skills hide from the skill list. Read the path shown; the Skill tool refuses hidden skills. Slash commands still work.
+Hidden skills: read the path shown, since the Skill tool refuses them. Slash commands still work.
 
-- writing for Valentin, plain words for a non-coder, ticket comments and PR text -> read ../unjargon/SKILL.md
+- plain words for him, ticket comments and PR text -> read ../unjargon/SKILL.md
 - rewrite a reply for a product owner, he says "pospeak" or "too technical" -> read ../pospeak/SKILL.md
-- a report, plan or research page for a person to scan -> read ../report-page/SKILL.md
+- a report, plan or research page to scan -> read ../report-page/SKILL.md
 - text for the web, landing pages, docs, UI copy -> read ../web-writing/SKILL.md
 - any English writing or editing in plain style -> read ../zinsser-english-style/SKILL.md
 - German text -> read ../schneider-deutsch-stil/SKILL.md
 - copyedit a draft he wrote himself without changing his voice -> read ../ptacek-copyedit/SKILL.md
 - set an agent up as design lead for a product repo -> read ../design-lead-setup/SKILL.md
 - put a lead session in Slack #fleet -> read ../join-slack/SKILL.md
+- a task he wants done deeper -> /deeper
+- a big task to run alone, one report at the end -> /deep-work
 - the chat stays free while workers run -> responsive-mode (already loaded in the first step)
 - ticket and board rules -> the /hypertask skill (not hidden)
