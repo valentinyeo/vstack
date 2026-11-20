@@ -24,6 +24,7 @@ Nobody pushes to main.
 | Promised work starts in that turn | `hooks/said-started.py` |
 | Advisors respect configured project boundaries | `hooks/out-of-bounds.py` |
 | Claude helpers start only when plan-pick --claude-helper allows | `hooks/claude-helper-gate.py` |
+| Lane hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | Each chat tidies its own open PRs | `skills/pr-housekeeping/pr-queue`, `tests/test_pr_queue.py` |

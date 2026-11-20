@@ -8,6 +8,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / 'hooks/claude-helper-gate.py'
+FIXTURES = ROOT / 'tests/fixtures/valentin-mode'
+LOADED = FIXTURES / 'command.jsonl'
+PLAIN = FIXTURES / 'plain.jsonl'
 
 
 def stub(where, code, output):
@@ -17,7 +20,7 @@ def stub(where, code, output):
     return str(path)
 
 
-def run_hook(args=(), picker=None, chat=None, tool='Agent'):
+def run_hook(args=(), picker=None, chat=None, tool='Agent', transcript=LOADED):
     env = {'PATH': os.environ['PATH'], 'HOME': os.environ.get('HOME', '/tmp')}
     for key in ('MULTIPROMPT_TAB', 'TMUX'):
         env.pop(key, None)
@@ -25,7 +28,10 @@ def run_hook(args=(), picker=None, chat=None, tool='Agent'):
         env[chat] = 'tab-1'
     if picker:
         env['PLAN_PICK_BIN'] = picker
-    return subprocess.run([sys.executable, str(HOOK), *args], input=json.dumps({'tool_name': tool, 'tool_input': {}}),
+    body = {'tool_name': tool, 'tool_input': {}}
+    if transcript is not None:
+        body['transcript_path'] = str(transcript)
+    return subprocess.run([sys.executable, str(HOOK), *args], input=json.dumps(body),
                           text=True, capture_output=True, env=env, cwd=str(ROOT))
 
 
@@ -74,6 +80,26 @@ class ClaudeHelperGate(unittest.TestCase):
             result = run_hook(picker=picker)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {})
+
+    def test_a_chat_that_never_loaded_valentin_mode_passes(self):
+        with tempfile.TemporaryDirectory() as where:
+            picker = stub(where, 3, 'Claude helper: refused. Why: Claude is pace 1.40x is above 1.1x.')
+            for transcript in (PLAIN, FIXTURES / 'missing.jsonl', None):
+                with self.subTest(transcript=transcript):
+                    result = run_hook(picker=picker, chat='MULTIPROMPT_TAB', transcript=transcript)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), {})
+
+    def test_a_skill_call_or_skill_body_loads_the_gate(self):
+        with tempfile.TemporaryDirectory() as where:
+            picker = stub(where, 3, 'Claude helper: refused. Why: Claude is pace 1.40x is above 1.1x.')
+            for fixture in ('skill-call.jsonl', 'base-dir.jsonl'):
+                with self.subTest(fixture=fixture):
+                    result = run_hook(picker=picker, chat='TMUX', transcript=FIXTURES / fixture)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    payload = json.loads(result.stdout)['hookSpecificOutput']
+                    self.assertEqual(payload['permissionDecision'], 'deny')
+                    self.assertIn('claude-helper-gate', payload['permissionDecisionReason'])
 
 
 if __name__ == '__main__':

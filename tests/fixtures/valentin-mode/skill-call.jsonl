@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Skill","input":{"skill":"valentin-mode"}}]},"uuid":"2a1","timestamp":"2026-11-20T11:00:00.000Z","sessionId":"s-skill"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"Skill loaded."}]},"uuid":"2a2","timestamp":"2026-11-20T11:00:01.000Z","sessionId":"s-skill"}
