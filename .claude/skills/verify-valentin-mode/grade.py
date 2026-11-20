@@ -224,12 +224,35 @@ def check_loaded(evidence):
                   '(three tools version, no self-start)')
 
 
+RESPONSIVE_HEADING = '## Responsive mode (pasted in when this skill loads)'
+RESPONSIVE_BODY = 'The main chat talks. Background agents work.'
+
+
+def responsive_injected(events):
+    """True when valentin mode's load pasted responsive mode's body into the chat.
+
+    The skill runs a shell line at load time; the body text appears only when
+    that line ran, so an unexpanded line does not count.
+    """
+    for event in events:
+        if event.get('type') != 'user':
+            continue
+        for block in content_blocks(event, 'text'):
+            text = block.get('text')
+            if (isinstance(text, str) and RESPONSIVE_HEADING in text
+                    and RESPONSIVE_BODY in text):
+                return True
+    return False
+
+
 def check_responsive(events):
     """PASS when the chat loads responsive mode, alone or as valentin mode's first step."""
     if any(responsive_invoked(tool_use) for tool_use in tool_uses(events)):
         return PASS, 'responsive mode loaded by the Skill tool'
     if responsive_prompt(events):
         return PASS, 'responsive mode started by /responsive-mode'
+    if responsive_injected(events):
+        return PASS, 'responsive mode pasted in by /valentin-mode'
     return FAIL, 'responsive mode not loaded'
 
 

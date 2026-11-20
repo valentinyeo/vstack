@@ -7,7 +7,11 @@ disable-model-invocation: true
 
 # Valentin mode
 
-First step, before any other tool: load the `pstack:poteto-mode` and `responsive-mode` skills. This skill holds only Valentin's own rules. A repo's AGENTS.md holds facts about that repo, never a copy of these rules.
+Responsive mode is part of this skill: its rules are pasted below when this skill loads, so no second load is needed and none can be skipped. Follow them from your first reply. If no rules appear under that heading (a chat without bypass permissions blocks the paste), load the `responsive-mode` skill before any other tool. pstack `poteto-mode` loads only when Valentin types `/pstack:poteto-mode`; until then follow its principles without its playbook. This skill holds only Valentin's own rules. A repo's AGENTS.md holds facts about that repo, never a copy of these rules.
+
+## Responsive mode (pasted in when this skill loads)
+
+!`awk 'c>=2{print} /^---$/{c++}' "${CLAUDE_SKILL_DIR}/../responsive-mode/SKILL.md"`
 
 ## Talking to the user
 

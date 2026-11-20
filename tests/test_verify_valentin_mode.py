@@ -116,6 +116,44 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assertIn('PASS responsive: responsive mode started by /responsive-mode',
                       result.stdout)
 
+    def grade_with_prompt(self, text):
+        target = self.temp_dir() / 'injected'
+        shutil.copytree(FIXTURES / 'no-responsive', target)
+        events = [json.loads(line) for line in
+                  (target / 'stream.jsonl').read_text().splitlines() if line.strip()]
+        events.insert(1, {'type': 'user', 'session_id': 'sid-no-responsive',
+                          'message': {'content': [{'type': 'text', 'text': text}]}})
+        (target / 'stream.jsonl').write_text(
+            '\n'.join(json.dumps(event) for event in events) + '\n')
+        return subprocess.run([sys.executable, str(GRADE), str(target)],
+                              capture_output=True, text=True, check=False)
+
+    def test_responsive_pasted_by_valentin_mode_grades_pass(self):
+        """valentin-mode pastes responsive mode's body at load; that counts as loaded."""
+        body = (ROOT / 'skills/responsive-mode/SKILL.md').read_text().split('---', 2)[2]
+        result = self.grade_with_prompt(
+            'Base directory for this skill: x\n\n## Responsive mode (pasted in when '
+            'this skill loads)\n\n' + body)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('PASS responsive: responsive mode pasted in by /valentin-mode',
+                      result.stdout)
+
+    def test_unexpanded_paste_line_fails_responsive(self):
+        """The raw shell line without its output means nothing was pasted."""
+        result = self.grade_with_prompt(
+            '## Responsive mode (pasted in when this skill loads)\n\n'
+            '!`awk \'c>=2{print} /^---$/{c++}\' "x/../responsive-mode/SKILL.md"`')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL responsive: responsive mode not loaded', result.stdout)
+
+    def test_valentin_mode_pastes_responsive_mode(self):
+        """The installed skill must carry the paste line pointing at responsive-mode."""
+        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
+        self.assertIn('## Responsive mode (pasted in when this skill loads)', text)
+        self.assertIn('"${CLAUDE_SKILL_DIR}/../responsive-mode/SKILL.md"', text)
+        self.assertIn('The main chat talks. Background agents work.',
+                      (ROOT / 'skills/responsive-mode/SKILL.md').read_text())
+
     def test_not_loaded_fixture_fails_loaded(self):
         code, output, _target = self.grade_fixture('not-loaded')
         self.assertEqual(code, 1, output)
