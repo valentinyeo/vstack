@@ -50,10 +50,25 @@ def todo(key, age=1800, waiting_on=None, blocker=None, comments=()):
     return {'task': task, 'comments': list(comments)}
 
 
-def doing(key, age=300, section='Doing'):
+def agent_assignee(name='Poteto'):
+    """The shape `task get` sends for a ticket an agent holds."""
+    return {'id': 6, 'email': '', 'displayName': name, 'type': 'agent',
+            'agentId': '8658ed82-c372-4e10-8410-0989067bb08f',
+            'agent': {'id': '8658ed82-c372-4e10-8410-0989067bb08f', 'displayName': name}}
+
+
+def doing(key, age=300, section='Doing', assignees=None):
     task = {'ticketNumber': key, 'projectId': 2060, 'section': section,
             'labels': [{'name': 'Poteto'}], 'waitingOnUserId': None,
-            'blockerCommentId': None, 'updatedAt': iso(NOW - age)}
+            'blockerCommentId': None, 'updatedAt': iso(NOW - age),
+            'assignees': [agent_assignee()] if assignees is None else assignees}
+    return {'task': task, 'comments': []}
+
+
+def vsta4():
+    """VSTA-4 as `hypertask --json task get VSTA-4` sent it: an agent holds it."""
+    task = json.loads((FIXTURES / 'VSTA-4.task.json').read_text())['tasks'][0]
+    task['updatedAt'] = iso(NOW - 300)
     return {'task': task, 'comments': []}
 
 
@@ -76,10 +91,10 @@ class CheckTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def run_check(self, rows, *extra, alive=False):
+    def run_check(self, rows, *extra, alive=False, board=2060, label='Poteto'):
         fixture = self.directory / 'fixture.json'
         fixture.write_text(json.dumps(rows))
-        argv = ['--board', '2060', '--label', 'Poteto', '--fixture', str(fixture),
+        argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
                 '--now', iso(NOW), *extra]
         out = io.StringIO()
         with patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
@@ -161,6 +176,44 @@ class CheckTest(unittest.TestCase):
     def test_a_live_lease_counts_even_on_an_old_doing_ticket(self):
         code, out = self.run_check([doing('SOFT-2907', age=7200)], alive=True)
         self.assertEqual(code, 0, out)
+
+    def test_an_assigned_ticket_in_a_working_column_is_not_flagged(self):
+        code, out = self.run_check([vsta4()], board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('unassigned:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_an_unassigned_ticket_in_a_working_column_is_flagged(self):
+        row = vsta4()
+        row['task']['assignees'] = []
+        code, out = self.run_check([row], board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 1, out)
+        self.assertIn('unassigned: VSTA-4 in AI Review has no agent assigned. Assign your own '
+                      'agent login to it (task assign VSTA-4 --self, with your token).', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_only_a_human_assignee_still_counts_as_unassigned(self):
+        row = vsta4()
+        row['task']['assignees'] = [{'id': 6, 'email': 'valentin.yeo@gmail.com',
+                                     'displayName': 'Valentin Yeo', 'type': 'user'}]
+        code, out = self.run_check([row], board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 1, out)
+        self.assertIn('unassigned: VSTA-4 in AI Review has no agent assigned.', out)
+
+    def test_every_working_column_needs_an_agent(self):
+        for column in ('Doing', 'Building', 'Checks', 'AI Review', 'Verifier'):
+            with self.subTest(column=column):
+                row = doing('SOFT-2917', section=column, assignees=[])
+                code, out = self.run_check([row])
+                self.assertEqual(code, 1, out)
+                self.assertIn(f'unassigned: SOFT-2917 in {column} has no agent assigned.', out)
+
+    def test_an_unassigned_todo_ticket_is_not_an_unassigned_finding(self):
+        # Todo is where a ticket waits for an owner; only a working column needs one.
+        row = todo('SOFT-2918')
+        row['task']['assignees'] = []
+        code, out = self.run_check([row])
+        self.assertNotIn('unassigned:', out)
 
     def test_a_todo_with_no_timestamp_is_never_stale(self):
         # The API may send updatedAt null; that is not a crash and not an age.
