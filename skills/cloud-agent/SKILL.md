@@ -22,7 +22,7 @@ Prior art: pstack `swarm` spawns workers with `environment: "cloud"`, and `potet
 | `codex` | Code workers | ChatGPT plan allowance |
 | `claude` | Claude-native jobs only, after `plan-pick --claude-helper` exits 0 | Claude plan allowance |
 
-Code workers never run on Claude (`~/.claude/rules/pstack-models.md`). Never ask Valentin for a Cursor API key or a spend limit: the Cursor CLI login launches cloud agents.
+Code workers never run on Claude, per the pstack models rule. Never ask Valentin for a Cursor API key or a spend limit: the Cursor CLI login launches cloud agents.
 
 ## Run
 
@@ -40,5 +40,5 @@ The result is a claim. Check the PR diff and its checks before calling the work 
 ## Traps
 
 - Cursor: `cursor-agent -p "& ..."` runs locally. Only the interactive CLI hands off, after `&` is typed alone. The script does this.
-- Codex: each repo needs a cloud environment, created once at https://chatgpt.com/codex. Map it in `~/.config/cloud-agent/codex-envs.json`.
+- Codex: each repo needs a cloud environment, created once at https://chatgpt.com/codex. Map it in the codex-envs file under the cloud-agent config folder; the launcher names the path when it is missing.
 - Claude: the repo needs the Claude GitHub App, or the session cannot push.
