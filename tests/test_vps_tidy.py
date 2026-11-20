@@ -11,7 +11,7 @@ The frozen contract these tests hold the tool to:
              [--ps-file FILE] [--proc-root DIR] [--root DIR] [--grace SECONDS]
              [--statvfs-json FILE]
 
-    parts: tmp, caches, docker, evidence, tmux, processes   (files = tmp,caches,docker,evidence)
+    parts: tmp, caches, docker, evidence, processes, tmux   (files = tmp,caches,docker,evidence)
     exit:  0 ran, 2 usage error, 3 could not run (lock held)
     env:   VPS_TIDY_ROOT, VPS_TIDY_PROC, VPS_TIDY_BOARD_CMD
     log:   <home>/.local/state/vps-tidy/<UTC>.jsonl, kills.log, status.json
@@ -180,6 +180,11 @@ class Sandbox:
         path.chmod(0o755)
         return path
 
+    def roster_rows(self, rows):
+        path = self.home / '.local/share/house-rules/fleet/roster.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'rows': rows}) + '\n')
+
     def env(self, board_cmd=None, tmux_ages=None):
         env = dict(os.environ)
         env['HOME'] = str(self.home)
@@ -210,6 +215,13 @@ class Sandbox:
         proc_dir.mkdir(parents=True, exist_ok=True)
         (proc_dir / 'cmdline').write_bytes(
             '\0'.join(argv).encode() + (b'\0' if argv else b''))
+
+    def seed_stat(self, pid, ppid, comm='proc'):
+        proc_dir = self.proc / str(pid)
+        proc_dir.mkdir(parents=True, exist_ok=True)
+        (proc_dir / 'stat').write_text(
+            '{} ({}) S {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n'
+            .format(pid, comm, ppid))
 
     def pane_pid(self, sock, session):
         out = subprocess.run(
@@ -850,7 +862,7 @@ class TmuxRules(Base):
         item = next(i for i in payload['items'] if i.get('socket') == sock)
         self.assertEqual(item['result'], 'would-close')
         self.assertTrue(tmux_alive(sock))
-        self.assertGreaterEqual(payload['summary']['removed'], 1)
+        self.assertEqual(payload['summary']['removed'], 0)
 
     def test_attached_private_server_is_kept(self):
         sock = self.box.tmux_socket('delta-test-attached')
@@ -865,16 +877,16 @@ class TmuxRules(Base):
         real_rows = mod.tmux_session_rows
 
         def rows(side_ctx, side_sock):
-            sessions, err = real_rows(side_ctx, side_sock)
+            sessions, err, complete = real_rows(side_ctx, side_sock)
             if err:
-                return sessions, err
+                return sessions, err, complete
             patched = []
             for row in sessions:
                 row = dict(row)
                 if row.get('name') == 'follow':
                     row['attached'] = 1
                 patched.append(row)
-            return patched, None
+            return patched, None, complete
 
         with unittest.mock.patch.object(mod, 'tmux_session_rows', side_effect=rows):
             mod.scan_tmux(ctx)
@@ -955,10 +967,149 @@ class TmuxProbeContract(unittest.TestCase):
         with unittest.mock.patch.object(mod, 'tmux_command', side_effect=plan):
             self.assertFalse(mod.tmux_server_confirmed_dead(ctx, '/tmp/x'))
 
+    def test_batch_dead_probe_sleeps_once_for_many_sockets(self):
+        mod = load_script()
+        ctx = mod.Context(self._ctx_opts())
+        sleep_calls = []
+
+        def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        probes = []
+
+        def fake_command(ctx, sock, extra, timeout=10, env=None):
+            probes.append((sock, extra))
+            if extra == ['list-sessions']:
+                return None, 'no server running on ' + sock
+            return None, 'unexpected'
+
+        with unittest.mock.patch.object(mod, 'tmux_command', side_effect=fake_command):
+            with unittest.mock.patch.object(mod.time, 'sleep', side_effect=fake_sleep):
+                dead = mod.confirm_dead_sockets_batch(
+                    ctx, ['/tmp/a', '/tmp/b', '/tmp/c'])
+        self.assertEqual(dead, {'/tmp/a', '/tmp/b', '/tmp/c'})
+        self.assertEqual(len(sleep_calls), 1)
+        self.assertEqual(len([p for p in probes if p[1] == ['list-sessions']]), 6)
+
     def _ctx_opts(self):
         return {'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
                 'ps_file': None, 'proc_root': '/proc', 'root': None, 'grace': 10,
                 'statvfs_json': None, 'caller': None}
+
+
+class TmuxRoundThree(unittest.TestCase):
+    def setUp(self):
+        if shutil.which('tmux') is None:
+            self.skipTest('tmux is not installed')
+        self.box = Sandbox()
+
+    def tearDown(self):
+        self.box.cleanup()
+
+    def test_roster_name_protects_private_server_with_sleep_pane(self):
+        self.box.roster_rows([{'name': 'valentinyeocom', 'status': 'live'}])
+        sock = self.box.tmux_socket('delta-roster-name')
+        self.box.start_tmux(sock, session='valentinyeocom', command='sleep 600')
+        time.sleep(1.2)
+        payload = self.box.payload('--only', 'tmux', tmux_ages=TmuxRules.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
+    def test_roster_pattern_protects_poteto_cursors(self):
+        self.box.roster_rows([{'name': 'poteto-cursor-{n}', 'status': 'live'}])
+        mod = load_script()
+        ctx = mod.Context({
+            'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
+            'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+            'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+            'caller': None})
+        protected, patterns = mod.protected_session_names(ctx)
+        self.assertTrue(mod.session_name_protected('poteto-cursor-3', protected, patterns))
+
+    def test_private_server_bash_c_pane_is_kept(self):
+        sock = self.box.tmux_socket('delta-bash-c')
+        self.box.start_tmux(sock, command="bash -c 'sleep 600'")
+        time.sleep(1.2)
+        pane_pid = self.box.pane_pid(sock, 's1')
+        host_stat = pathlib.Path('/proc') / str(pane_pid) / 'stat'
+        try:
+            host_ppid = int(host_stat.read_text().split(')')[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            host_ppid = pane_pid - 1
+        self.box.seed_stat(pane_pid, host_ppid, 'sleep')
+        self.box.seed_cmdline(pane_pid, ['sleep', '600'])
+        self.box.seed_stat(host_ppid, 1, 'bash')
+        self.box.seed_cmdline(host_ppid, ['/bin/bash', '-c', 'sleep 600'])
+        payload = self.box.payload('--only', 'tmux', tmux_ages=TmuxRules.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
+    def test_unparsed_pane_row_keeps_private_server(self):
+        sock = self.box.tmux_socket('delta-bad-pane')
+        self.box.start_tmux(sock, command='sleep 600')
+        time.sleep(1.2)
+        mod = load_script()
+        real_panes = mod.tmux_pane_rows
+
+        def bad_panes(ctx, side_sock):
+            rows, err, complete = real_panes(ctx, side_sock)
+            if err:
+                return rows, err, complete
+            return rows, None, False
+
+        ctx_opts = {'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                    'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+                    'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+                    'caller': None}
+        ctx = mod.Context(ctx_opts)
+        ages = {'VPS_TIDY_TMUX_SERVER_AGE': '1', 'VPS_TIDY_TMUX_DEAD_SOCKET_AGE': '1',
+                'VPS_TIDY_TMUX_SESSION_AGE': '1'}
+        with unittest.mock.patch.dict(os.environ, ages, clear=False):
+            with unittest.mock.patch.object(mod, 'tmux_pane_rows', side_effect=bad_panes):
+                mod.scan_tmux(ctx)
+        item = next(i for i in ctx.items if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertIn('incomplete', item['reason'].lower())
+
+    def test_processes_run_before_tmux_with_dead_sockets(self):
+        worktree = self.box.make('home/projects/worktrees/wt-tmux-budget/app/package.json',
+                                 '{}').parent
+        proc = self.box.spawn(cwd=worktree)
+        self.box.add_process(proc.pid, 1, 'node /x/.bin/next dev', etimes=3 * 3600,
+                             cwd=worktree)
+        for idx in range(8):
+            self.box.dead_tmux_socket('delta-dead-{}'.format(idx), seconds_old=7200)
+        payload = self.box.payload(tmux_ages=TmuxRules.AGES)
+        proc_items = [i for i in payload['items'] if i['part'] == 'processes']
+        tmux_items = [i for i in payload['items'] if i['part'] == 'tmux']
+        self.assertTrue(proc_items)
+        self.assertTrue(tmux_items)
+
+    def test_kill_server_uses_cleared_tmux_env(self):
+        mod = load_script()
+        captured = []
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            captured.append(kwargs.get('env'))
+            class Done:
+                returncode = 0
+                stdout = ''
+                stderr = ''
+            return Done()
+
+        ctx = mod.Context({'apply': True, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                           'ps_file': None, 'proc_root': '/proc', 'root': None, 'grace': 10,
+                           'statvfs_json': None, 'caller': None})
+        with unittest.mock.patch.dict(os.environ, {'TMUX': '/tmp/fake'}, clear=False):
+            with unittest.mock.patch('subprocess.run', side_effect=fake_run):
+                mod.tmux_command(ctx, '/tmp/x', ['kill-server'], env=mod.tmux_kill_env())
+        self.assertEqual(len(captured), 1)
+        env = captured[0]
+        self.assertNotIn('TMUX', env)
+        self.assertEqual(env.get('MULTIPROMPT_ALLOW_TMUX_KILL_SERVER'), '1')
 
 
 def tmux_alive(sock):

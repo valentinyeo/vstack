@@ -1,10 +1,10 @@
 # vps-tidy verification map
 
-The five parts of `skills/vps-tidy/vps-tidy`, and the check that proves each rule.
+The six parts of `skills/vps-tidy/vps-tidy`, and the check that proves each rule.
 Every rule comes from the "vps-tidy spec" section of `docs/housekeeping-map.md`.
 Read this, then the file for the part.
 
-## The five parts
+## The six parts
 
 | File | Part | Rules it covers |
 | --- | --- | --- |
@@ -13,8 +13,10 @@ Read this, then the file for the part.
 | [docker.md](docker.md) | `docker` | `docker-images-80`, `docker-builder-72h`, `docker-volumes-smoke` |
 | [evidence.md](evidence.md) | `evidence` | `evidence-30d`, `evidence-build-2d`, `evidence-video-14d`, `state-tmp-2d` |
 | [processes.md](processes.md) | `processes` | `headless-browser-2h`, `chroma-mcp-7200`, `dev-server-2h`, `provider-1800`, `protected`, `own-uid`, `zombies-report` |
+| [tmux.md](tmux.md) | `tmux` | `tmux-server-24h`, `tmux-dead-socket`, `tmux-default-3d` |
 
-`--only files` means the first four parts. `--dry-run` is the default.
+`--only files` means the first four parts (not tmux). `processes` runs before `tmux`.
+`--dry-run` is the default.
 
 ## What a run does
 
@@ -29,7 +31,7 @@ sandbox at `sandbox/` and every evidence file.
 3. Starts real sleeping children with `start_new_session`. Their rows in the fake
    process table say `ppid 1`, so the orphan rules apply and each kill still lands
    on a real pid. Nothing on this host is signalled.
-4. Runs `--apply` once over the sandbox, all five parts, with `--statvfs-json` for
+4. Runs `--apply` once over the sandbox, all six parts, with `--statvfs-json` for
    the disk gate and fake `npm`, `pnpm`, `uv` and `docker` on PATH.
 5. Runs one dry run per part with no `--root` against the real host, saved as
    `host-<part>.json` and merged into `host-dry-run.json`. Nothing is deleted and
