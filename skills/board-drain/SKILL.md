@@ -5,9 +5,9 @@ description: "board drain;drain my board;drain loop;is my loop armed;work my vie
 
 # Board drain
 
-Prior art: pstack poteto-mode Autopilot-full runs one owner per item, a verifier that never wrote the code, an audit loop for stuck agents. The `/hypertask` skill owns columns and the reconcile. Neither says which queue a chat drains, how the loop survives restart or expiry, or what counts as waiting on Valentin.
+Prior art: pstack Autopilot-full runs one owner per item, a verifier that never wrote the code, an audit loop. The `/hypertask` skill owns columns and the reconcile. Neither says which queue a chat drains, how the loop survives restart or expiry, or what counts as waiting on Valentin.
 
-Each chat runs this on itself; nobody drains another chat's board. Paths resolve from here.
+Each chat drains only its own board. Paths resolve from here.
 
 ## The loop is Autopilot-full
 
@@ -22,11 +22,11 @@ Two house mappings apply: owners start through `~/.local/bin/plan-pick --run`, w
 
 ## Arm
 
-Loops die silently: a session cron dies with the chat, a recurring one expires in 7 days, deleting it when Todo "looks done" kills it. Arm at session start, after a restart or handover, when valentin-mode loads, and on any drain-check fail:
+Loops die silently: a session cron dies with the chat or expires in 7 days. Arm at session start, after a restart or handover, when valentin-mode loads, and on any drain-check fail:
 
 1. `./loop-state status --name "<your Multibot name>"`. Exit 0: already armed.
-2. Otherwise arm the loop prompt every 15 minutes. Claude Code: `/loop 15m <prompt>`. Codex or another harness: a recurring job the harness reports back on.
-3. Record it: `./loop-state arm --name "<name>" --every 15m --job <job id> --board <id> --label <label>`.
+2. Otherwise arm the loop prompt every 2 hours; 15-minute ticks drain Valentin's Claude plan. Claude Code: cron `13 */2 * * *`. Codex: a recurring job the harness reports back on.
+3. Record it: `./loop-state arm --name "<name>" --every 2h --job <job id> --board <id> --label <label>`, then `./sync` once: arm resets the sync record.
 
 Never delete it for an empty Todo; a tick with nothing new stays quiet.
 
