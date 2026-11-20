@@ -919,8 +919,6 @@ class RepoRun:
 
     # github setting ----------------------------------------------------
     def tidy_setting(self, github):
-        if not self.opts.apply:
-            return
         if not github.slug:
             return
         owner = github.slug.split("/")[0]

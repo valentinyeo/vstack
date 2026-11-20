@@ -20,7 +20,7 @@ Dry run by default. `--apply` removes.
    `--apply --all` is there when you mean it. Nothing runs it on a timer, and
    nobody sweeps other chats' repos for them. It runs at `nice` 10, four repos
    at once by default (`--jobs 1..8`), and one when `vps-state --can-launch
-   worker` says HOLD, two when it says CAREFUL.
+   worker` says HOLD or cannot answer, two when it says CAREFUL.
 
 ## Set up your own check
 

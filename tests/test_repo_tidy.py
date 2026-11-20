@@ -158,6 +158,18 @@ class TestDryRunOnly(SandboxCase):
         self.assertIn("DRY RUN", result.stdout)
         self.assertIn("REMOVE worktree", result.stdout)
 
+    def test_dry_run_prints_the_setting_it_would_change(self):
+        """features/github-setting.md: on a dry run it prints SET, writes nothing.
+
+        The fitting item are the notes, but the SET line is the user-visible part.
+        """
+        result = tidy(self.world, "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SET setting valentinyeo/sandbox (delete_branch_on_merge=true)",
+                      result.stdout)
+        calls = sandbox.snapshot(self.world.root)["gh_calls"]
+        self.assertFalse([c for c in calls if c.startswith("PATCH ")], calls)
+
 
 class TestCap(SandboxCase):
     def test_max_remove_caps_and_reports_deferred(self):
