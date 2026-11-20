@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""verify-launch-gate: drive hooks/launch-gate.py the way Claude Code does, then grade it.
+
+    .claude/skills/verify-launch-gate/run              # this checkout's hook
+    .claude/skills/verify-launch-gate/run --hook PATH   # a branch's hook
+    .claude/skills/verify-launch-gate/run --keep        # keep the scratch project
+
+It makes a scratch project, installs the hook into it twice, checks it, then feeds
+the real hook real PreToolUse JSON for `~/.local/bin/plan-pick --run` with a fake
+vps-state at HOLD, CAREFUL, ADD and a probe failure. One last call reads the real
+host. Everything lands in ~/.local/state/verify-launch-gate/<run-id>/ and grade.py
+decides the verdict. Exit 0 PASS, 1 FAIL, 3 doctor failure.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_HOOK = ROOT / 'hooks/launch-gate.py'
+GRADE = Path(__file__).resolve().parent / 'grade.py'
+EVIDENCE_ROOT = Path.home() / '.local' / 'state' / 'verify-launch-gate'
+LAUNCH = '~/.local/bin/plan-pick --run'
+BRIEF = 'HOLD worker, HOLD chat: load5 40.10 is 2.23x 18 cores, cpu some60 92%'
+RUN_TIMEOUT = 30
+FAKE = """#!/usr/bin/env python3
+import sys
+if '--brief' in sys.argv[1:]:
+    print({brief!r})
+    sys.exit(0)
+sys.exit({code})
+"""
+
+
+def base_env():
+    return {'PATH': os.environ.get('PATH', ''), 'HOME': os.environ.get('HOME', '/tmp')}
+
+
+def call(cmd, env, stdin=None, timeout=RUN_TIMEOUT):
+    try:
+        return subprocess.run(cmd, input=stdin, capture_output=True, text=True, env=env,
+                              timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def exit_text(done):
+    return '' if done is None else str(done.returncode)
+
+
+def git_sha(path):
+    done = call(['git', 'rev-parse', '--short', 'HEAD'], base_env(), timeout=5)
+    return done.stdout.strip() if done and done.returncode == 0 else None
+
+
+def evidence_dir():
+    base = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+    directory = EVIDENCE_ROOT / base
+    suffix = 2
+    while directory.exists():
+        directory = EVIDENCE_ROOT / '{}-{}'.format(base, suffix)
+        suffix += 1
+    directory.mkdir(parents=True)
+    return directory
+
+
+def doctor(hook, directory):
+    lines = []
+    ok = True
+
+    def check(name, good, detail):
+        nonlocal ok
+        ok = ok and good
+        lines.append('{} {}: {}'.format('PASS' if good else 'FAIL', name, detail))
+
+    executable = hook.is_file() and os.access(hook, os.X_OK)
+    check('hook', executable, '{} {}'.format(str(hook), 'is executable' if executable
+                                             else 'is missing or not executable'))
+    done = call([str(hook), '--self-test'], base_env()) if executable else None
+    good = done is not None and done.returncode == 0
+    check('self-test', good, '{} --self-test exit {}'.format(hook.name, done.returncode if done else 'none'))
+    (directory / 'doctor.txt').write_text('\n'.join(lines) + '\n')
+    return ok, lines
+
+
+def resolve_vps_state():
+    found = shutil.which('vps-state')
+    if found:
+        return found
+    for candidate in (Path.home() / '.local/bin/vps-state',
+                      ROOT / 'skills/vps-state/vps-state'):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def write_fake(directory, code):
+    path = directory / 'vps-state'
+    path.write_text(FAKE.format(brief=BRIEF, code=code))
+    path.chmod(0o755)
+    return str(path)
+
+
+def save(directory, name, done):
+    (directory / (name + '.code')).write_text(exit_text(done) + '\n')
+    (directory / (name + '.out')).write_text(done.stdout if done else '')
+    (directory / (name + '.err')).write_text(done.stderr if done else '')
+
+
+def drive(hook, directory):
+    scratch = Path(tempfile.mkdtemp(prefix='verify-launch-gate-'))
+    home = scratch / 'home'
+    home.mkdir()
+    project = scratch / 'project'
+    project.mkdir()
+    empty = scratch / 'empty'
+    empty.mkdir()
+    env = dict(base_env(), HOME=str(home))
+    settings = project / '.claude/settings.local.json'
+
+    for round_number in (1, 2):
+        done = call([str(hook), '--install-for-project', str(project)], env)
+        (directory / 'install-{}.json'.format(round_number)).write_text(json.dumps({
+            'code': None if done is None else done.returncode,
+            'path': str(settings),
+            'stdout': done.stdout if done else '',
+            'stderr': done.stderr if done else '',
+        }, indent=2) + '\n')
+        try:
+            content = json.loads(settings.read_text())
+        except (OSError, ValueError):
+            content = None
+        (directory / 'settings-{}.json'.format(round_number)).write_text(
+            json.dumps(content, indent=2) + '\n')
+
+    save(directory, 'check-project', call([str(hook), '--check-project', str(project)], env))
+    save(directory, 'check-empty', call([str(hook), '--check-project', str(empty)], env))
+
+    payload = json.dumps({'tool_name': 'Bash', 'tool_input': {'command': LAUNCH}})
+    for name, code in (('hold', 2), ('careful', 1), ('add', 0), ('open', 3)):
+        state = scratch / name
+        state.mkdir()
+        save(directory, name, call([str(hook)], dict(env, LAUNCH_GATE_VPS_STATE=write_fake(state, code)),
+                                   stdin=payload))
+    (directory / 'brief.txt').write_text(BRIEF + '\n')
+
+    script = resolve_vps_state()
+    brief = call([script, '--brief', '--no-write'], base_env()) if script else None
+    (directory / 'live.out').write_text(brief.stdout if brief else '')
+    (directory / 'live.err').write_text(brief.stderr if brief else 'no vps-state found\n')
+    answer = call([script, '--can-launch', 'worker', '--no-write'], base_env()) if script else None
+    (directory / 'live.code').write_text(exit_text(answer) + '\n')
+    return scratch
+
+
+def load_grade():
+    loader = importlib.machinery.SourceFileLoader('verify_launch_gate_grade', str(GRADE))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    hook = DEFAULT_HOOK
+    if '--hook' in args:
+        index = args.index('--hook')
+        if index + 1 >= len(args):
+            print('run: --hook needs a path', file=sys.stderr)
+            return 2
+        hook = Path(args[index + 1]).expanduser().resolve()
+    keep = '--keep' in args
+
+    directory = evidence_dir()
+    (directory / 'meta.json').write_text(json.dumps({
+        'run_id': directory.name,
+        'hook': str(hook),
+        'hook_sha': git_sha(hook.parent),
+        'repo_sha': git_sha(ROOT),
+        'host': os.uname().nodename,
+        'started': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    }, indent=2) + '\n')
+
+    ok, lines = doctor(hook, directory)
+    print('\n'.join(lines))
+    if not ok:
+        print('verdict: FAIL (doctor)')
+        print('evidence: {}'.format(directory))
+        return 3
+
+    scratch = drive(hook, directory)
+    try:
+        code = load_grade().main([str(directory)])
+    finally:
+        if not keep:
+            shutil.rmtree(scratch, ignore_errors=True)
+    print('evidence: {}'.format(directory))
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main())

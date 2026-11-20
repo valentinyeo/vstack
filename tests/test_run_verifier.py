@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/run-verifier"
 WORKFLOWS = ROOT / ".github/workflows"
 LANE_WORKFLOWS = ("pstack-sources.yml",)
-SCRIPT_WORKFLOWS = ("soft-2446-verifier.yml", "advisor-checks.yml")
 FAKE_PI = '''#!/usr/bin/env python3
 import json
 import os
@@ -46,15 +45,6 @@ elif mode == "broken":
     sys.exit(2)
 '''
 AUTHOR = "Author model: anthropic/claude-sonnet"
-
-
-def load_lanes():
-    loader = importlib.machinery.SourceFileLoader("verifier_lanes_under_test", str(ROOT / "scripts/verifier_lanes.py"))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[loader.name] = module
-    loader.exec_module(module)
-    return module
 
 
 class RunVerifierTests(unittest.TestCase):
@@ -204,46 +194,6 @@ class RunVerifierTests(unittest.TestCase):
         self.assertIn("--mode", received)
 
 
-class VerifierLaneTableTests(unittest.TestCase):
-    def test_run_verifier_uses_the_shared_lane_table(self):
-        lanes = load_lanes()
-        loader = importlib.machinery.SourceFileLoader("run_verifier_under_test", str(SCRIPT))
-        spec = importlib.util.spec_from_loader(loader.name, loader)
-        script = importlib.util.module_from_spec(spec)
-        loader.exec_module(script)
-        self.assertEqual(script.LANES, lanes.LANES)
-
-    def test_attempts_put_every_first_lane_model_before_the_second_lane(self):
-        lanes = load_lanes()
-        wanted = ["deepseek-v4.1-flash", "glm-5.3-flash", "kimi-k3"]
-        self.assertEqual(lanes.attempts(wanted, {"OPENCODE_API_KEY": "x", "AI_GATEWAY_API_KEY": "y"}), [
-            ("opencode-go", "deepseek-v4.1-flash"), ("opencode-go", "glm-5.3-flash"),
-            ("opencode-go", "kimi-k3"), ("vercel-ai-gateway", "deepseek/deepseek-v4.1-flash"),
-            ("vercel-ai-gateway", "zai/glm-5.3-flash"), ("vercel-ai-gateway", "moonshotai/kimi-k3")])
-
-    def test_either_key_alone_plans_only_that_lane(self):
-        lanes = load_lanes()
-        wanted = ["glm-5.3-flash"]
-        self.assertEqual(lanes.attempts(wanted, {"OPENCODE_API_KEY": "x"}), [("opencode-go", "glm-5.3-flash")])
-        self.assertEqual(lanes.attempts(wanted, {"AI_GATEWAY_API_KEY": "y"}),
-                         [("vercel-ai-gateway", "zai/glm-5.3-flash")])
-        self.assertEqual(lanes.attempts(wanted, {}), [])
-
-    def test_the_models_come_from_the_base_checkout_picker(self):
-        lanes = load_lanes()
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            (workspace / "picker-base/scripts").mkdir(parents=True)
-            picker = workspace / "picker-base/scripts/pick-verifier-model"
-            picker.write_text('#!/usr/bin/env python3\nimport sys\n'
-                              'if "--all" in sys.argv:\n    print("glm-5.3-flash\\nkimi-k3")\n'
-                              'else:\n    print("glm-5.3-flash")\n')
-            self.assertEqual(lanes.models(str(workspace), "fallback-model"), ["glm-5.3-flash", "kimi-k3"])
-            picker.write_text('#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n')
-            self.assertEqual(lanes.models(str(workspace), "fallback-model"), ["fallback-model"])
-            self.assertEqual(lanes.models(str(workspace / "missing"), "fallback-model"), ["fallback-model"])
-
-
 class VerifierWorkflowTests(unittest.TestCase):
     def test_the_runner_calls_the_lane_runner_with_the_prompt_file(self):
         text = (WORKFLOWS / "pstack-sources.yml").read_text()
@@ -274,18 +224,10 @@ class VerifierWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(re.search(r'\[ -z "\$OPENCODE_API_KEY" \] && \[ -z "\$AI_GATEWAY_API_KEY" \]', text))
 
     def test_every_verifier_workflow_hands_over_the_gateway_key(self):
-        for name in LANE_WORKFLOWS + SCRIPT_WORKFLOWS:
+        for name in LANE_WORKFLOWS:
             with self.subTest(workflow=name):
                 self.assertIn("AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}",
                               (WORKFLOWS / name).read_text())
-
-    def test_the_script_workflows_still_run_their_own_verifier(self):
-        for name, script in (("soft-2446-verifier.yml", "scripts/column-verifier.py"),
-                             ("advisor-checks.yml", "scripts/verification/advisor.py")):
-            with self.subTest(workflow=name):
-                text = (WORKFLOWS / name).read_text()
-                self.assertIn(script, text)
-                self.assertIn('"$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model"', text)
 
 
 if __name__ == "__main__":

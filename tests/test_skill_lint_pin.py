@@ -6,13 +6,19 @@ WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / '.github/workflows/skil
 
 
 class SkillLintPin(unittest.TestCase):
-    def test_lint_ref_matches_the_pinned_workflow(self):
-        # The verifier helpers come from lint-ref. A stale lint-ref ran PR 134 with no
-        # fallback verifier while the workflow pin was current (SOFT-2802).
+    def test_the_lint_source_is_pinned_to_a_full_commit(self):
+        # A stale lint source ran PR 134 with the wrong helpers (SOFT-2802).
+        refs = re.findall(r'repository:\s*valentinyeo/house-rules\s*\n\s*ref:\s*(\S+)', WORKFLOW.read_text())
+        self.assertEqual(len(refs), 1)
+        self.assertRegex(refs[0], r'^[0-9a-f]{40}$')
+
+    def test_the_workflow_runs_the_shared_lint_script_and_no_ai_step(self):
         text = WORKFLOW.read_text()
-        uses = re.search(r'skill-lint\.yml@([0-9a-f]{40})', text)[1]
-        ref = re.search(r'lint-ref:\s*([0-9a-f]{40})', text)[1]
-        self.assertEqual(ref, uses)
+        self.assertIn('python3 ../lint-source/scripts/skill-lint', text)
+        self.assertIn('--base "$BASE"', text)
+        self.assertIn('fetch-depth: 0', text)
+        for tell in ('pi --', 'pick-verifier-model', 'run-verifier', 'gh pr comment', 'verdict'):
+            self.assertNotIn(tell, text)
 
 
 if __name__ == '__main__':

@@ -116,9 +116,21 @@ link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
 # vps-tidy is the one cleaner for temp files, caches, docker leftovers and stray
 # programs. Any chat runs it from its own loop; this script only links the tool.
 link_one vps-tidy "$ROOT/skills/vps-tidy/vps-tidy" "$HOME/.local/bin"
+# launch-gate blocks a worker, build or test run while vps-state says HOLD; each
+# chat registers it in its own project with --install-for-project.
+link_one launch-gate.py "$ROOT/hooks/launch-gate.py" "$HOME/.claude/hooks"
+
+# skill-update keeps the shared checkout current and tells a chat to re-read a
+# changed valentin-mode (VSTA-56). It still needs registering as a
+# UserPromptSubmit hook in each project's .claude/settings.json.
+link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
 
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"
 else
   echo "vstack install: linked skills from $ROOT; plain copies in $DUPES"
 fi
+
+# repo-tidy: the command, and the Stop hook each chat adds to its own project (SOFT-2937).
+link_one repo-tidy "$ROOT/skills/repo-tidy/repo-tidy" "$HOME/.local/bin"
+link_one repo-tidy-stop "$ROOT/hooks/repo-tidy-stop" "$HOME/.claude/hooks"

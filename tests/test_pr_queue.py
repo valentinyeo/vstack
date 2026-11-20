@@ -57,10 +57,16 @@ def comment(body, age=1.0):
 
 
 def view(number=1, repo='o/r', title=None, branch=None, author='valentinyeo',
-         age=1.0, pushed=1.0, body=BODY, checks='green', mergeable='MERGEABLE', comments=(), head=SHA):
+         age=1.0, pushed=1.0, body=BODY, checks='green', mergeable='MERGEABLE', comments=(), head=SHA,
+         billing=None):
     # One ticket key per PR unless the test names one, so unrelated fixtures never read as duplicates.
     title = title or f'SOFT-{number} thing'
     branch = branch or f'soft-{number}-thing'
+    runs = rollup(checks)
+    if billing:
+        # A failing check whose message names billing, as the bulk query reads it.
+        runs = runs + [{'__typename': 'CheckRun', 'name': 'start', 'status': 'COMPLETED',
+                        'conclusion': 'FAILURE', 'title': billing, 'summary': None, 'text': None}]
     return {
         'repository': repo,
         'number': number,
@@ -74,10 +80,92 @@ def view(number=1, repo='o/r', title=None, branch=None, author='valentinyeo',
         'isDraft': False,
         'body': body,
         'mergeable': mergeable,
-        'statusCheckRollup': rollup(checks),
+        'statusCheckRollup': runs,
         'comments': list(comments),
         'commits': [{'oid': head, 'committedDate': hours_ago(pushed)}],
     }
+
+
+# The fake gh the CLI tests run against: one bulk GraphQL search page, the two shapes the reader used
+# before it, and a loud refusal of anything else. It counts its own calls, so a test can hold a whole
+# tick to a call budget, and the call-count test can still be seen failing on the old one-per-PR reader.
+GH_STUB = '''import json, re, sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ARGV = sys.argv[1:]
+(ROOT / 'gh-calls.txt').open('a').write(' '.join(ARGV).replace('\\n', ' ') + '\\n')
+EXIT = (ROOT / 'gh-exit.txt').read_text().strip()
+if EXIT not in ('', '0'):
+    sys.exit(int(EXIT))
+PRS = json.loads((ROOT / 'prs.json').read_text())
+if ARGV[:2] == ['search', 'prs']:
+    print(json.dumps([{'number': item['number'], 'title': item['title'], 'url': item['url'],
+                       'repository': {'nameWithOwner': item['repository']},
+                       'author': item['author'], 'createdAt': item['createdAt'],
+                       'updatedAt': item['updatedAt'], 'isDraft': False} for item in PRS]))
+    sys.exit(0)
+if ARGV[:2] == ['pr', 'view']:
+    REPO = ARGV[ARGV.index('--repo') + 1]
+    FOUND = [item for item in PRS
+             if item['repository'] == REPO and item['number'] == int(ARGV[2])]
+    print(json.dumps(FOUND[0] if FOUND else {}))
+    sys.exit(0)
+if ARGV[:2] != ['api', 'graphql']:
+    sys.stderr.write('gh fixture: unexpected ' + ' '.join(ARGV) + '\\n')
+    sys.exit(3)
+
+
+def asked():
+    """The query and its variables: gh was given -f name=value or -F name=value pairs."""
+    fields, rest = {}, iter(ARGV[2:])
+    for arg in rest:
+        if arg in ('-f', '-F', '--raw-field', '--field'):
+            name, _, value = next(rest, '').partition('=')
+            fields[name] = value
+    return fields
+
+
+def node(item):
+    """One fixture PR as the full search node the script reads in that one call."""
+    return {
+        'number': item['number'], 'url': item['url'], 'title': item['title'],
+        'headRefName': item['headRefName'], 'headRefOid': item['headRefOid'],
+        'createdAt': item['createdAt'], 'updatedAt': item['updatedAt'],
+        'mergeable': item['mergeable'], 'body': item['body'],
+        'author': {'login': item['author']['login'], '__typename': 'User'},
+        'repository': {'nameWithOwner': item['repository']},
+        'comments': {'nodes': [{'body': c['body'], 'createdAt': c['createdAt']}
+                               for c in item['comments']]},
+        'commits': {'nodes': [{'commit': {'committedDate': c['committedDate']}}
+                              for c in item['commits']]},
+        'statusCheckRollup': {'state': None, 'contexts': {
+            'totalCount': len(item['statusCheckRollup']),
+            'nodes': item['statusCheckRollup']}},
+    }
+
+
+FIELDS = asked()
+QUERY = FIELDS.get('query') or ''
+SCOPE = FIELDS.get('q') or ''
+if 'search(' not in QUERY or 'statusCheckRollup' not in QUERY or 'comments(' not in QUERY:
+    sys.stderr.write('gh fixture: the query does not carry every row field: ' + QUERY + '\\n')
+    sys.exit(3)
+# The fixture holds exactly the PRs one test made, so an owner scope narrows nothing; the repo
+# scope is the one the CLI tests check.
+if 'repo:' in SCOPE:
+    WANTED = SCOPE.split('repo:', 1)[1].split()[0]
+    PRS = [item for item in PRS if item['repository'] == WANTED]
+SIZE = int(re.search(r'first: (\\d+)', QUERY).group(1))
+START = int(FIELDS.get('after') or 0)
+PAGE = [node(item) for item in PRS[START:START + SIZE]]
+END = START + len(PAGE)
+print(json.dumps({'data': {
+    'rateLimit': {'cost': 1, 'remaining': 4000},
+    'search': {'pageInfo': {'hasNextPage': END < len(PRS),
+                            'endCursor': None if END >= len(PRS) else str(END)},
+               'nodes': PAGE}}}))
+'''
 
 
 def chat(name, cwd='', repo=None, branch=None):
@@ -335,12 +423,71 @@ class ModuleTests(unittest.TestCase):
         rows = self.rows([view(70), view(71, checks='red')], chats=[chat('Owner', repo='o/r')])
         self.assertEqual(self.m.counts(rows), {'NO-VERDICT': 1, 'RED': 1})
 
+    def test_a_search_node_reads_as_the_rest_view(self):
+        """One bulk search node carries every field a row reads: the checks, the verdict at the
+        head, the newest commit and the billing message inside a failing check."""
+        node = {
+            'number': 90, 'url': 'https://github.com/o/r/pull/90', 'title': 'SOFT-90 thing',
+            'headRefName': 'soft-90-thing', 'headRefOid': SHA,
+            'createdAt': hours_ago(2), 'updatedAt': hours_ago(2), 'mergeable': 'MERGEABLE',
+            'body': BODY, 'author': {'login': 'valentinyeo'},
+            'repository': {'nameWithOwner': 'o/r'},
+            'comments': {'nodes': [{'body': f'VERDICT: PASS\n\nHead `{SHA}`', 'createdAt': hours_ago(1)}]},
+            'commits': {'nodes': [{'commit': {'committedDate': hours_ago(3)}}]},
+            'statusCheckRollup': {'contexts': {'nodes': [
+                {'__typename': 'CheckRun', 'name': 'skills', 'status': 'COMPLETED',
+                 'conclusion': 'SUCCESS', 'title': 'All jobs passed', 'summary': None, 'text': None},
+                {'__typename': 'StatusContext', 'context': 'build', 'state': 'SUCCESS'}]}},
+        }
+        row = self.rows([self.m.view_from_node(node)])[0]
+        self.assertEqual(row['repo'], 'o/r')
+        self.assertEqual(row['branch'], 'soft-90-thing')
+        self.assertEqual(row['head_sha'], SHA)
+        self.assertEqual(row['checks'], 'green')
+        self.assertEqual(row['verdict'], 'PASS')
+        self.assertEqual(row['state'], 'READY')
+        self.assertAlmostEqual(row['hours_since_push'], 3, delta=0.1)
+
+    def test_a_truncated_check_list_reads_githubs_own_rollup_state(self):
+        """A factory PR carries up to 167 checks, more than one read holds: the rollup state then
+        answers for the rest, so a red behind the page cannot read green."""
+        self.assertEqual(self.m.checks_state(rollup('green'), 167, 'FAILURE'), 'red')
+        self.assertEqual(self.m.checks_state([], 167, 'PENDING'), 'pending')
+        self.assertEqual(self.m.checks_state([], 167, 'SUCCESS'), 'green')
+        self.assertEqual(self.m.checks_state(rollup('red'), 1, 'SUCCESS'), 'red',
+                         'a complete list reads its own contexts')
+
+    def test_an_app_author_reads_as_the_rest_export_printed_it(self):
+        self.assertEqual(self.m.login_of({'login': 'dependabot', '__typename': 'Bot'}),
+                         'app/dependabot')
+        self.assertEqual(self.m.login_of({'login': 'valentinyeo', '__typename': 'User'}), 'valentinyeo')
+        self.assertEqual(self.m.login_of(None), '')
+
+    def test_a_billing_message_inside_a_failing_check_blocks(self):
+        node = {
+            'number': 91, 'url': '', 'title': 'SOFT-91 thing', 'headRefName': 'soft-91-thing',
+            'headRefOid': SHA, 'createdAt': hours_ago(1), 'updatedAt': hours_ago(1),
+            'mergeable': 'MERGEABLE', 'body': BODY, 'author': {'login': 'valentinyeo'},
+            'repository': {'nameWithOwner': 'o/r'}, 'comments': {'nodes': []},
+            'commits': {'nodes': []},
+            'statusCheckRollup': {'contexts': {'nodes': [
+                {'__typename': 'CheckRun', 'name': 'start', 'status': 'COMPLETED',
+                 'conclusion': 'FAILURE',
+                 'title': 'The job was not started because recent account payments have failed',
+                 'summary': None, 'text': None}]}},
+        }
+        view_now = self.m.view_from_node(node)
+        probe = lambda repo, sha: view_now['statusCheckRollup']
+        row = self.rows([view_now], billing_probe=probe)[0]
+        self.assertTrue(row['billing_blocked'])
+        self.assertEqual(row['state'], 'BILLING')
+
 
 class CliTests(unittest.TestCase):
     """The real exit code the loop tick sees: nonzero whenever a PR in scope is NO-OWNER or STALE."""
 
     def cli(self, views, chats=('Owner (live-x, claude, /home/valentin/projects/r)',), args=(), gh_exit=0,
-            checks=(), board=None, token=False, env_extra=None, script=None):
+            board=None, token=False, env_extra=None, script=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             home = root / 'home'
@@ -351,51 +498,12 @@ class CliTests(unittest.TestCase):
                 '#!/bin/sh\ncat "$HOME/roster.txt"\n')
             (home / '.local/share/house-rules/fleet/roster-live').chmod(0o755)
             (home / 'roster.txt').write_text('\n'.join(chats) + '\n')
-            (root / 'search.json').write_text(json.dumps([
-                {'number': item['number'], 'title': item['title'], 'url': item['url'],
-                 'repository': {'nameWithOwner': item['repository']}, 'author': item['author'],
-                 'createdAt': item['createdAt'], 'updatedAt': item['updatedAt'], 'isDraft': False}
-                for item in views]))
-            (root / 'views').mkdir()
-            for item in views:
-                key = item['repository'].replace('/', '_') + '-' + str(item['number'])
-                (root / 'views' / (key + '.json')).write_text(json.dumps(item))
-            (root / 'checks').mkdir()
-            for item, runs in checks:
-                key = item['repository'].replace('/', '_') + '-' + str(item['number'])
-                (root / 'checks' / (key + '.json')).write_text(json.dumps({'check_runs': runs}))
-            # The fixture gh answers three shapes and fails the rest, so an unexpected call is loud.
-            (bin_dir / 'gh').write_text(f'''#!{sys.executable}
-import json, subprocess, sys
-from pathlib import Path
-root = Path({str(root)!r})
-argv = sys.argv[1:]
-if argv[:2] == ["search", "prs"]:
-    if {gh_exit}:
-        sys.exit({gh_exit})
-    print((root / "search.json").read_text())
-    sys.exit(0)
-if argv[:2] == ["pr", "view"]:
-    repo = argv[argv.index("--repo") + 1]
-    key = repo.replace("/", "_") + "-" + argv[2]
-    print((root / "views" / (key + ".json")).read_text())
-    sys.exit(0)
-if argv[0] == "api":
-    parts = argv[1].split("/")
-    repo = parts[1] + "/" + parts[2]
-    sha = parts[4]
-    for item in json.loads((root / "search.json").read_text()):
-        key = repo.replace("/", "_") + "-" + str(item["number"])
-        path = root / "checks" / (key + ".json")
-        if path.exists() and json.loads((root / "views" / (key + ".json")).read_text())["headRefOid"] == sha:
-            print(path.read_text())
-            sys.exit(0)
-    print('{{"check_runs": []}}')
-    sys.exit(0)
-sys.stderr.write("gh fixture: unexpected " + " ".join(argv) + "\\n")
-sys.exit(3)
-''')
+            (root / 'prs.json').write_text(json.dumps(views))
+            # The fixture gh answers one bulk GraphQL search, records every call, and fails anything
+            # else out loud. A run that still asks one question per PR leaves its calls in the log.
+            (bin_dir / 'gh').write_text(f'#!{sys.executable}\n' + GH_STUB)
             (bin_dir / 'gh').chmod(0o755)
+            (root / 'gh-exit.txt').write_text(str(gh_exit))
             # A fake board reader: it records every call so a test can prove the run stayed read only.
             if board is not None:
                 (root / 'board.json').write_text(json.dumps(board))
@@ -428,6 +536,8 @@ sys.exit(3)
                                     capture_output=True, text=True)
             calls = root / 'calls.txt'
             result.calls = calls.read_text().splitlines() if calls.exists() else []
+            gh_calls = root / 'gh-calls.txt'
+            result.gh_calls = gh_calls.read_text().splitlines() if gh_calls.exists() else []
             return result
 
     def test_all_owned_and_fresh_exits_zero(self):
@@ -583,10 +693,24 @@ sys.exit(3)
             self.assertIn('counts', data)
             self.assertEqual(data['rows'][0]['number'], 1)
 
+    def test_a_180_pr_tick_costs_at_most_three_gh_calls(self):
+        """Twenty chats share one hourly limit: a tick reads every open PR in one paginated query,
+        never one call per PR."""
+        views = [view(number, repo='o/r', branch='owner-thing', title=f'SOFT-{number}', pushed=1)
+                 for number in range(1, 181)]
+        result = self.cli(views)
+        self.assertLessEqual(len(result.gh_calls), 3,
+                             f'{len(result.gh_calls)} gh calls for 180 PRs: '
+                             f'{[call[:60] for call in result.gh_calls[:3]]}')
+        self.assertRegex(result.stderr, r'\d+ gh calls', 'the run names its own call count')
+        self.assertIn('180 open PRs', result.stdout, result.stdout + result.stderr)
+        self.assertIn('o/r#1', result.stdout, result.stdout + result.stderr)
+        self.assertIn('o/r#180', result.stdout, result.stdout + result.stderr)
+
     def test_billing_fixture_reaches_the_table(self):
-        pr = view(1, repo='o/r', branch='owner-thing', checks='red')
-        runs = [{'output': {'title': 'The job was not started because recent account payments have failed'}}]
-        result = self.cli([pr], checks=[(pr, runs)])
+        pr = view(1, repo='o/r', branch='owner-thing', checks='red',
+                  billing='The job was not started because recent account payments have failed')
+        result = self.cli([pr])
         self.assertIn('BILLING', result.stdout, result.stdout + result.stderr)
 
 
