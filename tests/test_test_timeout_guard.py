@@ -290,5 +290,28 @@ class VerifyTestTimeoutRun(unittest.TestCase):
                 self.assertTrue((features / filename).is_file(), filename)
 
 
+class TestTimeoutSkill(unittest.TestCase):
+    """A rule in a document is not a check. These pin the one instruction a chat must never get:
+    `./install` from a worker's worktree repointed every chat's skills at that branch."""
+
+    def setUp(self):
+        self.skill = ROOT / 'skills/test-timeout/SKILL.md'
+        self.text = self.skill.read_text()
+
+    def test_the_skill_never_sends_a_chat_to_install(self):
+        for line in self.text.splitlines():
+            if './install' in line:
+                with self.subTest(line=line):
+                    self.assertIn('Never run `./install`', line)
+
+    def test_the_skill_names_the_hook_the_shared_install_already_linked(self):
+        self.assertIn('$HOME/.claude/hooks/test-timeout-guard.py', self.text)
+        self.assertIn('~/.local/share/vstack', self.text)
+
+    def test_the_skill_still_tells_a_chat_to_register_the_hook_per_project(self):
+        self.assertIn('.claude/settings.json', self.text)
+        self.assertIn('PreToolUse', self.text)
+
+
 if __name__ == '__main__':
     unittest.main()
