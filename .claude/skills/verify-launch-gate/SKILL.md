@@ -26,7 +26,7 @@ Read `features/README.md` for the map.
 3. Makes a scratch project and runs --install-for-project on it twice.
 4. Runs --check-project on that project and on an empty directory.
 5. Feeds the real hook the incident command `~/.local/bin/plan-pick --run` as PreToolUse JSON, with a fake vps-state at HOLD, CAREFUL, ADD and a probe failure.
-6. Reads the real host with `vps-state --brief`, then --can-launch worker --no-write.
+6. Reads the real host with `vps-state --brief --no-write`, then --can-launch worker --no-write.
 7. Grades every check and prints one line per check, then the verdict.
 
 Exit codes: 0 PASS, 1 FAIL, 3 doctor failure.
@@ -42,7 +42,7 @@ doctor.txt holds one line per check, and each must pass before anything is drive
 
 Only `run` drives the hook. It writes a fake `vps-state` into the scratch directory and points the hook at it with a fake `LAUNCH_GATE_VPS_STATE`, so no check depends on what this host happens to be doing. The scratch project gets its own `HOME`, so a hook registered in the real global settings cannot make `--check-project` pass.
 
-The live check is the only real read, and it never writes the shared status file.
+The live check is the only real read, and both of its calls pass --no-write, so the shared status file is untouched.
 
 ## Evidence
 

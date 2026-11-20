@@ -145,11 +145,13 @@ def resolve_vps_state():
 
 
 def probe(path, *args):
-    """vps-state's answer, or None when it could not answer in time."""
+    """vps-state's answer, or 'timeout' or 'missing' when it did not answer."""
     try:
         return subprocess.run([path, *args], capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return 'timeout'
     except (OSError, subprocess.SubprocessError):
-        return None
+        return 'missing'
 
 
 def decide(command):
@@ -160,12 +162,14 @@ def decide(command):
     if not path:
         return 'warn', 'launch-gate: vps-state was not found, so this launch was not checked'
     answer = probe(path, '--can-launch', 'worker', '--no-write')
-    if answer is None:
+    if answer == 'timeout':
         return 'warn', ('launch-gate: vps-state did not answer in {}s, so this launch was not '
                         'checked'.format(PROBE_TIMEOUT))
+    if answer == 'missing':
+        return 'warn', 'launch-gate: could not run {}, so this launch was not checked'.format(path)
     if answer.returncode == 2:
-        brief = probe(path, '--brief')
-        line = brief.stdout.strip() if brief and brief.stdout.strip() else 'no reason given'
+        brief = probe(path, '--brief', '--no-write')
+        line = getattr(brief, 'stdout', '').strip() or 'no reason given'
         return 'block', MESSAGE.format(brief=line)
     if answer.returncode in (0, 1):
         return 'allow', None
@@ -179,7 +183,7 @@ def hook(payload):
         return 0, ''
     tool_input = payload.get('tool_input')
     command = tool_input.get('command') if isinstance(tool_input, dict) else None
-    if not (command or '').strip() or overridden(command):
+    if not isinstance(command, str) or not command.strip() or overridden(command):
         return 0, ''
     if launch_argv is None:
         return 0, 'launch-gate: cannot read hooks/book-check.py, so no launch was checked'
@@ -249,8 +253,11 @@ def install_for_project(given):
         return refuse(path, '"hooks.PreToolUse" is not a list')
     entries.append({'matcher': 'Bash',
                     'hooks': [{'type': 'command', 'command': HOOK_COMMAND}]})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + '\n')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2) + '\n')
+    except OSError as error:
+        return refuse(path, 'it could not be written: {}'.format(error))
     print('launch-gate: {} the Bash hook in {}'.format(
         'created' if not existed else 'registered', path))
     return 0
@@ -312,6 +319,10 @@ def main(argv=None):
         return install_for_project(args[1:2])
     if args[:1] == ['--check-project']:
         return check_project(args[1:2])
+    if args:
+        print('launch-gate: unknown argument {!r}; nothing was done'.format(args[0]),
+              file=sys.stderr)
+        return 0
     try:
         payload = json.load(sys.stdin)
     except ValueError:

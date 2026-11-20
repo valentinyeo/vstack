@@ -113,6 +113,20 @@ class LaunchGate(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertFalse(log.exists())
 
+    def test_a_command_that_is_not_a_string_passes(self):
+        state, log = fake_state(self.dir, 2)
+        result = self.hook(payload=json.dumps({'tool_name': 'Bash',
+                                               'tool_input': {'command': {'cmd': 'pytest'}}}),
+                           state=state)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        self.assertFalse(log.exists())
+
+    def test_an_unknown_argument_says_so_and_does_nothing(self):
+        result = self.gate('--banana')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('unknown argument', result.stderr)
+
     def test_broken_json_passes(self):
         state, log = fake_state(self.dir, 2)
         self.assertEqual(self.hook(payload='not json', state=state).returncode, 0)
@@ -166,7 +180,7 @@ class LaunchGate(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stderr.strip().splitlines()
         self.assertEqual(len(lines), 1, result.stderr)
-        self.assertTrue(lines[0].startswith('launch-gate:'), lines[0])
+        self.assertIn('could not run', lines[0])
 
     def test_a_slow_probe_fails_open(self):
         state, _log = fake_state(self.dir, 0, sleep=6)
@@ -247,6 +261,14 @@ class LaunchGate(unittest.TestCase):
         project.mkdir()
         self.assertEqual(self.gate('--install-for-project', cwd=project).returncode, 0)
         self.assertTrue((project / '.claude/settings.local.json').is_file())
+
+    def test_install_refuses_a_settings_file_it_cannot_write(self):
+        project = self.dir / 'proj'
+        (project / '.claude/settings.local.json').mkdir(parents=True)
+        result = self.gate('--install-for-project', str(project))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('could not be written', result.stderr)
+        self.assertTrue((project / '.claude/settings.local.json').is_dir())
 
     def test_install_refuses_broken_settings_json(self):
         project = self.dir / 'proj'

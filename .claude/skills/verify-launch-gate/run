@@ -151,7 +151,7 @@ def drive(hook, directory):
     (directory / 'brief.txt').write_text(BRIEF + '\n')
 
     script = resolve_vps_state()
-    brief = call([script, '--brief'], base_env()) if script else None
+    brief = call([script, '--brief', '--no-write'], base_env()) if script else None
     (directory / 'live.out').write_text(brief.stdout if brief else '')
     (directory / 'live.err').write_text(brief.stderr if brief else 'no vps-state found\n')
     answer = call([script, '--can-launch', 'worker', '--no-write'], base_env()) if script else None

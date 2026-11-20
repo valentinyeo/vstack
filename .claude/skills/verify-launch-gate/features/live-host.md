@@ -13,7 +13,7 @@ The other checks use a fake. This one reads the machine the chats share, so the 
 
 ## Driving it with run
 
-- Action: `--brief`, then `--can-launch worker --no-write`, both against the real script found on PATH or in this repo.
+- Action: `--brief --no-write`, then `--can-launch worker --no-write`, both against the real script found on PATH or in this repo.
 - Evidence: `live.out`, `live.err`, `live.code`.
 - Check: `live` maps the first word to its exit code and wants them equal.
 
