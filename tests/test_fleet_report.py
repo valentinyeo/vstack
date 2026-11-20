@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills/fleet-report/fleet-report"
@@ -76,11 +77,10 @@ sys.exit({code})
         body = "\n".join(lines)
         script = self.home / "pstack-diff.py"
         script.write_text(
-            f"""#!/usr/bin/env python3
-import sys
-print({body!r})
-sys.exit({exit_code})
-""",
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"print({json.dumps(body)})\n"
+            f"sys.exit({exit_code})\n",
             encoding="utf-8",
         )
         script.chmod(0o755)
@@ -130,7 +130,7 @@ sys.exit({exit_code})
         self.assertEqual(row["extra_count"], 0)
         self.assertEqual(row["gap_count"], 0)
         v, reason, action = mod.verdict(
-            "claude", row["loaded"], 5, 5, 0, False, 0, 0, None, None, False, False, None
+            "claude", row["loaded"], 5, 5, 0, False, 0, 0, None, None, False, False, False, None
         )
         self.assertEqual(v, "OK")
         self.assertEqual(action, "")
@@ -289,10 +289,115 @@ sys.exit({exit_code})
             None,
             False,
             True,
+            False,
             170,
         )
         self.assertEqual(v, "GAPS")
         self.assertNotIn("FIX", v)
+
+    def test_verdict_fetch_failed_uses_local_extras(self):
+        mod = load_module()
+        v, reason, action = mod.verdict(
+            "claude",
+            "valentin-mode v4 (latest)",
+            4,
+            4,
+            0,
+            False,
+            1,
+            0,
+            None,
+            None,
+            False,
+            True,
+            True,
+            3,
+        )
+        self.assertIn("FIX", v)
+        self.assertNotIn("OK", v)
+        self.assertIn("STALE", v)
+
+    def test_json_upstream_counts_match_self_check(self):
+        mod = load_module()
+        self.fake_pstack_diff(1, 1, behind=3)
+        repo = self.home / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+        def fake_upstream(_cwd: str, _behind: int):
+            return 0, 0, True
+
+        original = mod.run_pstack_diff_upstream
+        mod.run_pstack_diff_upstream = fake_upstream
+        self.addCleanup(setattr, mod, "run_pstack_diff_upstream", original)
+
+        with patch.dict(os.environ, self.env, clear=False):
+            pstack = mod.run_pstack_diff(str(repo))
+
+        self.assertIn("(upstream)", pstack["self_check"])
+        self.assertEqual(pstack["extra_count"], 0)
+        self.assertEqual(pstack["gap_count"], 0)
+        self.assertEqual(pstack["local_extra_count"], 1)
+        self.assertTrue(pstack["upstream"])
+        v, _, _ = mod.verdict(
+            "claude",
+            "valentin-mode v4 (latest)",
+            4,
+            4,
+            0,
+            False,
+            pstack["extra_count"],
+            pstack["gap_count"],
+            pstack["upstream_extras"],
+            pstack["upstream_gaps"],
+            pstack["upstream_ok"],
+            pstack["stale"],
+            pstack["fetch_failed"],
+            pstack["behind"],
+        )
+        self.assertEqual(v, "OK")
+
+    def test_fetch_failure_not_ok_with_local_counts(self):
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(0)
+        self.fake_pstack_diff(1, 1, behind=2)
+        repo = self.home / "offline"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@test"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+        (repo / "f").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "f"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "remote", "add", "origin", "http://127.0.0.1:9/no-such-repo"],
+            check=True,
+        )
+
+        self.write_transcript(
+            str(repo),
+            "sid-fetch",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [
+                dict(
+                    name="Offline",
+                    harness="claude",
+                    cwd=str(repo),
+                    sid="sid-fetch",
+                    tmux="live-off",
+                )
+            ]
+        )
+        row = rows[0]
+        self.assertIn("fetch failed", row["self_check"])
+        self.assertNotIn("(upstream)", row["self_check"])
+        self.assertEqual(row["extra_count"], 1, row)
+        self.assertEqual(row["local_extra_count"], 1, row)
+        self.assertFalse(row["upstream"])
+        self.assertNotEqual(row["verdict"], "OK", row)
+        self.assertIn("FIX", row["verdict"])
 
     def test_parse_roster_line(self):
         mod = load_module()

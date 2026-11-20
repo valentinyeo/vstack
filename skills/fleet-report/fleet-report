@@ -363,8 +363,11 @@ def format_self_check(
     *,
     upstream: bool = False,
     stale: bool = False,
+    fetch_failed: bool = False,
 ) -> str:
     if stale and behind is not None:
+        if fetch_failed:
+            return f"EXTRA {extras} GAP {gaps} stale, {behind} behind (fetch failed)"
         return f"stale, {behind} behind"
     parts = [f"EXTRA {extras}", f"GAP {gaps}"]
     if behind is not None and behind > 0:
@@ -425,20 +428,28 @@ def run_pstack_diff_at(root: Path) -> tuple[str, int | None, int, int, int | Non
     return label, done.returncode, extras, gaps, behind
 
 
-def run_pstack_diff_upstream(cwd: str, behind: int) -> tuple[int, int, bool] | None:
-    """Re-run pstack-diff on a fresh detached worktree at origin default. None if fetch fails."""
+FETCH_FAILED = "fetch_failed"
+
+
+def run_pstack_diff_upstream(cwd: str, behind: int) -> tuple[int, int, bool] | str | None:
+    """Re-run pstack-diff on a fresh detached worktree at origin default.
+
+    Returns FETCH_FAILED when git fetch fails; None for other upstream skip reasons.
+    """
     expanded = Path(expand_cwd(cwd))
     if not (expanded / ".git").exists():
         return None
     try:
-        subprocess.run(
+        fetch = subprocess.run(
             ["git", "-C", str(expanded), "fetch", "origin"],
             capture_output=True,
             timeout=60,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return FETCH_FAILED
+    if fetch.returncode != 0:
+        return FETCH_FAILED
     ref = git_upstream_ref(expanded)
     if not ref:
         return None
@@ -474,21 +485,32 @@ def run_pstack_diff(cwd: str) -> dict:
             pstack_exit=None,
             extra_count=0,
             gap_count=0,
+            local_extra_count=0,
+            local_gap_count=0,
             behind=None,
+            upstream=False,
             upstream_extras=None,
             upstream_gaps=None,
             upstream_ok=False,
             stale=False,
+            fetch_failed=False,
         )
     expanded = expand_cwd(cwd)
     label, code, extras, gaps, behind = run_pstack_diff_at(Path(expanded))
     upstream_extras = upstream_gaps = None
     upstream_ok = False
     stale = False
+    fetch_failed = False
     self_check = label
     if behind is not None and behind > 0:
         upstream = run_pstack_diff_upstream(cwd, behind)
-        if upstream is None:
+        if upstream == FETCH_FAILED:
+            fetch_failed = True
+            stale = True
+            self_check = format_self_check(
+                extras, gaps, behind, stale=True, fetch_failed=True
+            )
+        elif upstream is None:
             stale = True
             self_check = format_self_check(extras, gaps, behind, stale=True)
         else:
@@ -496,16 +518,22 @@ def run_pstack_diff(cwd: str) -> dict:
             self_check = format_self_check(
                 upstream_extras, upstream_gaps, behind, upstream=True
             )
+    display_extras = upstream_extras if upstream_ok else extras
+    display_gaps = upstream_gaps if upstream_ok else gaps
     return dict(
         self_check=self_check,
         pstack_exit=code,
-        extra_count=extras,
-        gap_count=gaps,
+        extra_count=display_extras,
+        gap_count=display_gaps,
+        local_extra_count=extras,
+        local_gap_count=gaps,
         behind=behind,
+        upstream=upstream_ok,
         upstream_extras=upstream_extras,
         upstream_gaps=upstream_gaps,
         upstream_ok=upstream_ok,
         stale=stale,
+        fetch_failed=fetch_failed,
     )
 
 
@@ -522,6 +550,7 @@ def verdict(
     upstream_gaps: int | None,
     upstream_ok: bool,
     stale: bool,
+    fetch_failed: bool,
     behind: int | None,
 ) -> tuple[str, str, str]:
     tags: list[str] = []
@@ -545,11 +574,10 @@ def verdict(
         tags.append("LOOP OFF")
         actions.append("re-arm /board-drain")
 
-    use_upstream = upstream_ok and behind is not None and behind > 0 and not stale
-    if use_upstream:
-        effective_extras = upstream_extras if upstream_extras is not None else 0
-        effective_gaps = upstream_gaps if upstream_gaps is not None else 0
-    elif stale and behind is not None and behind > 0:
+    if upstream_ok and behind is not None and behind > 0 and not stale:
+        effective_extras = extra_count
+        effective_gaps = gap_count
+    elif stale and behind is not None and behind > 0 and not fetch_failed:
         effective_extras = 0
         effective_gaps = gap_count
     else:
@@ -561,6 +589,11 @@ def verdict(
         actions.append("remove the EXTRA in one PR")
     if effective_gaps > 0:
         tags.append("GAPS")
+
+    if fetch_failed:
+        if "STALE" not in tags:
+            tags.append("STALE")
+        notes.append("upstream fetch failed; counts are local")
 
     if not tags:
         tags.append("OK")
@@ -594,6 +627,7 @@ def build_rows() -> list[dict]:
             pstack["upstream_gaps"],
             pstack["upstream_ok"],
             pstack["stale"],
+            pstack["fetch_failed"],
             pstack["behind"],
         )
         rows.append(
@@ -610,6 +644,9 @@ def build_rows() -> list[dict]:
                 pstack_exit=pstack["pstack_exit"],
                 extra_count=pstack["extra_count"],
                 gap_count=pstack["gap_count"],
+                local_extra_count=pstack["local_extra_count"],
+                local_gap_count=pstack["local_gap_count"],
+                upstream=pstack["upstream"],
                 behind=pstack["behind"],
                 verdict=status,
                 reason=reason,
