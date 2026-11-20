@@ -45,6 +45,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_advisor_verdict.py -v
           python3 -m unittest discover -s tests -p test_verifier_prompts.py -v
           python3 -m unittest discover -s tests -p test_verdict.py -v
+          python3 -m unittest discover -s tests -p test_hand_moves.py -v
       - name: existing skill installer
         run: bash tests/install.sh
   deepseek-verifier:

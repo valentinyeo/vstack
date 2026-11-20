@@ -1,0 +1,54 @@
+{
+  "success": true,
+  "comments": [
+    {
+      "id": 423904,
+      "text": "",
+      "commentText": "",
+      "createdAt": "2026-11-20T09:00:00.000Z",
+      "editedAt": null,
+      "kind": null,
+      "editedBy": null,
+      "attachments": [],
+      "reactions": [],
+      "type": "activity",
+      "activity": {
+        "type": "TaskMove",
+        "data": {
+          "fromUserId": 9001,
+          "fromUserDisplayName": "Board Owner",
+          "fromAgent": {
+            "id": "agent-1111",
+            "userId": 9001,
+            "displayName": "Hypertask Reconciler",
+            "photoURL": "https://example.com/agent.png"
+          },
+          "fromSection": {
+            "sectionId": 114,
+            "sectionTitle": "In Progress"
+          },
+          "toSection": {
+            "sectionId": 111,
+            "sectionTitle": "AI Review"
+          }
+        }
+      }
+    }
+  ],
+  "total": 1,
+  "limit": 100,
+  "offset": 0,
+  "nextCursor": null,
+  "has_more": false,
+  "agent_activity": [
+    {
+      "id": "log-0002",
+      "agentId": "agent-1111",
+      "agentName": "Hypertask Reconciler",
+      "runId": "run-0002",
+      "type": "thought",
+      "text": "fleet/reconcile: an open PR with green checks; In Progress -> AI Review.",
+      "createdAt": "2026-11-20T09:05:00.000Z"
+    }
+  ]
+}

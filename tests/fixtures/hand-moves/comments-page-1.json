@@ -1,0 +1,53 @@
+{
+  "success": true,
+  "comments": [
+    {
+      "id": 423905,
+      "text": "",
+      "commentText": "",
+      "createdAt": "2026-11-20T11:00:00.000Z",
+      "editedAt": null,
+      "kind": null,
+      "editedBy": null,
+      "attachments": [],
+      "reactions": [],
+      "type": "activity",
+      "activity": {
+        "type": "TaskPullRequest",
+        "data": {
+          "action": "linked",
+          "fromUserId": 9001,
+          "fromUser": {
+            "id": 9001,
+            "email": "owner@example.com",
+            "photoURL": "https://example.com/avatar.png",
+            "displayName": "Board Owner"
+          },
+          "pullRequest": {
+            "url": "https://github.com/valentinyeo/example-repo/pull/1",
+            "title": "HTPR-9505 example",
+            "number": 1,
+            "repository": "valentinyeo/example-repo",
+            "displayState": "open"
+          }
+        }
+      }
+    }
+  ],
+  "total": 2,
+  "limit": 1,
+  "offset": 0,
+  "nextCursor": "423906",
+  "has_more": true,
+  "agent_activity": [
+    {
+      "id": "log-0003",
+      "agentId": "agent-1111",
+      "agentName": "Hypertask Reconciler",
+      "runId": "run-0003",
+      "type": "thought",
+      "text": "fleet/reconcile: open PR with green checks; Checks -> AI Review.",
+      "createdAt": "2026-11-20T11:12:49.600Z"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "success": true,
+  "comments": [
+    {
+      "id": 423902,
+      "text": "",
+      "commentText": "",
+      "createdAt": "2026-11-20T10:31:54.630Z",
+      "editedAt": null,
+      "kind": null,
+      "editedBy": null,
+      "agent": {
+        "id": "agent-2222",
+        "displayName": "HT Product Lead"
+      },
+      "agent_display_name": "HT Product Lead",
+      "attachments": [],
+      "reactions": [],
+      "type": "activity",
+      "activity": {
+        "type": "TaskMove",
+        "data": {
+          "fromUserId": 9001,
+          "fromUserDisplayName": "Board Owner",
+          "fromUser": {
+            "id": 9001,
+            "email": "owner@example.com",
+            "photoURL": "https://example.com/avatar.png",
+            "displayName": "Board Owner"
+          },
+          "fromSection": {
+            "sectionId": 114,
+            "sectionTitle": "In Progress"
+          },
+          "toSection": {
+            "sectionId": 112,
+            "sectionTitle": "Verification Backlog"
+          }
+        }
+      }
+    }
+  ],
+  "total": 1,
+  "limit": 100,
+  "offset": 0,
+  "nextCursor": null,
+  "has_more": false,
+  "agent_activity": []
+}

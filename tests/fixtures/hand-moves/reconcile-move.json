@@ -1,0 +1,65 @@
+{
+  "success": true,
+  "comments": [
+    {
+      "id": 423901,
+      "text": "",
+      "commentText": "",
+      "createdAt": "2026-11-20T11:28:48.029Z",
+      "editedAt": null,
+      "kind": null,
+      "editedBy": null,
+      "attachments": [],
+      "reactions": [],
+      "type": "activity",
+      "activity": {
+        "type": "TaskMove",
+        "data": {
+          "fromUserId": 9001,
+          "fromUserDisplayName": "Board Owner",
+          "fromUser": {
+            "id": 9001,
+            "uid": "",
+            "email": "owner@example.com",
+            "joinedAt": "2026-01-01T00:00:00.000Z",
+            "photoURL": "https://example.com/avatar.png",
+            "displayName": "Board Owner",
+            "UserSetting": {},
+            "UserSettingId": "",
+            "stripe_customer_id": ""
+          },
+          "fromAgent": {
+            "id": "agent-1111",
+            "userId": 9001,
+            "displayName": "Hypertask Reconciler",
+            "photoURL": "https://example.com/agent.png"
+          },
+          "fromSection": {
+            "sectionId": 112,
+            "sectionTitle": "Verification Backlog"
+          },
+          "toSection": {
+            "sectionId": 111,
+            "sectionTitle": "AI Review"
+          }
+        }
+      }
+    }
+  ],
+  "total": 1,
+  "limit": 100,
+  "offset": 0,
+  "nextCursor": null,
+  "has_more": false,
+  "agent_activity": [
+    {
+      "id": "log-0001",
+      "agentId": "agent-1111",
+      "agentName": "Hypertask Reconciler",
+      "runId": "run-0001",
+      "type": "thought",
+      "text": "fleet/reconcile: open PR checks green; verifier or merge pending; Verification Backlog -> AI Review.",
+      "createdAt": "2026-11-20T11:28:49.596Z"
+    }
+  ]
+}

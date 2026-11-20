@@ -17,7 +17,7 @@ Act as your own agent login, from the board-identity skill. Never write as Valen
 1. **Stale agents.** List assignees on your view's open tickets. An agent that is revoked, renamed or has no live chat is stale.
 2. **Clean them up.** Unassign a stale agent from your tickets and reassign the live owner. Never revoke, rename or delete an agent. A stale agent on another chat's tickets: tell that chat.
 3. **You are on it.** Your login is a board member and assigned to every ticket you work.
-4. **True columns.** Each card sits where the `hypertask-work` column rules put it; this check adds none of its own. Run the reconcile preview, then apply. A ticket that waits on Valentin stays where it is; never move one into Valentin Review.
+4. **True columns.** Each card sits where the `hypertask-work` column rules put it; this check adds none of its own. Run the reconcile preview, then apply. A ticket that waits on Valentin stays where it is; never move one into Valentin Review. Then run `bin/hand-moves --board <id> --days 1`: every hand move is a gap in the reconcile, so report it to the reconcile owner (Hypertask Reconciler) with the ticket, both columns and why the card moved.
 5. **Sync routine.** Your project's agent notes carry `Hypertask board: <id>, label: <label>`, and your loop runs the reconcile. Add whichever is missing.
 6. **Ticket per task.** Each open branch, PR, worktree and running worker has a ticket in your view. File one for any that lacks it.
 7. **Outdated or duplicate.** Close each with a one-line reason and a link to the ticket that replaces it. Move it to Done by hand; never delete. A ticket waiting on Valentin is his to close: ask him instead.

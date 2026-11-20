@@ -1,0 +1,40 @@
+{
+  "success": true,
+  "tasks": [
+    {
+      "id": 1,
+      "ticketNumber": "HTPR-9501",
+      "uniqueIndex": 9501,
+      "title": "Reconcile moved this card",
+      "section": "AI Review",
+      "sectionId": 111,
+      "boardId": 15,
+      "projectId": 15,
+      "status": "Normal",
+      "assignees": [],
+      "labels": [],
+      "createdAt": "2026-11-18T09:00:00.000Z",
+      "updatedAt": "2026-11-20T11:28:48.412Z"
+    },
+    {
+      "id": 2,
+      "ticketNumber": "HTPR-9502",
+      "uniqueIndex": 9502,
+      "title": "An agent moved this card by hand",
+      "section": "Verification Backlog",
+      "sectionId": 112,
+      "boardId": 15,
+      "projectId": 15,
+      "status": "Normal",
+      "assignees": [],
+      "labels": [],
+      "createdAt": "2026-11-18T09:00:00.000Z",
+      "updatedAt": "2026-11-20T10:31:54.630Z"
+    }
+  ],
+  "total": 3,
+  "limit": 2,
+  "offset": 0,
+  "nextCursor": "c1",
+  "has_more": true
+}

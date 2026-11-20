@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "tasks": [
+    {
+      "id": 3,
+      "ticketNumber": "HTPR-9503",
+      "uniqueIndex": 9503,
+      "title": "A person moved this card by hand",
+      "section": "QA",
+      "sectionId": 113,
+      "boardId": 15,
+      "projectId": 15,
+      "status": "Normal",
+      "assignees": [],
+      "labels": [],
+      "createdAt": "2026-11-18T09:00:00.000Z",
+      "updatedAt": "2026-11-20T12:05:11.004Z"
+    }
+  ],
+  "total": 3,
+  "limit": 2,
+  "offset": 2,
+  "nextCursor": null,
+  "has_more": false
+}

@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""Count the board moves that the reconcile did not make.
+
+One row per column move: board, day (UTC), ticket, at, from_column, to_column,
+mover (an agent display name, or "person"), by_reconcile.
+A move is by_reconcile when the same ticket carries a `fleet/reconcile:` agent-log
+line naming the same from -> to within two minutes of the move.
+
+Source is Hypertask activity. The board-wide form of `comment list` does not exist:
+the CLI asks for a ticket, so a scan lists the board's tickets first, then reads
+each ticket's activity. The token comes from HT_TOKEN and is never printed.
+
+    hand-moves --board 15 --board 2060 --days 7 [--json]
+"""
+import argparse
+from datetime import datetime, timedelta, timezone
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+RECONCILE_PREFIX = 'fleet/reconcile:'
+MATCH_WINDOW = timedelta(minutes=2)
+PAGE = 100
+BACKOFF_SECONDS = (5, 15, 45)
+PROGRESS_EVERY = 50
+
+
+class ReadError(Exception):
+    """The board could not be read, so no number from this run is trustworthy."""
+
+
+def stamp(value):
+    """ISO seconds in UTC, the form the CLI filter takes."""
+    return value.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def moment(value):
+    """Parse an activity timestamp; a bad one costs that row, never the run."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def one_line(text):
+    for line in (text or '').splitlines():
+        line = line.strip()
+        if line:
+            return line[:200]
+    return ''
+
+
+def rate_limited(text):
+    return 'rate limit' in (text or '').lower()
+
+
+class Client:
+    """Reads through the hypertask CLI, one process per call, with backoff."""
+
+    def __init__(self, binary=None, runner=None, sleep=time.sleep):
+        self.binary = binary or os.environ.get('HYPERTASK_BIN') or shutil.which('hypertask') or 'hypertask'
+        self.runner = runner or self.command
+        self.sleep = sleep
+        self.token = os.environ.get('HT_TOKEN', '').strip()
+        self.calls = 0
+
+    def command(self, args):
+        env = dict(os.environ)
+        if self.token:
+            env['HT_TOKEN'] = self.token
+        else:
+            env.pop('HT_TOKEN', None)
+        for attempt in range(len(BACKOFF_SECONDS) + 1):
+            done = subprocess.run([self.binary, '--json', *args], capture_output=True,
+                                  text=True, env=env, timeout=180)
+            output = (done.stdout or '') + (done.stderr or '')
+            if done.returncode == 0:
+                break
+            if rate_limited(output) and attempt < len(BACKOFF_SECONDS):
+                self.sleep(BACKOFF_SECONDS[attempt])
+                continue
+            raise ReadError(one_line(output) or f'{self.binary} {args[0]} {args[1]} exited {done.returncode}')
+        try:
+            data = json.loads(done.stdout)
+        except ValueError:
+            raise ReadError(one_line(done.stdout) or 'hypertask returned no JSON') from None
+        if not isinstance(data, dict):
+            raise ReadError('hypertask returned no object')
+        if data.get('success') is False:
+            raise ReadError(one_line(str(data.get('message') or data.get('error') or 'request refused')))
+        return data
+
+    def call(self, *args):
+        self.calls += 1
+        data = self.runner(list(args))
+        if not isinstance(data, dict):
+            raise ReadError(f'hypertask {args[0]} {args[1]} returned no object')
+        if data.get('success') is False:
+            raise ReadError(one_line(str(data.get('message') or data.get('error') or 'request refused')))
+        return data
+
+    def pages(self, key, *args):
+        """Yield each page, so a caller keeps the lists that ride beside the rows."""
+        cursor = None
+        seen = set()
+        while True:
+            flags = ['--limit', str(PAGE)] + (['--cursor', cursor] if cursor else [])
+            data = self.call(*args, *flags)
+            if not isinstance(data.get(key), list):
+                raise ReadError(f"hypertask {' '.join(args[:2])} returned no rows")
+            yield data
+            cursor = data.get('nextCursor')
+            if not cursor:
+                return
+            if not isinstance(cursor, str) or cursor in seen:
+                raise ReadError('pagination cursor repeats')
+            seen.add(cursor)
+
+
+def tickets(client, board, since, say):
+    found = []
+    for page in client.pages('tasks', 'task', 'list', '--project', str(board),
+                             '--filter', f'updated_since={stamp(since)}'):
+        for task in page['tasks']:
+            key = task.get('ticketNumber') if isinstance(task, dict) else None
+            if isinstance(key, str) and key:
+                found.append(key)
+    found = list(dict.fromkeys(found))
+    say(f'board {board}: {len(found)} tickets since {stamp(since)}')
+    return found
+
+
+def mover(entry):
+    """An agent display name, otherwise the move was made by a person."""
+    data = entry.get('activity', {}).get('data') if isinstance(entry.get('activity'), dict) else None
+    agent = (data or {}).get('fromAgent')
+    if isinstance(agent, dict) and (agent.get('displayName') or '').strip():
+        return agent['displayName'].strip()
+    name = entry.get('agent_display_name')
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    agent = entry.get('agent')
+    if isinstance(agent, dict) and isinstance(agent.get('displayName'), str) and agent['displayName'].strip():
+        return agent['displayName'].strip()
+    return 'person'
+
+
+def activity_rows(client, ticket, since):
+    """The moves on one ticket, and the reconcile lines that can explain them."""
+    moves, logs = [], []
+    for page in client.pages('comments', 'comment', 'list', ticket, '--include-activity',
+                             '--filter', f'updated_since={stamp(since)}'):
+        for entry in page['comments']:
+            activity = entry.get('activity') if isinstance(entry, dict) else None
+            if not isinstance(activity, dict) or activity.get('type') != 'TaskMove':
+                continue
+            data = activity.get('data') if isinstance(activity.get('data'), dict) else {}
+            from_column = (data.get('fromSection') or {}).get('sectionTitle')
+            to_column = (data.get('toSection') or {}).get('sectionTitle')
+            at = moment(entry.get('createdAt'))
+            if not from_column or not to_column or from_column == to_column or at is None:
+                continue
+            moves.append({'ticket': ticket, 'at': at, 'from_column': from_column,
+                          'to_column': to_column, 'mover': mover(entry)})
+        for log in page.get('agent_activity') or []:
+            if not isinstance(log, dict) or not isinstance(log.get('text'), str):
+                continue
+            if not log['text'].startswith(RECONCILE_PREFIX):
+                continue
+            at = moment(log.get('createdAt'))
+            if at is not None:
+                logs.append((at, log['text']))
+    return moves, logs
+
+
+def explained(move, logs):
+    """The reconcile writes the pair it moved, right after the move."""
+    needle = f'{move["from_column"]} -> {move["to_column"]}'
+    return any(needle in text and abs(at - move['at']) <= MATCH_WINDOW for at, text in logs)
+
+
+def board_rows(client, board, since, say):
+    rows = []
+    found = tickets(client, board, since, say)
+    for index, ticket in enumerate(found, 1):
+        moves, logs = activity_rows(client, ticket, since)
+        for move in moves:
+            if move['at'] < since:
+                continue
+            row = {'board': board, 'day': move['at'].date().isoformat(), 'ticket': move['ticket'],
+                   'at': move['at'].strftime('%Y-%m-%dT%H:%M:%SZ'),
+                   'from_column': move['from_column'], 'to_column': move['to_column'],
+                   'mover': move['mover'], 'by_reconcile': explained(move, logs)}
+            rows.append(row)
+        if index % PROGRESS_EVERY == 0:
+            say(f'board {board}: {index}/{len(found)} tickets, {len(rows)} moves')
+    say(f'board {board}: {len(rows)} moves')
+    rows.sort(key=lambda row: (row['at'], row['ticket']))
+    return rows
+
+
+def counted(rows, boards, since, now):
+    """Every board and day in the window, including the quiet ones."""
+    days = []
+    first = since.date()
+    last = now.date()
+    for board in boards:
+        for offset in range((last - first).days + 1):
+            day = (first + timedelta(days=offset)).isoformat()
+            of_day = [row for row in rows if row['board'] == board and row['day'] == day]
+            reconcile = sum(1 for row in of_day if row['by_reconcile'])
+            days.append({'board': board, 'day': day, 'moves': len(of_day),
+                         'reconcile': reconcile, 'hand': len(of_day) - reconcile})
+    return days
+
+
+def report(rows, days):
+    lines = []
+    for day in days:
+        lines.append(f"board={day['board']} day={day['day']} moves={day['moves']} "
+                     f"reconcile={day['reconcile']} hand={day['hand']}")
+        for row in rows:
+            if row['board'] != day['board'] or row['day'] != day['day'] or row['by_reconcile']:
+                continue
+            lines.append(f"  {row['ticket']} {row['at'][11:16]} {row['from_column']} -> "
+                         f"{row['to_column']} by {row['mover']}")
+    return lines
+
+
+def main(argv=None, now=None, client=None, sleep=time.sleep):
+    parser = argparse.ArgumentParser(
+        prog='hand-moves',
+        description='Count the column moves on a Hypertask board that the reconcile did not make.')
+    parser.add_argument('--board', action='append', type=int, metavar='ID',
+                        help='board id, repeatable; 15 and 2060 are the ones this repo owns')
+    parser.add_argument('--days', type=int, default=7, help='how many days back from now (default 7)')
+    parser.add_argument('--json', action='store_true', help='one JSON object of rows and day counts')
+    parser.add_argument('--now', help=argparse.SUPPRESS)  # a replay pins the clock
+    args = parser.parse_args(argv)
+    if not args.board:
+        parser.error('at least one --board is required')
+    if args.days < 1:
+        parser.error('--days must be 1 or more')
+    now = now or (moment(args.now) if args.now else datetime.now(timezone.utc))
+    since = now - timedelta(days=args.days)
+    boards = sorted(set(args.board))
+    say = lambda text: print(f'hand-moves: {text}', file=sys.stderr, flush=True)
+    reader = client or Client(sleep=sleep)
+    if not reader.token:
+        say('HT_TOKEN is not set; falling back to the CLI login')
+    try:
+        rows = []
+        for board in boards:
+            rows.extend(board_rows(reader, board, since, say))
+    except ReadError as error:
+        print(f'hand-moves: cannot read: {one_line(str(error))}', file=sys.stderr)
+        return 2
+    days = counted(rows, boards, since, now)
+    if args.json:
+        print(json.dumps({'success': True, 'since': stamp(since), 'now': stamp(now),
+                          'rows': rows, 'days': days}, indent=2))
+    else:
+        for line in report(rows, days):
+            print(line)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
