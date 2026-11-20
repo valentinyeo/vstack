@@ -22,7 +22,7 @@ First step, before any other tool: load the `responsive-mode` skill. Work the ps
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. On a new project, add vstack's `hooks/plan-pick-only.py` (Bash) and `hooks/claude-helper-gate.py` (Agent) to its `.claude/settings.json`. Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option.
 
 ### Board work
 
