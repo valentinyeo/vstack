@@ -177,6 +177,12 @@ class ExitCodes(unittest.TestCase):
     def test_can_launch_bad_argument(self):
         self.assertEqual(cli("add", "--can-launch", "banana").returncode, 3)
 
+    def test_brief_with_can_launch_prints_the_line_and_keeps_the_code(self):
+        proc = cli("hold-cpu", "--can-launch", "worker", "--brief")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertTrue(proc.stdout.startswith("HOLD worker"), proc.stdout)
+        self.assertEqual(len(proc.stdout.strip().splitlines()), 1, proc.stdout)
+
 
 class RunnerGate(unittest.TestCase):
     """ADD worker must be exactly the fleet runner gate, over load and memory."""

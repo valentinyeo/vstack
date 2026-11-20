@@ -36,6 +36,10 @@ def iso(seconds):
     return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+ADD_LINE = 'ADD worker, ADD chat: all gates green'
+HOLD_LINE = 'HOLD worker, HOLD chat: load5 30.24 is 1.68x 18 cores, cpu some60 26%'
+
+
 def snapshot(key):
     """A real ticket and its comments, as `hypertask --json task get` returned them."""
     task = json.loads((FIXTURES / f'{key}.task.json').read_text())['tasks'][0]
@@ -105,13 +109,15 @@ class CheckTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def run_check(self, rows, *extra, alive=False, board=2060, label='Poteto'):
+    def run_check(self, rows, *extra, alive=False, board=2060, label='Poteto',
+                  probe=(0, ADD_LINE)):
         fixture = self.directory / 'fixture.json'
         fixture.write_text(json.dumps(rows))
         argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
                 '--now', iso(NOW), *extra]
         out = io.StringIO()
-        with patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
+        with patch.object(drain, 'probe_load', return_value=probe), \
+                patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
                 contextlib.redirect_stdout(out):
             code = drain.main(argv)
         return code, out.getvalue()
@@ -379,6 +385,66 @@ class CheckTest(unittest.TestCase):
         code, out = self.run_check([todo('SOFT-2916', waiting_on=6)], '--state-name', 'HT Test')
         self.assertEqual(code, 1, out)
         self.assertIn('sync stale: no sync recorded yet.', out)
+
+    def test_a_server_hold_turns_loop_off_and_stale_into_a_held_line(self):
+        # Valentin's rule holds launches while the server is overloaded, so an
+        # idle drain on a HOLD server is obeying him, not broken.
+        code, out = self.run_check([todo('SOFT-2920', age=3 * 3600),
+                                    todo('SOFT-2921', age=3 * 3600)],
+                                   probe=(2, HOLD_LINE))
+        self.assertEqual(code, 0, out)
+        self.assertIn(f'held: {HOLD_LINE}; 2 workable Todo wait for the server', out)
+        self.assertNotIn('loop off:', out)
+        self.assertNotIn('stale:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_a_server_hold_never_hides_a_stalled_ticket(self):
+        code, out = self.run_check([doing('SOFT-2922', age=7200)], alive=False,
+                                   probe=(2, HOLD_LINE))
+        self.assertEqual(code, 1, out)
+        self.assertIn('stalled: SOFT-2922 in Doing with no live worker.', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_server_hold_never_hides_an_answered_ticket(self):
+        comments = [agent_comment(3600), human_comment(600)]
+        code, out = self.run_check([todo('SOFT-2923', waiting_on=6, comments=comments)],
+                                   probe=(2, HOLD_LINE))
+        self.assertEqual(code, 1, out)
+        self.assertIn('answered: SOFT-2923', out)
+
+    def test_an_add_server_still_fails_loop_off(self):
+        code, out = self.run_check([todo('SOFT-2924')], probe=(0, ADD_LINE))
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
+
+    def test_a_careful_server_still_fails_loop_off(self):
+        code, out = self.run_check([todo('SOFT-2925')],
+                                   probe=(1, 'CAREFUL worker, ADD chat: load5 20.0'))
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off:', out)
+
+    def test_a_probe_failure_never_hides_a_finding(self):
+        code, out = self.run_check([todo('SOFT-2926', age=3 * 3600)], probe=(3, ''))
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off:', out)
+        self.assertIn('stale:', out)
+        self.assertNotIn('held:', out)
+
+    def test_no_load_skips_the_probe(self):
+        code, out = self.run_check([todo('SOFT-2927')], '--no-load')
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off:', out)
+        self.assertNotIn('held:', out)
+
+    def test_the_probe_runs_only_when_loop_off_or_stale_is_there_to_judge(self):
+        with patch.object(drain, 'probe_load', return_value=(2, HOLD_LINE)) as probe:
+            fixture = self.directory / 'fixture.json'
+            fixture.write_text(json.dumps([todo('SOFT-2928', waiting_on=6)]))
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = drain.main(['--board', '2060', '--label', 'Poteto',
+                                   '--fixture', str(fixture), '--now', iso(NOW)])
+        self.assertEqual(code, 0)
+        probe.assert_not_called()
 
     def test_a_usage_error_exits_two(self):
         with contextlib.redirect_stderr(io.StringIO()), \

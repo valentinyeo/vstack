@@ -5,7 +5,7 @@ description: "board drain;drain my board;drain loop;is my loop armed;work my vie
 
 # Board drain
 
-Prior art: pstack poteto-mode Autopilot-full runs a queue: one owner per item from build to merge, a verifier that never wrote the code, an audit loop that replaces stuck agents. The `/hypertask` skill owns columns and the reconcile. Neither says which queue a chat drains, how the loop survives restarts or expiry, or what counts as waiting on Valentin. Those gaps are here.
+Prior art: pstack poteto-mode Autopilot-full runs one owner per item, a verifier that never wrote the code, an audit loop for stuck agents. The `/hypertask` skill owns columns and the reconcile. Neither says which queue a chat drains, how the loop survives restart or expiry, or what counts as waiting on Valentin.
 
 Each chat runs this on itself; nobody drains another chat's board. Paths resolve from here.
 
@@ -22,7 +22,7 @@ Two house mappings apply: owners start through `~/.local/bin/plan-pick --run`, w
 
 ## Arm
 
-Loops die silently: a session cron dies with the chat, a recurring cron expires after 7 days, deleting it when Todo "looks done" kills it. Arm at session start, after a restart or handover, when valentin-mode loads, and on any drain-check fail:
+Loops die silently: a session cron dies with the chat, a recurring one expires in 7 days, deleting it when Todo "looks done" kills it. Arm at session start, after a restart or handover, when valentin-mode loads, and on any drain-check fail:
 
 1. `./loop-state status --name "<your Multibot name>"`. Exit 0: already armed.
 2. Otherwise arm the loop prompt every 15 minutes. Claude Code: `/loop 15m <prompt>`. Codex or another harness: a recurring job the harness reports back on.
@@ -56,6 +56,8 @@ A ticket linked BlockedBy a ticket that is not Done also stays outside the drain
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.
 - **not armed:** this chat restarted or the loop expired. Arm it.
 - **sync failed** or **sync stale:** the last board sync broke or is over 45 minutes old. Fix it, then run `./sync`.
+
+A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:` line; `--no-load` skips that probe.
 
 A fail that returns is a gap in this skill: file it on board 13556, label Board Drain Loop, with the drain-check output; that role turns repeated gaps into new checks here.
 
