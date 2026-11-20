@@ -24,6 +24,13 @@ Act as your own agent login, from the board-identity skill. Never write as Valen
 8. **Misfiled.** A ticket another chat owns moves to that chat's label or board. Tell that chat. A ticket of yours on another view gets your label.
 9. **Own view.** You own a view named after your repo, or after your Multibot name. Create it with your label when missing, then work from it.
 
+## Fix the tool, not just the card
+
+Every card you move by hand is a gap in the reconcile.
+For each one, write down why the reconcile missed it.
+Add that case to the reconcile with a test built from the real card, through a plan-pick worker.
+Proof: run the reconcile, then preview again; the preview shows no moves.
+
 ## Report
 
 One line per check: ✅ fine, 🔧 fixed (what), or ❓ needs Valentin (the question, with your pick).
