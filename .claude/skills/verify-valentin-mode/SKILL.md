@@ -18,7 +18,7 @@ Read `features/README.md` for the map.
 - Scratch ticket: SOFT-2849 on board 2060, label `vvm-test`. Test chats write there. Nobody works it.
 - Pacer log: `plan-pick --run` appends `{at, lane, session, cwd, not_vendor}` to ~/.local/state/token-ladder/launches.jsonl (server only) (token-ladder PR 41). `session` is the chat's `CLAUDE_CODE_SESSION_ID`.
 
-If the test login is gone, recreate it with `board-identity` steps 4 to 6: name "VVM Test Agent", board 2060. Never reuse another agent's token.
+If the test login is gone, recreate it with the `/hypertask` skill's identity steps: name "VVM Test Agent", board 2060. Never reuse another agent's token.
 
 ## Launch
 
@@ -76,5 +76,5 @@ Every change to `skills/valentin-mode`, `skills/hypertask-work` or plan-pick run
 ## Gotchas
 
 - Never run a test chat with user hooks off (`--setting-sources`): the guard against writing as Valentin goes too. Two early runs on 19 Nov wrote on SOFT-2849 as him. The guard still misses `ht` writes and the claude.ai connector (SOFT-2857).
-- A `reconcile --apply` without `--label vvm-test` fails the check: it can move real tickets.
+- A `reconcile --apply` without `--label vvm-test` fails the check: it can move real tickets (see the `/hypertask` skill).
 - One check at a time: the board sync lock is per board (SOFT-2853).

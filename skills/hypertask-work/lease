@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -63,6 +64,40 @@ def write(key, action, pid, directory=None, now=None):
                 Path(temp.name).unlink(missing_ok=True)
 
 
+def take_card(key, name, token, env=None):
+    """Assign the chat's agent to the ticket when it has no agent assignee.
+
+    Leaves an existing agent assignee alone and never assigns a person. Any
+    failure answers False: a lease never blocks and never fails on assignment.
+    """
+    env = dict(os.environ if env is None else env)
+    try:
+        token_value = Path(token).read_text().strip()
+    except OSError:
+        return False
+    if not token_value:
+        return False
+    cli = shutil.which('hypertask')
+    if cli is None:
+        return False
+    run_env = dict(env, HYPERTASKS_JWT_TOKEN=token_value, SHIP_SESSION_NAME=name)
+    try:
+        read = subprocess.run([cli, '--json', 'task', 'get', key], capture_output=True,
+                              text=True, env=run_env, timeout=30, check=False)
+        task = (json.loads(read.stdout or '{}').get('tasks') or [{}])[0]
+        if any(isinstance(row, dict) and row.get('agent')
+               for row in task.get('assignees') or ()):
+            return False
+        command = [cli, 'agent', 'take', key]
+        if task.get('projectId'):
+            command += ['--project', str(task['projectId'])]
+        took = subprocess.run(command, capture_output=True, text=True, env=run_env,
+                              timeout=30, check=False)
+        return took.returncode == 0
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
 def spawn_card(command, env):
     """Start one card sync and return at once. Detached, silent, never waited on."""
     subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -94,6 +129,8 @@ def sync_card(key, phase, env=None):
         env['HT_TOKEN'] = Path(token).read_text().strip()
         env['SHIP_SESSION_NAME'] = name
         env['RECONCILE_CARD_PHASE'] = phase
+        if phase == 'start':
+            take_card(key, name, token, env)
         command = [sys.executable, str(script), '--ticket', key, '--apply', '--limit', '1']
         spawn_card(command, env)
         return True
