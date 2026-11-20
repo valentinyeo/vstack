@@ -4,7 +4,8 @@ pstack owns workflow rules.
 vstack holds shared skills and checks.
 Product repos hold their own facts.
 
-Hypertask board: 2060, label: Vstack
+Hypertask board: 13556, label: Vstack
+Each chat working from this repo uses its own label on board 13556 (its chat name): Hypertask Reconciler, Responsive Mode, VPS Admin, PR Housekeeping, Board Drain Loop, Token Ladder. Vstack Maintainer uses Vstack.
 
 ## Rules and the checks that enforce them
 
