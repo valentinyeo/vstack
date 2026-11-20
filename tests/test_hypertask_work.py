@@ -118,7 +118,7 @@ class ReconcileTest(unittest.TestCase):
                 self.assertFalse(r.names_ticket(pr, 'SOFT-1'))
 
     def test_body_url_only_counts_on_the_ticket_line(self):
-        board = r.BoardConfig(13556, 'VSTA', frozenset(), frozenset(), (), 'valentinyeo/vstack')
+        board = r.BOARDS[13556]
         pull = json.loads((ROOT / 'tests/fixtures/reconcile' / 'vstack-200.json').read_text())
         with self.subTest('a prose url in the real PR is not evidence'):
             self.assertFalse(r.names_ticket(pull, 'VSTA-53', board=board))
@@ -253,6 +253,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r, 'discover', return_value={'BROKEN': [], 'SOFT-1': []}), \
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 1)
             self.assertIn('UNKNOWN BROKEN | invalid board-2060 ticket key', out.getvalue())
@@ -565,6 +566,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r, 'discover', return_value={'SOFT-2': [], 'SOFT-1': []}) as discover, \
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
             discover.assert_called_once_with(['SOFT-2', 'SOFT-1'], created={'SOFT-2': None, 'SOFT-1': None})
@@ -939,8 +941,10 @@ class ReconcileTest(unittest.TestCase):
 class Board15Test(unittest.TestCase):
     CREATED = '2026-11-20T09:51:00Z'
 
-    def target(self, column, age=8000, alive=False, pulls=()):
-        return r.target(r.Facts(column, age, alive, pulls), board=r.BOARDS[15])[0]
+    def target(self, column, age=8000, alive=False, pulls=(), column_entered=None):
+        entered = r.stamp(self.CREATED) if column_entered is None else column_entered
+        return r.target(r.Facts(column, age, alive, pulls, column_entered=entered),
+                        board=r.BOARDS[15])[0]
 
     def card(self, key, column, updated, pulls=()):
         return {'ticketNumber': key, 'section': column, 'projectId': 15,
@@ -963,11 +967,11 @@ class Board15Test(unittest.TestCase):
         return [{**self.card(f'HTPR-{n}', column, NOW - 8000), 'createdAt': created}
                 for n in range(1, count + 1)]
 
-    def fixture_github15(self, tasks):
-        """A board-15 fixture's GitHub: one open PR per ticket, nothing else."""
+    def fixture_github15(self, tasks, state='OPEN', merged_at=None):
+        """A board-15 fixture's GitHub: one PR per ticket in that state, nothing else."""
         pulls = {t['ticketNumber']: {'title': f'{t["ticketNumber"]} work', 'body': '',
                                      'headRefName': f'{t["ticketNumber"].lower()}-work',
-                                     'state': 'OPEN',
+                                     'state': state, 'mergedAt': merged_at,
                                      'number': r.ticket_index(t['ticketNumber'], r.BOARDS[15]),
                                      'url': 'https://github.com/hypertask-ai/hypertask/pull/' + str(n),
                                      'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
@@ -1079,10 +1083,79 @@ else:
                 self.assertEqual(self.target('Backlog', pulls=(pull(checks=checks),)), 'AI Review')
 
     def test_backlog_stays_and_ai_review_never_demotes(self):
+        self.assertEqual(self.target('Backlog'), 'Backlog')
+        self.assertEqual(self.target('Backlog', pulls=(pull('CLOSED'),)), 'Backlog')
+        # One model: merged evidence promotes backlog the same way on every board.
+        merged = r.Pull('https://github.com/hypertask-ai/hypertask/pull/1', 'MERGED', '', False,
+                        r.stamp('2026-11-20T10:00:00Z'))
+        self.assertEqual(self.target('Backlog', pulls=(merged,)), 'AI Review')
         for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
-                self.assertEqual(self.target('Backlog', pulls=pulls), 'Backlog')
                 self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
+
+    # HTPR-7807 as the board has it: reopened into Backlog on 2026-11-20, behind
+    # hypertask-ai/hypertask#3180, merged 2026-11-10. The merge is evidence for the
+    # work that shipped before the reopen, not for pulling the card back out.
+    REOPENED = {'entry': '2026-11-20T10:35:31.522Z', 'created': '2026-10-24T16:18:39.517Z',
+                'merged': '2026-11-10T09:50:51Z'}
+
+    def reopened_facts(self, pulls, now, column='Backlog', alive=False):
+        card = {'ticketNumber': 'HTPR-7807', 'section': column, 'projectId': 15,
+                'createdAt': self.REOPENED['created'], 'updatedAt': r.stamp(self.REOPENED['entry']),
+                'staleness': {'sectionChangedAt': self.REOPENED['entry']},
+                'assignees': [], 'labels': [], 'pulls': list(pulls)}
+        return self.facts(card, now, alive=alive)
+
+    def test_an_old_merge_never_pulls_a_reopened_card(self):
+        now = r.stamp('2026-11-20T16:00:00Z')
+        old = {**self.product_pull(3180, 'MERGED'), 'mergedAt': self.REOPENED['merged']}
+        fresh = {**self.product_pull(3532, 'MERGED'), 'mergedAt': '2026-11-20T11:00:00Z'}
+        with self.subTest('the merge is older than the column entry'):
+            facts = self.reopened_facts([old], now)
+            self.assertEqual(facts.column_entered, r.stamp(self.REOPENED['entry']))
+            self.assertEqual(r.target(facts, board=r.BOARDS[15]),
+                             ('Backlog', 'merged PR older than column entry; kept'))
+        with self.subTest('a merge after the entry still pulls it'):
+            self.assertEqual(r.target(self.reopened_facts([fresh], now), board=r.BOARDS[15])[0],
+                             'AI Review')
+        with self.subTest('a live worker is unaffected'):
+            self.assertEqual(r.target(self.reopened_facts([old], now, alive=True),
+                                      board=r.BOARDS[15])[0], 'In Progress')
+        with self.subTest('an old merge holds a card already in review'):
+            self.assertEqual(r.target(self.reopened_facts([old], now, column='AI Review'),
+                                      board=r.BOARDS[15])[0], 'AI Review')
+        with self.subTest('column entry comes from staleness, not updatedAt'):
+            task = {**self.board15_tasks(count=1)[0],
+                    'updatedAt': r.stamp('2026-11-20T18:08:23.579Z'),
+                    'staleness': {'sectionChangedAt': self.REOPENED['entry']}}
+            self.assertEqual(r.column_entered(task), r.stamp(self.REOPENED['entry']))
+
+    def test_merged_pr_in_doing_moves_even_after_ticket_edits(self):
+        """A relabel or assign bumps updatedAt; sectionChangedAt is the real column entry."""
+        merge_at = '2026-11-20T10:00:00Z'
+        entry_at = '2026-11-20T09:00:00Z'
+        now = r.stamp('2026-11-20T16:00:00Z')
+        merged = {**self.product_pull(1, 'MERGED'), 'mergedAt': merge_at}
+        card = {**self.card('HTPR-9001', 'In Progress', r.stamp('2026-11-20T11:00:00Z'), [merged]),
+                'staleness': {'sectionChangedAt': entry_at}}
+        self.assertEqual(r.target(self.facts(card, now), board=r.BOARDS[15])[0], 'AI Review')
+
+    def test_a_board_15_dry_run_keeps_a_reopened_card_in_backlog(self):
+        tasks = [{**self.board15_tasks(count=1)[0], 'ticketNumber': 'HTPR-7807',
+                  'staleness': {'sectionChangedAt': self.REOPENED['entry']}}]
+        respond = self.fixture_github15(tasks, state='MERGED', merged_at=self.REOPENED['merged'])
+
+        def api(*args):
+            if args[:2] == ('task', 'get'):
+                return {'tasks': [tasks[0]]}
+            raise AssertionError(f'unexpected api {args!r}')
+
+        with patch.object(r, 'api', side_effect=api):
+            code, printed, _calls = self.board15_run(tasks, respond=respond)
+        self.assertEqual(code, 0, printed)
+        self.assertIn('KEEP HTPR-7807 Backlog -> Backlog | merged PR older than column entry; kept',
+                      printed)
+        self.assertIn('DRY RUN board=15 tickets=1 unknown=0', printed)
 
     def test_stale_in_progress_cards_move_to_backlog(self):
         now = r.stamp(self.CREATED) + 3 * 3600
@@ -1285,11 +1358,12 @@ class AnyBoardTest(unittest.TestCase):
     def test_known_boards_keep_their_own_configs(self):
         self.assertIs(r.board_config(2060), r.BOARDS[2060])
         self.assertIs(r.board_config(15), r.BOARDS[15])
-        self.assertEqual(r.board_config(2060).rules, r.RULES)
+        self.assertIs(r.board_config(13556), r.BOARDS[13556])
         self.assertEqual((r.board_config(2060).prefix, r.board_config(2060).managed),
                          ('SOFT', frozenset(r.MANAGED)))
-        self.assertEqual((r.board_config(15).prefix, r.board_config(15).rules),
-                         ('HTPR', r.PRODUCT_RULES))
+        self.assertEqual(r.board_config(15).prefix, 'HTPR')
+        self.assertEqual(r.board_config(15).demote_all_idle, False)
+        self.assertEqual(r.board_config(2060).demote_all_idle, True)
 
 
 class ProductWorkerTest(unittest.TestCase):
