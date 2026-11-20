@@ -23,6 +23,7 @@ AGENTS = frozenset({'claude', 'codex', 'pi'})
 NODES = frozenset({'node', 'nodejs'})
 WEEK = 7 * 86400
 SOON = 86400
+SYNC_STALE = 45 * 60
 ERRORS = (ValueError, KeyError, TypeError, OSError)
 
 
@@ -121,6 +122,34 @@ def status(name, now=None):
     return (3 if remaining < SOON else 0), (
         'expires soon (<24h): re-arm now' if remaining < SOON
         else f'armed, expires in {window(remaining)}')
+
+
+def record_sync(name, ok, reason, now=None):
+    """Record this chat's last board sync. A record alone never arms the loop."""
+    moment = time.time() if now is None else now
+    record = {'at': iso(moment), 'ok': bool(ok), 'reason': reason or ''}
+    target = state_path(name)
+    try:
+        state = json.loads(target.read_text())
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, TypeError, ValueError):
+        state = {}
+    state.setdefault('name', name)
+    state['last_sync'] = record
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(state, indent=2) + '\n')
+    return record
+
+
+def sync_state(name):
+    """The last_sync this chat recorded, or None when it never recorded one."""
+    try:
+        state = json.loads(state_path(name).read_text())
+    except (OSError, TypeError, ValueError):
+        return None
+    record = state.get('last_sync') if isinstance(state, dict) else None
+    return record if isinstance(record, dict) else None
 
 
 def clear(name):

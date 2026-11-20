@@ -29,6 +29,7 @@ def load(name, path):
 
 drain = load('board_drain_check', SKILL / 'drain-check')
 loop = load('board_drain_loop_state', SKILL / 'loop-state')
+sync = load('board_drain_sync', SKILL / 'sync')
 
 
 def iso(seconds):
@@ -161,10 +162,73 @@ class CheckTest(unittest.TestCase):
         code, out = self.run_check([doing('SOFT-2907', age=7200)], alive=True)
         self.assertEqual(code, 0, out)
 
+    def test_a_todo_with_no_timestamp_is_never_stale(self):
+        # The API may send updatedAt null; that is not a crash and not an age.
+        row = todo('SOFT-2910')
+        row['task']['updatedAt'] = None
+        code, out = self.run_check([row])
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
+        self.assertIn('start a worker on SOFT-2910.', out)
+        self.assertNotIn('stale:', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_an_unparsable_timestamp_is_never_fresh(self):
+        row = todo('SOFT-2911')
+        row['task']['updatedAt'] = 'not a date'
+        code, out = self.run_check([row])
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off: 1 workable Todo', out)
+        self.assertNotIn('stale:', out)
+
+    def test_a_marked_todo_with_no_comment_timestamp_does_not_crash(self):
+        comments = [dict(agent_comment(3600), createdAt=None)]
+        code, out = self.run_check([todo('SOFT-2912', waiting_on=6, comments=comments)])
+        self.assertEqual(code, 0, out)
+        self.assertIn('waiting: SOFT-2912 (marked)', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_an_unexpected_error_exits_two_not_one(self):
+        with patch.object(drain, 'check', side_effect=AttributeError('boom')), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = drain.main(['--board', '2060', '--label', 'Poteto', '--now', iso(NOW)])
+        self.assertEqual(code, 2, out.getvalue() + err.getvalue())
+        self.assertIn('drain-check: error: boom', err.getvalue())
+
     def test_a_missing_loop_state_fails_when_named(self):
         code, out = self.run_check([todo('SOFT-2908', waiting_on=6)], '--state-name', 'HT Test')
         self.assertEqual(code, 1, out)
         self.assertIn('loop state: not armed', out)
+
+    def test_an_armed_loop_with_a_fresh_sync_passes(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_sync('HT Test', True, '', now=NOW)
+        code, out = self.run_check([todo('SOFT-2913', waiting_on=6)], '--state-name', 'HT Test')
+        self.assertEqual(code, 0, out)
+        self.assertIn('drain-check: PASS', out)
+        self.assertNotIn('sync stale', out)
+
+    def test_a_failed_sync_fails_the_check(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_sync('HT Test', False, 'usage: --apply requires SHIP_SESSION_NAME', now=NOW)
+        code, out = self.run_check([todo('SOFT-2914', waiting_on=6)], '--state-name', 'HT Test')
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync failed: usage: --apply requires SHIP_SESSION_NAME. '
+                      'Fix it, then run ./sync.', out)
+
+    def test_a_stale_sync_fails_the_check(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_sync('HT Test', True, '', now=NOW - 3600)
+        code, out = self.run_check([todo('SOFT-2915', waiting_on=6)], '--state-name', 'HT Test')
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync stale: last sync 60 min ago.', out)
+
+    def test_a_missing_sync_fails_the_check(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        code, out = self.run_check([todo('SOFT-2916', waiting_on=6)], '--state-name', 'HT Test')
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync stale: no sync recorded yet.', out)
 
     def test_a_usage_error_exits_two(self):
         with contextlib.redirect_stderr(io.StringIO()), \
@@ -221,6 +285,25 @@ class LoopStateTest(unittest.TestCase):
         loop.clear('HT Test')
         self.assertEqual(loop.status('HT Test', now=NOW), (2, 'not armed'))
 
+    def test_record_sync_creates_the_file_without_arming(self):
+        record = loop.record_sync('HT Test', False, 'usage: no token', now=NOW)
+        self.assertEqual(record, {'at': iso(NOW), 'ok': False, 'reason': 'usage: no token'})
+        self.assertTrue((self.directory / 'ht-test.json').exists())
+        self.assertEqual(loop.sync_state('HT Test'), record)
+        # A sync record alone never arms the loop.
+        self.assertEqual(loop.status('HT Test', now=NOW), (2, 'not armed'))
+
+    def test_record_sync_keeps_the_armed_loop(self):
+        loop.arm('HT Test', every='15m', job='cron-1', now=NOW)
+        loop.record_sync('HT Test', True, '', now=NOW)
+        self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+        self.assertEqual(loop.sync_state('HT Test'), {'at': iso(NOW), 'ok': True, 'reason': ''})
+
+    def test_a_file_with_no_sync_record_reads_none(self):
+        loop.arm('HT Test', now=NOW)
+        self.assertIsNone(loop.sync_state('HT Test'))
+        self.assertIsNone(loop.sync_state('HT Never Armed'))
+
     def test_the_cli_exits_with_the_status_code(self):
         env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory))
         command = [sys.executable, str(SKILL / 'loop-state')]
@@ -239,6 +322,114 @@ class LoopStateTest(unittest.TestCase):
                                  capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(missing.returncode, 2, missing.stderr)
         self.assertEqual(missing.stdout.strip(), 'not armed')
+
+
+class SyncTest(unittest.TestCase):
+    """The sync steps reconcile runs as this chat's own login, without the network."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.creds = self.directory / 'credentials'
+        self.creds.mkdir()
+        self.states = self.directory / 'state'
+        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.states),
+                                      'BOARD_DRAIN_CRED_DIR': str(self.creds),
+                                      'HT_TOKEN': '', 'SHIP_SESSION_NAME': ''})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def run_sync(self, answers, *extra, name='HT Test'):
+        """answers: one (returncode, stdout, stderr) per reconcile call, in order."""
+        queued, calls = list(answers), []
+
+        def fake(argv, **kwargs):
+            calls.append({'argv': argv, **kwargs})
+            return subprocess.CompletedProcess(argv, *queued.pop(0))
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sync.subprocess, 'run', side_effect=fake), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = sync.main(['--board', '2060', '--label', 'Poteto', '--name', name, *extra])
+        return code, out.getvalue() + err.getvalue(), calls
+
+    def write_token(self, text='tok-from-file', name='HT Test'):
+        (self.creds / (loop.slug(name) + '-agent-token')).write_text(text + '\n')
+
+    def test_a_usage_error_fails_and_records_it(self):
+        self.write_token()
+        code, out, calls = self.run_sync([(2, '', 'usage: --apply requires SHIP_SESSION_NAME\n')])
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync: FAIL', out)
+        self.assertIn('usage:', out)
+        self.assertEqual(len(calls), 1, out)  # no apply after a broken preview
+        record = loop.sync_state('HT Test')
+        self.assertIsNotNone(record)
+        self.assertFalse(record['ok'])
+        self.assertIn('usage:', record['reason'])
+        self.assertEqual(loop.status('HT Test'), (2, 'not armed'))
+
+    def test_an_error_in_the_output_fails_even_on_a_zero_exit(self):
+        self.write_token()
+        code, out, _ = self.run_sync([(0, 'reconcile: API error: 500\n', '')])
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync: FAIL', out)
+        self.assertFalse(loop.sync_state('HT Test')['ok'])
+
+    def test_a_non_zero_exit_fails(self):
+        self.write_token()
+        code, out, _ = self.run_sync([(1, '', 'board 2060 unreachable\n')])
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync: FAIL', out)
+        self.assertIn('board 2060 unreachable', out)
+        self.assertFalse(loop.sync_state('HT Test')['ok'])
+
+    def test_a_clean_preview_then_apply_succeeds(self):
+        self.write_token()
+        code, out, calls = self.run_sync([(0, 'preview: 2 moves\n', ''),
+                                          (0, 'applied: 2 moves\n', '')])
+        self.assertEqual(code, 0, out)
+        self.assertIn('preview: 2 moves', out)
+        self.assertIn('applied: 2 moves', out)
+        self.assertEqual(out.strip().splitlines()[-1], 'sync: ok')
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn('--apply', calls[0]['argv'])
+        self.assertIn('--apply', calls[1]['argv'])
+        self.assertEqual(calls[1]['argv'][calls[1]['argv'].index('--limit') + 1], '5')
+        self.assertEqual(loop.sync_state('HT Test')['ok'], True)
+
+    def test_the_token_comes_from_the_session_credentials(self):
+        self.write_token()
+        code, out, calls = self.run_sync([(0, 'ok\n', ''), (0, 'ok\n', '')])
+        self.assertEqual(code, 0, out)
+        for call in calls:
+            self.assertEqual(call['env']['HT_TOKEN'], 'tok-from-file')
+            self.assertEqual(call['env']['SHIP_SESSION_NAME'], 'HT Test')
+
+    def test_an_existing_token_and_session_name_are_kept(self):
+        with patch.dict(os.environ, {'HT_TOKEN': 'from-env', 'SHIP_SESSION_NAME': 'other-chat'}):
+            code, out, calls = self.run_sync([(0, 'ok\n', ''), (0, 'ok\n', '')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(calls[0]['env']['HT_TOKEN'], 'from-env')
+        self.assertEqual(calls[0]['env']['SHIP_SESSION_NAME'], 'other-chat')
+
+    def test_no_token_anywhere_fails(self):
+        code, out, calls = self.run_sync([])
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync: FAIL', out)
+        self.assertIn('HT_TOKEN', out)
+        self.assertEqual(calls, [])
+        self.assertFalse(loop.sync_state('HT Test')['ok'])
+
+    def test_the_cli_runs_and_refuses_without_a_token(self):
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.states),
+                   BOARD_DRAIN_CRED_DIR=str(self.creds), HT_TOKEN='', SHIP_SESSION_NAME='')
+        done = subprocess.run([sys.executable, str(SKILL / 'sync'), '--board', '2060',
+                               '--label', 'Poteto', '--name', 'HT Test'],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn('sync: FAIL', done.stdout)
 
 
 if __name__ == '__main__':

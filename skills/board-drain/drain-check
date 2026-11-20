@@ -30,12 +30,19 @@ STALE = 7200
 ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
 
 
+def stamp_of(value):
+    """Epoch seconds, or None when the field is missing, empty or unparsable."""
+    if not value:
+        return None
+    try:
+        return reconcile.stamp(value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def ticked(task):
     """The board's timestamp in epoch seconds, or None when it sent nothing usable."""
-    try:
-        return reconcile.stamp(task.get('updatedAt'))
-    except (TypeError, ValueError):
-        return None
+    return stamp_of(task.get('updatedAt'))
 
 
 def age(task, now):
@@ -53,10 +60,7 @@ def is_human(comment):
 
 
 def said(comment):
-    try:
-        return reconcile.stamp(comment.get('createdAt'))
-    except (TypeError, ValueError):
-        return None
+    return stamp_of(comment.get('createdAt'))
 
 
 def answered(comments):
@@ -90,6 +94,23 @@ def top_key(rows, now, board):
             index = sys.maxsize
         return (-(age(row['task'], now) or 0), index)
     return sorted(rows, key=rank)[0]['task']['ticketNumber']
+
+
+def sync_findings(name, now):
+    """A broken or over-45-minute-old sync is a finding; a fresh ok one is not."""
+    record = loop_state.sync_state(name)
+    if not record:
+        return ['sync stale: no sync recorded yet.']
+    if not record.get('ok'):
+        reason = record.get('reason') or 'no reason recorded'
+        return [f'sync failed: {reason}. Fix it, then run ./sync.']
+    moment = stamp_of(record.get('at'))
+    if moment is None:
+        return ['sync stale: no sync time recorded.']
+    spent = now - moment
+    if spent > loop_state.SYNC_STALE:
+        return [f'sync stale: last sync {int(spent // 60)} min ago.']
+    return []
 
 
 def read_fixture(path):
@@ -184,6 +205,7 @@ def check(args, now):
         code, text = loop_state.status(args.state_name, now)
         if code:
             findings.append(f'loop state: {text}')
+        findings += sync_findings(args.state_name, now)
     for line in findings:
         print(line)
     print('drain-check: PASS' if not findings else f'drain-check: FAIL ({len(findings)} findings)')
@@ -205,6 +227,9 @@ def main(argv=None):
         return check(args, now)
     except ERRORS as error:
         print(f'drain-check: {error}', file=sys.stderr)
+        return 2
+    except Exception as error:  # noqa: BLE001 - a crash must read as 2, never as 1
+        print(f'drain-check: error: {error}', file=sys.stderr)
         return 2
 
 

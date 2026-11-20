@@ -35,7 +35,7 @@ Never delete the loop because Todo looks empty. A tick with nothing new stays qu
 
 On top of Autopilot-full's audit:
 
-1. **Sync.** `../hypertask-work/reconcile --board <id> --label <label>`, read each reason, then again with `--apply --limit 5`.
+1. **Sync.** `./sync --board <id> --label <label> --name "<name>"` runs the reconcile preview, then `--apply --limit 5`, as your own login. Read each reason. A usage error or non-zero exit prints `sync: FAIL`, and drain-check reports it until a sync succeeds.
 2. **New tickets join the queue.** A workable Todo ticket with no owner gets one.
 3. **Waits.** Read the newest comments on each waiting ticket first. Valentin's yes makes it workable: clear the mark and give it an owner.
 4. **Check.** `./drain-check --board <id> --label <label> --state-name "<name>"`.
@@ -55,6 +55,7 @@ Each line names its fix:
 - **stale:** a workable ticket idle in Todo over two hours. Give it an owner, and note the gap on your role ticket.
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.
 - **not armed:** this chat restarted or the loop expired. Arm it.
+- **sync failed** or **sync stale:** the last board sync broke or is over 45 minutes old. Fix the named cause, then run `./sync`.
 
 A fail that returns on the next tick is a gap in this skill. File it on board 13556, label Board Drain Loop, with the drain-check output. That role turns repeated gaps into new checks here.
 
