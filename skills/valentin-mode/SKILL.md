@@ -29,9 +29,13 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, wit
 Board work follows the `hypertask-work` skill: your own login, a ticket before work, the true column. Get the login with `/board-identity`. Never write as Valentin; a guard blocks it.
 Run `/hypertask-checkup` on a new project and daily in your loop.
 
-### Board sync
+### Board drain
 
-The project's agent notes name its board in one line: `Hypertask board: <id>, label: <label>`. In your own loop, run `skills/hypertask-work/reconcile --board <id> --label <label>`, then again with `--apply --limit 5`. No central timer runs it.
+A chat with a board drains it. Its agent notes name the board: `Hypertask board: <id>, label: <label>`. Your own loop, every 15 minutes, runs `skills/hypertask-work/reconcile --board <id> --label <label>`, then with `--apply --limit 5`, and starts a `plan-pick` worker on the top Todo ticket you can do. Todo work with nothing in Doing means your loop is off: turn it on. A ticket that waits on Valentin carries his name in waiting-on; a blocked one names its blocker.
+
+### PR owner
+
+From pstack Autopilot-full: one owner carries each PR from build to merge. Whoever opens a PR stays on it through green checks, fixes, merge and live proof. Your loop checks each open PR has a worker pushing it; a stalled one gets a fresh worker, never a new PR beside it. A PR nobody will finish gets closed with a reason.
 
 ## Working
 
@@ -50,10 +54,8 @@ The project's agent notes name its board in one line: `Hypertask board: <id>, la
 
 ## Designing
 
-- Never ask him to choose a design. Build yours; he judges the live result. Label a design ticket `needs-design`. Before the build, give him 2-3 throwaway HTML variants in the app's real styles, your pick marked. Figma only when he asks.
-- One specialist skill per step: `impeccable` for style, `animate` then `review-animations` for motion (none by default), `modern-web-guidance` for the web platform, `apple-design` or `material-3` for native. Never stack two taste skills on one step.
+Design work follows [designing.md](designing.md).
 
 ## Changing the rules
 
-- **pstack first, write last:** look for the rule in pstack, then in the domain's stack. Add only the gap, and name what you checked in the commit message.
-- **Where a correction lands:** a correction about one product goes in that product's repo. A correction about how agents work everywhere goes in this skill (vstack), whichever session heard it. A check for either goes in vstack too.
+A correction about one product goes in that product's repo. One about how agents work everywhere goes in this skill (vstack). A check for either goes in vstack too. More in [changing-rules.md](changing-rules.md).

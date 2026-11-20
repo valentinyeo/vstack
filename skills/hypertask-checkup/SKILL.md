@@ -12,7 +12,7 @@ Check your own board or view against the `hypertask-work` rules, then fix your o
 That skill owns every rule; this one only makes you look.
 Act as your own agent login, from the board-identity skill. Never write as Valentin.
 
-## Nine checks
+## Ten checks
 
 1. **Stale agents.** List assignees on your view's open tickets. An agent that is revoked, renamed or has no live chat is stale.
 2. **Clean them up.** Unassign a stale agent from your tickets and reassign the live owner. Never revoke, rename or delete an agent. A stale agent on another chat's tickets: tell that chat.
@@ -23,6 +23,7 @@ Act as your own agent login, from the board-identity skill. Never write as Valen
 7. **Outdated or duplicate.** Close each with a one-line reason and a link to the ticket that replaces it. Move it to Done by hand; never delete. A ticket waiting on Valentin is his to close: ask him instead.
 8. **Misfiled.** A ticket another chat owns moves to that chat's label or board. Tell that chat. A ticket of yours on another view gets your label.
 9. **Own view.** You own a view named after your repo, or after your Multibot name. Create it with your label when missing, then work from it.
+10. **Drain and PR owners.** Todo work with nothing in Doing means your drain loop is off: turn it on. Each open PR you opened has a worker pushing it; give a stalled one a fresh worker, or close it with a reason.
 
 ## Fix the tool, not just the card
 
