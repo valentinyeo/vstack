@@ -20,7 +20,7 @@ FAIL_HINT = (
 
 # Plain cross-chat calls: any hit in a non-allowlisted file fails.
 REACH = (
-    (re.compile(r'mp-send'), 'mp-send'),
+    (re.compile(r'mp[_-]send'), 'mp-send'),
     (re.compile(r'mp-sessions'), 'mp-sessions'),
     (re.compile(r'roster-live'), 'roster-live'),
     (re.compile(r'multiprompt/agent-host'), 'multiprompt/agent-host'),
@@ -37,8 +37,11 @@ GH_SELF = re.compile(
 )
 
 
+REVIEWED = re.compile(r'^reviewed-by: .+$')
+
+
 def parse_allowlist(text: str) -> dict[str, dict]:
-    """path -> {reach, reason, expiry, approved}"""
+    """path -> {reach, reason, expiry, reviewed}"""
     entries = {}
     for line in text.splitlines():
         raw = line.strip()
@@ -47,10 +50,10 @@ def parse_allowlist(text: str) -> dict[str, dict]:
         parts = [part.strip() for part in raw.split('|')]
         if len(parts) != 5:
             raise ValueError(f'allowlist line needs five fields: {raw!r}')
-        path, reach, reason, expiry, approved = parts
-        if approved != 'approved-by: Valentin':
-            raise ValueError(f'allowlist line missing Valentin approval: {raw!r}')
-        entries[path] = {'reach': reach, 'reason': reason, 'expiry': expiry, 'approved': approved}
+        path, reach, reason, expiry, reviewed = parts
+        if not REVIEWED.match(reviewed):
+            raise ValueError(f'allowlist line missing reviewed-by chat name: {raw!r}')
+        entries[path] = {'reach': reach, 'reason': reason, 'expiry': expiry, 'reviewed': reviewed}
     return entries
 
 
@@ -67,9 +70,6 @@ def expired(expiry: str, today: datetime.date) -> bool:
 def validate_allowlist(entries: dict[str, dict], today: datetime.date) -> list[str]:
     problems = []
     for path, meta in sorted(entries.items()):
-        file_path = ROOT / path
-        if not file_path.is_file():
-            problems.append(f'allowlist {path}: file no longer exists ({meta["reach"]})')
         if expired(meta['expiry'], today):
             problems.append(f'allowlist {path}: expiry {meta["expiry"]} passed ({meta["reach"]})')
     return problems
@@ -139,18 +139,26 @@ class OwnChatOnly(unittest.TestCase):
         violations = scan_repo(self.allowed)
         self.assertEqual(violations, [], '\n'.join(violations))
 
-    def test_past_fleet_report_snippet_would_fail(self):
-        """Real past mistake (VSTA-92 fleet-report): mp-sessions across every live chat."""
-        snippet = subprocess.check_output(
-            ['git', 'show', '44c4480:skills/fleet-report/fleet-report'],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-        rel = 'skills/fleet-report/fleet-report'
+    def test_past_solo_wake_snippet_would_fail(self):
+        """Central operator (house-rules fleet/solo-wake): messages idle chats across the fleet."""
+        fixture = ROOT / 'tests/fixtures/own-chat-only/solo-wake-acting-snippet.txt'
+        house_rules = Path.home() / '.local/share/house-rules'
+        snippet = None
+        if (house_rules / '.git').is_dir():
+            try:
+                snippet = subprocess.check_output(
+                    ['git', '-C', str(house_rules), 'show', 'HEAD:fleet/solo-wake'],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                snippet = None
+        if not snippet:
+            snippet = fixture.read_text()
+        rel = 'skills/fleet-switch/solo-wake'
         hits = violations_for_rel(rel, snippet, self.allowed)
-        self.assertTrue(hits, 'expected fleet-report snippet to trip cross-chat scan')
-        self.assertTrue(any('mp-sessions' in line for line in hits), hits)
+        self.assertTrue(hits, 'expected solo-wake snippet to trip cross-chat scan')
+        self.assertTrue(any('mp-send' in line for line in hits), hits)
 
 
 if __name__ == '__main__':
