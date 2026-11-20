@@ -320,6 +320,61 @@ def lease_run(argv, index):
     return not wrapped or Path(wrapped[0]).name not in NON_WORKERS
 
 
+def lease_roots(now, directory=None):
+    """PIDs recorded on a fresh lease on this host."""
+    directory = directory or LEASES
+    host = socket.gethostname()
+    roots = set()
+    try:
+        paths = list(directory.glob('*.json'))
+    except OSError:
+        return roots
+    for path in paths:
+        try:
+            lease = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if lease.get('host') != host:
+            continue
+        if now - stamp(lease['last_beat']) >= 900:
+            continue
+        pid = lease.get('pid')
+        if isinstance(pid, int) and pid > 0 and pid_alive(pid):
+            roots.add(pid)
+    return roots
+
+
+def leased_process_tree(now, proc_dir=None, leases_dir=None):
+    """A leased worker PID and every descendant; argv scan must not see them."""
+    proc_dir = proc_dir or PROC
+    roots = lease_roots(now, leases_dir)
+    if not roots:
+        return set()
+    parent = {}
+    try:
+        entries = proc_dir.iterdir()
+    except OSError:
+        return set(roots)
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            fields = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+            parent[pid] = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    tree = set(roots)
+    changed = True
+    while changed:
+        changed = False
+        for pid, ppid in parent.items():
+            if pid not in tree and ppid in tree:
+                tree.add(pid)
+                changed = True
+    return tree
+
+
 @lru_cache(maxsize=2)
 def process_tickets(board=DEFAULT):
     """Fallback liveness for an agent CLI started without the lease wrapper.
@@ -327,6 +382,7 @@ def process_tickets(board=DEFAULT):
     Word boundaries keep SOFT-27 out of SOFT-2730.
     """
     ignore = process_chain()
+    leased = leased_process_tree(time.time())
     url = re.compile(r'https://app\.hypertask\.ai/detail/project-' + str(board.id) + r'/([1-9]\d*)(?!\w)')
     key = re.compile(r'(?<![\w-])' + re.escape(board.prefix) + r'-[1-9]\d*(?![\w-])', re.I)
     found = set()
@@ -335,7 +391,8 @@ def process_tickets(board=DEFAULT):
     except OSError:
         return found
     for entry in entries:
-        if not entry.name.isdigit() or int(entry.name) in ignore:
+        pid = int(entry.name) if entry.name.isdigit() else 0
+        if not pid or pid in ignore or pid in leased:
             continue
         try:
             argv = [os.fsdecode(part) for part in (entry / 'cmdline').read_bytes().split(b'\0') if part]
