@@ -9,6 +9,7 @@ Live reads on every call, no timer and no cache: /proc/loadavg, /proc/meminfo,
     vps-state --json            everything, for scripts
     vps-state --can-launch chat|worker
                                 exit 0 ADD, 1 CAREFUL, 2 HOLD, 3 probe failure
+                                (add --brief to print that line too)
 
 Flags: --no-write (skip ~/.local/state/vps-load/status), --no-cleanup (skip the
 worktree and /tmp scan), --ps-file FILE, --statvfs-json FILE.
@@ -774,6 +775,8 @@ def main(argv=None):
     if opts["can_launch"]:
         if facts["load"] is None or facts["memory"] is None:
             return PROBE_FAILED
+        if opts["brief"]:
+            print(verdict_line(result))
         return EXIT_CODE[result["verdict"][opts["can_launch"]]]
 
     if opts["brief"]:

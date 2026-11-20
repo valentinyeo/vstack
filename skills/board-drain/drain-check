@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, armed loop."""
+"""Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, blocked links, armed loop."""
 import argparse
 import importlib.machinery
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -23,11 +24,37 @@ loop_state = importlib.util.module_from_spec(state_spec)
 sys.modules[state_loader.name] = loop_state
 state_loader.exec_module(loop_state)
 
+# Before any board read: a worker `hypertask` shim earlier on PATH exits 3.
+loop_state.ensure_cli_path()
+
 TODO = 'Todo'
+DONE = 'Done'
 DOING = frozenset({'Doing', 'Building'})
+# A ticket in one of these columns has an owner, so an agent must be on it.
+WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
 FRESH = 1800
 STALE = 7200
 ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
+# The load probe: only these findings are about work the server is too busy to take.
+VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
+LOAD_FINDINGS = frozenset({'loop off', 'stale'})
+
+
+def probe_load():
+    """The server's launch verdict for a worker: (exit code, one reason line).
+
+    One call answers both: --can-launch sets the code, --brief prints the line.
+    3 means the probe failed, and a failed probe never hides a finding.
+    """
+    if not os.access(VPS_STATE, os.X_OK):
+        return 3, ''
+    try:
+        done = subprocess.run([str(VPS_STATE), '--can-launch', 'worker', '--brief'],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return 3, ''
+    lines = (done.stdout or '').strip().splitlines()
+    return done.returncode, lines[0].strip() if lines else ''
 
 
 def stamp_of(value):
@@ -52,6 +79,37 @@ def age(task, now):
 
 def waiting(task):
     return bool(task.get('waitingOnUserId') or task.get('blockerCommentId'))
+
+
+def done_blocker(key, loaded, other):
+    """A blocker is done when its column says so, else when its own status does."""
+    if key in loaded:
+        return loaded[key].get('section') == DONE
+    return (other.get('status') or '').strip().casefold() == DONE.casefold()
+
+
+def open_blockers(relations, loaded):
+    """The keys this ticket is BlockedBy that are still open, in link order."""
+    stuck = []
+    for relation in relations or ():
+        if not isinstance(relation, dict):
+            continue
+        if (relation.get('relationType') or '').strip().casefold() != 'blockedby':
+            continue
+        if (relation.get('direction') or '').strip().casefold() != 'outgoing':
+            continue
+        other = relation.get('otherTask')
+        other = other if isinstance(other, dict) else {}
+        key = other.get('ticketNumber')
+        if key and not done_blocker(key, loaded, other):
+            stuck.append(key)
+    return stuck
+
+
+def agent_assigned(task):
+    """An agent on the ticket; a person alone is not an owner."""
+    return any((assignee.get('type') or '').strip().lower() == 'agent'
+               for assignee in task.get('assignees') or () if isinstance(assignee, dict))
 
 
 def is_human(comment):
@@ -122,7 +180,8 @@ def read_fixture(path):
     for item in data:
         if not isinstance(item, dict) or not isinstance(item.get('task'), dict):
             raise ValueError('each fixture row needs a task')
-        rows.append({'task': item['task'], 'comments': item.get('comments') or []})
+        rows.append({'task': item['task'], 'comments': item.get('comments') or [],
+                     'relations': item.get('relations') or []})
     return rows
 
 
@@ -134,6 +193,12 @@ def fixture_board(board_id, rows):
         prefix = str(rows[0]['task'].get('ticketNumber') or '').split('-')[0]
     return reconcile.BoardConfig(board_id, prefix, reconcile.DEFAULT.managed,
                                  reconcile.DEFAULT.protected, reconcile.DEFAULT.rules)
+
+
+def ticket_relations(key):
+    """The links on one ticket: what it is BlockedBy, and what it blocks."""
+    page = reconcile.api('task', 'relations', key)
+    return page.get('relations') or []
 
 
 def ticket_comments(key):
@@ -153,13 +218,17 @@ def ticket_comments(key):
 
 
 def rows_for(args):
-    """Open tickets carrying the label, each Todo ticket with its comments."""
+    """Open tickets carrying the label, each Todo ticket with its comments and links.
+
+    Also the whole loaded board by key, label or not, so a blocker's column is known.
+    """
     if args.fixture:
         rows = read_fixture(args.fixture)
         board = fixture_board(args.board, rows)
     else:
         board = reconcile.board_config(args.board)
         rows = [{'task': task} for task in reconcile.tickets(board=board)]
+    loaded = {row['task'].get('ticketNumber'): row['task'] for row in rows}
     kept = []
     for row in rows:
         task = row['task']
@@ -168,48 +237,89 @@ def rows_for(args):
         if not reconcile.carries_label(task, args.label):
             continue
         if not args.fixture and task.get('section') == TODO:
-            row = {'task': task, 'comments': ticket_comments(task['ticketNumber'])}
+            key = task['ticketNumber']
+            row = {'task': task, 'comments': ticket_comments(key),
+                   'relations': [] if waiting(task) else ticket_relations(key)}
         kept.append(row)
-    return board, kept
+    return board, kept, loaded
 
 
 def check(args, now):
-    board, rows = rows_for(args)
+    board, rows, loaded = rows_for(args)
     todos = [row for row in rows if row['task'].get('section') == TODO]
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
-    workable, waiting_lines, findings = [], [], []
+    workable, waiting_lines, blocked_lines, findings = [], [], [], []
     for row in todos:
         task = row['task']
         if waiting(task):
             if answered(row.get('comments') or []):
-                findings.append(f'answered: {task["ticketNumber"]} clear the waiting-on mark and work it')
+                findings.append(('answered', f'answered: {task["ticketNumber"]} clear the '
+                                             'waiting-on mark and work it'))
             else:
                 waiting_lines.append(f'waiting: {task["ticketNumber"]} (marked)')
+            continue
+        stuck = open_blockers(row.get('relations'), loaded)
+        if stuck:
+            blocked_lines.append(f'blocked: {task["ticketNumber"]} by {", ".join(stuck)}')
         else:
             workable.append(row)
-    for line in waiting_lines:
+    for line in waiting_lines + blocked_lines:
         print(line)
     if workable and not live:
-        findings.append(f'loop off: {len(workable)} workable Todo, nothing in Doing. '
-                        f'Re-arm your loop and start a worker on {top_key(workable, now, board)}.')
+        findings.append(('loop off', f'loop off: {len(workable)} workable Todo, nothing in Doing. '
+                                     f'Re-arm your loop and start a worker on '
+                                     f'{top_key(workable, now, board)}.'))
     for row in doings:
         if row not in live:
-            findings.append(f'stalled: {row["task"]["ticketNumber"]} in Doing with no live worker. '
-                            'Start a fresh plan-pick worker.')
+            findings.append(('stalled', f'stalled: {row["task"]["ticketNumber"]} in Doing with no '
+                                        'live worker. Start a fresh plan-pick worker.'))
+    for row in rows:
+        task = row['task']
+        if task.get('section') in WORKING and not agent_assigned(task):
+            findings.append(('unassigned', f'unassigned: {task["ticketNumber"]} in '
+                                           f'{task["section"]} has no agent assigned. Assign your '
+                                           f'own agent login to it (task assign '
+                                           f'{task["ticketNumber"]} --self, with your token).'))
     for row in workable:
         spent = age(row['task'], now)
         if spent is not None and spent > STALE:
-            findings.append(f'stale: {row["task"]["ticketNumber"]} workable in Todo for {int(spent // 3600)}h.')
+            findings.append(('stale', f'stale: {row["task"]["ticketNumber"]} workable in Todo '
+                                      f'for {int(spent // 3600)}h.'))
     if args.state_name:
         code, text = loop_state.status(args.state_name, now)
         if code:
-            findings.append(f'loop state: {text}')
-        findings += sync_findings(args.state_name, now)
-    for line in findings:
+            findings.append(('loop state', f'loop state: {text}'))
+        findings += [('sync', line) for line in sync_findings(args.state_name, now)]
+    held = hold_line(workable, findings, args.no_load)
+    shown, printed_hold, failing = [], False, 0
+    for kind, text in findings:
+        if held is not None and kind in LOAD_FINDINGS:
+            if not printed_hold:
+                shown.append(held)
+                printed_hold = True
+            continue
+        shown.append(text)
+        failing += 1
+    for line in shown:
         print(line)
-    print('drain-check: PASS' if not findings else f'drain-check: FAIL ({len(findings)} findings)')
-    return 0 if not findings else 1
+    print('drain-check: PASS' if not failing else f'drain-check: FAIL ({failing} findings)')
+    return 0 if not failing else 1
+
+
+def hold_line(workable, findings, no_load):
+    """One held line when the server says HOLD, else None so findings stand.
+
+    Valentin's rule is to launch nothing while the server is overloaded, so an
+    idle drain on a HOLD server is holding on purpose, not a broken loop.
+    Stalled, unassigned, answered, loop-state and sync findings always stand.
+    """
+    if no_load or not any(kind in LOAD_FINDINGS for kind, _ in findings):
+        return None
+    code, line = probe_load()
+    if code != 2 or not line:
+        return None
+    return f'held: {line}; {len(workable)} workable Todo wait for the server'
 
 
 def main(argv=None):
@@ -219,6 +329,8 @@ def main(argv=None):
     parser.add_argument('--fixture', help='Read a JSON list of {"task", "comments"} instead of the API')
     parser.add_argument('--now', help='Judge ages against this ISO time instead of the clock')
     parser.add_argument('--state-name', help='Also require this chat\'s loop to be armed')
+    parser.add_argument('--no-load', action='store_true',
+                        help='Skip the vps-state load probe')
     args = parser.parse_args(argv)
     if args.board < 1:
         parser.error('--board must be a positive board id')
