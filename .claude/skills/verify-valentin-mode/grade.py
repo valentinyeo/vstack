@@ -24,6 +24,10 @@ INSTALLED_NAME = 'installed-valentin-mode.md'
 DISABLE_LINE = 'disable-model-invocation: true'
 NO_SESSION = 'no session id in stream'
 TASK_LINE = 'hello from the worker'
+# valentin-mode pastes responsive mode's body in at load: these three mark it whole.
+RESPONSIVE_PASTE_HEADING = '## Responsive mode (pasted in when this skill loads)'
+RESPONSIVE_PASTE_FIRST = 'The main chat talks. Background agents work.'
+RESPONSIVE_PASTE_LAST = 'the push lands on the remote with no nudge.'
 
 
 def parse_time(value):
@@ -224,12 +228,39 @@ def check_loaded(evidence):
                   '(three tools version, no self-start)')
 
 
+def pasted_responsive(text):
+    """True when this text holds responsive mode's body, start to last sentence.
+
+    The skill runs a shell line at load, so the body shows up only once that line
+    ran: the unexpanded line is text too, and it carries the heading without the
+    rules. A paste cut off part way loses the end-of-turn rule, so the last
+    sentence of the body is what proves the whole thing arrived.
+    """
+    return (RESPONSIVE_PASTE_HEADING in text
+            and RESPONSIVE_PASTE_FIRST in text
+            and RESPONSIVE_PASTE_LAST in text)
+
+
+def responsive_pasted(events):
+    """True when the loaded skill pasted responsive mode's body into the chat."""
+    for event in events:
+        if event.get('type') != 'user':
+            continue
+        for block in content_blocks(event, 'text'):
+            text = block.get('text')
+            if isinstance(text, str) and pasted_responsive(text):
+                return True
+    return False
+
+
 def check_responsive(events):
     """PASS when the chat loads responsive mode, alone or as valentin mode's first step."""
     if any(responsive_invoked(tool_use) for tool_use in tool_uses(events)):
         return PASS, 'responsive mode loaded by the Skill tool'
     if responsive_prompt(events):
         return PASS, 'responsive mode started by /responsive-mode'
+    if responsive_pasted(events):
+        return PASS, 'responsive mode pasted in by /valentin-mode'
     return FAIL, 'responsive mode not loaded'
 
 
