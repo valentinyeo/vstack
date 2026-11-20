@@ -108,9 +108,10 @@ PRODUCT_MANAGED = frozenset({'Backlog', 'In Progress', 'AI Review'})
 PRODUCT_RULES = (
     (lambda f: f.column in PRODUCT_PROTECTED or f.column.startswith('Flag:'), None, 'protected column'),
     (lambda f: f.column not in PRODUCT_MANAGED, None, 'unknown column; kept'),
-    (lambda f: f.age < 7200, None, 'touched within 2h'),
-    (lambda f: f.alive, 'In Progress', 'live worker'),
     (lambda f: any(p.state == 'OPEN' for p in f.pulls), 'AI Review', 'open PR'),
+    (lambda f: f.alive, 'In Progress', 'live worker'),
+    (lambda f: f.age < 7200, None, 'touched within 2h'),
+    (lambda f: f.column == 'In Progress', 'Backlog', 'idle In Progress; no live worker or open PR'),
     (lambda f: True, None, 'no live worker or open PR; kept'),
 )
 BOARDS = {
@@ -320,9 +321,10 @@ def process_tickets(board=DEFAULT):
 
 
 def worker_alive(key, now, board=DEFAULT):
-    """A lease wins; without one, a live command line that names the ticket counts."""
+    """A lease, a live command line, or a product worker proves a live worker."""
     if product_board(board):
-        return live_product_worker(key, now)
+        return (live_product_worker(key, now) or live_lease(key, now)
+                or key.upper() in process_tickets(board))
     return live_lease(key, now) or key.upper() in process_tickets(board)
 
 

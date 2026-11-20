@@ -744,8 +744,27 @@ class ReconcileTest(unittest.TestCase):
 
 
 class Board15Test(unittest.TestCase):
+    CREATED = '2026-11-20T09:51:00Z'
+
     def target(self, column, age=8000, alive=False, pulls=()):
         return r.target(r.Facts(column, age, alive, pulls), board=r.BOARDS[15])[0]
+
+    def card(self, key, column, updated, pulls=()):
+        return {'ticketNumber': key, 'section': column, 'projectId': 15,
+                'createdAt': self.CREATED, 'updatedAt': updated,
+                'assignees': [], 'labels': [], 'pulls': list(pulls)}
+
+    def product_pull(self, number, state):
+        return {'number': number, 'state': state,
+                'url': f'https://github.com/hypertask-ai/hypertask/pull/{number}',
+                'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+
+    def facts(self, card, now, alive=False):
+        states = {pull['number']: pull['state'] for pull in card['pulls']}
+        with patch.object(r, 'worker_alive', return_value=alive), \
+                patch.object(r, 'read_product_pull', side_effect=lambda number: r.Pull(
+                    f'https://github.com/hypertask-ai/hypertask/pull/{number}', states[number], '', False)):
+            return r.collect(card, card['pulls'], now, board=r.BOARDS[15])
 
     def test_service_path_finds_agent_cli_before_validation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -771,7 +790,7 @@ else:
 
     def test_live_worker_moves_to_in_progress(self):
         self.assertEqual(self.target('Backlog', alive=True), 'In Progress')
-        self.assertEqual(self.target('AI Review', alive=True, pulls=(pull(),)), 'In Progress')
+        self.assertEqual(self.target('In Progress', alive=True, pulls=(pull(),)), 'AI Review')
 
     def test_open_pr_moves_to_ai_review(self):
         for checks in ('green', 'red', 'running', 'missing'):
@@ -779,11 +798,50 @@ else:
                 self.assertEqual(self.target('In Progress', pulls=(pull(checks=checks),)), 'AI Review')
                 self.assertEqual(self.target('Backlog', pulls=(pull(checks=checks),)), 'AI Review')
 
-    def test_never_returns_to_backlog(self):
-        for column in ('In Progress', 'AI Review'):
-            for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
-                with self.subTest(column=column, pulls=pulls):
-                    self.assertEqual(self.target(column, pulls=pulls), column)
+    def test_backlog_stays_and_ai_review_never_demotes(self):
+        for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
+            with self.subTest(pulls=pulls):
+                self.assertEqual(self.target('Backlog', pulls=pulls), 'Backlog')
+                self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
+
+    def test_stale_in_progress_cards_move_to_backlog(self):
+        now = r.stamp(self.CREATED) + 3 * 3600
+        for key in ('HTPR-9514', 'HTPR-9511'):
+            with self.subTest(ticket=key):
+                idle = self.card(key, 'In Progress', now - 3 * 3600)
+                self.assertEqual(r.target(self.facts(idle, now), board=r.BOARDS[15]),
+                                 ('Backlog', 'idle In Progress; no live worker or open PR'))
+                moved = self.card(key, 'Verification Backlog', now - 60)
+                self.assertEqual(r.target(self.facts(moved, now), board=r.BOARDS[15])[0],
+                                 'Verification Backlog')
+
+    def test_open_pr_moves_a_card_inside_the_grace(self):
+        now = r.stamp(self.CREATED) + 600
+        card = self.card('HTPR-9387', 'Backlog', now - 120,
+                         (self.product_pull(3646, 'OPEN'), self.product_pull(3594, 'CLOSED')))
+        self.assertEqual(r.target(self.facts(card, now), board=r.BOARDS[15]), ('AI Review', 'open PR'))
+
+    def test_open_pr_outranks_a_live_worker(self):
+        now = r.stamp(self.CREATED) + 3 * 3600
+        card = self.card('HTPR-7742', 'In Progress', now - 3 * 3600, (self.product_pull(3735, 'OPEN'),))
+        self.assertEqual(r.target(self.facts(card, now, alive=True), board=r.BOARDS[15]),
+                         ('AI Review', 'open PR'))
+
+    def test_lease_or_process_is_a_live_worker(self):
+        with patch.object(r, 'live_product_worker', return_value=False), \
+                patch.object(r, 'live_lease', return_value=True):
+            self.assertTrue(r.worker_alive('HTPR-9514', NOW, r.BOARDS[15]))
+        with patch.object(r, 'live_product_worker', return_value=False), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value={'HTPR-9514'}):
+            self.assertTrue(r.worker_alive('HTPR-9514', NOW, r.BOARDS[15]))
+        now = r.stamp(self.CREATED) + 3 * 3600
+        card = self.card('HTPR-9514', 'In Progress', now - 3 * 3600)
+        self.assertEqual(r.target(self.facts(card, now, alive=True), board=r.BOARDS[15]),
+                         ('In Progress', 'live worker'))
+        with patch.object(r, 'live_product_worker', side_effect=ValueError('worker facts unreadable')):
+            with self.assertRaises(ValueError):
+                r.collect(card, [], NOW, board=r.BOARDS[15])
 
     def test_protected_columns_never_move(self):
         for column in ('UX needed', 'UX Sign-off', 'Agent Blocked (Infra)', 'Valentin Review',
@@ -792,9 +850,11 @@ else:
             with self.subTest(column=column):
                 self.assertEqual(self.target(column, alive=True, pulls=(pull(checks='red'),)), column)
 
-    def test_two_hour_grace(self):
-        self.assertEqual(self.target('Backlog', age=7199, alive=True), 'Backlog')
-        self.assertEqual(self.target('Backlog', age=7200, alive=True), 'In Progress')
+    def test_two_hour_grace_only_protects_idle_demotion(self):
+        self.assertEqual(self.target('In Progress', age=7199), 'In Progress')
+        self.assertEqual(self.target('Backlog', age=7199, alive=True), 'In Progress')
+        self.assertEqual(self.target('In Progress', age=7200), 'Backlog')
+        self.assertEqual(self.target('In Progress', age=7200, alive=True), 'In Progress')
 
     def test_five_move_cap(self):
         plans = [({'ticketNumber': f'HTPR-{i}', 'section': 'Backlog', 'projectId': 15, 'updatedAt': 1},

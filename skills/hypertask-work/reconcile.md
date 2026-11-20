@@ -117,7 +117,7 @@ Own board only; a URL for another board proves nothing.
 The reconcile process and its parents never count, because their brief names tickets.
 Any other command that names a ticket only looks at it, so it never counts: a search, `grep`, `rg`, `ps`, `pgrep`, `sed`, `awk`, `cat`, `tail`, `journalctl`, `gh`, `git`, `hypertask`, an editor, a shell or script run in its worktree, and a `shell -c` string that only runs those.
 Leases still win; the process fallback only adds liveness.
-Board 15 keeps its worker-service facts and does not read processes.
+Board 15 counts its worker service, a live lease, and a live process.
 `FLEET_PROC_DIR` overrides the process directory for tests.
 
 PASS requires a structured `verify-verdict` comment.
@@ -212,10 +212,11 @@ Board 15 ticket keys start with `HTPR-`.
 PRs come from `hypertask-ai/hypertask`.
 Live workers move tickets to In Progress.
 Open PRs move tickets to AI Review.
-Live workers take priority over open PRs.
-Recent changes keep their two-hour grace.
-Idle tickets stay in their current column.
-Tickets never move back to Backlog.
+Open PRs outrank live workers.
+An open PR or a live worker moves a ticket even inside the two-hour grace.
+The grace only protects an idle ticket.
+An In Progress ticket with no live worker and no open PR moves to Backlog after two hours.
+Tickets in Backlog stay.
 UX needed and UX Sign-off stay.
 Agent Blocked (Infra) and Valentin Review stay.
 QA and every Flag column stay.
@@ -230,6 +231,7 @@ Its local PID must still exist.
 Its queue must name that board's ticket.
 Claiming, launching, and running count as active.
 Progress expires after fifteen minutes.
+A live lease or a process that names the ticket also counts.
 Unreadable worker facts refuse all moves.
 
 The board-15 service template installs no timer.
