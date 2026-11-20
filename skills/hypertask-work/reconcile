@@ -86,8 +86,8 @@ class Facts:
     waiting: bool = False
     blocked: bool = False
     verification: bool = False
-    # When this card entered the column it sits in, from the ticket's own timestamps.
-    column_entry: float | None = None
+    # When this card entered its column (`staleness.sectionChangedAt`), or None when unknown.
+    column_entered: float | None = None
 
 
 class Stage(Enum):
@@ -177,16 +177,21 @@ def open_pr_in_checks(pull, board):
     return pull.checks != 'green'
 
 
-def merged_since_entry(pull, facts):
-    """A merge is evidence only if it came after the card entered its current column.
+def merged_since_entry(pull, facts, here):
+    """A merge counts as evidence by stage.
 
-    A card parked or reopened behind an old, already merged PR carries history, not
-    work. An unreadable time on either side keeps the old reading: a missing clock
-    is not proof the merge came first.
+    Reopened backlog cards ignore merges that landed before the column entry.
+    Verification backlog uses the same clock. Work and review columns treat a merged
+    PR as evidence regardless of entry time. A missing merge time keeps the old
+    reading; a missing entry on backlog or verification is not a guess.
     """
-    if pull.merged_at is None or facts.column_entry is None:
+    if here in (Stage.IN_PROGRESS, Stage.CHECKS, Stage.REVIEW):
         return True
-    return pull.merged_at > facts.column_entry
+    if pull.merged_at is None:
+        return True
+    if facts.column_entered is None:
+        return False
+    return pull.merged_at > facts.column_entered
 
 
 def plan_stage(facts, here, board):
@@ -198,7 +203,9 @@ def plan_stage(facts, here, board):
     if any(p.state == 'OPEN' for p in facts.pulls):
         return Stage.REVIEW, _open_pr_reason(board)
     merged = [p for p in facts.pulls if p.state == 'MERGED']
-    fresh = [p for p in merged if merged_since_entry(p, facts)]
+    if merged and here == Stage.BACKLOG and facts.column_entered is None:
+        return None, 'column entry unreadable; kept'
+    fresh = [p for p in merged if merged_since_entry(p, facts, here)]
     if fresh and all(p.passed for p in fresh):
         return Stage.REVIEW, 'merged PR with PASS; live proof pending'
     if fresh:
@@ -211,8 +218,8 @@ def plan_stage(facts, here, board):
         return None, 'verification backlog; kept'
     if here == Stage.BACKLOG and facts.verification and Stage.VERIFICATION in stage_column_map(board):
         return Stage.VERIFICATION, 'verification ticket'
-    if merged and here in (Stage.BACKLOG, Stage.REVIEW):
-        # Older than the column it sits in: history, so it holds the card and never pulls it.
+    if merged and here == Stage.BACKLOG:
+        # Older than the backlog entry: history on a reopened card, not evidence.
         return None, 'merged PR older than column entry; kept'
     if facts.age < GRACE_SECONDS:
         return None, 'touched within 2h'
@@ -351,14 +358,40 @@ def moment(value):
         return None
 
 
-def column_entry(task):
-    """When this card entered its current column, from the fields the board list sends.
+SECTION_CHANGED = {}
 
-    The list read carries no `staleness` block, and one task read per ticket is out,
-    so the last update stands in: a move is an update, and only an edit made after
-    the move can make a merged PR look older than it really was.
-    """
-    return moment(task.get('updatedAt'))
+
+def column_entered(task):
+    """When this card entered its current column."""
+    key = task['ticketNumber']
+    if key in SECTION_CHANGED:
+        return SECTION_CHANGED[key]
+    staleness = task.get('staleness') or {}
+    return moment(staleness.get('sectionChangedAt'))
+
+
+def needs_column_entry(task, pulls, board):
+    if column_stage_of(board, task['section']) is not Stage.BACKLOG:
+        return False
+    return any(p.get('state') == 'MERGED' for p in pulls.get(task['ticketNumber'], ()))
+
+
+def fill_section_changed(candidates, pulls, board):
+    """One task read per reopened backlog card that still carries a merged PR."""
+    SECTION_CHANGED.clear()
+    for task in candidates:
+        if not needs_column_entry(task, pulls, board):
+            continue
+        key = task['ticketNumber']
+        direct = moment((task.get('staleness') or {}).get('sectionChangedAt'))
+        if direct is not None:
+            SECTION_CHANGED[key] = direct
+            continue
+        try:
+            row = api('task', 'get', key)['tasks'][0]
+            SECTION_CHANGED[key] = moment((row.get('staleness') or {}).get('sectionChangedAt'))
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+            SECTION_CHANGED[key] = None
 
 
 def ticket_date(value):
@@ -1155,7 +1188,7 @@ def collect(task, pulls, now, board=DEFAULT):
     details = tuple(pull_facts(p, board) for p in pulls)
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
                  bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')),
-                 is_verification(task), column_entry(task))
+                 is_verification(task), column_entered(task))
 
 
 def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
@@ -1456,6 +1489,9 @@ def board_run():
         pulls = discover([t['ticketNumber'] for t in candidates], created=created, **options)
         with phase('pulls'):
             prefetch(pulls, **options)
+        with phase('column_entry'):
+            if candidates:
+                fill_section_changed(candidates, pulls, board)
         now, errors = time.time(), 0
         if product_board(board) and candidates:
             # One read for the whole board, before the loop. A failure here is not
