@@ -23,6 +23,7 @@ Nobody pushes to main.
 | Advice replies name their pstack source | `hooks/pstack-reply.py` |
 | Promised work starts in that turn | `hooks/said-started.py` |
 | Advisors respect configured project boundaries | `hooks/out-of-bounds.py` |
+| Claude helpers start only when plan-pick --claude-helper allows | `hooks/claude-helper-gate.py` |
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | The verifier's model family differs from every `Author model:` line in the PR body | `scripts/pick-verifier-model`, `tests/test_pick_verifier_model.py` |
