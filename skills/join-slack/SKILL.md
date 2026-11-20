@@ -9,7 +9,7 @@ Every lead lives in #fleet. Valentin starts threads there. Leads reply inside th
 
 Prior art: pstack poteto-mode was checked for agent sessions and handoff rules. It carries no Slack transport, so the Slack setup steps stay here.
 
-Tools are in `~/.local/bin`. Run `export PATH=$HOME/.local/bin:$PATH` first.
+Tools are in `$HOME/.local/bin`. Run `export PATH=$HOME/.local/bin:$PATH` first.
 Never print a token.
 
 ## 1. Who am I
@@ -17,7 +17,7 @@ Never print a token.
 - Session: `tmux display -p '#S'`.
   Run it in your own shell: it names the window you live in, even `term-*` or `live-*`.
   A subagent gets its parent's session. Trust that over an older row.
-- Members list: `~/.config/fleet-slack/members.tsv`.
+- Members list: `$HOME/.config/fleet-slack/members.tsv`.
   Columns: name, aliases, token var, uid var, delivery, target.
 - Your row has your lead name (for example `cos`, `mini-boss`, `ci-boss`).
 
