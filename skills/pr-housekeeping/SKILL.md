@@ -8,7 +8,7 @@ description: >-
 
 Prior art: pstack `poteto-mode` Babysit, Shipping and Autopilot-full step 6 take one PR at a time; the older `hypertask-triage` `pr-queue` reads PRs from the board side. Neither says which live chat owns a PR, so this skill adds the per chat queue and its states.
 
-Every chat tidies its own PRs. Nobody tidies another chat's. Maintainers are not operators: no central timer and no central runner watches for you, so you set up your own check.
+Every chat tidies its own PRs. Nobody tidies another chat's. vstack builds the queue tool; your chat runs it on its own work only. Pass `--mine` with your live chat name every tick.
 
 ## Set up your own check
 
@@ -22,13 +22,13 @@ The skill installs there, so that path works from any repo. A tick whose run exi
 
 ## Every tick
 
-A nonzero exit is the enforcement: one of your own PRs has gone quiet, or, without `--mine`, a PR in scope has no owner. Deal with it before you pick new work. The script only reads `gh`, the live roster and, with a token, one ticket.
+A nonzero exit is the enforcement: one of your own PRs has gone quiet or needs action. Deal with it before you pick new work. The script only reads `gh`, the live roster and, with a token, one ticket.
 
 ## Ladder of states
 
 - BOT: CI Boss owns dependabot, renovate and github-actions PRs.
 - DUPLICATE: the keeper is the PR with a passing verdict at its current head, else the newest green one, else the oldest. Message its owner chat, then close this one with a one line reason and the ticket link. Never open a second PR beside a stalled one. The `pr-overlap` GitHub check fails the newer PR when an older open one already edits a guarded file or carries the same ticket key.
-- NO-OWNER: without `--mine`, a PR no live chat claims fails the tick whatever its checks and verdict. Hand it to the chat that works in the repo or owns its ticket, and say so there.
+- NO-OWNER: your pull request lacks a readable owner for this chat. Add `Owner chat: <your live name>` to the body, or branch with your chat's unique initials prefix, then rerun.
 - CONFLICT: run Babysit in check mode, rebase your own branch, then push with force-with-lease on your own branch only.
 - BILLING: private repos only. Scan the history for secrets and client data, then make the repo public; ask Valentin only if the scan finds something.
 - RED: run Babysit in check mode, fix the failing check on your branch, then push.
@@ -41,7 +41,7 @@ A nonzero exit is the enforcement: one of your own PRs has gone quiet, or, witho
 
 ## Who owns a PR
 
-Ownership comes from the live roster: the checkout's branch, then the chat name in the branch slug, then the ticket's board assignee, then the only checkout of the repo. The board is read only, and only with a token. With no token such a PR can still read NO-OWNER; hand it over by hand, once.
+Ownership comes from the `Owner chat:` line in the body, then branch initials unique among live chats, then the live roster: checkout branch, chat name in the branch slug, ticket assignee on the board, then the only checkout of the repo. The board is read only, and only with a token.
 
 ## Gaps
 

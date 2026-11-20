@@ -259,6 +259,21 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(self.m.owner_chat('vsta-12-pr-housekeeping', 'o/r', chats, ['VPS Admin']),
                          'PR Housekeeping', 'the branch is the closest evidence')
 
+    def test_owner_from_owner_chat_line_in_body(self):
+        chats = [chat('Multi Bot Bugs', repo='o/r'), chat('Multi Bot Features', repo='o/r')]
+        body = '## Summary\nOwner chat: Multi Bot Bugs\n'
+        self.assertIsNone(self.m.owner_chat('feature-x', 'o/r', chats), 'shared checkout alone owns nobody')
+        self.assertEqual(self.m.owner_chat('feature-x', 'o/r', chats, body=body), 'Multi Bot Bugs')
+
+    def test_owner_from_unique_branch_initials(self):
+        chats = [chat('Multi Bot Bugs', repo='o/r'), chat('Multi Bot Features', repo='o/r')]
+        self.assertEqual(self.m.owner_chat('mbb-vsta-99', 'o/r', chats), 'Multi Bot Bugs')
+        self.assertEqual(self.m.owner_chat('mbf-vsta-12', 'o/r', chats), 'Multi Bot Features')
+
+    def test_ambiguous_initials_own_nobody(self):
+        chats = [chat('Alpha Beta', repo='o/r'), chat('Aardvark Balloon', repo='o/r')]
+        self.assertIsNone(self.m.owner_chat('ab-work', 'o/r', chats))
+
     def test_ticket_owner_names(self):
         answer = json.dumps({'success': True, 'tasks': [
             {'ticketNumber': 'VSTA-12', 'assignees': [{'displayName': 'PR Housekeeping'}, {'displayName': ''}]}]})
@@ -487,7 +502,11 @@ class CliTests(unittest.TestCase):
     """The real exit code the loop tick sees: nonzero whenever a PR in scope is NO-OWNER or STALE."""
 
     def cli(self, views, chats=('Owner (live-x, claude, /home/valentin/projects/r)',), args=(), gh_exit=0,
-            board=None, token=False, env_extra=None, script=None):
+            board=None, token=False, env_extra=None, script=None, require_mine=True):
+        if require_mine and '--mine' not in args:
+            roster_line = chats[0] if chats else 'Owner (live-x, claude, /home/valentin/projects/r)'
+            mine = roster_line.split(' (', 1)[0]
+            args = (*args, '--mine', mine)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             home = root / 'home'
@@ -548,12 +567,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('READY', result.stdout)
 
-    def test_no_owner_exits_one(self):
-        passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')
-        views = [view(1, repo='o/r', branch='nobody-here', pushed=1, comments=[passed])]
-        result = self.cli(views, chats=())
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn('NO-OWNER', result.stdout)
+    def test_without_mine_exits_two(self):
+        views = [view(1, repo='valentinyeo/multiprompt', branch='mbb-thing')]
+        result = self.cli(views, args=('--repo', 'valentinyeo/multiprompt'), chats=(),
+                          require_mine=False)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn('--mine', result.stderr)
+        self.assertIn('each chat checks only its own pull requests', result.stderr)
 
     def test_runs_through_a_symlink_outside_the_repo(self):
         """~/.claude/skills/pr-housekeeping is a symlink into the checkout: the script still finds
@@ -574,8 +594,10 @@ class CliTests(unittest.TestCase):
                       comments=[passed])]
         chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
                  'Other Chat (live-y, claude, /home/valentin/projects/s)')
-        self.assertEqual(self.cli(views, chats=chats).returncode, 1, 'no token, so nobody owns it')
+        self.assertEqual(self.cli(views, chats=chats, args=('--mine', 'Board Owner')).returncode, 0,
+                         'no token and no owner signal, so your queue is empty')
         result = self.cli(views, chats=chats, token=True,
+                          args=('--mine', 'Board Owner'),
                           board={'VSTA-12': [{'displayName': 'Board Owner'}]})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('READY', result.stdout)
@@ -585,7 +607,7 @@ class CliTests(unittest.TestCase):
         views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
         chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
                  'Other Chat (live-y, claude, /home/valentin/projects/s)')
-        result = self.cli(views, chats=chats, token=True,
+        result = self.cli(views, chats=chats, token=True, args=('--mine', 'Board Owner'),
                           board={'VSTA-12': [{'displayName': 'Board Owner'}]})
         self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
         calls = result.calls
@@ -598,29 +620,31 @@ class CliTests(unittest.TestCase):
                  view(2, repo='o/r', title='VSTA-12 b', branch='ticket-two')]
         chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
                  'Other Chat (live-y, claude, /home/valentin/projects/s)')
-        result = self.cli(views, chats=chats, token=True,
+        result = self.cli(views, chats=chats, token=True, args=('--mine', 'Board Owner'),
                           board={'VSTA-12': [{'displayName': 'Board Owner'}]})
         self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
         self.assertEqual(len(result.calls), 1, result.calls)
 
     def test_a_missing_token_file_runs_without_the_board(self):
-        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
+        body = BODY + 'Owner chat: Board Owner\n'
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing', body=body)]
         chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
                  'Other Chat (live-y, claude, /home/valentin/projects/s)')
-        result = self.cli(views, chats=chats, args=['--token-file', '/nonexistent/token'],
+        result = self.cli(views, chats=chats,
+                          args=['--token-file', '/nonexistent/token', '--mine', 'Board Owner'],
                           board={'VSTA-12': [{'displayName': 'Board Owner'}]})
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn('NO-OWNER', result.stdout)
+        self.assertIn('NO-VERDICT', result.stdout)
         self.assertEqual(result.calls, [])
         self.assertIn('cannot read --token-file', result.stderr)
 
     def test_board_needs_a_token(self):
-        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
+        body = BODY + 'Owner chat: Board Owner\n'
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing', body=body)]
         chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
                  'Other Chat (live-y, claude, /home/valentin/projects/s)')
-        result = self.cli(views, chats=chats, board={'VSTA-12': [{'displayName': 'Board Owner'}]})
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn('NO-OWNER', result.stdout)
+        result = self.cli(views, chats=chats, args=('--mine', 'Board Owner'),
+                          board={'VSTA-12': [{'displayName': 'Board Owner'}]})
+        self.assertIn('NO-VERDICT', result.stdout)
         self.assertEqual(result.calls, [], 'no token means no board read')
 
     def test_ht_token_in_the_environment_is_used(self):
@@ -628,18 +652,21 @@ class CliTests(unittest.TestCase):
         views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing', comments=[passed])]
         chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
                  'Other Chat (live-y, claude, /home/valentin/projects/s)')
-        result = self.cli(views, chats=chats, board={'VSTA-12': [{'displayName': 'Board Owner'}]},
+        result = self.cli(views, chats=chats, args=('--mine', 'Board Owner'),
+                          board={'VSTA-12': [{'displayName': 'Board Owner'}]},
                           env_extra={'HT_TOKEN': 'tok-env'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('READY', result.stdout)
 
-    def test_a_failing_board_read_leaves_the_pr_unowned(self):
-        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing')]
+    def test_a_failing_board_read_still_reads_owner_chat_from_the_body(self):
+        body = BODY + 'Owner chat: Board Owner\n'
+        views = [view(1, repo='o/r', title='VSTA-12 thing', branch='ticket-thing', body=body)]
         chats = ('Board Owner (live-x, claude, /home/valentin/projects/r)',
                  'Other Chat (live-y, claude, /home/valentin/projects/s)')
-        result = self.cli(views, chats=chats, token=True, board='fail')
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn('NO-OWNER', result.stdout)
+        result = self.cli(views, chats=chats, token=True, board='fail', args=('--mine', 'Board Owner'))
+        self.assertIn('Board Owner', result.stdout)
+        self.assertIn('NO-VERDICT', result.stdout)
+        self.assertIn('could not read ticket', result.stderr)
 
     def test_stale_exits_one(self):
         passed = comment(f'VERDICT: PASS\n\nHead `{SHA}`')

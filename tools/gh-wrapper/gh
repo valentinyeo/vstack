@@ -1248,7 +1248,7 @@ def _unlink(path: str) -> bool:
 
 
 def prune_mode() -> int:
-    """GH_WRAPPER_PRUNE=1 gh: one unbound pass, for the orchestrator to clear the backlog."""
+    """GH_WRAPPER_PRUNE=1 gh: one unbound pass, for the deploying chat to clear the backlog."""
     result = prune_cache(force=True)
     sys.stdout.write("gh-wrapper prune: removed %d entries, freed %d bytes, seen %d\n" % (
         result["removed"], result["freed"], result["seen"]))
