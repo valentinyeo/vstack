@@ -26,6 +26,15 @@ MESSAGE = (
     "{lines}\n"
     "Remove it, or list it in the repo's house file with the pstack sentence it follows."
 )
+MISSING_TOOL = (
+    "pstack-new-gates: pstack-diff not found.\n"
+    "Run from a checkout that has skills/pstack-diff/pstack-diff, or install pstack-diff under ~/.claude/skills/pstack-diff/."
+)
+DIFF_ERROR = "pstack-new-gates: pstack-diff exited {code}.\n{detail}\nFix pstack-diff before creating a PR."
+GAP_PSTACK = (
+    "pstack-new-gates: no pstack recipe found (GAP pstack).\n"
+    "Set PSTACK_DIFF_PSTACK or install pstack under ~/.claude/plugins/cache/cursor-plugins/pstack."
+)
 
 
 def git(root, *args):
@@ -114,12 +123,21 @@ def verdict(cmd, cwd):
         return None
     tool = diff_tool(root)
     if tool is None:
-        return None
+        return MISSING_TOOL
     result = subprocess.run(
         [sys.executable, str(tool), "--base", base, str(root)],
         capture_output=True,
         text=True,
     )
+    combined = (result.stdout or "") + (result.stderr or "")
+    if "GAP pstack:" in combined:
+        return GAP_PSTACK
+    if result.returncode == 2:
+        detail = (result.stderr or result.stdout or "unknown error").strip()
+        return DIFF_ERROR.format(code=2, detail=detail)
+    if result.returncode not in (0, 1):
+        detail = (result.stderr or result.stdout or "unknown error").strip()
+        return DIFF_ERROR.format(code=result.returncode, detail=detail)
     if result.returncode != 1:
         return None
     extras = [line for line in result.stdout.splitlines() if line.startswith("EXTRA ")]
@@ -196,6 +214,23 @@ def self_test():
 
     assert verdict("git status", repo) is None, "other commands pass"
     assert verdict("gh pr view 1", repo) is None, "other gh commands pass"
+
+    holder, root = make([(".github/workflows/ci.yml", planted)])
+    try:
+        saved = os.environ.get("PSTACK_DIFF_PSTACK")
+        os.environ["PSTACK_DIFF_PSTACK"] = str(fixture / "no-such-pstack")
+        os.environ["PSTACK_GATE_BASE"] = "HEAD~1"
+        try:
+            why = verdict("gh pr create --title t --body b", root)
+            assert why and "pstack recipe" in why, "GAP pstack blocks PR create"
+        finally:
+            if saved is None:
+                os.environ.pop("PSTACK_DIFF_PSTACK", None)
+            else:
+                os.environ["PSTACK_DIFF_PSTACK"] = saved
+    finally:
+        holder.cleanup()
+
     print("pstack-new-gates self-test ok")
 
 

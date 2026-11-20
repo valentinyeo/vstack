@@ -1,0 +1,711 @@
+name: Verifier
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pstack-verifier-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: Pick the verifier engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      engine: ${{ steps.pick.outputs.engine }}
+      codex: ${{ steps.pick.outputs.codex }}
+      claude: ${{ steps.pick.outputs.claude }}
+    steps:
+      - name: Read which verifier setting exists
+        id: pick
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_VERIFIER_KEY: ${{ secrets.CODEX_VERIFIER_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          codex=no
+          claude=no
+          if [ -n "${CODEX_AUTH_JSON:-}" ] || [ -n "${CODEX_VERIFIER_KEY:-}" ]; then codex=yes; fi
+          if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then claude=yes; fi
+          if [ "$codex" = "no" ] && [ "$claude" = "no" ]; then
+            engine=none
+            echo "::notice title=Verifier skipped::skipped: no verifier setting. The pstack-verifier check stays neutrally skipped. Add the repository secret CODEX_AUTH_JSON with a Codex plan login file, or CODEX_VERIFIER_KEY with a Codex API key, or CLAUDE_CODE_OAUTH_TOKEN from the Claude plan."
+          elif [ "$codex" = "yes" ]; then
+            engine=codex
+          else
+            engine=claude
+          fi
+          printf 'engine=%s\ncodex=%s\nclaude=%s\n' "$engine" "$codex" "$claude" >> "$GITHUB_OUTPUT"
+          printf 'engine: %s\n' "$engine" >> "$GITHUB_STEP_SUMMARY"
+
+  pstack-verifier:
+    name: pstack-verifier
+    needs: engine
+    if: needs.engine.outputs.engine != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      REPO: ${{ github.repository }}
+      SERVER_URL: ${{ github.server_url }}
+      RUN_ID: ${{ github.run_id }}
+      LIVE_URL: https://hypertask.ai
+    steps:
+      - name: Resolve the pull request, its parent commit and its head commit
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          set -euo pipefail
+          case "${PR_NUMBER:-}" in
+            ''|*[!0-9]*) echo "::error::No pull request number was given."; exit 1 ;;
+          esac
+          gh pr view "$PR_NUMBER" --repo "$REPO" --json state,isDraft,headRefOid,baseRefOid,headRepository,url > "$RUNNER_TEMP/pr.json"
+          state="$(jq -r .state "$RUNNER_TEMP/pr.json")"
+          draft="$(jq -r .isDraft "$RUNNER_TEMP/pr.json")"
+          sha="$(jq -r .headRefOid "$RUNNER_TEMP/pr.json" | tr '[:upper:]' '[:lower:]')"
+          base="$(jq -r .baseRefOid "$RUNNER_TEMP/pr.json" | tr '[:upper:]' '[:lower:]')"
+          head_repo="$(jq -r .headRepository.nameWithOwner "$RUNNER_TEMP/pr.json")"
+          case "$sha" in
+            *[!0-9a-f]*|'') echo "::error::The head commit is not a full commit SHA: $sha"; exit 1 ;;
+          esac
+          if [ "${#sha}" -ne 40 ]; then
+            echo "::error::The head commit is not a full commit SHA: $sha"
+            exit 1
+          fi
+          case "$base" in
+            *[!0-9a-f]*|'') echo "::error::The parent commit is not a full commit SHA: $base"; exit 1 ;;
+          esac
+          if [ "${#base}" -ne 40 ]; then
+            echo "::error::The parent commit is not a full commit SHA: $base"
+            exit 1
+          fi
+          go=yes
+          if [ "$head_repo" != "$REPO" ]; then
+            go=no
+            echo "::notice::skipped: pull request $PR_NUMBER comes from the fork $head_repo, and a fork gets no verifier setting."
+          elif [ "$state" != "OPEN" ]; then
+            go=no
+            echo "::notice::skipped: pull request $PR_NUMBER is $state."
+          elif [ "$draft" = "true" ]; then
+            go=no
+            echo "::notice::skipped: pull request $PR_NUMBER is a draft. The verifier runs when it is ready for review."
+          fi
+          printf 'go=%s\nnumber=%s\nsha=%s\nbase=%s\n' "$go" "$PR_NUMBER" "$sha" "$base" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the pull request head
+        if: steps.target.outputs.go == 'yes'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use Node.js 24.18.0
+        if: steps.target.outputs.go == 'yes'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.18.0
+
+      - name: Check the diff reader on a fixture
+        if: steps.target.outputs.go == 'yes'
+        run: node --test verify/diff.test.mjs
+
+      - name: Enable corepack pnpm
+        if: steps.target.outputs.go == 'yes'
+        run: corepack enable && corepack prepare pnpm@11.3.0 --activate
+
+      - name: Install dependencies for the head
+        if: steps.target.outputs.go == 'yes'
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch pinned source objects for the head
+        if: steps.target.outputs.go == 'yes'
+        run: pnpm sources:fetch
+
+      - name: Build the head the way ci.yml builds
+        if: steps.target.outputs.go == 'yes'
+        run: pnpm turbo run build --concurrency=2
+
+      - name: Check out the parent commit into its own tree
+        if: steps.target.outputs.go == 'yes'
+        env:
+          BASE_SHA: ${{ steps.target.outputs.base }}
+        run: git -C "$GITHUB_WORKSPACE" worktree add --detach "$RUNNER_TEMP/parent" "$BASE_SHA"
+
+      - name: Install dependencies for the parent
+        if: steps.target.outputs.go == 'yes'
+        working-directory: ${{ runner.temp }}/parent
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch pinned source objects for the parent
+        if: steps.target.outputs.go == 'yes'
+        working-directory: ${{ runner.temp }}/parent
+        run: pnpm sources:fetch
+
+      - name: Build the parent the way ci.yml builds
+        if: steps.target.outputs.go == 'yes'
+        working-directory: ${{ runner.temp }}/parent
+        run: pnpm turbo run build --concurrency=2
+
+      - name: Install Playwright Chromium for the verifier
+        if: steps.target.outputs.go == 'yes'
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/browser" --no-fund --no-audit playwright@1.65.1
+          "$RUNNER_TEMP/browser/node_modules/.bin/playwright" install --with-deps chromium
+          mkdir -p "$RUNNER_TEMP/screens"
+          ln -sfn "$RUNNER_TEMP/browser/node_modules" "$GITHUB_WORKSPACE/verify/node_modules"
+          printf 'SCREENS_DIR=%s\n' "$RUNNER_TEMP/screens" >> "$GITHUB_ENV"
+
+      - name: Serve the built sites and try each commit's Worker preview
+        if: steps.target.outputs.go == 'yes'
+        env:
+          BASE_SHA: ${{ steps.target.outputs.base }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/serve-static.mjs" <<'SERVER'
+          import { createReadStream } from "node:fs";
+          import { stat } from "node:fs/promises";
+          import { createServer } from "node:http";
+          import path from "node:path";
+
+          const root = path.resolve(process.argv[2]);
+          const port = Number(process.argv[3]);
+
+          const types = {
+            ".avif": "image/avif",
+            ".css": "text/css; charset=utf-8",
+            ".html": "text/html; charset=utf-8",
+            ".ico": "image/x-icon",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".js": "text/javascript; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".map": "application/json; charset=utf-8",
+            ".md": "text/markdown; charset=utf-8",
+            ".mjs": "text/javascript; charset=utf-8",
+            ".mp4": "video/mp4",
+            ".png": "image/png",
+            ".svg": "image/svg+xml",
+            ".txt": "text/plain; charset=utf-8",
+            ".wasm": "application/wasm",
+            ".webmanifest": "application/manifest+json",
+            ".webp": "image/webp",
+            ".woff": "font/woff",
+            ".woff2": "font/woff2",
+            ".xml": "application/xml; charset=utf-8",
+          };
+
+          const candidatesFor = (urlPath) => {
+            const base = path.resolve(root, decodeURIComponent(urlPath).replace(/^\/+/u, "").replace(/\/+$/u, ""));
+            if (base !== root && !base.startsWith(`${root}${path.sep}`)) {
+              return [];
+            }
+            return [base, path.join(base, "index.html"), `${base}.html`];
+          };
+
+          const fileAt = async (paths) => {
+            for (const candidate of paths) {
+              try {
+                const info = await stat(candidate);
+                if (info.isFile()) {
+                  return candidate;
+                }
+              } catch {}
+            }
+            return undefined;
+          };
+
+          createServer(async (request, response) => {
+            const url = new URL(request.url ?? "/", "http://127.0.0.1");
+            const found = await fileAt(candidatesFor(url.pathname));
+            if (found === undefined) {
+              const fallback = await fileAt([path.join(root, "404.html")]);
+              response.writeHead(404, {
+                "content-type": fallback === undefined ? types[".txt"] : types[".html"],
+              });
+              if (request.method === "HEAD" || fallback === undefined) {
+                response.end(fallback === undefined ? `404 ${url.pathname}\n` : undefined);
+                return;
+              }
+              createReadStream(fallback).pipe(response);
+              return;
+            }
+            response.writeHead(200, {
+              "content-type": types[path.extname(found)] ?? "application/octet-stream",
+            });
+            if (request.method === "HEAD") {
+              response.end();
+              return;
+            }
+            createReadStream(found).pipe(response);
+          }).listen(port, "127.0.0.1", () => {
+            console.log(`serving ${root} on http://127.0.0.1:${port}`);
+          });
+          SERVER
+
+          site_root() {
+            local tree="$1" candidate
+            for candidate in apps/web/dist/client apps/*/dist/client; do
+              if [ -f "$tree/$candidate/index.html" ]; then
+                printf '%s\n' "$tree/$candidate"
+                return 0
+              fi
+            done
+            echo "::error::$tree left no apps/*/dist/client/index.html, so there is nothing to serve."
+            find "$tree/apps" -maxdepth 3 -type d -name dist -print
+            return 1
+          }
+
+          wait_for_page() {
+            local url="$1" pid="$2" attempts="$3" attempt
+            for attempt in $(seq 1 "$attempts"); do
+              if curl --silent --fail --output /dev/null --max-time 60 "$url"; then
+                return 0
+              fi
+              if ! kill -0 "$pid" 2>/dev/null; then
+                return 1
+              fi
+              sleep 2
+            done
+            return 1
+          }
+
+          start_static() {
+            local tree="$1" port="$2" side="$3" root pid
+            if ! root="$(site_root "$tree")"; then
+              return 1
+            fi
+            node "$RUNNER_TEMP/serve-static.mjs" "$root" "$port" > "$RUNNER_TEMP/$side.log" 2>&1 &
+            pid="$!"
+            printf '%s\n' "$pid" > "$RUNNER_TEMP/$side.pid"
+            if ! wait_for_page "http://127.0.0.1:$port/" "$pid" 60; then
+              cat "$RUNNER_TEMP/$side.log"
+              echo "::error::the built files for the $side tree did not answer on port $port."
+              return 1
+            fi
+            printf '%s\n' "$root" > "$RUNNER_TEMP/$side.root"
+          }
+
+          start_preview() {
+            local tree="$1" side="$2" package="$1/apps/infra/package.json" attempt url candidate found="" pid
+            if [ ! -f "$package" ]; then
+              echo "::notice::$side has no apps/infra/package.json, so its Worker preview is not available."
+              return 1
+            fi
+            if [ "$(jq -r '.scripts.dev // ""' "$package")" != "alchemy dev" ]; then
+              echo "::notice::$side does not declare an alchemy dev preview, so its Worker preview is not available."
+              return 1
+            fi
+            env CI=1 NO_COLOR=1 TERM=dumb pnpm --dir "$tree" --filter @hypertask-site/infra run dev > "$RUNNER_TEMP/$side-worker.log" 2>&1 &
+            pid="$!"
+            printf '%s\n' "$pid" > "$RUNNER_TEMP/$side-worker.pid"
+            for attempt in $(seq 1 180); do
+              if ! kill -0 "$pid" 2>/dev/null; then
+                echo "::notice::$side Worker preview stopped before it answered. Its log is $side-worker.log."
+                return 1
+              fi
+              while IFS= read -r url; do
+                candidate="${url/localhost/127.0.0.1}"
+                if curl --silent --show-error --fail --max-time 5 "$candidate/" 2>/dev/null | grep -qi "hypertask"; then
+                  found="$candidate"
+                  break
+                fi
+              done < <(grep -oE 'https?://(localhost|127\.0\.0\.1):[0-9]+' "$RUNNER_TEMP/$side-worker.log" | sort -u)
+              if [ -n "$found" ]; then
+                break
+              fi
+              sleep 2
+            done
+            if [ -z "$found" ]; then
+              echo "::notice::$side Worker preview did not answer within 360 seconds. Its log is $side-worker.log."
+              return 1
+            fi
+            printf '%s\n' "$found" > "$RUNNER_TEMP/$side.worker-url"
+          }
+
+          if ! start_static "$GITHUB_WORKSPACE" 4173 site; then
+            exit 1
+          fi
+          if ! start_static "$RUNNER_TEMP/parent" 4174 parent; then
+            exit 1
+          fi
+          printf 'SITE_URL=http://127.0.0.1:4173\nBASE_URL=http://127.0.0.1:4174\n' >> "$GITHUB_ENV"
+          printf 'SITE_ROOT=%s\nBASE_ROOT=%s\n' "$(cat "$RUNNER_TEMP/site.root")" "$(cat "$RUNNER_TEMP/parent.root")" >> "$GITHUB_ENV"
+
+          start_preview "$GITHUB_WORKSPACE" site &
+          site_preview="$!"
+          start_preview "$RUNNER_TEMP/parent" parent &
+          parent_preview="$!"
+          wait "$site_preview" || true
+          wait "$parent_preview" || true
+
+          head_worker="$(cat "$RUNNER_TEMP/site.worker-url" 2>/dev/null || true)"
+          base_worker="$(cat "$RUNNER_TEMP/parent.worker-url" 2>/dev/null || true)"
+          printf 'SITE_WORKER_URL=%s\nBASE_WORKER_URL=%s\n' "$head_worker" "$base_worker" >> "$GITHUB_ENV"
+
+          head_mode="static at http://127.0.0.1:4173"
+          if [ -n "$head_worker" ]; then
+            head_mode="$head_mode and the repo's Worker preview at $head_worker"
+          else
+            head_mode="$head_mode only; the repo's Worker preview did not answer"
+          fi
+          parent_mode="static at http://127.0.0.1:4174"
+          if [ -n "$base_worker" ]; then
+            parent_mode="$parent_mode and the repo's Worker preview at $base_worker"
+          else
+            parent_mode="$parent_mode only; the repo's Worker preview did not answer"
+          fi
+          printf 'SERVE_MODE_HEAD=%s\nSERVE_MODE_PARENT=%s\n' "$head_mode" "$parent_mode" >> "$GITHUB_ENV"
+
+          {
+            printf 'head %s static http://127.0.0.1:4173 from %s, Worker preview %s\n' "$SHA" "$(cat "$RUNNER_TEMP/site.root")" "${head_worker:-not started}"
+            printf 'parent %s static http://127.0.0.1:4174 from %s, Worker preview %s\n' "$BASE_SHA" "$(cat "$RUNNER_TEMP/parent.root")" "${base_worker:-not started}"
+            printf 'live %s\n' "$LIVE_URL"
+            printf 'screens %s\n' "$SCREENS_DIR"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Read the change under review from the checkout
+        if: steps.target.outputs.go == 'yes'
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+          BASE_SHA: ${{ steps.target.outputs.base }}
+          DIFF_LIMIT_BYTES: "200000"
+        run: |
+          set -euo pipefail
+          node "$GITHUB_WORKSPACE/verify/diff.mjs" \
+            --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" \
+            --head "$SHA" \
+            --out "$RUNNER_TEMP" \
+            --limit "$DIFF_LIMIT_BYTES" > "$RUNNER_TEMP/diff.json"
+          jq -r '"diff: \(.files) files, \(.bytes) bytes, prompt copy capped: \(.capped)"' "$RUNNER_TEMP/diff.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the verifier prompt with the change under review
+        if: steps.target.outputs.go == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          BASE_SHA: ${{ steps.target.outputs.base }}
+          PR: ${{ steps.target.outputs.number }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR" --repo "$REPO" --json title,body,url --jq '"Title: \(.title)\n\nBody:\n\(if .body == "" or .body == null then "(empty)" else .body end)\n\nURL: \(.url)"' > "$RUNNER_TEMP/pr-meta.md"
+          diff_bytes="$(jq -r '.bytes' "$RUNNER_TEMP/diff.json")"
+          diff_files="$(jq -r '.files' "$RUNNER_TEMP/diff.json")"
+          diff_capped="$(jq -r '.capped' "$RUNNER_TEMP/diff.json")"
+          diff_capped_bytes="$(jq -r '.cappedBytes' "$RUNNER_TEMP/diff.json")"
+          diff_limit="$(jq -r '.limit' "$RUNNER_TEMP/diff.json")"
+          if [ -n "${SITE_WORKER_URL:-}" ] && [ -n "${BASE_WORKER_URL:-}" ]; then
+            preview_note="- The repo's own Worker preview answered for both sides: head $SITE_WORKER_URL and parent $BASE_WORKER_URL. Use it for the rules the static files cannot answer: an old address and its Location, a trailing slash, an unknown address and its status, and the response headers. The same built files are also served at $SITE_URL and $BASE_URL."
+          elif [ -n "${SITE_WORKER_URL:-}" ] || [ -n "${BASE_WORKER_URL:-}" ]; then
+            preview_note="- The repo's Worker preview answered for only one side this run: head ${SITE_WORKER_URL:-none}, parent ${BASE_WORKER_URL:-none}. Use it for that side's redirect, header, trailing-slash and unknown-address behaviour, and say plainly which side you could not compare. The built files are served at $SITE_URL and $BASE_URL."
+          else
+            preview_note="- No Worker preview answered on this run, so only the built files are served at $SITE_URL and $BASE_URL. A redirect, a response header, a trailing slash or the status of an unknown address cannot be judged through those files. Say plainly that you could not judge it, and read the checkout for what the code would do."
+          fi
+          {
+            cat <<PROMPT
+          You are the independent verifier for a pull request in this repository. You did not write this change. Do not merge, do not push, do not edit the checked-out repository. Judge the change, leave your evidence, then stop.
+
+          ## The goal
+          This repository is the new hypertask.ai, built on Rat Stack. The parent ticket is HTPR-9124. Valentin's goal for the whole move: the rebuilt site looks exactly the same as https://hypertask.ai and has the same content. Same colours, same fonts, same sizes, same corners, same words, same page addresses, same links. Rat Stack's own look and Foldkit's own look are not acceptable, a rewritten sentence is not acceptable, and a page the move claims is not acceptable when it is missing or different.
+
+          ## This pull request is one step of a move, not the whole site
+          Judge only what this pull request's own ticket and body claim, by comparing the parent commit against the head commit.
+          - A page, route or file that is missing in BOTH the parent and the head is not a finding against this pull request. Early steps build the frame, later steps fill it, and nothing has built every page yet.
+          - A page that works in the parent and is missing or broken in the head is a finding against this pull request.
+          - A page that this pull request claims to have moved, and whose words, look or address differ from the live old site $LIVE_URL, is a finding.
+          - Do not fail a step for work its ticket explicitly leaves to another step. Name it as a note and say which step owns it.
+          - If the pull request does not claim a change for visitors, say that, and check that the visitor sees no regression.
+
+          ## What you have
+          - The pull request head $SHA is checked out at $GITHUB_WORKSPACE. That is the change under review.
+          - The parent commit $BASE_SHA, the commit this change is based on, is checked out at $RUNNER_TEMP/parent. That is what a visitor sees today.
+          - The head site is served at $SITE_URL from the built files in $SITE_ROOT. The parent site is served at $BASE_URL from the built files in $BASE_ROOT.
+          $preview_note
+          - Serve mode for the head: $SERVE_MODE_HEAD. Serve mode for the parent: $SERVE_MODE_PARENT.
+          - The built files are what a deploy uploads, so pages, plain files, the sitemap, the feed and images can all be fetched there.
+          - The live old site is at $LIVE_URL. Fetch it sparingly, with GET only, for look and content reference. Never send it a form, a chat message or any other write.
+          - Playwright 1.65.1 with Chromium is installed outside the repository and linked at $GITHUB_WORKSPACE/verify/node_modules, so the driver resolves it. Screenshots and reports go in $SCREENS_DIR.
+          - verify/driver.mjs opens a path at 1440 and 390 pixels wide, reports the status, title, headings, links, fonts, visible text, console errors, page errors and failed requests, and screenshots it. It compares parent against head text, and probes an address without following a redirect. Read it before you trust it: it comes from the same change you are judging, so check what it actually does.
+            - node verify/driver.mjs page --head "$SITE_URL" --base "$BASE_URL" --path /pricing/ --path /blog/
+            - node verify/driver.mjs compare --head "$SITE_URL" --base "$BASE_URL" --path /pricing/
+            - node verify/driver.mjs probe --head "${SITE_WORKER_URL:-$SITE_URL}" --base "${BASE_WORKER_URL:-$BASE_URL}" --path /v2 --path /no-such-page
+          - .claude/skills/verify-astro-rs/features/README.md lists every user-visible feature of hypertask.ai with the address to try and what to look for, and one file per top feature beside it. Work down it for the pages this change touches.
+          - The change under review, its title, its body, the files it touches and its diff, is at the end of this prompt.
+
+          ## What to do
+          1. Read the pull request's title and body, and name what it claims. Read the diff, then name what a reader would notice.
+          2. Drive the parent site and the head site like a user, the same way for both. Use .claude/skills/verify-astro-rs/features/ for the addresses. Compare what each one shows: title, headings, text, navigation, links, styles, the phone layout at 390 pixels, and the browser console.
+          3. Take the live old site $LIVE_URL as the reference for look and content when the parent build and the live site disagree, for pages this pull request claims.
+          4. Try to break it. Unknown paths, a trailing slash, an old address, an asset that returns 404, text that differs from the live page, a font or colour or size or corner that differs, a link that goes nowhere, a JavaScript error, a layout that breaks on a phone, a control you cannot reach with the keyboard.
+          5. Keep what you used as evidence: the pages you fetched, the text you compared, the screenshots you took, the driver reports.
+
+          ## What changed for a visitor
+          Say plainly what a reader of hypertask.ai sees differently between the parent $BASE_SHA and the head $SHA. If nothing changed for a visitor, say so and say why that is correct for this change.
+
+          ## The verdict
+          Your answer's first line must be exactly one of these three, whole, with nothing else on that line and nothing before it:
+          pstack-verifier: PASS @ $SHA
+          pstack-verifier: PASS+NOTES @ $SHA
+          pstack-verifier: FAIL @ $SHA
+
+          PASS means you drove both sides, compared only what this pull request claims, and found nothing a reader would notice. PASS+NOTES means it works and your notes do not block the merge. FAIL means a reader would notice a regression the pull request causes, a page that worked in the parent is broken in the head, or the change does not do what its own ticket asks.
+
+          A verdict covers the commit $SHA only. If your verdict is for any other commit, it is stale and it will be rejected.
+
+          After that first line, in plain sentences:
+          - what you ran, with the commands and the pages.
+          - the evidence: what matched, what differed between parent and head, with the exact text or the screenshot file names.
+          - what changed for a visitor.
+          - what this step does not cover, and which later step owns it.
+          - for a FAIL, the one change that would make it pass.
+
+          Never claim something you did not run.
+          PROMPT
+            printf '\n## The change under review\n\n'
+            cat "$RUNNER_TEMP/pr-meta.md"
+            printf '\n## The files this change touches\n\n'
+            cat "$RUNNER_TEMP/pr-files.txt"
+            printf '\n## The diff\n\n'
+            if [ "$diff_capped" = "true" ]; then
+              printf 'This diff is large. The copy below is capped at %s bytes of %s bytes, across %s files. The full diff is at %s, so read more of it with sed, head or rg when the claim needs it. This cap is stated in the posted verdict.\n\n' "$diff_capped_bytes" "$diff_bytes" "$diff_files" "$RUNNER_TEMP/pr.diff"
+            else
+              printf 'The complete diff is below: %s bytes across %s files. It is also at %s. The stated cap for a prompt copy is %s bytes, and this diff did not reach it.\n\n' "$diff_bytes" "$diff_files" "$RUNNER_TEMP/pr.diff" "$diff_limit"
+            fi
+            printf '~~~diff\n'
+            cat "$RUNNER_TEMP/pr.diff.capped"
+            printf '~~~\n'
+          } > "$RUNNER_TEMP/prompt.md"
+
+      - name: Verify with Codex
+        id: codex
+        if: steps.target.outputs.go == 'yes' && needs.engine.outputs.codex == 'yes'
+        continue-on-error: true
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_VERIFIER_KEY: ${{ secrets.CODEX_VERIFIER_KEY }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          npm install --global --no-fund --no-audit @openai/codex@0.169.0
+          agent_path="$(dirname "$(command -v codex)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
+          codex_env=(
+            "HOME=$HOME"
+            "PATH=$agent_path"
+            "TERM=dumb"
+            "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+            "RUNNER_TEMP=$RUNNER_TEMP"
+            "SCREENS_DIR=$SCREENS_DIR"
+            "SITE_URL=$SITE_URL"
+            "BASE_URL=$BASE_URL"
+            "SITE_WORKER_URL=${SITE_WORKER_URL:-}"
+            "BASE_WORKER_URL=${BASE_WORKER_URL:-}"
+            "LIVE_URL=$LIVE_URL"
+          )
+          if [ -n "${CODEX_AUTH_JSON:-}" ]; then
+            codex_home="$(mktemp -d "$RUNNER_TEMP/codex-home.XXXXXX")"
+            chmod 700 "$codex_home"
+            (
+              umask 077
+              printf '%s' "$CODEX_AUTH_JSON" > "$codex_home/auth.json"
+            )
+            chmod 600 "$codex_home/auth.json"
+            printf 'CODEX_HOME=%s\n' "$codex_home" >> "$GITHUB_ENV"
+            auth_mode="$(jq -r '.auth_mode // "absent"' "$codex_home/auth.json" 2>/dev/null)" || auth_mode="unreadable"
+            if [ "$auth_mode" != "chatgpt" ]; then
+              echo "::error::CODEX_AUTH_JSON is not a Codex plan login file: its auth_mode is $auth_mode, not chatgpt. Nothing was printed from it, and the file is removed."
+              exit 1
+            fi
+            codex_env+=("CODEX_HOME=$codex_home")
+          else
+            engine_token="$CODEX_VERIFIER_KEY"
+            codex_env+=("CODEX_API_KEY=$engine_token" "OPENAI_API_KEY=$engine_token")
+          fi
+          env -i "${codex_env[@]}" \
+            codex exec \
+              --skip-git-repo-check \
+              --ephemeral \
+              --sandbox danger-full-access \
+              --cd "$GITHUB_WORKSPACE" \
+              --output-last-message "$RUNNER_TEMP/verdict.md" \
+              - < "$RUNNER_TEMP/prompt.md"
+          first="$(sed -n '1{s/[[:space:]]*$//;p}' "$RUNNER_TEMP/verdict.md" 2>/dev/null || true)"
+          if [[ ! "$first" =~ ^pstack-verifier:\ (PASS|PASS\+NOTES|FAIL)\ @\ ([0-9a-f]{40})$ ]]; then
+            echo "::error::Codex produced no verdict in the required format, so the next configured engine stands in: $first"
+            sed -n '1,40p' "$RUNNER_TEMP/verdict.md" 2>/dev/null || true
+            exit 1
+          fi
+          if [ "${BASH_REMATCH[2]}" != "$SHA" ]; then
+            echo "::error::The Codex verdict names ${BASH_REMATCH[2]}, not the head $SHA, so the next configured engine stands in."
+            exit 1
+          fi
+
+      - name: Remove the Codex login file
+        if: always()
+        run: |
+          set -euo pipefail
+          case "${CODEX_HOME:-}" in
+            "$RUNNER_TEMP"/codex-home.*)
+              rm -rf -- "$CODEX_HOME"
+              printf 'removed the temporary Codex login file\n'
+              ;;
+          esac
+
+      - name: Verify with Claude when Codex is absent or refused
+        id: claude
+        if: steps.target.outputs.go == 'yes' && needs.engine.outputs.claude == 'yes' && (needs.engine.outputs.codex == 'no' || steps.codex.outcome == 'failure')
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          npm install --global --no-fund --no-audit @anthropic-ai/claude-code@2.1.325
+          engine_token="$CLAUDE_CODE_OAUTH_TOKEN"
+          agent_path="$(dirname "$(command -v claude)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
+          env -i \
+            HOME="$HOME" \
+            PATH="$agent_path" \
+            TERM=dumb \
+            CLAUDE_CODE_OAUTH_TOKEN="$engine_token" \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            SCREENS_DIR="$SCREENS_DIR" \
+            SITE_URL="$SITE_URL" \
+            BASE_URL="$BASE_URL" \
+            SITE_WORKER_URL="${SITE_WORKER_URL:-}" \
+            BASE_WORKER_URL="${BASE_WORKER_URL:-}" \
+            LIVE_URL="$LIVE_URL" \
+            claude --print --dangerously-skip-permissions < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/verdict.md"
+          first="$(sed -n '1{s/[[:space:]]*$//;p}' "$RUNNER_TEMP/verdict.md")"
+          if [[ ! "$first" =~ ^pstack-verifier:\ (PASS|PASS\+NOTES|FAIL)\ @\ ([0-9a-f]{40})$ ]]; then
+            echo "::error::Claude produced no verdict in the required format: $first"
+            sed -n '1,40p' "$RUNNER_TEMP/verdict.md"
+            exit 1
+          fi
+          if [ "${BASH_REMATCH[2]}" != "$SHA" ]; then
+            echo "::error::The Claude verdict names ${BASH_REMATCH[2]}, not the head $SHA, so it is stale."
+            exit 1
+          fi
+
+      - name: Post the verdict on the pull request
+        id: verdict
+        if: steps.target.outputs.go == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.target.outputs.sha }}
+          PR: ${{ steps.target.outputs.number }}
+          CODEX_OUTCOME: ${{ steps.codex.outcome }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          CODEX_CONFIGURED: ${{ needs.engine.outputs.codex }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "$RUNNER_TEMP/verdict.md" ]; then
+            echo "::error::The verifier produced no verdict. Codex: ${CODEX_OUTCOME:-not run}. Claude: ${CLAUDE_OUTCOME:-not run}."
+            exit 1
+          fi
+          first="$(sed -n '1{s/[[:space:]]*$//;p}' "$RUNNER_TEMP/verdict.md")"
+          if [[ ! "$first" =~ ^pstack-verifier:\ (PASS|PASS\+NOTES|FAIL)\ @\ ([0-9a-f]{40})$ ]]; then
+            echo "::error::The verifier's first line is not a verdict in the required format: $first"
+            sed -n '1,40p' "$RUNNER_TEMP/verdict.md"
+            exit 1
+          fi
+          verdict="${BASH_REMATCH[1]}"
+          line_sha="${BASH_REMATCH[2]}"
+          if [ "$line_sha" != "$SHA" ]; then
+            echo "::error::The verdict names $line_sha, not the head $SHA, so it is stale."
+            exit 1
+          fi
+          head_now="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid | tr '[:upper:]' '[:lower:]')"
+          if [ "$head_now" != "$SHA" ]; then
+            echo "::notice::The pull request head moved from $SHA to $head_now while this run was verifying. A newer run posts the verdict."
+            exit 0
+          fi
+          if [ "${CODEX_OUTCOME:-}" = "success" ]; then
+            engine_note="codex"
+          elif [ "${CLAUDE_OUTCOME:-}" = "success" ] && [ "${CODEX_CONFIGURED:-no}" = "no" ]; then
+            engine_note="claude, because no Codex setting exists"
+          elif [ "${CLAUDE_OUTCOME:-}" = "success" ]; then
+            engine_note="claude, after Codex was refused"
+          else
+            engine_note="unknown"
+          fi
+          diff_note="$(jq -r 'if .capped then "capped at \(.cappedBytes) bytes of \(.bytes) for the prompt, \(.files) files, the full diff is in the run artifacts" else "complete, \(.bytes) bytes, \(.files) files" end' "$RUNNER_TEMP/diff.json")"
+          title="$(sed -n '1s/^Title: //p' "$RUNNER_TEMP/pr-meta.md")"
+          ticket="$(printf '%s' "$title" | grep -o 'HTPR-[0-9]*' | head -n 1 || true)"
+          if [ -z "$ticket" ]; then ticket="not in the title"; fi
+          {
+            printf '%s\n' "$first"
+            printf 'engine: %s\n' "$engine_note"
+            printf 'run: %s/%s/actions/runs/%s\n' "$SERVER_URL" "$REPO" "$RUN_ID"
+            printf 'head: %s from %s\n' "${SITE_URL:-unset}" "${SITE_ROOT:-unset}"
+            printf 'parent: %s from %s\n' "${BASE_URL:-unset}" "${BASE_ROOT:-unset}"
+            printf 'serve: head %s, parent %s\n' "${SERVE_MODE_HEAD:-unset}" "${SERVE_MODE_PARENT:-unset}"
+            printf 'diff: %s\n' "$diff_note"
+            printf 'baseline: %s\n' "$LIVE_URL"
+            printf 'ticket: %s\n\n' "$ticket"
+            sed -n '2,$p' "$RUNNER_TEMP/verdict.md"
+          } > "$RUNNER_TEMP/comment.md"
+          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(((.body // \"\") | split(\"\n\")[0]) == \"pstack-verifier: $verdict @ $SHA\") | .id" | head -n 1)"
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
+            echo "updated comment $existing"
+          else
+            gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"
+          fi
+          printf 'verdict=%s\n' "$verdict" >> "$GITHUB_OUTPUT"
+          printf 'pstack-verifier: %s @ %s\n' "$verdict" "$SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the evidence
+        if: always() && steps.target.outputs.go == 'yes'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pstack-verifier-evidence
+          path: |
+            ${{ runner.temp }}/screens
+            ${{ runner.temp }}/verdict.md
+            ${{ runner.temp }}/prompt.md
+            ${{ runner.temp }}/diff.json
+            ${{ runner.temp }}/pr.diff
+            ${{ runner.temp }}/pr.diff.capped
+            ${{ runner.temp }}/pr-files.txt
+            ${{ runner.temp }}/site.log
+            ${{ runner.temp }}/parent.log
+            ${{ runner.temp }}/site-worker.log
+            ${{ runner.temp }}/parent-worker.log
+          if-no-files-found: ignore
+
+      - name: Stop the local sites and previews
+        if: always() && steps.target.outputs.go == 'yes'
+        run: |
+          set -euo pipefail
+          for name in site parent site-worker parent-worker; do
+            pidfile="$RUNNER_TEMP/$name.pid"
+            if [ -f "$pidfile" ]; then
+              pid="$(cat "$pidfile")"
+              kill "$pid" 2>/dev/null || true
+            fi
+          done
+
+      - name: Fail the job when the verdict is FAIL
+        if: steps.verdict.outputs.verdict == 'FAIL'
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          echo "::error::The verifier returned FAIL at $SHA. Read the pull request comment."
+          exit 1

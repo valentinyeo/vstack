@@ -86,6 +86,25 @@ class PstackNewGates(unittest.TestCase):
                 result = run_hook(command, root)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_gap_pstack_blocks_pr_create(self):
+        root = build_repo(self)
+        env = os.environ.copy()
+        env['PSTACK_GATE_BASE'] = 'HEAD~1'
+        env['PSTACK_DIFF_PSTACK'] = str(FIXTURES / 'no-such-pstack')
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps({
+                'tool_name': 'Bash',
+                'cwd': str(root),
+                'tool_input': {'command': 'gh pr create --title t --body b'},
+            }),
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn('pstack recipe', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
