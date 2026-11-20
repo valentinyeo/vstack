@@ -19,8 +19,15 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills" / "vps-state" / "vps-state"
 HOOK = ROOT / "hooks" / "vps-state-hook"
-VERIFY_RUN = ROOT / ".claude" / "skills" / "verify-vps-state" / "run"
+VERIFY = ROOT / ".claude" / "skills" / "verify-vps-state"
+VERIFY_RUN = VERIFY / "run"
 FIX = ROOT / "tests" / "fixtures" / "vps-state"
+
+# A Claude Code Bash shell inherits a PATH with no ~/.local/bin, so a bare
+# command name exits 127 there. These are the files that tell a chat what to type.
+DOCS = [ROOT / "skills" / "vps-state" / "SKILL.md", VERIFY / "SKILL.md"] + sorted(
+    (VERIFY / "features").glob("*.md"))
+CLAUDE_BASH_PATH = "/usr/bin:/bin"
 
 GB = 1024 ** 3
 MB = 1024
@@ -50,6 +57,25 @@ def fixture_env(name, home):
     env["VPS_STATE_CORES"] = str(CORES)  # a fixture must mean the same on any host
     env["HOME"] = str(home)
     return env
+
+
+def documented_bin(text):
+    """The vps-state command a doc tells a chat to type, exactly as written."""
+    for span in re.findall(r"`([^`\n]+)`", text):
+        token = span.split()[0]
+        if token.strip("\"'").endswith("vps-state"):
+            return token
+    return None
+
+
+def bare_commands(text):
+    """Code spans that start with the bare command name, so they need PATH."""
+    found = []
+    for span in re.findall(r"`([^`\n]+)`", text):
+        token = span.split()[0]
+        if token.strip("\"'") == "vps-state":
+            found.append(span)
+    return found
 
 
 def cli(name, *args, home=None, timeout=60):
@@ -414,7 +440,7 @@ class SessionHook(unittest.TestCase):
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         server = [line for line in lines if line.startswith("Server: ")]
         self.assertEqual(len(server), 1, proc.stdout)
-        self.assertIn("run vps-state before starting chats or workers", proc.stdout)
+        self.assertIn("run ~/.local/bin/vps-state before starting chats or workers", proc.stdout)
         self.assertTrue(server[0].strip() != "Server:", proc.stdout)
 
     def test_hook_exits_0_with_no_script_and_prints_nothing(self):
@@ -426,6 +452,73 @@ class SessionHook(unittest.TestCase):
         proc = subprocess.run([str(HOOK)], env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "")
+
+
+class ClaudeBashPath(unittest.TestCase):
+    """Live proof 2026-11-20: a Claude Code Bash shell's PATH has no ~/.local/bin.
+
+    The test runs what the docs tell a chat to type inside the same minimal
+    environment, with a temporary HOME whose ~/.local/bin links this checkout.
+    """
+
+    def installed_home(self):
+        home = pathlib.Path(tempfile.mkdtemp(prefix="vps-state-claude-path-"))
+        (home / ".local" / "bin").mkdir(parents=True)
+        (home / ".local" / "bin" / "vps-state").symlink_to(SCRIPT)
+        return home
+
+    def run_in_minimal_env(self, argv, home):
+        env = {"HOME": str(home), "PATH": CLAUDE_BASH_PATH}
+        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=60)
+
+    def test_documented_command_runs_without_127(self):
+        skill = (ROOT / "skills" / "vps-state" / "SKILL.md").read_text()
+        command = documented_bin(skill)
+        self.assertIsNotNone(command, "skills/vps-state/SKILL.md names no vps-state command")
+        self.assertNotEqual(
+            command, "vps-state",
+            "the skill tells chats to run a bare vps-state; a Claude Code Bash shell "
+            "has no ~/.local/bin on PATH, so it exits 127")
+        home = self.installed_home()
+        for args in (["--brief"], ["--can-launch", "worker"], ["--can-launch", "chat"]):
+            with self.subTest(args=args):
+                proc = self.run_in_minimal_env(
+                    ["bash", "-c", command + " " + " ".join(args)], home)
+                self.assertNotEqual(proc.returncode, 127, proc.stderr)
+                self.assertNotIn("command not found", proc.stderr)
+                self.assertNotIn("No such file or directory", proc.stderr)
+                if args == ["--brief"]:
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertIn(proc.stdout.split()[0], ("ADD", "CAREFUL", "HOLD"),
+                                  proc.stdout)
+                else:
+                    self.assertIn(proc.returncode, (0, 1, 2, 3), proc.stderr)
+
+    def test_hook_prints_its_line_without_127(self):
+        home = self.installed_home()
+        proc = self.run_in_minimal_env([str(HOOK)], home)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Server: ", proc.stdout)
+        self.assertNotIn("command not found", proc.stderr)
+        self.assertNotIn("No such file or directory", proc.stderr)
+
+    def test_docs_name_no_bare_command(self):
+        for path in DOCS:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                for span in bare_commands(line):
+                    self.fail("{}:{}: `{}` needs ~/.local/bin on PATH; a Claude Code "
+                              "Bash shell has it not, so name the command by full "
+                              "path".format(path.relative_to(ROOT), number, span))
+
+
+class VerifySkillPaths(unittest.TestCase):
+    def test_run_resolves_the_script_and_the_hook_by_absolute_path(self):
+        run_skill = load_verify_run()
+        for path in (run_skill.DEFAULT_SCRIPT, run_skill.HOOK):
+            self.assertTrue(path.is_absolute(), "{} is not absolute".format(path))
+            self.assertTrue(path.is_file(), "{} is missing".format(path))
+        self.assertEqual(run_skill.DEFAULT_SCRIPT.resolve(), SCRIPT.resolve())
+        self.assertEqual(run_skill.HOOK.resolve(), HOOK.resolve())
 
 
 class Install(unittest.TestCase):

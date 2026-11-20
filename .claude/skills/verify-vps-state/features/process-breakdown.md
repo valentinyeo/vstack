@@ -10,8 +10,8 @@ What is actually running: chats, workers, builds, everything else, and the proce
 
 ## How to get to it (user POV)
 
-- Run `vps-state` and read the `procs` and `heavy` lines.
-- `vps-state --json` names the process ids, their CPU share and their RSS.
+- Run `"$HOME/.local/bin/vps-state"` and read the `procs` and `heavy` lines.
+- `"$HOME/.local/bin/vps-state" --json` names the process ids, their CPU share and their RSS.
 
 ## Driving it with run
 

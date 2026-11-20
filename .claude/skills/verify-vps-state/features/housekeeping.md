@@ -10,7 +10,7 @@ The report of what this session may clean, and the tools that sweep the host.
 
 ## How to get to it (user POV)
 
-- Run `vps-state` and read the last section. It never deletes anything.
+- Run `"$HOME/.local/bin/vps-state"` and read the last section. It never deletes anything.
 - Then run the tool for what it listed, from the session that owns those files.
 
 ## Driving it with run
