@@ -1,3 +1,5 @@
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
@@ -11,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / '.claude/skills/verify-valentin-mode'
 GRADE = SKILL / 'grade.py'
 RUN = SKILL / 'run'
+RESOLVER = ROOT / 'skills/hypertask-work/session_login.py'
 FIXTURES = ROOT / 'tests/fixtures/verify-valentin-mode'
 
 SCRATCH = '/tmp/vvm-scratch/.claude/skills/valentin-mode'
@@ -47,6 +50,15 @@ def hook_line(event, name, folder=SCRATCH, matcher=''):
 def ran_valentin_hooks():
     return hook_line('PreToolUse', 'reply-check.py', matcher='Bash') + hook_line(
         'Stop', 'said-started.py')
+
+
+def load_grade():
+    loader = importlib.machinery.SourceFileLoader('vvm_grade', str(GRADE))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
 
 
 class VerifyValentinModeGrade(unittest.TestCase):
@@ -242,6 +254,45 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assertFalse(any(line.startswith('FAIL loaded: installed valentin-mode lacks')
                              for line in output.splitlines()), output)
 
+    def test_lease_sync_fixture_passes_board_sync_on_the_card_sync(self):
+        """The real 20 Nov run: the lease synced the card, so no dry run was needed."""
+        code, output, _target = self.grade_fixture('lease-sync')
+        self.assertEqual(code, 1, output)
+        self.assertIn('PASS board sync: lease worker run synced the card (Vstack Maintainer)',
+                      output)
+        self.assertIn('FAIL login: board write by Vstack Maintainer instead of VVM Test Agent',
+                      output)
+        failed = [line for line in output.splitlines() if line.startswith('FAIL ')]
+        self.assertTrue(failed, output)
+        self.assertTrue(all(line.startswith('FAIL login') for line in failed), output)
+
+    def test_lease_sync_clean_fixture_grades_pass(self):
+        """The same run once the chat has its own login: every check passes."""
+        code, output, target = self.grade_fixture('lease-sync-clean')
+        self.assertEqual(code, 0, output)
+        self.assertIn('PASS board sync: lease worker run synced the card (VVM Test Agent)', output)
+        self.assertIn('PASS login: board write by VVM Test Agent', output)
+        self.assertFalse(any(line.startswith('FAIL ') for line in output.splitlines()), output)
+        verdict = json.loads((target / 'verdict.json').read_text())
+        self.assertEqual(verdict['verdict'], 'PASS')
+
+    def test_lease_without_a_card_sync_fails_board_sync(self):
+        code, output, _target = self.grade_fixture('lease-no-sync')
+        self.assertEqual(code, 1, output)
+        self.assert_check(output, 'FAIL', 'board sync')
+        self.assertIn('lease worker run, but no fleet/reconcile activity on the ticket', output)
+        self.assertIn('PASS login: board write by VVM Test Agent', output)
+
+    def test_a_card_apply_is_not_the_dangerous_label_less_apply(self):
+        """The lease's own `--ticket ... --apply --limit 1` can move one card only."""
+        grade_module = load_grade()
+        card = 'skills/hypertask-work/reconcile --ticket SOFT-2849 --apply --limit 1'
+        self.assertFalse(grade_module.uncapped_apply(card, 'vvm-test'))
+        board = 'skills/hypertask-work/reconcile --board 2060 --apply --limit 5'
+        self.assertTrue(grade_module.uncapped_apply(board, 'vvm-test'))
+        capped = 'skills/hypertask-work/reconcile --board 2060 --label vvm-test --apply --limit 5'
+        self.assertFalse(grade_module.uncapped_apply(capped, 'vvm-test'))
+
     def test_apply_no_label_fixture_fails_board_sync(self):
         code, output, _target = self.grade_fixture('apply-no-label')
         self.assertEqual(code, 1, output)
@@ -433,12 +484,40 @@ class VerifyValentinModeRunScript(unittest.TestCase):
         text = RUN.read_text()
         self.assertIn('--debug-file "$E/debug.log"', text)
 
+    def test_run_script_gives_the_chat_its_own_identity(self):
+        text = RUN.read_text()
+        self.assertNotIn('identity.py', text, 'headless login comes from SHIP_SESSION_NAME only')
+        self.assertIn('"${CHAT_ENV[@]}" SHIP_SESSION_NAME="$AGENT"', text,
+                      'the chat must start with the test agent name, not the caller\'s tab')
+
+    def chat_env_loop(self):
+        """The lines of run that strip the caller's identity from the chat's env."""
+        lines = RUN.read_text().splitlines()
+        starts = [i for i, line in enumerate(lines) if line.strip() == 'CHAT_ENV=(env)']
+        self.assertEqual(len(starts), 1, 'expected one CHAT_ENV block in run')
+        ends = [i for i in range(starts[0] + 1, len(lines)) if 'compgen -v' in lines[i]]
+        self.assertTrue(ends, 'the CHAT_ENV loop never ends')
+        return lines[starts[0]:ends[0] + 1]
+
+    def test_chat_env_drops_the_callers_chat_identity(self):
+        """The caller's MULTIPROMPT_* and board tokens must never reach the test chat."""
+        script = '\n'.join(self.chat_env_loop()) + '\n"${CHAT_ENV[@]}" env\n'
+        env = dict(os.environ, MULTIPROMPT_TAB='live-caller', MULTIPROMPT_MODE='x',
+                   HT_TOKEN='caller-token', HYPERTASK_API_TOKEN='caller-token', KEEP_ME='yes')
+        result = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                                env=env, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        exported = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+        for name in ('MULTIPROMPT_TAB', 'MULTIPROMPT_MODE', 'HT_TOKEN', 'HYPERTASK_API_TOKEN'):
+            self.assertNotIn(name, exported, 'the caller\'s %s leaked into the test chat' % name)
+        self.assertEqual(exported.get('KEEP_ME'), 'yes', 'unrelated variables must survive')
+
     def test_grade_script_has_shebang(self):
         self.assertEqual(GRADE.read_text().splitlines()[0], '#!/usr/bin/env python3')
 
     def test_scripts_are_executable(self):
-        self.assertTrue(GRADE.stat().st_mode & 0o111, '%s is not executable' % GRADE)
-        self.assertTrue(RUN.stat().st_mode & 0o111, '%s is not executable' % RUN)
+        for script in (GRADE, RUN):
+            self.assertTrue(script.stat().st_mode & 0o111, '%s is not executable' % script)
 
 
 if __name__ == '__main__':

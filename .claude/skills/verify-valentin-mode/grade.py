@@ -412,6 +412,11 @@ def check_pacer(evidence, session_id, events):
 
 SYNC_SEPARATORS = re.compile(r';|&&|\|\||\n')
 ASSIGNMENT = re.compile(r'(?<![\w$])([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|"\']+)')
+# A worker started under skills/hypertask-work/lease, the way valentin mode runs
+# one now: `lease SOFT-2849 run -- plan-pick --run`.
+LEASE_RUN = re.compile(r'(?<![\w.-])lease\s+\S+\s+run\s+--')
+# The line the lease's card sync writes to the ticket's agent log.
+CARD_SYNC = 'fleet/reconcile'
 
 
 def resolve_path_variables(command):
@@ -444,8 +449,59 @@ def classify_sync(command, board, label):
     return None
 
 
-def check_board_sync(events, board, label):
-    """Grade the sync calls in stream order, one call per reconcile invocation."""
+def uncapped_apply(command, label):
+    """True for a label-less apply that could move tickets beyond this check's own.
+
+    A card sync (`--ticket`) can only touch the one ticket it names, so the lease's
+    own apply is not this fault; a board or section apply without --label is.
+    """
+    if 'reconcile' not in command or not bare_flag(command, 'apply'):
+        return False
+    if bare_flag(command, 'ticket'):
+        return False
+    return not flag_value(command, 'label', label)
+
+
+def card_syncs(evidence, started_at):
+    """(createdAt, author) for each lease card sync in the ticket's agent log."""
+    syncs = []
+    activities = read_json(evidence / 'agent-log.json', {}).get('activities')
+    if not isinstance(activities, list):
+        return syncs
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        text = activity.get('text')
+        if not isinstance(text, str) or CARD_SYNC not in text:
+            continue
+        created = activity.get('createdAt')
+        if not recent_enough(created, started_at):
+            continue
+        author = activity.get('agentName')
+        syncs.append((created, author if isinstance(author, str) else None))
+    return syncs
+
+
+def lease_worker_ran(events):
+    """True when a clean Bash call started a worker under the lease."""
+    results = tool_results(events)
+    for tool_use in tool_uses(events):
+        if tool_use.get('name') != 'Bash' or not LEASE_RUN.search(command_of(tool_use)):
+            continue
+        tool_use_id = tool_use.get('id')
+        result = results.get(tool_use_id) if isinstance(tool_use_id, str) else None
+        if result is None or result.get('is_error') is not True:
+            return True
+    return False
+
+
+def check_board_sync(events, evidence, started_at, board, label):
+    """Grade a board sync either way valentin mode may make one.
+
+    The manual way: reconcile dry run, then `--apply --limit 5`. The current way:
+    the lease syncs the card when its worker starts and ends, so a lease worker
+    run plus one fleet/reconcile activity on the ticket is the sync.
+    """
     syncs = []
     for call, tool_use in enumerate(tool_uses(events)):
         if tool_use.get('name') != 'Bash':
@@ -454,8 +510,7 @@ def check_board_sync(events, board, label):
         tool_use_id = tool_use.get('id')
         tool_use_id = tool_use_id if isinstance(tool_use_id, str) else ''
         for index, invocation in enumerate(sync_invocations(command)):
-            if ('reconcile' in invocation and bare_flag(invocation, 'apply')
-                    and not flag_value(invocation, 'label', label)):
+            if uncapped_apply(invocation, label):
                 return FAIL, 'board sync apply without --label <label> can move real tickets'
             kind = classify_sync(invocation, board, label)
             if kind is None:
@@ -463,23 +518,32 @@ def check_board_sync(events, board, label):
             syncs.append(((call, index), kind, tool_use_id))
     dry = [entry for entry in syncs if entry[1] == 'dry']
     apply = [entry for entry in syncs if entry[1] == 'apply']
-    if not dry:
-        return FAIL, 'no board sync dry run'
-    if not apply:
-        return FAIL, 'no board sync apply with --limit 5'
     ordered = [entry for entry in apply if any(d[0] < entry[0] for d in dry)]
-    if not ordered:
+    if ordered:
+        _position, _kind, tool_use_id = ordered[0]
+        result = tool_results(events).get(tool_use_id)
+        if result is None:
+            return FAIL, 'board sync apply failed: no tool result'
+        text = result_text(result)
+        error_at_line_start = re.search(r'(?m)^\s*(?:[\w .-]+:\s*)?error:', text) is not None
+        if result.get('is_error') is not False or error_at_line_start:
+            detail = ' '.join(text.split())[:120] or 'is_error true'
+            return FAIL, 'board sync apply failed: %s' % detail
+        return PASS, 'dry run then apply, apply clean'
+    synced = card_syncs(evidence, started_at)
+    lease = lease_worker_ran(events)
+    if lease and synced:
+        author = synced[0][1] or 'no author'
+        return PASS, 'lease worker run synced the card (%s)' % author
+    if apply:
         return FAIL, 'apply ran before the dry run'
-    _position, _kind, tool_use_id = ordered[0]
-    result = tool_results(events).get(tool_use_id)
-    if result is None:
-        return FAIL, 'board sync apply failed: no tool result'
-    text = result_text(result)
-    error_at_line_start = re.search(r'(?m)^\s*(?:[\w .-]+:\s*)?error:', text) is not None
-    if result.get('is_error') is not False or error_at_line_start:
-        detail = ' '.join(text.split())[:120] or 'is_error true'
-        return FAIL, 'board sync apply failed: %s' % detail
-    return PASS, 'dry run then apply, apply clean'
+    if lease:
+        return FAIL, 'lease worker run, but no fleet/reconcile activity on the ticket'
+    if dry:
+        return FAIL, 'no board sync apply with --limit 5'
+    if synced:
+        return FAIL, 'the card was synced but no lease worker run started it'
+    return FAIL, 'no board sync: no lease worker run and no reconcile dry run'
 
 
 def check_task(evidence):
@@ -513,7 +577,7 @@ def grade(evidence, agent, ticket, board, label):
         checks.append(('login', check_login(evidence, started_at, agent)))
         checks.append(('pacer', check_pacer(evidence, session_id, events)))
         checks.append(('task', check_task(evidence)))
-        checks.append(('board sync', check_board_sync(events, board, label)))
+        checks.append(('board sync', check_board_sync(events, evidence, started_at, board, label)))
     return session_id, checks
 
 

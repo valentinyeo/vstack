@@ -7,6 +7,7 @@ The three tools valentin mode names, each proved by one check in `grade.py`, plu
 - `~/.local/share/vstack` holds the valentin-mode under test, installed with `./install`.
 - No hook pushes valentin mode in. The prompt asks the chat to invoke it.
 - Test login "VVM Test Agent" and scratch ticket SOFT-2849 (label `vvm-test`) exist on board 2060.
+- `run` sets `SHIP_SESSION_NAME="VVM Test Agent"` so the lease and the Stop hook resolve the test login when the chat has no tab (`skills/hypertask-work/session_login.py`).
 - `plan-pick --claude-helper` exits 0.
 - `run` saves Claude Code's debug log as `debug.log`. Each hook run appears there
   as a `Hooks: <Event>[:<matcher>] [<command>]` line, and `checks loaded` matches
@@ -31,6 +32,6 @@ The three tools valentin mode names, each proved by one check in `grade.py`, plu
 | --- | --- | --- |
 | [login.md](login.md) | `login` | Board rules: own login, never Valentin's |
 | [pacer.md](pacer.md) | `pacer`, `task` | Subscription pacer: workers through `plan-pick --run` |
-| [board-sync.md](board-sync.md) | `board sync` | Board sync: reconcile dry run, then `--apply --limit 5` |
+| [board-sync.md](board-sync.md) | `board sync` | Board sync: the lease card sync, or a reconcile dry run then `--apply --limit 5` |
 | [SKILL.md](../SKILL.md) | `checks loaded` | Hooks: both hooks the frontmatter declares ran |
 | [self-audit.md](self-audit.md) | `self-audit` | pstack-diff: load removes a planted extra gate |
