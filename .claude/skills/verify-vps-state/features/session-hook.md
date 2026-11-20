@@ -23,5 +23,5 @@ The one line every session sees as it opens, so nobody has to remember to ask.
 ## Gotchas
 
 - The hook finds its script through `$VPS_STATE_BIN`, then `~/.local/bin/vps-state`, then the checkout next to it. The installed symlink under `~/.claude/hooks` resolves back here, so a repo copy works before `install` runs.
-- The orchestrator registers the SessionStart hook in `~/.claude/settings.json`. This repo only ships and links the file; a missing registration means no session sees the line.
+- Each chat registers the SessionStart hook in its own project's `.claude/settings.json`, with the JSON in `skills/vps-state/SKILL.md`. Nobody registers it centrally. This repo only ships and links the file; without a registration no session sees the line.
 - The hook runs `--brief`, which skips the worktree and /tmp scans. Sharing that scan would blow the three second budget on a busy host.
