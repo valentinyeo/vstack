@@ -72,6 +72,20 @@ def vsta4():
     return {'task': task, 'comments': []}
 
 
+def vsta(key, section='Todo', age=1800, assignees=None):
+    """A board-13556 ticket on the label this check drains."""
+    task = {'ticketNumber': key, 'projectId': 13556, 'section': section,
+            'labels': [{'name': 'Board Drain Loop'}], 'status': 'Normal',
+            'waitingOnUserId': None, 'blockerCommentId': None,
+            'updatedAt': iso(NOW - age), 'assignees': assignees or []}
+    return {'task': task, 'comments': []}
+
+
+def blocked_by():
+    """VSTA-7's links as `hypertask --json task relations VSTA-7` sent them."""
+    return json.loads((FIXTURES / 'VSTA-7.relations.json').read_text())['relations']
+
+
 def agent_comment(age):
     return {'createdAt': iso(NOW - age), 'creatorId': 6, 'agent': {'id': 'a'},
             'agent_display_name': 'Poteto', 'text': 'working it'}
@@ -248,6 +262,89 @@ class CheckTest(unittest.TestCase):
             code = drain.main(['--board', '2060', '--label', 'Poteto', '--now', iso(NOW)])
         self.assertEqual(code, 2, out.getvalue() + err.getvalue())
         self.assertIn('drain-check: error: boom', err.getvalue())
+
+    def test_a_ticket_linked_to_open_blockers_is_not_workable(self):
+        # VSTA-7 is BlockedBy VSTA-2 and VSTA-3, both open, so it waits outside the drain.
+        rows = [vsta('VSTA-7', age=3 * 3600), vsta('VSTA-2', age=300),
+                vsta('VSTA-3', age=300)]
+        rows[0]['relations'] = blocked_by()
+        for row in rows[1:]:
+            row['task'].update(section='Doing', assignees=[agent_assignee()])
+        code, out = self.run_check(rows, board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 0, out)
+        self.assertIn('blocked: VSTA-7 by VSTA-2, VSTA-3', out)
+        self.assertNotIn('stale:', out)
+        self.assertNotIn('loop off:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_a_ticket_whose_blockers_are_done_is_workable(self):
+        rows = [vsta('VSTA-7'), vsta('VSTA-2', section='Done'), vsta('VSTA-3', section='Done')]
+        rows[0]['relations'] = blocked_by()
+        code, out = self.run_check(rows, board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
+        self.assertIn('start a worker on VSTA-7.', out)
+        self.assertNotIn('blocked:', out)
+
+    def test_one_open_blocker_among_done_ones_still_blocks(self):
+        rows = [vsta('VSTA-7'), vsta('VSTA-2', section='Done'), vsta('VSTA-3')]
+        rows[0]['relations'] = blocked_by()
+        code, out = self.run_check(rows, board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 1, out)
+        self.assertIn('blocked: VSTA-7 by VSTA-3', out)
+        self.assertNotIn('blocked: VSTA-7 by VSTA-3,', out)
+        self.assertIn('loop off: 1 workable Todo', out)
+
+    def test_a_ticket_with_no_links_reads_as_before(self):
+        for relations in (None, []):
+            with self.subTest(relations=relations):
+                row = vsta('VSTA-7')
+                if relations is not None:
+                    row['relations'] = relations
+                code, out = self.run_check([row], board=13556, label='Board Drain Loop')
+                self.assertEqual(code, 1, out)
+                self.assertIn('loop off: 1 workable Todo', out)
+                self.assertNotIn('blocked:', out)
+
+    def test_a_blocker_missing_from_the_board_counts_open(self):
+        row = vsta('VSTA-7')
+        row['relations'] = [{'relationType': 'BlockedBy', 'direction': 'outgoing',
+                             'otherTask': {'ticketNumber': 'SOFT-99', 'status': 'Normal'}}]
+        code, out = self.run_check([row], board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 0, out)
+        self.assertIn('blocked: VSTA-7 by SOFT-99', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_a_missing_blocker_whose_status_says_done_does_not_block(self):
+        row = vsta('VSTA-7')
+        row['relations'] = [{'relationType': 'BlockedBy', 'direction': 'outgoing',
+                             'otherTask': {'ticketNumber': 'SOFT-99', 'status': 'Done'}}]
+        code, out = self.run_check([row], board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 1, out)
+        self.assertNotIn('blocked:', out)
+        self.assertIn('loop off: 1 workable Todo', out)
+
+    def test_incoming_and_blocks_links_never_block(self):
+        row = vsta('VSTA-7')
+        row['relations'] = [
+            {'relationType': 'BlockedBy', 'direction': 'incoming',
+             'otherTask': {'ticketNumber': 'VSTA-9', 'status': 'Normal'}},
+            {'relationType': 'Blocks', 'direction': 'outgoing',
+             'otherTask': {'ticketNumber': 'VSTA-10', 'status': 'Normal'}}]
+        code, out = self.run_check([row], board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 1, out)
+        self.assertNotIn('blocked:', out)
+        self.assertIn('loop off: 1 workable Todo', out)
+
+    def test_a_marked_ticket_is_never_asked_for_its_links(self):
+        # A marked wait already keeps it out of the drain; no links read needed.
+        row = vsta('VSTA-8')
+        row['task']['waitingOnUserId'] = 6
+        row['relations'] = blocked_by()
+        code, out = self.run_check([row], board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 0, out)
+        self.assertIn('waiting: VSTA-8 (marked)', out)
+        self.assertNotIn('blocked:', out)
 
     def test_a_missing_loop_state_fails_when_named(self):
         code, out = self.run_check([todo('SOFT-2908', waiting_on=6)], '--state-name', 'HT Test')
@@ -484,6 +581,55 @@ class LoopStateTest(unittest.TestCase):
                                  capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(missing.returncode, 2, missing.stderr)
         self.assertEqual(missing.stdout.strip(), 'not armed')
+
+
+class RelationsCliTest(unittest.TestCase):
+    """The real CLI answers `task relations`: one read per unmarked Todo ticket."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.real_bin = self.directory / 'home/.local/bin'
+        self.real_bin.mkdir(parents=True)
+        self.real_log = self.directory / 'real.log'
+        self.real_log.write_text('')
+        task = {'projectId': 13556, 'labels': [{'name': 'Board Drain Loop'}],
+                'status': 'Normal', 'assignees': [], 'waitingOnUserId': None,
+                'blockerCommentId': None, 'updatedAt': iso(NOW - 300)}
+        tasks = [dict(task, ticketNumber='VSTA-7', section='Todo'),
+                 dict(task, ticketNumber='VSTA-8', section='Todo', waitingOnUserId=6),
+                 dict(task, ticketNumber='VSTA-2', section='Doing',
+                      assignees=[agent_assignee('Board Drain Loop')])]
+        answers = {'task list': {'tasks': tasks, 'total': len(tasks)},
+                   'comment list': {'comments': []},
+                   'task relations': {'success': True, 'relations': blocked_by()},
+                   'project show': {'project': {'uniqueIdentifier': 'VSTA', 'sections': [
+                       {'section_title': 'Todo'}, {'section_title': 'Doing'}]}}}
+        write_tool(self.real_bin / 'hypertask',
+                   'import json, os, pathlib, sys\n'
+                   'log = pathlib.Path(os.environ["REAL_HYPERTASK_LOG"])\n'
+                   'log.write_text(log.read_text() + " ".join(sys.argv[1:]) + "\\n")\n'
+                   f'answers = {answers!r}\n'
+                   'args = [a for a in sys.argv[1:] if a != "--json"]\n'
+                   'print(json.dumps(answers.get(" ".join(args[:2]), {"tasks": [], "total": 0})))\n')
+
+    def test_links_come_from_the_cli_once_per_unmarked_todo(self):
+        done = subprocess.run(
+            [sys.executable, str(SKILL / 'drain-check'), '--board', '13556',
+             '--label', 'Board Drain Loop', '--now', iso(NOW)],
+            capture_output=True, text=True, timeout=60,
+            env={'HOME': str(self.directory / 'home'), 'PATH': '/usr/bin:/bin',
+                 'REAL_HYPERTASK_LOG': str(self.real_log),
+                 'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state'),
+                 'RECONCILE_CACHE': str(self.directory / 'cache.json')})
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn('blocked: VSTA-7 by VSTA-2, VSTA-3', done.stdout)
+        self.assertIn('waiting: VSTA-8 (marked)', done.stdout)
+        self.assertIn('drain-check: PASS', done.stdout)
+        reads = [line for line in self.real_log.read_text().splitlines()
+                 if 'task relations' in line]
+        self.assertEqual(reads, ['--json task relations VSTA-7'])
 
 
 class SyncTest(unittest.TestCase):

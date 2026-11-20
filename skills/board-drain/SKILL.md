@@ -45,6 +45,8 @@ On top of Autopilot-full's audit:
 
 Only a set waiting-on mark naming Valentin, or a blocker comment, counts; a chat's memory that "this waits on Valentin" does not. An unmarked ticket is workable; drain-check treats it so. Mark a real wait the moment you ask him.
 
+A ticket linked BlockedBy a ticket that is not Done also stays outside the drain, by the links on the ticket and not by memory. drain-check reads `task relations` once for each unmarked Todo ticket and prints `blocked: <KEY> by <KEY>, <KEY>`. A `blocked:` line is news, not a fail.
+
 ## drain-check fails
 
 - **loop off:** workable Todo, nothing alive in Doing. Re-arm, then give the named ticket an owner.

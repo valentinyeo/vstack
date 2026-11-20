@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, armed loop."""
+"""Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, blocked links, armed loop."""
 import argparse
 import importlib.machinery
 import importlib.util
@@ -27,6 +27,7 @@ state_loader.exec_module(loop_state)
 loop_state.ensure_cli_path()
 
 TODO = 'Todo'
+DONE = 'Done'
 DOING = frozenset({'Doing', 'Building'})
 # A ticket in one of these columns has an owner, so an agent must be on it.
 WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
@@ -57,6 +58,31 @@ def age(task, now):
 
 def waiting(task):
     return bool(task.get('waitingOnUserId') or task.get('blockerCommentId'))
+
+
+def done_blocker(key, loaded, other):
+    """A blocker is done when its column says so, else when its own status does."""
+    if key in loaded:
+        return loaded[key].get('section') == DONE
+    return (other.get('status') or '').strip().casefold() == DONE.casefold()
+
+
+def open_blockers(relations, loaded):
+    """The keys this ticket is BlockedBy that are still open, in link order."""
+    stuck = []
+    for relation in relations or ():
+        if not isinstance(relation, dict):
+            continue
+        if (relation.get('relationType') or '').strip().casefold() != 'blockedby':
+            continue
+        if (relation.get('direction') or '').strip().casefold() != 'outgoing':
+            continue
+        other = relation.get('otherTask')
+        other = other if isinstance(other, dict) else {}
+        key = other.get('ticketNumber')
+        if key and not done_blocker(key, loaded, other):
+            stuck.append(key)
+    return stuck
 
 
 def agent_assigned(task):
@@ -133,7 +159,8 @@ def read_fixture(path):
     for item in data:
         if not isinstance(item, dict) or not isinstance(item.get('task'), dict):
             raise ValueError('each fixture row needs a task')
-        rows.append({'task': item['task'], 'comments': item.get('comments') or []})
+        rows.append({'task': item['task'], 'comments': item.get('comments') or [],
+                     'relations': item.get('relations') or []})
     return rows
 
 
@@ -145,6 +172,12 @@ def fixture_board(board_id, rows):
         prefix = str(rows[0]['task'].get('ticketNumber') or '').split('-')[0]
     return reconcile.BoardConfig(board_id, prefix, reconcile.DEFAULT.managed,
                                  reconcile.DEFAULT.protected, reconcile.DEFAULT.rules)
+
+
+def ticket_relations(key):
+    """The links on one ticket: what it is BlockedBy, and what it blocks."""
+    page = reconcile.api('task', 'relations', key)
+    return page.get('relations') or []
 
 
 def ticket_comments(key):
@@ -164,13 +197,17 @@ def ticket_comments(key):
 
 
 def rows_for(args):
-    """Open tickets carrying the label, each Todo ticket with its comments."""
+    """Open tickets carrying the label, each Todo ticket with its comments and links.
+
+    Also the whole loaded board by key, label or not, so a blocker's column is known.
+    """
     if args.fixture:
         rows = read_fixture(args.fixture)
         board = fixture_board(args.board, rows)
     else:
         board = reconcile.board_config(args.board)
         rows = [{'task': task} for task in reconcile.tickets(board=board)]
+    loaded = {row['task'].get('ticketNumber'): row['task'] for row in rows}
     kept = []
     for row in rows:
         task = row['task']
@@ -179,17 +216,19 @@ def rows_for(args):
         if not reconcile.carries_label(task, args.label):
             continue
         if not args.fixture and task.get('section') == TODO:
-            row = {'task': task, 'comments': ticket_comments(task['ticketNumber'])}
+            key = task['ticketNumber']
+            row = {'task': task, 'comments': ticket_comments(key),
+                   'relations': [] if waiting(task) else ticket_relations(key)}
         kept.append(row)
-    return board, kept
+    return board, kept, loaded
 
 
 def check(args, now):
-    board, rows = rows_for(args)
+    board, rows, loaded = rows_for(args)
     todos = [row for row in rows if row['task'].get('section') == TODO]
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
-    workable, waiting_lines, findings = [], [], []
+    workable, waiting_lines, blocked_lines, findings = [], [], [], []
     for row in todos:
         task = row['task']
         if waiting(task):
@@ -197,9 +236,13 @@ def check(args, now):
                 findings.append(f'answered: {task["ticketNumber"]} clear the waiting-on mark and work it')
             else:
                 waiting_lines.append(f'waiting: {task["ticketNumber"]} (marked)')
+            continue
+        stuck = open_blockers(row.get('relations'), loaded)
+        if stuck:
+            blocked_lines.append(f'blocked: {task["ticketNumber"]} by {", ".join(stuck)}')
         else:
             workable.append(row)
-    for line in waiting_lines:
+    for line in waiting_lines + blocked_lines:
         print(line)
     if workable and not live:
         findings.append(f'loop off: {len(workable)} workable Todo, nothing in Doing. '
