@@ -22,7 +22,11 @@ WRITE = re.compile(
     r"(create|add|update|edit|move|move-board|assign|unassign|delete|archive|done|resolve|clear|set|react)\b")
 HT_WRITE = re.compile(r"(^|[;&|(\s/])ht\s+(post|patch|put|delete)\b([^\n;&|)]*)", re.IGNORECASE)
 PATH_LIKE = re.compile(r"^(?:https?://|/)")
-AGENT_SETUP = re.compile(r"^(?:https?://[^/]+)?/mcp/agents(?:[/?#]|$)", re.IGNORECASE)
+# Agent setup is /mcp/agents, or /mcp/agents/<one id>, optionally with a query. Nothing may follow the id
+# (no /extra), and the id may not be a dot-segment or hold a percent-encoded dot, so a path can never climb
+# back out of the agent scope (`/mcp/agents/../tasks/1`, `/mcp/agents/%2e%2e/comments`).
+AGENT_SETUP = re.compile(
+    r"^(?:https?://[^/]+)?/mcp/agents(?:/(?!\.{1,2}(?:$|[/?#]))[^/?#%]+(?:\?[^#]*)?)?$", re.IGNORECASE)
 MCP_PREFIX = "mcp__claude_ai_Hypertask__"
 MCP_READ_ONLY = frozenset("list get search read history whoami context count export status".split())
 MCP_BLOCKED = ("BLOCKED by agent-identity-guard: the claude.ai Hypertask connector writes as Valentin. "
@@ -124,6 +128,11 @@ def self_test():
     assert verdict("ht PATCH /mcp/agents/1 '{}' && ht POST /mcp/comments '{}'", "Poteto", False), "&& chains too"
     assert verdict("ht PATCH /mcp/agents/x /mcp/comments", "Poteto", False), "a second board path is not exempt"
     assert verdict("ht PATCH /mcp/agentsx '{}'", "Poteto", False), "a lookalike path is not exempt"
+    assert verdict("ht PATCH /mcp/agents/../tasks/1 '{}'", "Poteto", False), "a dot-segment escape is not exempt"
+    assert verdict("ht PATCH /mcp/agents/%2e%2e/comments '{}'", "Poteto", False), "a percent-encoded dot is not exempt"
+    assert verdict("ht PATCH /mcp/agents/abc/extra '{}'", "Poteto", False), "a deeper agent path is not exempt"
+    assert verdict("ht PATCH /mcp/agents/abc?x=1 '{}'", "Poteto", False) is None, "an agent id with a query passes"
+    assert verdict("ht PATCH https://app.hypertask.ai/mcp/agents/abc '{}'", "Poteto", False) is None, "a full URL passes"
     assert verdict("ht PATCH", "Poteto", False), "a pathless write is not exempt"
     assert verdict("h PATCH /mcp/agents/x '{}'", "Poteto", False) is None, "`h` is a skill wrapper, not `ht`"
     assert mcp_verdict(MCP_PREFIX + "hypertask_comments", {"action": "add", "input": {"body": "x"}}) == MCP_BLOCKED
