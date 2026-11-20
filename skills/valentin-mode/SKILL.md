@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Valentin mode
 
-If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat, or one without bypass permissions, gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
+If no rules appear under Responsive mode below, load the `responsive-mode` skill before any other tool. A Codex, Cursor or pi chat, or one without bypass permissions, gets no paste. Work the pstack way,; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
 ## Responsive mode (pasted in when this skill loads)
 
