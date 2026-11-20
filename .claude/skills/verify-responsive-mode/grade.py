@@ -17,6 +17,8 @@ DETACHED = ('nohup', 'setsid', 'disown', 'tmux')
 BACKGROUND_AMP = re.compile(r'(?:^|[^&])&(?:[^&]|$)')
 TRACKED_AGENTS = ('Agent', 'Task')
 HOOK_FILE = re.compile(r'[^\s"\'`]+\.[a-z]{2}\b')
+# A debug log line per hook run: "Hooks: <Event>[:<matcher>] [<command>] finished".
+DEBUG_HOOK = re.compile(r'Hooks: ([A-Za-z]+)(?::\S*)?\s+\[([^\]]*)\]')
 
 
 def read_text(path):
@@ -132,59 +134,48 @@ def hook_commands(text):
     return found
 
 
-def attachments(value):
-    """Every attachment entry anywhere in one transcript record."""
-    if isinstance(value, dict):
-        entry = value.get('attachment')
-        if isinstance(entry, dict):
-            yield entry
-        for inner in value.values():
-            yield from attachments(inner)
-    elif isinstance(value, list):
-        for inner in value:
-            yield from attachments(inner)
+def installed_hook_files(command):
+    """The hook file names a command line runs out of a .claude/skills/ folder.
+    An unexpanded "$CLAUDE_PLUGIN_ROOT" leaves the path as /reply-check.py, which
+    would match on name alone, so a path outside that folder never counts."""
+    return [token.rsplit('/', 1)[-1] for token in HOOK_FILE.findall(command)
+            if '.claude/skills/' in token]
 
 
 def hook_runs(evidence):
-    """(event, file name) for every hook the chat's transcript logged running.
-    The shape: a record holding attachment.type hook_*, attachment.hookEvent
-    naming the event, and the command line that ran."""
+    """(event, file name) for every hook the chat's debug log recorded running.
+    The shape: "Hooks: <Event>[:<matcher>] [<command>] finished with status N".
+    The transcript is no use here: a hook that prints nothing leaves no entry."""
     runs = []
-    for line in read_text(evidence / 'transcript.jsonl').splitlines():
-        try:
-            record = json.loads(line)
-        except ValueError:
+    for line in read_text(evidence / 'debug.log').splitlines():
+        match = DEBUG_HOOK.search(line)
+        if not match:
             continue
-        for entry in attachments(record):
-            kind = entry.get('type')
-            command = entry.get('command')
-            if not isinstance(kind, str) or not kind.startswith('hook'):
-                continue
-            if not isinstance(command, str):
-                continue
-            event = entry.get('hookEvent') or entry.get('hookName') or ''
-            names = hook_files(command)
-            runs.append((str(event), names[0] if names else command))
+        event, command = match.group(1), match.group(2)
+        runs.extend((event, name) for name in installed_hook_files(command))
     return runs
 
 
 def check_checks_loaded(evidence):
     """The skill's own hooks loaded with it. A skill that turns no hooks on has
     nothing to prove; one that does must show those hook files running in the
-    chat's transcript, never in the chat's words."""
+    chat's debug log, never in the chat's words."""
     text = skill_text(evidence)
     if not text:
         return True, 'no skill text in evidence, so no hooks block to check'
     wanted = hook_commands(text)
     if not wanted:
         return True, 'the skill under test turns no hooks on'
+    if not (evidence / 'debug.log').is_file():
+        return False, ('no debug.log: the skill turns hooks on, but nothing shows '
+                       'they ran')
     ran = hook_runs(evidence)
     missing = [f'{name} ({event})' for event, name in wanted
-               if not any(event in seen and name == found for seen, found in ran)]
+               if (event, name) not in ran]
     if missing:
-        return False, ('the transcript shows no run of ' + ', '.join(missing)
-                       + '; no hook_* entry names it')
-    return True, 'the transcript shows every declared hook ran: ' + ', '.join(
+        return False, ('debug.log shows no run of ' + ', '.join(missing)
+                       + ' from the scratch project\'s .claude/skills/ folder')
+    return True, 'debug.log shows every declared hook ran: ' + ', '.join(
         f'{name} ({event})' for event, name in wanted)
 
 

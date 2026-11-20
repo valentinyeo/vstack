@@ -56,16 +56,26 @@ def say(t, text, message_id=None):
     return {'t': t, 'ev': {'type': 'assistant', 'message': message}}
 
 
-def hook_run(event, command, kind='hook_success'):
-    """One hook attachment entry, shaped like the ones a real transcript logs."""
-    return {'type': 'attachment',
-            'attachment': {'type': kind, 'hookName': event + ':Bash',
-                           'hookEvent': event, 'command': command, 'exitCode': 0}}
+# The line Claude Code's debug file writes per hook run, verbatim from a probe:
+# 2026-11-20T13:34:13.605Z [DEBUG] Hooks: PreToolUse:Bash [python3 ".../x.py"]
+# finished with status 0 (131ms)
+SCRATCH = '/tmp/vrm-scratch/.claude/skills/responsive-mode-under-test'
+PROBE_LINE = ('2026-11-20T13:34:13.605Z [DEBUG] Hooks: PreToolUse:Bash '
+              '[python3 "/tmp/skhook2.xNQD/.claude/skills/p2/x.py"] '
+              'finished with status 0 (131ms)')
 
 
-def ran_hooks(prefix='/tmp/vrm-scratch/.claude/skills/responsive-mode-under-test'):
-    return (hook_run('PreToolUse', 'python3 "%s/reply-check.py"' % prefix),
-            hook_run('Stop', 'python3 "%s/said-started.py"' % prefix))
+def hook_line(event, name, folder=SCRATCH, matcher=''):
+    """One hook line from the debug file, shaped like the probe's."""
+    return ('2026-11-20T13:34:13.605Z [DEBUG] Hooks: %s%s '
+            '[python3 "%s/%s"] finished with status 0 (131ms)\n'
+            % (event, ':' + matcher if matcher else '', folder, name))
+
+
+def ran_hooks():
+    """Both declared hooks ran: PreToolUse carries a matcher, Stop does not."""
+    return hook_line('PreToolUse', 'reply-check.py', matcher='Bash') + hook_line(
+        'Stop', 'said-started.py')
 
 
 def tool(t, name, args):
@@ -94,7 +104,7 @@ def hard_chat():
 
 class VerifyResponsiveModeGrade(unittest.TestCase):
     def evidence(self, records, spec=None, ran=(1,), pushed=(LINE,), loaded=True,
-                 skill_md=None, hooks=()):
+                 skill_md=None, debug=None):
         """A run's evidence folder, built the way run leaves one behind."""
         evidence = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, evidence, ignore_errors=True)
@@ -114,7 +124,9 @@ class VerifyResponsiveModeGrade(unittest.TestCase):
         transcript = ([{'type': 'user', 'isMeta': True,
                         'message': {'content': MARKER + '\n...'}}] if loaded else [])
         (evidence / 'transcript.jsonl').write_text(
-            ''.join(json.dumps(record) + '\n' for record in transcript + list(hooks)))
+            ''.join(json.dumps(record) + '\n' for record in transcript))
+        if debug is not None:
+            (evidence / 'debug.log').write_text(debug)
         (evidence / 'pushed-report.md').write_text(''.join(line + '\n' for line in pushed))
         return evidence
 
@@ -152,32 +164,58 @@ class VerifyResponsiveModeGrade(unittest.TestCase):
         self.assert_passes(code, output, 'checks loaded')
         self.assertIn('turns no hooks on', output)
 
-    def test_hooks_block_with_no_transcript_hook_runs_fails(self):
-        self.assert_fails(self.grade(chat(), skill_md=HOOKED_SKILL)[1], 'checks loaded')
+    def test_hooks_block_without_a_debug_log_fails(self):
+        output = self.grade(chat(), skill_md=HOOKED_SKILL)[1]
+        self.assert_fails(output, 'checks loaded')
+        self.assertIn('no debug.log', output)
 
-    def test_hooks_that_ran_in_the_transcript_pass(self):
-        code, output = self.grade(chat(), skill_md=HOOKED_SKILL, hooks=ran_hooks())
+    def test_hooks_that_ran_in_the_debug_log_pass(self):
+        code, output = self.grade(chat(), skill_md=HOOKED_SKILL, debug=ran_hooks())
         self.assert_passes(code, output, 'checks loaded')
         line = next(line for line in output.splitlines() if line.startswith('PASS checks loaded:'))
         self.assertIn('reply-check.py', line)
         self.assertIn('said-started.py', line)
 
+    def test_the_probe_line_shape_counts(self):
+        """The exact line a live probe wrote is what the check reads."""
+        skill = ('---\nname: responsive-mode\ndescription: test skill\nhooks:\n'
+                 '  PreToolUse:\n    - matcher: "*"\n      hooks:\n'
+                 '        - type: command\n'
+                 '          command: python3 "$CLAUDE_PLUGIN_ROOT/x.py"\n---\n\n'
+                 '# Responsive mode\n')
+        code, output = self.grade(chat(), skill_md=skill, debug=PROBE_LINE + '\n')
+        self.assert_passes(code, output, 'checks loaded')
+
     def test_a_foreign_pretooluse_hook_does_not_count(self):
         """The box runs other PreToolUse hooks. Only the skill's own files count."""
-        hooks = (hook_run('PreToolUse', 'python3 /home/valentin/.claude/hooks/chromescribe-link.py'),)
-        self.assert_fails(self.grade(chat(), skill_md=HOOKED_SKILL, hooks=hooks)[1], 'checks loaded')
+        debug = hook_line('PreToolUse', 'chromescribe-link.py',
+                          folder='/home/valentin/.claude/hooks', matcher='Bash')
+        self.assert_fails(self.grade(chat(), skill_md=HOOKED_SKILL, debug=debug)[1],
+                          'checks loaded')
 
     def test_one_declared_hook_never_running_fails(self):
-        output = self.grade(chat(), skill_md=HOOKED_SKILL, hooks=ran_hooks()[:1])[1]
+        debug = hook_line('PreToolUse', 'reply-check.py', matcher='Bash')
+        output = self.grade(chat(), skill_md=HOOKED_SKILL, debug=debug)[1]
         self.assert_fails(output, 'checks loaded')
-        self.assertIn('said-started.py', output)
+        self.assertIn('said-started.py (Stop)', output)
+
+    def test_an_unexpanded_plugin_root_does_not_count(self):
+        """Root unset leaves the path as /reply-check.py, which names no skill folder."""
+        debug = (hook_line('PreToolUse', 'reply-check.py', folder='', matcher='Bash')
+                 + hook_line('Stop', 'said-started.py', folder=''))
+        self.assert_fails(self.grade(chat(), skill_md=HOOKED_SKILL, debug=debug)[1],
+                          'checks loaded')
 
     def test_a_hook_named_in_chat_text_only_fails(self):
-        """The chat saying a hook ran is not the hook running."""
-        message = {'type': 'user', 'isMeta': True,
-                   'message': {'content': 'reply-check.py said-started.py ran'}}
-        self.assert_fails(self.grade(chat(), skill_md=HOOKED_SKILL, hooks=(message,))[1],
-                          'checks loaded')
+        """The chat saying a hook ran is not the hook running. The debug log is
+        the only record, so chat text and transcript entries prove nothing."""
+        evidence = self.evidence(chat(), skill_md=HOOKED_SKILL, debug='')
+        with (evidence / 'transcript.jsonl').open('a') as transcript:
+            transcript.write(json.dumps({'type': 'user', 'isMeta': True, 'message': {
+                'content': 'reply-check.py said-started.py ran',
+                'attachment': {'type': 'hook_success', 'hookEvent': 'PreToolUse',
+                               'command': 'python3 "%s/reply-check.py"' % SCRATCH}}}) + '\n')
+        self.assert_fails(self.grade_folder(evidence)[1], 'checks loaded')
 
     def test_old_evidence_without_skill_text_passes_checks_loaded(self):
         code, output = self.grade(chat())
@@ -298,6 +336,10 @@ class VerifyResponsiveModeRun(unittest.TestCase):
         self.assertIn('cp -rL "$SKILL_DIR" "$W/.claude/skills/$NAME"', self.text)
         self.assertNotIn('mkdir -p "$W/.claude/skills/$NAME"', self.text,
                          'a bare mkdir would leave the hooks behind')
+
+    def test_run_saves_a_debug_log_per_run(self):
+        # Skill hooks leave no transcript entry, so the debug file is the record.
+        self.assertIn("'--debug-file', f'{evidence}/debug.log'", self.text)
 
     def test_run_saves_the_whole_folder_in_the_evidence(self):
         self.assertIn('cp -rL "$SKILL_DIR" "$E/skill-under-test"', self.text)

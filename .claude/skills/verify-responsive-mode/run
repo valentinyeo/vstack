@@ -166,7 +166,7 @@ plan = {
     'cwd': workdir,
     'claude': claude,
     'args': ['--model', 'sonnet', '--permission-mode', 'bypassPermissions',
-             '--max-turns', '60'],
+             '--debug-file', f'{evidence}/debug.log', '--max-turns', '60'],
     'messages': [
         {'at': 0, 'text': first},
         {'at': 25, 'text': 'Side question: what is 17 + 25?'},

@@ -12,11 +12,13 @@ never from the chat's own claim.
   marker the `loaded` check looks for.
 - `run` copies the skill's whole folder, following symlinks, into the scratch repo and
   into the evidence folder, so a hook file the frontmatter names is never left behind.
-- The skill's own hooks load with it. The chat transcript logs each hook run as a
-  record holding an `attachment` whose `type` starts with `hook`, its `hookEvent` and
-  the `command` that ran, so `checks loaded` matches that command's file name against
-  the frontmatter. Another hook on the box, a hook named only in chat text, and a
-  chat that never loaded the skill all count as no run.
+- The skill's own hooks load with it. `run` saves Claude Code's debug log as
+  `debug.log`, and each hook run appears there as a `Hooks: <Event>[:<matcher>]
+  [<command>]` line, so `checks loaded` matches that command's file name against
+  the frontmatter. The transcript is no record at all: a hook that prints nothing
+  leaves no entry. Another hook on the box, a command left as `/reply-check.py`
+  by an unset `$CLAUDE_PLUGIN_ROOT`, a hook named only in chat text, and a chat
+  that never loaded the skill all count as no run.
 
 ## Driving conventions
 
