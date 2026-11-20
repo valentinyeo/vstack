@@ -8,6 +8,9 @@ One row per open PR: its ticket key, its checks, the verifier verdict at its cur
 whether the body carries the `Author model:` and `Pacer launch:` lines, whether another open
 PR carries the same ticket, the live chat that owns it, one state, and one plain next action.
 
+One paginated bulk query reads every open PR, so a tick over 180 PRs costs three gh calls and
+about eight GraphQL points instead of one call per PR. Twenty chats share one hourly limit.
+
   BOT            dependabot, renovate or github-actions wrote it: CI Boss looks after it
   DUPLICATE      a second open PR for a ticket whose keeper is another open PR
   NO-OWNER       no live chat claims it, whatever its checks or its verdict
@@ -45,16 +48,45 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 ROSTER = Path.home() / '.local/share/house-rules/fleet/roster-live'
-VIEW_FIELDS = ('number,title,url,headRefName,headRefOid,author,createdAt,updatedAt,isDraft,body,'
-               'mergeable,statusCheckRollup,comments,commits')
-SEARCH_FIELDS = 'number,title,url,repository,author,createdAt,updatedAt,isDraft'
+# Every field a row reads, in the one search that lists the PRs: 60 a page, then the next page by
+# cursor. The page stays small on purpose: a page near GitHub's query timeout answers HTTP 504 and
+# costs a whole tick, and 60 PRs of mergeable plus checks answers in about five seconds.
+# `comments(last: 30)` is every comment the newest verdict at this head can sit in; `commits(last: 1)`
+# is the head commit, whose date is the last push. `contexts(first: 100)` is every check a normal PR
+# carries; a factory PR with more carries the rollup `state` too, which answers for the rest.
+SEARCH_QUERY = '''query($q: String!, $after: String) {
+  rateLimit { cost remaining }
+  search(query: $q, type: ISSUE, first: 60, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number url title headRefName headRefOid createdAt updatedAt mergeable body
+        author { login __typename }
+        repository { nameWithOwner }
+        comments(last: 30) { nodes { body createdAt } }
+        commits(last: 1) { nodes { commit { committedDate } } }
+        statusCheckRollup {
+          state
+          contexts(first: 100) {
+            totalCount
+            nodes {
+              __typename
+              ... on CheckRun { name status conclusion title summary }
+              ... on StatusContext { context state }
+            }
+          }
+        }
+      }
+    }
+  }
+}'''
+MAX_PAGES = 10
 POOL = 8
 GH_TIMEOUT = 90
 GIT_TIMEOUT = 20
 ROSTER_TIMEOUT = 30
 BOARD_TIMEOUT = 60
 
-# `gh search prs` has no headRefName, so the branch comes from one `gh pr view` per PR.
 KEY = re.compile(r'\b([A-Z][A-Z0-9]{1,9}-\d+)\b')
 # The key prefixes that are not tickets: carried from ~/.local/share/house-rules/skills/
 # hypertask-triage/scripts/pr-queue, which owns this rule. Not imported, so the two scripts
@@ -63,6 +95,9 @@ NOT_KEYS = {'DEV', 'RUNNER', 'AGENT', 'CURSOR', 'CODEX', 'WORKER', 'INFRA-RUNNER
 BOTS = ('dependabot', 'renovate', 'github-actions')
 GENERIC_NAMES = {'claude', 'poteto', 'shell', 'live', 'term', 'session', 'unknown'}
 RED_STATES = {'FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'}
+# PullRequestStatusCheckRollupState: GitHub's own answer over every check of a head.
+AGGREGATE_STATE = {'SUCCESS': 'green', 'FAILURE': 'red', 'ERROR': 'red',
+                   'PENDING': 'pending', 'EXPECTED': 'pending'}
 PENDING_STATES = {'QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED', 'PENDING'}
 PASSING = ('PASS', 'PASS+NOTES')
 BILLING = re.compile(r'payments have failed', re.I)
@@ -119,11 +154,15 @@ def ticket_key(title, branch):
     return None
 
 
-def checks_state(rollup):
+def checks_state(rollup, total=None, aggregate=None):
     """green | red | pending | none for a statusCheckRollup.
 
     CANCELLED, SKIPPED, NEUTRAL and stale runs count as passing: this fleet cancels the runs it
-    supersedes on purpose. Red beats pending."""
+    supersedes on purpose. Red beats pending. When the read carried fewer checks than the PR holds,
+    GitHub's own rollup state answers instead, so a factory PR with more than a page of checks
+    cannot hide a failure from the tick."""
+    if total is not None and aggregate and total > len(rollup or ()):
+        return AGGREGATE_STATE.get(aggregate.upper(), 'green')
     if not rollup:
         return 'none'
     red = pending = False
@@ -307,7 +346,7 @@ def build_rows(views, chats, stale_hours=72, billing_probe=None, board_lookup=No
         body = view.get('body') or ''
         branch = view.get('headRefName') or ''
         head = view.get('headRefOid') or ''
-        checks = checks_state(view.get('statusCheckRollup'))
+        checks = view_checks(view)
         billed = bool(checks == 'red' and billing_probe and billing_blocked(billing_probe(repo, head)))
         mergeable = (view.get('mergeable') or '').upper()
         key = ticket_key(view.get('title'), branch)
@@ -371,39 +410,116 @@ def gh_json(args):
         raise GhError(f'unparseable gh output: gh {" ".join(args[:3])}')
 
 
-def search_prs(owner):
-    """[(repo, search item)] for every open PR the owner has."""
-    found = gh_json(['search', 'prs', '--owner', owner, '--state', 'open', '--limit', '200',
-                     '--json', SEARCH_FIELDS])
-    if not isinstance(found, list):
-        raise GhError('gh search prs answered no list of pull requests')
-    items = []
-    for item in found:
-        repo = (item.get('repository') or {}).get('nameWithOwner')
-        if not repo or not item.get('number'):
-            raise GhError('gh search prs answered an item without a repository or a number')
-        items.append((repo, item['number']))
-    return items
+def graphql(query, **variables):
+    """One GraphQL answer; its cost and remaining points come from the same response.
+
+    A rate-limit or other GraphQL error arrives either as a nonzero exit or inside a 200, and both
+    become one GhError, so a broken tick never reads as a clean one."""
+    args = ['api', 'graphql', '-f', f'query={query}']
+    for name, value in variables.items():
+        if value is not None:
+            args += ['-F', f'{name}={value}']
+    answer = gh_json(args)
+    if isinstance(answer, dict) and answer.get('errors'):
+        first = (answer['errors'] or [{}])[0]
+        message = first.get('message') if isinstance(first, dict) else None
+        raise GhError(f'gh api graphql said {message or "an error this script cannot read"}')
+    data = answer.get('data') if isinstance(answer, dict) else None
+    if not isinstance(data, dict):
+        raise GhError('gh api graphql answered no data')
+    return data
 
 
-def fetch_view(repo, number):
-    view = gh_json(['pr', 'view', str(number), '--repo', repo, '--json', VIEW_FIELDS])
-    if not isinstance(view, dict):
-        raise GhError(f'gh pr view {repo}#{number} answered no pull request')
-    view['repository'] = repo
-    view['number'] = view.get('number') or number
-    return view
+def search_scope(owner, repo=None):
+    """The search that scopes one run: one repo, else every repo the owner has."""
+    target = f'repo:{repo}' if repo else f'owner:{owner}'
+    return f'{target} is:pr is:open'
 
 
-def fetch_billing(repo, sha):
-    """The check runs of one head, read only for a red PR when it needs the billing probe."""
-    answer = gh_json(['api', f'repos/{repo}/commits/{sha}/check-runs'])
-    runs = answer.get('check_runs') if isinstance(answer, dict) else None
-    return runs or []
+def context(run):
+    """One check as `gh pr view --json statusCheckRollup` shaped it, so the row reads it the same.
+
+    A billing message lives in a check run's title or summary."""
+    if run.get('__typename') == 'StatusContext':
+        return {'__typename': 'StatusContext', 'context': run.get('context') or '',
+                'state': run.get('state') or ''}
+    return {'__typename': 'CheckRun', 'name': run.get('name') or '',
+            'status': run.get('status') or '', 'conclusion': run.get('conclusion') or '',
+            'output': {field: run.get(field) for field in ('title', 'summary', 'text')}}
+
+
+def login_of(author):
+    """The login `gh pr view` printed: an app actor reads `app/<slug>`, as the REST export does."""
+    author = author or {}
+    login = author.get('login') or ''
+    return f'app/{login}' if (login and author.get('__typename') == 'Bot') else login
+
+
+def view_from_node(node):
+    """One search node as the view `gh pr view --json` answered before, field for field."""
+    def nodes(field):
+        return ((node.get(field) or {}).get('nodes')) or ()
+
+    rollup = node.get('statusCheckRollup') or {}
+    contexts = (rollup.get('contexts') or {})
+    return {
+        'repository': (node.get('repository') or {}).get('nameWithOwner') or '',
+        'number': node.get('number'),
+        'url': node.get('url') or '',
+        'title': node.get('title') or '',
+        'headRefName': node.get('headRefName') or '',
+        'headRefOid': node.get('headRefOid') or '',
+        'author': {'login': login_of(node.get('author'))},
+        'createdAt': node.get('createdAt') or '',
+        'updatedAt': node.get('updatedAt') or '',
+        'body': node.get('body') or '',
+        'mergeable': node.get('mergeable') or '',
+        'statusCheckRollup': [context(run) for run in contexts.get('nodes') or ()],
+        'checks_total': contexts.get('totalCount'),
+        'checks_rollup': rollup.get('state'),
+        'comments': [{'body': comment.get('body') or '', 'createdAt': comment.get('createdAt') or ''}
+                     for comment in nodes('comments')],
+        'commits': [{'oid': '', 'committedDate': (entry.get('commit') or {}).get('committedDate') or ''}
+                    for entry in nodes('commits')],
+    }
+
+
+def view_checks(view):
+    """The checks of one view: by context, with the rollup state answering when they were cut short."""
+    return checks_state(view.get('statusCheckRollup') or (),
+                        view.get('checks_total'), view.get('checks_rollup'))
+
+
+def bulk_prs(scope):
+    """Every open PR in the scope, in one search paged by cursor.
+
+    Three calls cover 180 open PRs. The run prints what it spent, so the next tick can too."""
+    views, calls, points, after, limit = [], 0, 0, None, {}
+    while True:
+        data = graphql(SEARCH_QUERY, q=scope, after=after)
+        calls += 1
+        limit = data.get('rateLimit') or {}
+        points += int(limit.get('cost') or 0)
+        search = data.get('search') or {}
+        for node in search.get('nodes') or ():
+            if not isinstance(node, dict) or not node.get('number'):
+                raise GhError('the bulk search answered an item without a number')
+            views.append(view_from_node(node))
+        page = search.get('pageInfo') or {}
+        after = page.get('endCursor')
+        if not page.get('hasNextPage') or not after:
+            break
+        if calls >= MAX_PAGES:
+            print(f'pr-queue: stopped after {MAX_PAGES} pages and {len(views)} PRs; the scope holds more',
+                  file=sys.stderr)
+            break
+    print(f'pr-queue: {calls} gh calls, {points} GraphQL points spent, '
+          f'{limit.get("remaining")} points left in this hour', file=sys.stderr)
+    return views
 
 
 def pooled(work, items):
-    """Run one bounded pool of gh calls: a slow repo never stalls the whole queue."""
+    """Run one bounded pool of ticket reads: a slow board never stalls the whole queue."""
     if not items:
         return []
     with ThreadPoolExecutor(max_workers=POOL) as pool:
@@ -551,13 +667,11 @@ def main(argv):
     if args.self_test:
         return self_test()
     try:
-        items = search_prs(args.owner)
-        if args.repo:
-            items = [item for item in items if item[0] == args.repo]
-        views = pooled(fetch_view, items)
-        red = [(view['repository'], view['headRefOid']) for view in views
-               if view.get('headRefOid') and checks_state(view.get('statusCheckRollup')) == 'red']
-        probes = dict(zip(red, pooled(fetch_billing, red)))
+        views = bulk_prs(search_scope(args.owner, args.repo))
+        # The billing probe reads the checks the bulk query already carried, so a red PR costs
+        # no extra call. Only a red head is ever probed.
+        probes = {(view['repository'], view['headRefOid']): view['statusCheckRollup'] for view in views
+                  if view.get('headRefOid') and view_checks(view) == 'red'}
     except GhError as error:
         print(f'pr-queue: {error}', file=sys.stderr)
         print('pr-queue: gh failed, so this tick read nothing; check `gh auth status` and rerun',
