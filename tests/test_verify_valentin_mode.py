@@ -116,6 +116,56 @@ class VerifyValentinModeGrade(unittest.TestCase):
         self.assertIn('PASS responsive: responsive mode started by /responsive-mode',
                       result.stdout)
 
+    def grade_with_user_text(self, text):
+        """Grade the no-responsive fixture with one user event carrying `text`."""
+        target = self.temp_dir() / 'pasted'
+        shutil.copytree(FIXTURES / 'no-responsive', target)
+        stream = target / 'stream.jsonl'
+        events = [json.loads(line) for line in stream.read_text().splitlines() if line.strip()]
+        events.insert(1, {'type': 'user', 'session_id': 'sid-no-responsive',
+                          'message': {'content': [{'type': 'text', 'text': text}]}})
+        stream.write_text('\n'.join(json.dumps(event) for event in events) + '\n')
+        return subprocess.run([sys.executable, str(GRADE), str(target)],
+                              capture_output=True, text=True, check=False)
+
+    def responsive_body(self):
+        """responsive mode's text below its frontmatter, as the load line prints it."""
+        return (ROOT / 'skills/responsive-mode/SKILL.md').read_text().split('---', 2)[2]
+
+    def test_whole_paste_from_the_load_line_grades_pass(self):
+        """valentin-mode pastes responsive mode's body at load, so that counts as loaded."""
+        result = self.grade_with_user_text(
+            '## Responsive mode (pasted in when this skill loads)\n\n' + self.responsive_body())
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('PASS responsive: responsive mode pasted in by /valentin-mode',
+                      result.stdout)
+
+    def test_unexpanded_load_line_fails_responsive(self):
+        """The shell line on its own means the body never arrived."""
+        result = self.grade_with_user_text(
+            '## Responsive mode (pasted in when this skill loads)\n\n'
+            '!`awk \'c>=2{print} /^---$/{c++}\' "x/../responsive-mode/SKILL.md"`')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL responsive: responsive mode not loaded', result.stdout)
+
+    def test_paste_stopped_after_the_first_sentence_fails_responsive(self):
+        """A paste cut off before the last sentence loses the end-of-turn rule."""
+        result = self.grade_with_user_text(
+            '## Responsive mode (pasted in when this skill loads)\n\n'
+            'The main chat talks. Background agents work.')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('FAIL responsive: responsive mode not loaded', result.stdout)
+
+    def test_valentin_mode_keeps_the_paste_block(self):
+        """The skill carries the heading and the line that prints responsive mode's body."""
+        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
+        self.assertIn('## Responsive mode (pasted in when this skill loads)', text)
+        self.assertIn('"${CLAUDE_SKILL_DIR}/../responsive-mode/SKILL.md"', text)
+        responsive = (ROOT / 'skills/responsive-mode/SKILL.md').read_text()
+        self.assertIn('The main chat talks. Background agents work.', responsive)
+        self.assertIn('the push lands on the remote with no nudge.', responsive,
+                      'the graded last sentence must be the body\'s last sentence')
+
     def test_not_loaded_fixture_fails_loaded(self):
         code, output, _target = self.grade_fixture('not-loaded')
         self.assertEqual(code, 1, output)

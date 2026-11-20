@@ -41,6 +41,7 @@ Nobody pushes to main.
 | Every verifier falls through every allowed model and lane | `scripts/verifier_lanes.py`, `tests/test_run_verifier.py` |
 | Advisor reports keep exact-head validation | `tests/test_advisor_verdict.py` |
 | Skill budgets, copied rules, references and new-skill prior art pass | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
+| Loaded skills stay lean: no dead links, duplicate names, retired terms or oversized descriptions | `scripts/skill-check.py`, `tests/test_skill_check.py` |
 
 Skill-lint commands and exceptions: [shared reference](https://github.com/valentinyeo/house-rules/blob/d60a2c149b29ef555dec42f20afc074543624f7b/docs/skill-lint.md).
 

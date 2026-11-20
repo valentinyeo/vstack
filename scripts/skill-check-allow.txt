@@ -1,0 +1,6 @@
+# Allowed findings, one per line. `#` starts a comment.
+#
+# duplicate-name:unslop
+#   The Hetzner user copy of unslop is kept on purpose: the pstack copy sets
+#   disable-model-invocation, so only the user copy is visible there.
+duplicate-name:unslop
