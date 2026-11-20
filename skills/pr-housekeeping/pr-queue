@@ -15,9 +15,9 @@ PR carries the same ticket, the live chat that owns it, one state, and one plain
   RED            a check failed
   VERIFIER-FAIL  the newest verdict at this head is FAIL
   MISSING-LINES  body lacks `Author model:` or `Pacer launch:`
-  NO-OWNER       no live chat claims this repo, branch or chat name
-  STALE          no push for more than --stale-hours
   NO-VERDICT     no verdict at this head yet
+  STALE          a verified PR nobody pushed for more than --stale-hours
+  NO-OWNER       a verified PR no live chat claims by repo, branch or chat name
   READY          green checks and a PASS or PASS+NOTES at this head
   OK             nothing to do this tick
 
@@ -67,7 +67,7 @@ ROSTER_LINE = re.compile(r'^(?P<name>.+?) \((?P<tmux>[^,()]+), (?P<harness>[^,()
 REMOTE = re.compile(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$')
 
 STATES = ('BOT', 'DUPLICATE', 'CONFLICT', 'BILLING', 'RED', 'VERIFIER-FAIL', 'MISSING-LINES',
-          'NO-OWNER', 'STALE', 'NO-VERDICT', 'READY', 'OK')
+          'NO-VERDICT', 'STALE', 'NO-OWNER', 'READY', 'OK')
 NEXT_ACTION = {
     'BOT': 'A bot wrote this one, so CI Boss looks after it and no chat has to act.',
     'DUPLICATE': 'Message the owner chat of the older pull request for this ticket and close this one '
@@ -221,20 +221,20 @@ def billing_blocked(runs):
 
 
 def mark_duplicates(rows):
-    """The older open PR for the same repo and ticket, else None.
+    """One keeper per repo and ticket: the oldest PR, the lowest number on a same second tie.
 
-    Only a strictly older PR makes a row a duplicate, so PRs a chat opened in the same second for
-    one ticket are one attempt and none of them reads DUPLICATE."""
+    Every other row of that ticket is the duplicate, so two PRs a chat opened in the same second
+    still leave exactly one keeper."""
     groups = {}
     for row in rows:
         if row['bot'] or not row['ticket_key']:
             continue
         groups.setdefault((row['repo'], row['ticket_key']), []).append(row)
     for group in groups.values():
+        keeper = min(group, key=lambda other: (other['created_at'], other['number']))
         for row in group:
-            older = [other for other in group if other['created_at'] < row['created_at']]
-            if older:
-                row['duplicate_of'] = min(older, key=lambda other: (other['created_at'], other['number']))['number']
+            if row is not keeper:
+                row['duplicate_of'] = keeper['number']
 
 
 def classify(row, stale_hours):
@@ -253,12 +253,12 @@ def classify(row, stale_hours):
         return 'VERIFIER-FAIL'
     if not (row['has_author_model'] and row['has_pacer_line']):
         return 'MISSING-LINES'
-    if not row['owner_chat']:
-        return 'NO-OWNER'
-    if row['hours_since_push'] > stale_hours:
-        return 'STALE'
     if row['verdict'] == 'none':
         return 'NO-VERDICT'
+    if row['hours_since_push'] > stale_hours:
+        return 'STALE'
+    if not row['owner_chat']:
+        return 'NO-OWNER'
     if row['checks'] == 'green' and row['verdict'] in PASSING:
         return 'READY'
     return 'OK'
