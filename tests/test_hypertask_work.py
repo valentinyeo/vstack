@@ -1061,9 +1061,12 @@ else:
                 self.assertEqual(self.target('Backlog', pulls=(pull(checks=checks),)), 'AI Review')
 
     def test_backlog_stays_and_ai_review_never_demotes(self):
+        self.assertEqual(self.target('Backlog'), 'Backlog')
+        self.assertEqual(self.target('Backlog', pulls=(pull('CLOSED'),)), 'Backlog')
+        # One model: merged evidence promotes backlog the same way on every board.
+        self.assertEqual(self.target('Backlog', pulls=(pull('MERGED'),)), 'AI Review')
         for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
-                self.assertEqual(self.target('Backlog', pulls=pulls), 'Backlog')
                 self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
 
     def test_stale_in_progress_cards_move_to_backlog(self):
@@ -1267,11 +1270,12 @@ class AnyBoardTest(unittest.TestCase):
     def test_known_boards_keep_their_own_configs(self):
         self.assertIs(r.board_config(2060), r.BOARDS[2060])
         self.assertIs(r.board_config(15), r.BOARDS[15])
-        self.assertEqual(r.board_config(2060).rules, r.RULES)
+        self.assertIs(r.board_config(13556), r.BOARDS[13556])
         self.assertEqual((r.board_config(2060).prefix, r.board_config(2060).managed),
                          ('SOFT', frozenset(r.MANAGED)))
-        self.assertEqual((r.board_config(15).prefix, r.board_config(15).rules),
-                         ('HTPR', r.PRODUCT_RULES))
+        self.assertEqual(r.board_config(15).prefix, 'HTPR')
+        self.assertEqual(r.board_config(15).demote_all_idle, False)
+        self.assertEqual(r.board_config(2060).demote_all_idle, True)
 
 
 class ProductWorkerTest(unittest.TestCase):

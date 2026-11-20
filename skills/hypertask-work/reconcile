@@ -4,6 +4,7 @@ import argparse
 import base64
 import contextlib
 from contextlib import closing
+from enum import Enum
 from functools import lru_cache
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -86,23 +87,17 @@ class Facts:
     verification: bool = False
 
 
-# An open or merged PR is the true stage; a live worker comes after it.
-RULES = (
-    (lambda f: f.column in PROTECTED, None, 'protected column'),
-    (lambda f: f.column not in MANAGED, None, 'unknown column; kept'),
-    (lambda f: f.waiting or f.blocked, None, 'waiting or blocked; kept'),
-    (lambda f: any(p.state == 'OPEN' and p.checks != 'green' for p in f.pulls), 'Checks', 'open PR checks running, red, or missing'),
-    (lambda f: any(p.state == 'OPEN' for p in f.pulls), 'AI Review', 'open PR checks green; verifier or merge pending'),
-    (lambda f: bool(f.pulls) and all(p.state == 'MERGED' and p.passed for p in f.pulls), 'AI Review', 'merged PR with PASS; live proof pending'),
-    (lambda f: any(p.state == 'MERGED' for p in f.pulls), 'AI Review', 'merged PR missing PASS on current head'),
-    (lambda f: f.alive, 'Doing', 'live worker: lease or process'),
-    # A verification ticket rests in its own backlog, and only a labelled ticket belongs there.
-    (lambda f: f.column == VERIFICATION_BACKLOG and not f.verification, 'Todo', 'not a verification ticket'),
-    (lambda f: f.column == VERIFICATION_BACKLOG, None, 'verification backlog; kept'),
-    (lambda f: f.column == 'Todo' and f.verification, VERIFICATION_BACKLOG, 'verification ticket'),
-    (lambda f: f.age < 7200, None, 'touched within 2h'),
-    (lambda f: True, 'Todo', 'no live worker and no PR'),
-)
+class Stage(Enum):
+    BACKLOG = 'backlog'
+    IN_PROGRESS = 'in_progress'
+    CHECKS = 'checks'
+    REVIEW = 'review'
+    VERIFICATION = 'verification'
+    PROTECTED = 'protected'
+    UNMANAGED = 'unmanaged'
+
+
+GRACE_SECONDS = 7200
 
 
 @dataclass(frozen=True)
@@ -111,31 +106,120 @@ class BoardConfig:
     prefix: str
     managed: frozenset
     protected: frozenset
-    rules: tuple
+    column_stage: frozenset
+    stage_column: frozenset
+    idle_demotion: frozenset
+    demote_all_idle: bool
     repository: str | None = None
     # A board read at runtime carries its real column titles; a configured board
     # keeps None and lets each stage name resolve from the ticket's own column.
     columns: frozenset | None = None
 
 
+def column_stage_map(board):
+    return dict(board.column_stage)
+
+
+def stage_column_map(board):
+    return dict(board.stage_column)
+
+
 PRODUCT_PROTECTED = frozenset({'UX needed', 'UX Sign-off', 'Agent Blocked (Infra)',
     'Valentin Review', 'QA', 'No Flag', 'Flag: Only Me + QA', 'Flag: Everyone', 'Flag: Off'})
 PRODUCT_MANAGED = frozenset({'Backlog', 'In Progress', 'AI Review'})
-PRODUCT_RULES = (
-    (lambda f: f.column in PRODUCT_PROTECTED or f.column.startswith('Flag:'), None, 'protected column'),
-    (lambda f: f.column not in PRODUCT_MANAGED, None, 'unknown column; kept'),
-    (lambda f: any(p.state == 'OPEN' for p in f.pulls), 'AI Review', 'open PR'),
-    (lambda f: f.alive, 'In Progress', 'live worker'),
-    (lambda f: f.age < 7200, None, 'touched within 2h'),
-    (lambda f: f.column == 'In Progress', 'Backlog', 'idle In Progress; no live worker or open PR'),
-    (lambda f: True, None, 'no live worker or open PR; kept'),
-)
+FACTORY_STAGE_COLUMN = {
+    Stage.BACKLOG: 'Todo',
+    Stage.VERIFICATION: VERIFICATION_BACKLOG,
+    Stage.IN_PROGRESS: 'Doing',
+    Stage.CHECKS: 'Checks',
+    Stage.REVIEW: 'AI Review',
+}
+FACTORY_COLUMN_STAGE = {name: stage for stage, name in FACTORY_STAGE_COLUMN.items()}
+FACTORY_COLUMN_STAGE['Building'] = Stage.IN_PROGRESS
+FACTORY_COLUMN_STAGE['Verifier'] = Stage.REVIEW
+PRODUCT_STAGE_COLUMN = {Stage.BACKLOG: 'Backlog', Stage.IN_PROGRESS: 'In Progress', Stage.REVIEW: 'AI Review'}
+PRODUCT_COLUMN_STAGE = {name: stage for stage, name in PRODUCT_STAGE_COLUMN.items()}
+
+
+def make_board(board_id, prefix, managed, protected, stage_column, column_stage, *,
+               idle_demotion=frozenset(), demote_all_idle=True, repository=None, columns=None):
+    return BoardConfig(board_id, prefix, frozenset(managed), frozenset(protected),
+                       frozenset(column_stage.items()), frozenset(stage_column.items()),
+                       frozenset(idle_demotion), demote_all_idle, repository, columns)
+
+
 BOARDS = {
-    2060: BoardConfig(2060, 'SOFT', frozenset(MANAGED), frozenset(PROTECTED), RULES),
-    15: BoardConfig(15, 'HTPR', PRODUCT_MANAGED, PRODUCT_PROTECTED, PRODUCT_RULES,
-                    'hypertask-ai/hypertask'),
+    2060: make_board(2060, 'SOFT', MANAGED, PROTECTED, FACTORY_STAGE_COLUMN, FACTORY_COLUMN_STAGE),
+    13556: make_board(13556, 'VSTA', MANAGED, PROTECTED, FACTORY_STAGE_COLUMN, FACTORY_COLUMN_STAGE),
+    15: make_board(15, 'HTPR', PRODUCT_MANAGED, PRODUCT_PROTECTED, PRODUCT_STAGE_COLUMN,
+                   PRODUCT_COLUMN_STAGE, idle_demotion=frozenset({Stage.IN_PROGRESS}),
+                   demote_all_idle=False, repository='hypertask-ai/hypertask'),
 }
 DEFAULT = BOARDS[2060]
+
+
+def _open_pr_reason(board):
+    return 'open PR' if product_board(board) else 'open PR checks green; verifier or merge pending'
+
+
+def _worker_reason(board):
+    return 'live worker' if product_board(board) else 'live worker: lease or process'
+
+
+def open_pr_in_checks(pull, board):
+    if pull.state != 'OPEN':
+        return False
+    if product_board(board):
+        return pull.checks not in ('', 'green')
+    return pull.checks != 'green'
+
+
+def plan_stage(facts, here, board):
+    """One evidence order for every board: PR, worker, verification routing, grace, idle."""
+    if facts.waiting or facts.blocked:
+        return None, 'waiting or blocked; kept'
+    if any(open_pr_in_checks(p, board) for p in facts.pulls):
+        return Stage.CHECKS, 'open PR checks running, red, or missing'
+    if any(p.state == 'OPEN' for p in facts.pulls):
+        return Stage.REVIEW, _open_pr_reason(board)
+    if facts.pulls and all(p.state == 'MERGED' and p.passed for p in facts.pulls):
+        return Stage.REVIEW, 'merged PR with PASS; live proof pending'
+    if any(p.state == 'MERGED' for p in facts.pulls):
+        return Stage.REVIEW, 'merged PR missing PASS on current head'
+    if facts.alive:
+        return Stage.IN_PROGRESS, _worker_reason(board)
+    if here == Stage.VERIFICATION and not facts.verification:
+        return Stage.BACKLOG, 'not a verification ticket'
+    if here == Stage.VERIFICATION:
+        return None, 'verification backlog; kept'
+    if here == Stage.BACKLOG and facts.verification and Stage.VERIFICATION in stage_column_map(board):
+        return Stage.VERIFICATION, 'verification ticket'
+    if facts.age < GRACE_SECONDS:
+        return None, 'touched within 2h'
+    if here in board.idle_demotion:
+        return Stage.BACKLOG, ('idle In Progress; no live worker or open PR' if product_board(board)
+                               else 'no live worker and no PR')
+    if board.demote_all_idle:
+        return Stage.BACKLOG, 'no live worker and no PR'
+    return None, 'no live worker or open PR; kept'
+
+
+def resolve_column(stage, board, names):
+    targets = stage_column_map(board)
+    if stage == Stage.CHECKS and Stage.CHECKS not in targets:
+        stage = Stage.REVIEW
+    if stage == Stage.IN_PROGRESS:
+        return names.get('Doing', targets[Stage.IN_PROGRESS])
+    if stage == Stage.REVIEW:
+        return names.get('AI Review', targets[Stage.REVIEW])
+    return targets[stage]
+
+
+def column_stage_of(board, column):
+    if column in board.protected or column.startswith('Flag:'):
+        return Stage.PROTECTED
+    stage = column_stage_map(board).get(column)
+    return stage if stage is not None else Stage.UNMANAGED
 
 
 def stage_names(column=None, sections=()):
@@ -154,7 +238,7 @@ def read_sections(board=DEFAULT):
 
 
 def product_board(board):
-    """Board 15 runs the product's own rules and workers; every other board uses 2060's."""
+    """Board 15 runs the product's own workers; every other board uses fleet leases."""
     return board.id == 15
 
 
@@ -171,20 +255,32 @@ def session_bus(env=None):
     return env
 
 
-def board_rules(managed, protected):
-    """2060's rule table with one board's own column sets in place of its two globals."""
-    return ((lambda f: f.column in protected, None, 'protected column'),
-            (lambda f: f.column not in managed, None, 'unknown column; kept')) + RULES[2:]
+def dynamic_stage_maps(columns, names):
+    """Map a board's real columns onto the factory stage model."""
+    stage_column = dict(FACTORY_STAGE_COLUMN)
+    column_stage = dict(FACTORY_COLUMN_STAGE)
+    if names['Doing'] != 'Doing':
+        stage_column[Stage.IN_PROGRESS] = names['Doing']
+        column_stage[names['Doing']] = Stage.IN_PROGRESS
+    if names['AI Review'] != 'AI Review':
+        stage_column[Stage.REVIEW] = names['AI Review']
+        column_stage[names['AI Review']] = Stage.REVIEW
+    if 'Checks' not in columns:
+        stage_column.pop(Stage.CHECKS, None)
+        column_stage.pop('Checks', None)
+    if VERIFICATION_BACKLOG not in columns:
+        stage_column.pop(Stage.VERIFICATION, None)
+        column_stage.pop(VERIFICATION_BACKLOG, None)
+    return stage_column, column_stage
 
 
 # Read once per run, so the same board object keys the process scan and its lease.
 @lru_cache(maxsize=None)
 def board_config(board_id):
-    """Any board a project names: its own prefix and columns, 2060's safe rules.
+    """Any board a project names: its own prefix and columns, the one stage model.
 
-    Only columns carrying a 2060 stage name can be moved between; every other
-    column is protected, and a rule pointing at a column this board lacks keeps
-    its ticket instead of inventing one.
+    Only columns carrying a known stage can be moved between; every other
+    column is protected, and a target stage this board lacks keeps its ticket.
     """
     if board_id in BOARDS:
         return BOARDS[board_id]
@@ -198,19 +294,27 @@ def board_config(board_id):
     managed = columns & frozenset({'Todo', 'Checks', VERIFICATION_BACKLOG,
                                    names['Doing'], names['AI Review']})
     protected = columns - managed
-    return BoardConfig(board_id, prefix, managed, protected, board_rules(managed, protected),
-                       columns=columns)
+    stage_column, column_stage = dynamic_stage_maps(columns, names)
+    return make_board(board_id, prefix, managed, protected, stage_column, column_stage,
+                      columns=columns)
 
 
 def target(facts, board=DEFAULT, names=None):
-    names = names if names is not None else ({} if product_board(board) else
-                                             stage_names(facts.column, board.columns or ()))
-    for matches, column, reason in board.rules:
-        if matches(facts):
-            column = names.get(column, column) or facts.column
-            if board.columns is not None and column not in board.columns:
-                return facts.column, 'target column missing; kept'
-            return column, reason
+    if names is None:
+        names = {} if product_board(board) else stage_names(facts.column, board.columns or ())
+    here = column_stage_of(board, facts.column)
+    if here in (Stage.PROTECTED, Stage.UNMANAGED):
+        reason = 'protected column' if here is Stage.PROTECTED else 'unknown column; kept'
+        return facts.column, reason
+    planned, reason = plan_stage(facts, here, board)
+    if planned is None:
+        return facts.column, reason
+    column = resolve_column(planned, board, names)
+    if board.columns is not None and column not in board.columns:
+        return facts.column, 'target column missing; kept'
+    if column == facts.column:
+        return facts.column, reason
+    return column, reason
 
 
 def stamp(value):
@@ -1042,7 +1146,9 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
     moves = [(task, facts) for task, facts in plans if target(facts, board, names)[0] != task['section']]
     if len(moves) > limit:
         # Moves backed by a live lease or PR go first; moves back to Todo go last.
-        moves.sort(key=lambda m: (target(m[1], board, names)[0] == 'Todo', int(ticket_index(m[0]['ticketNumber'], board))))
+        backlog = stage_column_map(board)[Stage.BACKLOG]
+        moves.sort(key=lambda m: (target(m[1], board, names)[0] == backlog,
+                                  int(ticket_index(m[0]['ticketNumber'], board))))
         for old, facts in moves[limit:]:
             column, reason = target(facts, board, names)
             print(f'DEFERRED {old["ticketNumber"]} {old["section"]} -> {column} | {reason}; over limit={limit}', flush=True)
