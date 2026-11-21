@@ -2,8 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -12,7 +10,7 @@ GUARD = ROOT / 'hooks/pacer-guard.py'
 FIXTURES = ROOT / 'tests/fixtures/valentin-mode'
 LOADED = FIXTURES / 'command.jsonl'
 PLAIN = FIXTURES / 'plain.jsonl'
-PACE_MESSAGE = ('BLOCKED by pacer-guard: Claude is ahead of pace')
+WORKER_MESSAGE = 'BLOCKED by pacer-guard: this chat talks to Valentin, so it hands work to workers'
 
 
 def run(payload=None, env=None):
@@ -31,67 +29,41 @@ def payload(command, transcript=LOADED):
 
 
 class PacerGuardPace(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.pace_file = Path(self.temp.name) / 'pace.json'
-        self.pace_file.write_text(json.dumps({'pace_ratio': 1.21, 'fetched_at': time.time()}))
-        self.env = {'PACER_GUARD_PACE_FILE': str(self.pace_file)}
-
     def test_self_test_runs(self):
-        result = run(env=self.env, payload=None)
         result = subprocess.run([sys.executable, str(GUARD), '--self-test'],
                                 capture_output=True, text=True, cwd=str(ROOT))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('pacer-guard self-test ok', result.stdout)
 
-    def test_ahead_blocks_a_test_run(self):
-        result = run(payload=payload('python3 -m unittest discover -s tests'), env=self.env)
+    def test_valentin_mode_blocks_a_test_run(self):
+        result = run(payload=payload('python3 -m unittest discover -s tests'))
         self.assertEqual(result.returncode, 2)
-        self.assertIn(PACE_MESSAGE, result.stderr)
+        self.assertIn(WORKER_MESSAGE, result.stderr)
 
-    def test_on_pace_allows_a_test_run(self):
-        self.pace_file.write_text(json.dumps({'pace_ratio': 0.9, 'fetched_at': time.time()}))
-        result = run(payload=payload('python3 -m unittest discover -s tests'), env=self.env)
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stderr, '')
-
-    def test_reads_pass_when_ahead(self):
+    def test_reads_pass_in_valentin_mode(self):
         for command in ('git status', 'git log -1', 'cat README.md', 'gh pr view 42'):
             with self.subTest(command=command):
-                result = run(payload=payload(command), env=self.env)
+                result = run(payload=payload(command))
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_plan_pick_passes_when_ahead(self):
+    def test_plan_pick_passes_in_valentin_mode(self):
         for command in ('~/.local/bin/plan-pick --run',
                         'lease SOFT-12 run -- plan-pick --run'):
             with self.subTest(command=command):
-                result = run(payload=payload(command), env=self.env)
+                result = run(payload=payload(command))
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_override_passes_when_ahead(self):
-        env = dict(self.env)
-        env['PACER_GUARD_PACE'] = 'off'
-        result = run(payload=payload('python3 -m unittest discover -s tests'), env=env)
+    def test_override_passes_heavy_bash(self):
+        result = run(payload=payload('python3 -m unittest discover -s tests'),
+                     env={'PACER_GUARD_INLINE': 'off'})
         self.assertEqual(result.returncode, 0)
 
-    def test_unreadable_pace_passes(self):
-        self.pace_file.write_text('not json')
-        broken = Path(self.temp.name) / 'broken'
-        broken.write_text('#!/bin/sh\nexit 1\n')
-        broken.chmod(0o755)
-        env = dict(self.env)
-        env['PLAN_PICK_BIN'] = str(broken)
-        env['TOKEN_LADDER_BIN'] = str(broken)
-        result = run(payload=payload('npm test'), env=env)
+    def test_plain_chat_is_not_worker_gated(self):
+        result = run(payload=payload('python3 -m unittest discover -s tests', transcript=PLAIN))
         self.assertEqual(result.returncode, 0)
 
-    def test_plain_chat_is_not_pace_gated(self):
-        result = run(payload=payload('python3 -m unittest discover -s tests', transcript=PLAIN), env=self.env)
-        self.assertEqual(result.returncode, 0)
-
-    def test_ahead_allows_text_that_mentions_loops_or_tests(self):
-        ahead_cases = [
+    def test_valentin_mode_allows_text_that_mentions_loops_or_tests(self):
+        cases = [
             'grep -n "while true" hooks/x.py',
             'cat > brief.txt <<EOF\nwhile true; do drain; done\nEOF',
             '~/.local/bin/plan-pick --run --brief "while true; do sync; done"',
@@ -100,12 +72,12 @@ class PacerGuardPace(unittest.TestCase):
             "cat > brief.txt <<'EOF'\nrun pytest\nEOF",
             'lease X run -- ~/.local/bin/plan-pick --run',
         ]
-        for command in ahead_cases:
+        for command in cases:
             with self.subTest(command=command):
-                result = run(payload=payload(command), env=self.env)
+                result = run(payload=payload(command))
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_ahead_still_blocks_heavy_commands(self):
+    def test_valentin_mode_blocks_heavy_commands(self):
         blocked = (
             'pytest -q',
             'timeout 600 npm test',
@@ -114,9 +86,9 @@ class PacerGuardPace(unittest.TestCase):
         )
         for command in blocked:
             with self.subTest(command=command):
-                result = run(payload=payload(command), env=self.env)
+                result = run(payload=payload(command))
                 self.assertEqual(result.returncode, 2, command)
-                self.assertIn(PACE_MESSAGE, result.stderr)
+                self.assertIn(WORKER_MESSAGE, result.stderr)
 
 
 if __name__ == '__main__':

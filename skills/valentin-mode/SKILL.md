@@ -41,7 +41,7 @@ If no rules appear under Responsive mode below, load `responsive-mode` before an
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Wire hooks per [setup.md](setup.md). Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option. A chat Valentin talks to always only writes briefs, reads one result line and answers him; code, tests, rebases, logs and PR babysitting go to workers. Pace decides only who runs the work: a Claude subagent only when `~/.local/bin/plan-pick --claude-helper` exits 0; otherwise plan-pick workers.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt. Reviews add `--not-vendor <author vendor>`. Wire hooks per [setup.md](setup.md). Chats Valentin talks to run on Claude; code workers never do. The pstack models rule holds the lanes. Every brief includes docs/worker-brief.md. Never ask him to pay more; bring the free option. A chat Valentin talks to always only writes briefs, reads one result line and answers him; code, tests, rebases, log reading and PR babysitting always go to workers. Pace decides only who runs the work: a Claude subagent only when `~/.local/bin/plan-pick --claude-helper` exits 0; otherwise plan-pick workers.
 
 ### Board work
 

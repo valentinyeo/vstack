@@ -124,6 +124,48 @@ class OverlapTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, proc.stdout)
         self.assertEqual(proc.stderr.strip(), 'pr-overlap: no PR number; pass --pr N')
 
+    def test_open_pr_omitted_from_list_is_loaded_by_number(self):
+        """Reproduces PR 253: list pulls lagged after body PATCH and sync push."""
+        saved_list = self.m.list_open_pulls
+        saved_get = self.m.get_open_pull
+        saved_files = self.m.pull_files
+
+        def list_without_target(owner, repo, token):
+            return [{
+                'number': 10,
+                'created_at': '2026-01-01T00:00:00Z',
+                'title': 'VSTA-1 other',
+                'head': {'ref': 'vsta-1'},
+                'user': {'login': 'valentinyeo'},
+                'state': 'open',
+                'draft': False,
+            }]
+
+        def fetch_target(owner, repo, number, token):
+            return {
+                'number': 253,
+                'created_at': '2026-01-02T00:00:00Z',
+                'title': 'VSTA-100 work',
+                'head': {'ref': 'vsta-100-work'},
+                'user': {'login': 'valentinyeo'},
+                'state': 'open',
+                'draft': False,
+            }
+
+        self.m.list_open_pulls = list_without_target
+        self.m.get_open_pull = fetch_target
+        self.m.pull_files = lambda o, r, n, t: ['README.md']
+        try:
+            this, rows, _guarded = self.m.load_live('valentinyeo/vstack', 253, 'tok', GUARDED)
+        finally:
+            self.m.list_open_pulls = saved_list
+            self.m.get_open_pull = saved_get
+            self.m.pull_files = saved_files
+        self.assertEqual(this['number'], 253)
+        self.assertEqual(this['files'], ['README.md'])
+        numbers = {r['number'] for r in rows}
+        self.assertEqual(numbers, {10, 253})
+
     def test_malformed_pulls_payload_fails_closed(self):
         saved = self.m.api_request
 

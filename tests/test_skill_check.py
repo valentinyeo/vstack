@@ -288,6 +288,15 @@ class RetiredTerms(HomeCase):
         result, report = self.report()
         self.assertEqual(result.returncode, 0, report['findings'])
 
+    def test_orchestrator_board_drain_sentence_is_retired(self):
+        self.retired.write_text('# retired\norchestrator\ncentral watcher\n')
+        self.add_skill('valentin-mode', text=frontmatter(name='valentin-mode', description='d') +
+                       '\norchestrators loop until their board is drained.\n')
+        result, report = self.report()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.kinds(report), ['retired-term'])
+        self.assertIn('orchestrator', report['findings'][0]['detail'].lower())
+
 
 class Budget(HomeCase):
     def test_a_total_under_the_budget_passes(self):

@@ -103,7 +103,7 @@ jobs:
           Check waiting-on-Valentin exclusion and board sync precedence.
           Board 2060 merged work awaits live proof.
           Alias names must preserve that pending stage.
-          These test prose contracts, not an executable orchestrator.
+          These test prose contracts, not a second process that runs the fleet for you.
           Inspect whether instructions actually mandate these decisions.
           Review scoped comments before verification, following pstack no-comments.
           Inspect and exercise the real changed skill or hook as a user.
