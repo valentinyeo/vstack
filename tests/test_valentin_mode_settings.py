@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every hook named in skills/valentin-mode/setup.md (except launch-gate) must be in .claude/settings.json."""
+"""Every per-project hook in setup.md must be in .claude/settings.json (not global-only hooks)."""
 import json
 import re
 import unittest
@@ -17,8 +17,11 @@ def hooks_named_in_setup():
     return re.findall(r'\|\s*`([^`]+\.py)`\s*\|', text)
 
 
+GLOBAL_ONLY = {'launch-gate.py', 'long-chat.py'}
+
+
 def hooks_required_in_settings():
-    return [name for name in hooks_named_in_setup() if name != 'launch-gate.py']
+    return [name for name in hooks_named_in_setup() if name not in GLOBAL_ONLY]
 
 
 def command_strings(settings):

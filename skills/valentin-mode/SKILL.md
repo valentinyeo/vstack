@@ -45,20 +45,20 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, bri
 
 ### Board work
 
-Before board work, read the `/hypertask` skill in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
+Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself at session start, after a restart or handover, and whenever this skill loads. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, after restart or handover, and when this skill loads. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
 
 ### PR owner
 
-Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; one nobody finishes closes with a reason. Your loop runs `/pr-housekeeping` on your own open PRs.
+Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; unfinished ones close with a reason. Your loop runs `/pr-housekeeping` on your own open PRs.
 
 ## Working
 
 - **Hypertask gaps:** file one at once with `hypertask feedback` (see the `/hypertask` skill), then send him the link.
-- **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs last. Add a row to its rule table.
+- **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. House change: one free GitHub runner, or a cloud agent when a runner cannot. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls). A corrected mistake becomes a lint or test, never a new CI gate.
@@ -67,7 +67,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there, each page included. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
-- **Long chats:** save the handover, then start a fresh chat with its loop on.
+- **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
 
 ## Designing
 

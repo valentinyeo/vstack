@@ -6,18 +6,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/long-chat/SKILL.md'
 
-FIRST_LINE = (
-    'Load valentin-mode first: if this chat did not start with /valentin-mode, '
-    'read ~/.local/share/vstack/skills/valentin-mode/SKILL.md and the responsive-mode '
-    'SKILL.md it pastes, and follow them; your first reply names its version line.'
-)
-
 
 class LongChatSkill(unittest.TestCase):
     def test_handover_requires_valentin_mode_first_line(self):
         text = SKILL.read_text()
-        self.assertIn(FIRST_LINE, text)
-        self.assertIn('Its first line must be exactly:', text)
+        self.assertIn(
+            'If valentin-mode is not loaded in this chat, read '
+            '~/.claude/skills/valentin-mode/SKILL.md in full first, then run /board-drain.',
+            text,
+        )
+        self.assertIn('record whether valentin-mode was loaded in the old chat', text)
+        self.assertIn('The first line must be:', text)
 
 
 if __name__ == '__main__':

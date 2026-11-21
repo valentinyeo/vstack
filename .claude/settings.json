@@ -6,34 +6,6 @@
           {
             "type": "command",
             "command": "sh -c 'f=\"$HOME/.claude/hooks/skill-update.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'"
-          },
-          {
-            "type": "command",
-            "command": "sh -c 'f=\"$HOME/.claude/hooks/long-chat.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -c 'f=\"$HOME/.claude/hooks/long-chat.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -c 'f=\"$HOME/.claude/hooks/long-chat.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
-            "timeout": 10
           }
         ]
       }

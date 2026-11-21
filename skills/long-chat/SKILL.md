@@ -16,7 +16,7 @@ Valentin-mode chats must hand off and restart in the same Multibot chat before c
 
 1. **Background work.** Finish or stop tracked background jobs (Agent or Bash `run_in_background`, `/loop`). Anything still running goes in the handover with how to pick it up.
 
-2. **Handover file.** Write `~/.local/state/long-chat/<session_id>.md`. Its first line must be exactly: `Load valentin-mode first: if this chat did not start with /valentin-mode, read ~/.local/share/vstack/skills/valentin-mode/SKILL.md and the responsive-mode SKILL.md it pastes, and follow them; your first reply names its version line.` Then add: goal; tickets (full `https://` URLs); open PRs; running jobs; decisions made; next step; other chats this work talks to. Keep it under about 6000 characters.
+2. **Handover file.** Write `~/.local/state/long-chat/<session_id>.md`. The first line must be: If valentin-mode is not loaded in this chat, read ~/.claude/skills/valentin-mode/SKILL.md in full first, then run /board-drain. Also record whether valentin-mode was loaded in the old chat. Then goal; tickets (full `https://` URLs); open PRs; running jobs; decisions made; next step; other chats this work talks to. Multibot types `/valentin-mode` as the first message after a fresh start when the old chat had it loaded (multiprompt PR 1162). Keep it under about 6000 characters.
 
 3. **Queue fresh start.** Run `mp-fresh --handover <that file>`.
    - Exit **0**: write marker `~/.local/state/long-chat/<session_id>.queued` (empty file is fine), tell the user one line ("Starting fresh in this same chat, handover saved."), end the turn.
