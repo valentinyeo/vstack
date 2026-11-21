@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+"""solo-wake: keep every solo dev draining its board view or whole board (HYCI-211, HYCI-214).
+
+For each solo-dev row (fleet/roster.json plus sessions that announced themselves with fleet/roster-announce): find its
+live session, read its scope, and when the session sits idle while the scope still holds a ticket it may take, send
+one short wake prompt naming that ticket. Never wakes a busy session. At most one wake per session per 30 minutes.
+A missing session is logged for Fleet Tools.
+
+Scope per row: "view" as a scopes.json key or a raw Hypertask view id on "board"; no view means the whole board
+(client solo devs own their board). "take" maps section to 0 (own work in flight) or 1 (queue); default TAKE.
+A row without a login owns its whole board, so unassigned in-flight tickets count as its own.
+
+Sessions come in two shapes:
+- Multibot live chats (roster "tmux" is a live-* id): busy, idle or stopped from the agent host (roster.hosted_chats);
+  the wake goes through mp_send, whose dispatch restarts an agent the host idle-stopped (agent-host HOST_IDLE_SECONDS).
+- Plain tmux Claude sessions (roster "name" is the tmux session): busy or idle from session-list; the wake goes
+  through session-say.
+
+Loop watch (every orchestrator row: chief, lead, solo-dev): the chat's current transcript must show a scheduled or watcher-result turn
+(turnOrigin "scheduled" or native user "task_notification") in the last 45 minutes. A chat's own report is not proof. When
+none shows and the chat is idle or stopped, send one arm-your-loop message (one per 30 minutes); after two unanswered,
+log ESCALATE for Fleet Tools.
+
+Usage: solo-wake [--dry-run] | --self-test
+Log: ~/.local/state/fleet-switch/log.txt. State: ~/.local/state/fleet-switch/solo-wake.json.
+"""
+import json
+import re
+from datetime import datetime
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+HOME = Path.home()
+WATCH = Path(os.environ.get("FLEET_WATCH_STATE", HOME / ".local/state/fleet-switch"))
+STATE = WATCH / "solo-wake.json"
+MP_SEND = HOME / ".local/share/multiprompt-talk/mp_send.py"
+SESSION_LIST = HOME / ".local/bin/session-list"
+SESSION_SAY = HOME / ".local/bin/session-say"
+COOLDOWN = 30 * 60
+QUIET = 15 * 60  # a session that wrote to its transcript this recently is mid-conversation, not stalled
+PRIORITY = {"Urgent": 0, "High": 1, "Medium": 2, "Low": 3}
+TAKE = {"Doing": 0, "AI Review": 0, "Todo": 1}  # own work in flight first, then the queue
+DRY_RUN = "--dry-run" in sys.argv
+LOOP_GAP = 45 * 60  # a 30-minute heartbeat plus the scheduler's jitter
+LOOP_KINDS = ("chief", "lead", "solo-dev")
+LOOP_MESSAGE = ("Your drain loop is not running: this chat shows no scheduled or watcher-result turn in 45 minutes. Arm it now per "
+                "pstack poteto-mode playbooks/autonomous-run.md (state the exit condition as a checkable predicate; watch worker, CI and "
+                "verdict events; /loop or CronCreate as a slow fallback), run one round, fix what it finds, and reply with one line.")
+
+sys.path.insert(0, str(HERE.parent / "skills/hypertask-triage/scripts"))
+sys.path.insert(0, str(HERE))
+import roster  # noqa: E402
+import scopes  # noqa: E402
+
+FROM = roster.OWNER  # the sender label on wake and arm messages: the session that owns fleet alarms
+
+
+def log(msg):
+    line = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + " solo-wake: " + msg
+    print(line)
+    if DRY_RUN:
+        return
+    WATCH.mkdir(parents=True, exist_ok=True)
+    with open(WATCH / "log.txt", "a") as f:
+        f.write(line + "\n")
+
+
+def ht(*args):
+    r = subprocess.run(["hypertask", "--json", *args], capture_output=True, text=True, timeout=600)
+    try:
+        return json.loads(r.stdout[r.stdout.index("{"):])
+    except ValueError:
+        return None
+
+
+def board_tickets(board):
+    tickets, offset = [], 0
+    while True:
+        page = (ht("task", "list", "--project", str(board), "--status", "Normal", "--limit", "100",
+                   "--offset", str(offset)) or {}).get("tasks")
+        if page is None:
+            return None
+        tickets += page
+        if len(page) < 100:
+            return tickets
+        offset += 100
+
+
+def open_blocker(key):
+    """First open ticket this one waits on through a BlockedBy link, or None."""
+    for r in (ht("task", "relations", key) or {}).get("relations") or []:
+        other = r.get("otherTask") or {}
+        if r.get("relationType") != "BlockedBy" or r.get("direction") != "outgoing" or other.get("status") == "Archive":
+            continue
+        got = ((ht("task", "get", other.get("ticketNumber") or "") or {}).get("tasks") or [{}])[0]
+        if not got or (got.get("status") != "Archive" and not got.get("sectionIsDone")
+                       and not (got.get("section") or "").lower().startswith("done")):
+            return other.get("ticketNumber") or "?"
+    return None
+
+
+def candidates(tickets, login, take=TAKE):
+    """Scope tickets the solo dev may take, best first. Pure: the BlockedBy read happens later, one ticket at a time."""
+    me = (login or "").lower()
+    out = []
+    for t in tickets:
+        if t.get("sectionIsDone") or t.get("section") not in take:
+            continue
+        if t.get("waitingOnUserId") or t.get("blockerCommentId"):
+            continue
+        names = {(a.get("displayName") or "").lower() for a in t.get("assignees") or []}
+        if names - {me}:
+            continue  # someone else holds it, or shares it: theirs, not ours
+        if take[t["section"]] == 0 and login and me not in names:
+            continue  # in flight but unassigned on a shared board: another session's leftover, board-health sends it home
+        out.append(t)
+    return sorted(out, key=lambda t: (take[t["section"]], PRIORITY.get(t.get("priority"), 4), t.get("createdAt") or ""))
+
+
+def next_ticket(tickets, login, blocked=open_blocker, take=TAKE):
+    for t in candidates(tickets, login, take):
+        if not blocked(t["ticketNumber"]):
+            return t
+    return None
+
+
+def tmux_transcript(name):
+    sessions = []
+    for path in (HOME / ".claude/sessions").glob("*.json"):
+        try:
+            session = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(session, dict) and isinstance(session.get("tmux"), str) and session["tmux"].split(":")[0] == name:
+            if not isinstance(session.get("sessionId"), str):
+                continue
+            pid = session.get("pid")
+            if type(pid) is not int or pid <= 0:
+                continue
+            try:
+                os.kill(pid, 0)
+            except PermissionError:
+                pass
+            except (ProcessLookupError, OverflowError):
+                continue
+            sessions.append(session)
+    newest = max(sessions, key=lambda s: s.get("updatedAt", 0), default=None)
+    return newest["sessionId"] if newest else None
+
+
+def transcript_age(sid=None, now=None):
+    """Seconds since the session last wrote its transcript; None when no transcript is found."""
+    now = time.time() if now is None else now
+    projects = HOME / ".claude/projects"
+    if sid:
+        files = list(projects.glob(f"*/{sid}.jsonl"))
+    else:
+        files = []
+    return min((now - f.stat().st_mtime for f in files), default=None)
+
+
+def tmux_states():
+    out = subprocess.run([str(SESSION_LIST)], capture_output=True, text=True, timeout=120).stdout
+    rows = {}
+    for line in out.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) == 4:
+            rows[parts[0]] = {"harness": parts[1], "state": parts[2], "cwd": parts[3]}
+    return rows
+
+
+def session_of(row, chats, panes):
+    """Where the row's session lives now: {"via", "key", "state", "age"} or None when it is gone."""
+    pinned = row.get("tmux")
+    if pinned and pinned in chats:
+        c = chats[pinned]
+        return {"via": "live", "key": pinned, "sid": c["sid"], "state": c["state"], "age": transcript_age(sid=c["sid"])}
+    if pinned:
+        return None
+    p = panes.get(row["name"])
+    if p and p["harness"] == "claude":
+        return {"via": "tmux", "key": row["name"], "cwd": p["cwd"], "state": p["state"], "age": transcript_age(sid=tmux_transcript(row["name"]))}
+    named = [c for c in chats.values() if c.get("name") and c["name"].casefold() == (row.get("multibot") or "").casefold()]
+    if len(named) == 1:
+        c = named[0]
+        return {"via": "live", "key": c["tmux"], "sid": c["sid"], "state": c["state"], "age": transcript_age(sid=c["sid"])}
+    return None
+
+
+def last_loop_fire(transcript_sid, tail=3_000_000):
+    """Epoch of the newest scheduled or native watcher-result turn in the chat's current transcript, or None."""
+    newest = None
+    now = time.time()
+    for f in (HOME / ".claude/projects").glob(f"*/{transcript_sid}.jsonl"):
+        with open(f, "rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - tail))
+            lines = fh.read().decode(errors="ignore").splitlines()
+        for line in reversed(lines):
+            try:
+                turn = json.loads(line)
+                origin = turn.get("turnOrigin")
+                if origin != "scheduled" and not (origin == "task_notification" and turn.get("type") == "user"):
+                    continue
+                fired = datetime.fromisoformat(turn["timestamp"].replace("Z", "+00:00")).timestamp()
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            if fired <= now + 60:
+                newest = max(newest or fired, fired)
+    return newest
+
+
+def loop_verdict(session, last_fire, nudges, now):
+    """("ok"|"arm"|"skip"|"escalate", why) for one orchestrator chat. Pure. nudges = [epoch, ...] since the last fire."""
+    if session is None:
+        return "skip", "session not found; Fleet Tools: restart it or fix its roster row"
+    if last_fire and now - last_fire < LOOP_GAP:
+        return "ok", f"loop fired {int((now - last_fire) // 60)} min ago"
+    if len(nudges) >= 2:
+        return "escalate", f"no loop after {len(nudges)} arm messages; Fleet Tools: fix it in the chat"
+    if session["state"] not in ("idle", "stopped"):
+        return "skip", f"no loop, busy ({session['state']}); next run"
+    if nudges and now - nudges[-1] < COOLDOWN:
+        return "skip", f"no loop, asked {int((now - nudges[-1]) // 60)} min ago"
+    return "arm", "no scheduled or watcher-result turn in 45 min"
+
+
+SESSIONS = HOME / ".config/hypertask-agents/credentials/sessions"
+IDENTITY_MESSAGE = ("Your Hypertask board login does not match your Multibot name \"{name}\": no agent token {token}. "
+                    "Run the hypertask skill now for a login named exactly \"{name}\", then use it for every board write.")
+
+
+def identity_gap(name, sessions=SESSIONS, exists=Path.is_file):
+    """None when the chat has a board login named after its Multibot name, else the token file it lacks. Pure but for one stat."""
+    if not name:
+        return "a Multibot name (the tab has none)"
+    token = sessions / (re.sub(r"^-+|-+$", "", re.sub(r"[^a-z0-9]+", "-", name.lower())) + "-agent-token")
+    return None if exists(token) else str(token)
+
+
+def loop_watch(chats, panes, state, now, woken=frozenset()):
+    """At most one message per chat per tick: the loop ask and the identity ask go out together, and a chat solo-wake
+    woke this tick gets nothing more until the next one. Two roster rows that resolve to one chat count once."""
+    seen = set()
+    for row in roster.rows():
+        if row.get("kind") not in LOOP_KINDS:
+            continue
+        if not (row.get("tmux") or row.get("multibot")):
+            log(f"{row['name']} loop: skip, roster row names no chat (no tmux, no multibot); Fleet Tools: fix the row")
+            continue
+        session = session_of(row, chats, panes)
+        if session and session["key"] in seen:
+            log(f"{row['name']} loop: skip, same chat as an earlier row ({session['key']}); Fleet Tools: drop the duplicate row")
+            continue
+        if session:
+            seen.add(session["key"])
+        if session and session["via"] == "live":
+            session["transcript"] = chats[session["key"]].get("transcript") or session["sid"]
+        elif session and session["via"] == "tmux":
+            session["transcript"] = tmux_transcript(session["key"])
+            if session["transcript"] is None:
+                log(f"{row['name']} loop: skip, no live session record for tmux {session['key']}; cannot tell")
+                continue
+        fire = last_loop_fire(session["transcript"]) if session and session.get("transcript") else None
+        key, ikey = "loop:" + row["name"], "identity:" + row["name"]
+        nudges = [] if fire and now - fire < LOOP_GAP else [t for t in state.get(key, []) if not fire or t > fire]
+        state[key] = nudges
+        verdict, why = loop_verdict(session, fire, nudges, now)
+        live = session is not None and session["via"] == "live"
+        name = chats.get(session["key"], {}).get("name") if live else None
+        gap = identity_gap(name) if live else None
+        ask_identity = bool(gap) and bool(name) and session["state"] in ("idle", "stopped") and now - state.get(ikey, 0) >= COOLDOWN
+        log(f"{row['name']} loop: {'would arm' if verdict == 'arm' else verdict}, {why}")
+        if gap:
+            log(f"{row['name']} identity: gap, missing {gap}")
+        parts = ([LOOP_MESSAGE] if verdict == "arm" else []) + \
+                ([IDENTITY_MESSAGE.format(name=name, token=gap)] if ask_identity else [])
+        if not parts or DRY_RUN or session["key"] in woken:
+            continue
+        ok, detail = send(session, " ".join(parts))
+        if ok and verdict == "arm":
+            state[key] = nudges + [now]
+        if ok and ask_identity:
+            state[ikey] = now
+        log(f"{row['name']}: {'sent' if ok else 'send failed'} {len(parts)} ask(s) to {session['key']} ({detail})")
+    if not DRY_RUN:
+        STATE.write_text(json.dumps(state))
+
+
+def decide(row, session, ticket, last_wake, now):
+    """One verdict per solo dev: ("wake", why) or ("skip", why). Pure."""
+    if session is None:
+        return "skip", "session not found; Fleet Tools: restart it or fix its roster row"
+    if session["state"] not in ("idle", "stopped"):
+        return "skip", f"busy ({session['state']})"
+    if session["age"] is not None and session["age"] < QUIET:
+        return "skip", f"idle only {int(session['age'] // 60)} min"
+    if last_wake and now - last_wake < COOLDOWN:
+        return "skip", f"woken {int((now - last_wake) // 60)} min ago"
+    if ticket is None:
+        return "skip", "no open ticket it may take"
+    return "wake", ticket["ticketNumber"]
+
+
+def scope_of(row):
+    """{"board", "view"?, "where"} for a row, or None when it names no usable scope. Pure."""
+    view, board = row.get("view"), str(row.get("board") or "")
+    if view and view in scopes.SCOPES:
+        return dict(scopes.get(view), where=f"view {view}")
+    if not board.isdigit():
+        return None
+    if view:
+        return {"board": int(board), "view": view, "where": f"board {board} view {row.get('view_name') or view}"}
+    return {"board": int(board), "where": f"board {board}"}
+
+
+def message(ticket, scope="view"):
+    return (f"Continue draining your {scope} per /solo-dev: next {ticket['url']} "
+            f"({ticket['ticketNumber']}, {ticket['section']}). Already mid-ticket on a job? Finish that first, then this.")
+
+
+def send(session, text):
+    if session["via"] == "live":
+        cmd = ["python3", str(MP_SEND), "claude", session["sid"], f"From {FROM} (solo-wake): {text}",
+               "--tmux", session["key"], "--wait", "--timeout", "60", "--json"]
+    else:
+        cmd = [str(SESSION_SAY), session["key"], text, "--from", f"{FROM} (solo-wake)"]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())[-200:]
+
+
+def load_state():
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def main():
+    rows = [r for r in roster.rows() if r.get("kind") == "solo-dev" or "solo-dev" in (r.get("roles") or [])]
+    chats, panes, state, now = roster.hosted_chats(), tmux_states(), load_state(), time.time()
+    boards, woken = {}, set()
+    for row in rows:
+        scope = scope_of(row)
+        who = f"{row['name']} ({scope['where']})" if scope else row["name"]
+        if scope is None or (scope.get("view") and not row.get("login")):
+            log(f"{who}: skip, no board, or a view without a login, in its roster row")
+            continue
+        session = session_of(row, chats, panes)
+        verdict, why = decide(row, session, {"ticketNumber": "?"}, state.get(row["name"]), now)
+        if verdict == "skip":
+            log(f"{who}: skip, {why}")
+            continue
+        if scope["board"] not in boards:
+            boards[scope["board"]] = board_tickets(scope["board"])
+        tickets = boards[scope["board"]]
+        if tickets is None:
+            log(f"{who}: skip, board {scope['board']} unreadable")
+            continue
+        labels = scopes.view_labels(scope, ht)
+        ticket = next_ticket([t for t in tickets if scopes.in_view(t, labels)], row.get("login"),
+                             take=row.get("take") or TAKE)
+        verdict, why = decide(row, session, ticket, state.get(row["name"]), now)
+        if verdict == "skip":
+            log(f"{who}: skip, {why}")
+            continue
+        if DRY_RUN:
+            log(f"{who}: would wake {session['key']} with {why}")
+            continue
+        ok, detail = send(session, message(ticket, "view" if scope.get("view") else "board"))
+        if ok:
+            state[row["name"]] = now
+            woken.add(session["key"])
+            STATE.write_text(json.dumps(state))
+        log(f"{who}: {'woke' if ok else 'wake failed for'} {session['key']} with {why} via {session['via']} ({detail})")
+    loop_watch(chats, panes, state, now, woken)
+
+
+def self_test():
+    tk = lambda n, sec, *who, prio="Medium", **kw: dict({"ticketNumber": n, "section": sec, "priority": prio,
+                                                         "assignees": [{"displayName": w} for w in who],
+                                                         "url": f"https://app.hypertask.ai/detail/project-2060/{n}"}, **kw)
+    me = "Multi Bot Opus Lead"
+    view = [tk("A", "Todo", prio="Low"), tk("B", "Todo", prio="High"), tk("C", "Todo", "Runner 7", prio="Urgent"),
+            tk("D", "Valentin Review", me), tk("E", "Todo", prio="Urgent", waitingOnUserId=4),
+            tk("F", "Todo", prio="Urgent", blockerCommentId=9), tk("G", "Doing", "Runner 2"),
+            tk("H", "Doing"), tk("I", "Done", me, sectionIsDone=True)]
+    assert [t["ticketNumber"] for t in candidates(view, me)] == ["B", "A"], "queue order or skips wrong"
+    view.append(tk("J", "Doing", me, prio="Low"))
+    assert next_ticket(view, me, blocked=lambda k: False)["ticketNumber"] == "J", "own work in flight must come first"
+    assert next_ticket(view, me, blocked=lambda k: k == "J")["ticketNumber"] == "B", "BlockedBy ticket must be skipped"
+    assert next_ticket([tk("C", "Todo", "Runner 7")], me, blocked=lambda k: False) is None, "runner's ticket taken"
+    idle = {"via": "live", "key": "live-1", "sid": "s", "state": "idle", "age": 3600}
+    t, now = {"ticketNumber": "B"}, 10_000
+    assert decide({}, idle, t, None, now) == ("wake", "B"), "idle with open work must wake"
+    assert decide({}, dict(idle, state="busy"), t, None, now)[0] == "skip", "never wake a busy session"
+    assert decide({}, dict(idle, age=60), t, None, now)[0] == "skip", "a session that just spoke is not stalled"
+    assert decide({}, idle, t, now - 29 * 60, now)[0] == "skip", "at most one wake per 30 min"
+    assert decide({}, idle, t, now - 31 * 60, now) == ("wake", "B"), "cooldown must end after 30 min"
+    assert decide({}, idle, None, None, now)[0] == "skip", "nothing to take, nothing to say"
+    assert "Fleet Tools" in decide({}, None, t, None, now)[1], "dead session must be logged for Fleet Tools"
+    chats = {"live-308b1fc": {"tmux": "live-308b1fc", "sid": "x", "state": "idle", "name": "IGSH-1865 Talk Builder"}}
+    row = {"name": "Multi Bot Opus Runner", "multibot": "Multi Bot Opus Runner", "tmux": "live-308b1fc"}
+    assert session_of(row, chats, {})["key"] == "live-308b1fc", "pinned live chat must resolve despite a renamed tab"
+    assert session_of(dict(row, tmux="live-gone"), chats, {}) is None, "a gone pinned chat must not fall back to a guess"
+    assert session_of({"name": "postbox"}, {}, {"postbox": {"harness": "claude", "state": "idle", "cwd": "/nowhere"}})["via"] == "tmux"
+    assert session_of({"name": "postbox"}, {}, {"postbox": {"harness": "bash", "state": "?", "cwd": "/"}}) is None, \
+        "a shell where Claude died is a dead session"
+    assert "1897" in message(tk("IGSH-1897", "Todo")) and "/solo-dev" in message(tk("X", "Todo"))
+    assert "your board" in message(tk("X", "Todo"), "board")
+    client = {"In Progress": 0, "Backlog": 1}
+    board = [tk("M1", "Backlog", prio="Urgent"), tk("M2", "In Progress", prio="Low"), tk("M3", "Waiting on Matt"),
+             tk("M4", "Valentin Review"), tk("M5", "In Progress", "Valentin Yeo")]
+    assert [t["ticketNumber"] for t in candidates(board, None, client)] == ["M2", "M1"], \
+        "no-login client board: unassigned in-flight is its own, waiting and review columns never, others' never"
+    assert candidates(board, None) == [], "a client board must not fall back to the 2060 columns"
+    assert decide({}, dict(idle, state="stopped"), t, None, now) == ("wake", "B"), "an idle-stopped chat must be woken"
+    assert scope_of({"board": "12322", "view": None}) == {"board": 12322, "where": "board 12322"}, "no view: whole board"
+    assert scope_of({"board": "15", "view": "e6753c48", "view_name": "Design pass"})["view"] == "e6753c48"
+    assert scope_of({"board": "2060", "view": "2060/postbox"})["where"] == "view 2060/postbox"
+    assert scope_of({"board": None, "view": None}) is None, "no board, no scope"
+    live = {"via": "live", "key": "live-1", "sid": "s", "state": "idle", "age": 3600}
+    assert loop_verdict(live, now - 10 * 60, [], now)[0] == "ok", "a loop that fired 10 min ago is healthy"
+    assert loop_verdict(live, None, [], now)[0] == "arm", "a chat that never looped must be asked to arm (Pecunia, 16 Nov)"
+    assert loop_verdict(live, now - 50 * 60, [], now)[0] == "arm", "a loop silent for 50 min is dead"
+    assert loop_verdict(dict(live, state="busy"), None, [], now)[0] == "skip", "never interrupt a busy chat"
+    assert loop_verdict(live, None, [now - 10 * 60], now)[0] == "skip", "one arm message per 30 min"
+    assert loop_verdict(live, None, [now - 90 * 60, now - 40 * 60], now)[0] == "escalate", "two ignored asks escalate"
+    assert loop_verdict(None, None, [], now)[0] == "skip"
+    assert "Fleet Tools" in loop_verdict(live, None, [now - 90 * 60, now - 40 * 60], now)[1], "escalation names the live owner"
+    assert "Fleet Tools" in loop_verdict(None, None, [], now)[1] and FROM == "Fleet Tools", "alarm and sender name the live owner"
+    assert "autonomous-run" in LOOP_MESSAGE and "valentin-mode" not in LOOP_MESSAGE and "/loop" in LOOP_MESSAGE
+    have = {SESSIONS / "ht-product-lead-agent-token"}
+    assert identity_gap("HT Product Lead", exists=lambda t: t in have) is None, "a login named after the Multibot name is in sync"
+    assert identity_gap("Matt Live Stream", exists=lambda t: t in have), "a chat without its own login must be told (16 Nov audit)"
+    assert identity_gap(None), "a tab with no name has no identity"
+    from tempfile import TemporaryDirectory
+    from unittest.mock import Mock, patch
+
+    with TemporaryDirectory() as home:
+        project = Path(home) / ".claude/projects/-tmp-loop-watch-project"
+        project.mkdir(parents=True)
+        older, newest = project / "older.jsonl", project / "newest.jsonl"
+        older.write_text(json.dumps({"turnOrigin": "scheduled",
+                                     "timestamp": datetime.fromtimestamp(now - 600).astimezone().isoformat()},
+                                    separators=(",", ":")) + "\n")
+        newest.write_text("{}\n")
+        sessions = Path(home) / ".claude/sessions"
+        sessions.mkdir()
+        session = sessions / "1.json"
+        session.write_text(json.dumps({"tmux": "postbox:@1.%1", "sessionId": "older", "pid": os.getpid(), "updatedAt": now}))
+        dead_session = sessions / "2.json"
+        dead_session.write_text(json.dumps({"tmux": "postbox:@1.%1", "sessionId": "newest", "pid": 2**22 + 12345,
+                                            "updatedAt": now + 1}))
+        os.utime(older, (now - 60, now - 60))
+        os.utime(newest, (now, now))
+        logs = []
+        panes = {"postbox": {"harness": "claude", "state": "idle", "cwd": "/tmp/loop.watch/project"}}
+        with patch.dict(globals(), HOME=Path(home), DRY_RUN=True, log=logs.append), \
+                patch.object(roster, "rows", return_value=[{"name": "postbox", "kind": "solo-dev", "multibot": "Postbox"}]):
+            loop_watch({}, panes, {}, now)
+            assert "postbox loop: ok, loop fired 10 min ago" in logs, f"recent tmux scheduled turn must count as a fire: {logs}"
+            dead_session.unlink()
+            missing_session = sessions / "3.json"
+            missing_session.write_text(json.dumps({"tmux": "postbox:@1.%1", "pid": os.getpid(), "updatedAt": now + 2}))
+            logs.clear()
+            loop_watch({}, panes, {}, now)
+            assert "postbox loop: ok, loop fired 10 min ago" in logs, f"missing sessionId must be skipped: {logs}"
+            missing_session.unlink()
+            session.unlink()
+            newest.write_text(older.read_text())
+            (sessions / "other.json").write_text(json.dumps({"tmux": "other:@1.%1", "sessionId": "newest",
+                                                           "pid": os.getpid(), "updatedAt": now + 3}))
+            panes["other"] = dict(panes["postbox"])
+            logs.clear()
+            state = {"loop:postbox": [now - 1200]}
+            sent = Mock()
+            with patch.dict(globals(), DRY_RUN=False, STATE=Path(home) / "state.json", send=sent):
+                loop_watch({}, panes, state, now)
+                sent.assert_not_called()
+            assert logs == ["postbox loop: skip, no live session record for tmux postbox; cannot tell"], logs
+            assert state == {"loop:postbox": [now - 1200]}, "unknown transcript must leave nudges unchanged"
+    print("solo-wake self-test ok")
+
+
+if __name__ == "__main__":
+    self_test() if "--self-test" in sys.argv else main()
