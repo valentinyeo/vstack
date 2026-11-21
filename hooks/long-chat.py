@@ -164,12 +164,48 @@ def pid_alive(pid):
     return True
 
 
+def _tmux_needles(tab):
+    quoted = json.dumps(tab)
+    return (f'"tmux": {quoted}'.encode(), f'"tmux":{quoted}'.encode())
+
+
+def _pid_from_state(path):
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get('pid') is not None:
+        return data.get('pid')
+    return data.get('agent_pid')
+
+
 def host_pid_for_tab(home, tab):
     root = agent_host_dir(home)
     if not tab or not root.is_dir():
         return None
-    quoted = json.dumps(tab)
-    needles = (f'"tmux": {quoted}'.encode(), f'"tmux":{quoted}'.encode())
+    needles = _tmux_needles(tab)
+    for path in root.glob('*.config.json'):
+        try:
+            head = path.read_bytes()[:4096]
+        except OSError:
+            continue
+        if not any(n in head for n in needles):
+            continue
+        try:
+            cfg = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(cfg, dict) or cfg.get('tmux') != tab:
+            continue
+        base = path.name[: -len('.config.json')]
+        if not base:
+            return None
+        state_path = path.parent / f'{base}.state.json'
+        if not state_path.is_file():
+            return None
+        return _pid_from_state(state_path)
     for path in root.glob('*.state.json'):
         try:
             head = path.read_bytes()[:8192]
@@ -183,9 +219,11 @@ def host_pid_for_tab(home, tab):
             return None
         if not isinstance(data, dict) or data.get('tmux') != tab:
             continue
-        if 'pid' not in data:
-            return None
-        return data.get('pid')
+        if data.get('pid') is not None:
+            return data.get('pid')
+        if data.get('agent_pid') is not None:
+            return data.get('agent_pid')
+        return None
     return None
 
 
@@ -438,6 +476,16 @@ def self_test():
         host_dir.mkdir(parents=True)
         (host_dir / 'live-test.state.json').write_text(json.dumps({
             'tmux': 'live-test', 'pid': os.getpid()}))
+
+        cfg_host = agent_host_dir(home)
+        (cfg_host / 'pinned.config.json').write_text(json.dumps({
+            'tmux': 'live-cfg', 'sid': 'sid-cfg', 'provider': 'claude'}))
+        (cfg_host / 'pinned.state.json').write_text(json.dumps({
+            'sid': 'sid-cfg', 'provider': 'claude', 'pid': os.getpid()}))
+        env_cfg = {**env_host, 'MULTIPROMPT_TAB': 'live-cfg'}
+        stop_cfg = {**stop_hard, 'session_id': 'sess-cfg'}
+        assert hook(stop_cfg, env_cfg).get('decision') == 'block', (
+            'config.json tmux + state pid -> block')
 
         blocked = hook(stop_hard, env_host)
         assert blocked.get('decision') == 'block', 'hard + live host -> block'
