@@ -27,7 +27,7 @@ Nobody pushes to main.
 | Lane hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
-| vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `tests/test_pr_queue.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
+| vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `scripts/pacer-check.py` (`Owner chat:`), `tests/test_pr_queue.py`, `tests/test_pacer_enforce.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
 | A PR never collides with an older open PR on a guarded file or ticket | `scripts/pr-overlap`, `.github/workflows/pr-overlap.yml`, `tests/test_pr_overlap.py` |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Worker tasks can run on vendor cloud agents | `skills/cloud-agent/cloud-agent`, `tests/test_cloud_agent.py` |
