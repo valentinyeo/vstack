@@ -968,5 +968,35 @@
       "detail": "tmp-cleanup runs from its Sunday 03:30 timer and again from crontab Sunday 04:45. Until the crontab was read this looked like one run",
       "route": "board 2060 ticket, label Poteto"
     }
-  ]
+  ],
+  "session_retirement_2026_11_21": {
+    "owner_order": "No central scripts may stop, restart or kill chat sessions on this VPS; each chat looks after itself.",
+    "archive": "~/.local/state/retired-housekeeping/2026-11-21",
+    "disabled": [
+      {
+        "name": "proc-watchdog.timer",
+        "action": "disable --now (was already disabled)",
+        "kill_line": "proc-watchdog.py ~335"
+      },
+      {
+        "name": "heavy-guard.service",
+        "action": "disable --now; removed default.target.wants",
+        "kill_line": "heavy-guard.py:177"
+      },
+      {
+        "name": "agent-provider-reaper.service",
+        "action": "archived; static unit left inactive",
+        "kill_line": "agent-provider-reaper:76-79"
+      },
+      {
+        "name": "mb-watch.timer",
+        "action": "removed broken timers.target.wants symlink",
+        "kill_line": "mb-watch:33"
+      }
+    ],
+    "multibot_service_restart": {
+      "path": "~/.multiprompt-runtime/reader.py",
+      "lines": ["6237-6427", "6369-6376", "3950-3951", "2234-2267"]
+    }
+  }
 }
