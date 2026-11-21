@@ -20,7 +20,7 @@ Valentin-mode chats must hand off and restart in the same Multibot chat before c
 
 3. **Queue fresh start.** Run `mp-fresh --handover <that file>`.
    - Exit **0**: write marker `~/.local/state/long-chat/<session_id>.queued` (empty file is fine), tell the user one line ("Starting fresh in this same chat, handover saved."), end the turn.
-   - Exit **3** or command missing: tell the user once this chat is outside Multibot and keep working (warn only).
+   - Exit **3** (not under an agent host), command missing, or any other failure except **4**: write marker `~/.local/state/long-chat/<session_id>.nohost` (empty file is fine), tell the user once this chat is outside Multibot and keep working (warn only).
    - Exit **4**: write marker `~/.local/state/long-chat/<session_id>.queued`, end the turn (already queued).
 
 4. **Never** type `/clear` or ask the user to.
