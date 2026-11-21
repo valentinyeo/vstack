@@ -269,6 +269,8 @@ sys.exit(1)
 GH_STUB = '''
 import sys
 if sys.argv[1:3] == ['pr', 'create']:
+    body = sys.argv[sys.argv.index('--body') + 1]
+    assert '\\nOwner chat: PR Housekeeping\\n' in body, body
     print('https://github.com/valentinyeo/example/pull/7')
     sys.exit(0)
 print('gh stub: unexpected ' + ' '.join(sys.argv[1:]), file=sys.stderr)
@@ -301,7 +303,8 @@ class CodexPullRequestTests(unittest.TestCase):
             try:
                 row = self.m.codex_pull_request(
                     repo, 'valentinyeo/example', 'task_e_test',
-                    'https://chatgpt.com/codex/tasks/task_e_test', 'Add the thing.\n')
+                    'https://chatgpt.com/codex/tasks/task_e_test',
+                    'Add the thing.\n' + 'More detail.\n' * 150 + 'Owner chat: PR Housekeeping\n')
             finally:
                 self.m.BIN_DIRS = saved
             self.assertEqual(row['status'], 'done', row)
@@ -315,6 +318,17 @@ class CodexPullRequestTests(unittest.TestCase):
             self.assertNotEqual(log.returncode, 0, 'the codex debug log never reaches the branch')
             trees = [line for line in git(repo, 'worktree', 'list').stdout.splitlines() if line.strip()]
             self.assertEqual(len(trees), 1, 'the temporary worktree is removed')
+
+
+    def test_missing_owner_fails_before_git_changes(self):
+        for brief in ('Add the thing.\n', 'Owner chat:   \n'):
+            with self.subTest(brief=brief), patch.object(self.m, 'git') as git_call:
+                row = self.m.codex_pull_request(
+                    '/unused', 'valentinyeo/example', 'task_e_test',
+                    'https://chatgpt.com/codex/tasks/task_e_test', brief)
+            self.assertEqual(row['status'], 'failed', row)
+            self.assertIn('Owner chat:', row['error'])
+            git_call.assert_not_called()
 
 
 class PreflightTests(unittest.TestCase):
