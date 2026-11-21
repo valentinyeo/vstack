@@ -102,6 +102,57 @@ One row per item. Paths abbreviate `/home/valentin` as `~`.
 
 ---
 
+## 2026-11-21 session-kill retirement (owner order)
+
+Measured on this host 2026-11-21 ~11:45 CET. Rule: no central script may stop, restart, kill or refresh Claude, Codex or Multibot chat sessions or their tmux panes. Each chat looks after itself. Incident 3010 is out of scope here.
+
+Archive on the host: `~/.local/state/retired-housekeeping/2026-11-21/` (units, scripts, README with re-enable commands). Nothing was deleted from install paths.
+
+### Disabled (central)
+
+| Name | What it did to chats | Kill/restart line | Action |
+|---|---|---|---|
+| `proc-watchdog.timer` + `proc-watchdog.py` | SIGTERM/SIGKILL on test/build trees; code excludes claude/tmux (`NEVER` set line 56) but is still a central killer | `proc-watchdog.py` sweep kill path ~335 | Was already `disabled`; confirmed; archived |
+| `heavy-guard.service` + `heavy-guard` | Always-on SIGKILL on heavy local build/test trees every 5s | `heavy-guard` line 177 `os.kill(p, signal.SIGKILL)` | `systemctl --user disable --now`; removed `default.target.wants` symlink; archived |
+| `agent-provider-reaper.service` + script | Kills orphan `claude`/`codex`/`hax`/`node` with ppid 1 in agent state dirs | `agent-provider-reaper` lines 76–79 `os.killpg`/`os.kill` | No timer; service static; archived copy; left inactive |
+| `mb-watch` + broken `mb-watch.timer` | `tmux respawn-pane -k` on idle `multibot-runner-*` when brain tag needs relaunch | `mb-watch` line 33 | Removed dead `timers.target.wants/mb-watch.timer` symlink (unit file missing); archived script |
+
+### Kept (checked, no central chat kill)
+
+| Name | Why kept |
+|---|---|
+| `session-flush.timer` | Delivers queued `session-say` notes when idle; no kill (`session-flush` uses `mail_deliver` only) |
+| `multibot-watchdog-day.timer` | Read-only Cloudflare crash observation (`observe.py`); no kill |
+| `factory-cleanup.timer` | Deletes idle scratch dirs/worktrees; skips live UUID sessions via `lsof`/`pgrep` |
+| `worktree-reaper.service` | No timer; removes git worktrees only |
+| `mp-agent-sync.timer` | Renames Hypertask agents to match chat titles; no kill |
+| `tmux-pane-mem.service` | RSS readout for status bar only |
+| `box-update.timer` | apt/npm tool updates; `NEEDRESTART_MODE=l`; never auto-reboot (lines 214–219); may skip codex when busy |
+| `plugins-update.timer` / `pstack-update.timer` | Plugin/marketplace sync; no session stop |
+| `ht-supervisor.service` | Board supervision (`cli.py`); `bug_drain.py` restarts `drain:*` tmux factory windows only (line 760), not Multibot chats; no enabled timer |
+| `factory-supervisor-hypertask` / `factory-recovery-hypertask` | Factory ticket supervision/recover; no chat tmux |
+| `unblocker.service` / `solo-nudge` | Opus unblocker and SF nudge via `tmux send-keys`; no timer enabled |
+| `fleet-watch` / `agent-fleet-watch` | Timers in `retired-picker/` only; live `fleet-watch` drop-in exists but unit not in `timers.target.wants` |
+| `fleet-switch` / `fleet-watchdog` / `wazig-fleet-guard` | Restart factory worker units or `ht-or-runner-*` tmux (lines 146–147 in `fleet-switch`); not scheduled for Multibot chats |
+| Cron `orphan-reaper`, `reap-orphan-devservers`, `qa-browser-reaper` | Kill headless browsers / dev servers; `reap-orphan-devservers` explicitly skips trees with claude cwd; not chat-pane killers (retire with vps-tidy migration, not today) |
+
+### Not scheduled centrally (document only)
+
+| Name | Risk | Line |
+|---|---|---|
+| `~/.local/bin/mp-watch` | `tmux kill-session` then `new-session` when relaunching MP runners | line 114 |
+| `~/.local/bin/mb-watch` | `tmux respawn-pane -k` on multibot runners | line 33 |
+
+### Inside Multibot service (not changed)
+
+| Location | Behaviour | Line |
+|---|---|---|
+| `~/.multiprompt-runtime/reader.py` | Nightly idle rotate: `host_nightly_due` then `host_rotate` stops agent and `os.execv` new reader (`HOST_NIGHTLY_HOUR = 4`) | 6237–6427, 6369–6376, 2778 |
+| same | `restart_ai_response` sends `claude --resume` into idle shell panes | 2234–2267 |
+| same | `host_agent_stop` → `agent.kill()` on timeout | 3950–3951 |
+
+---
+
 ## 2026-11-20 incident: a python test tree is invisible to proc-watchdog
 
 Four `python3 -m unittest discover -s scripts` runs took 10 to 15 hours each. `proc-watchdog` never stopped one. Lines 45-53 of `proc-watchdog.py` match `node`, `bun`, `vitest`, `jest`, `playwright`, `next` and `vite` only, so a python test tree matches nothing and runs until it finishes or the box gives out.
