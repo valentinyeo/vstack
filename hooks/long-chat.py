@@ -12,6 +12,7 @@ long-chat.py --self-test
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -64,14 +65,26 @@ def token_threshold(window, fraction, cap, env, cap_key, default_cap):
     return min(int(fraction * window), cap_tokens)
 
 
-def window_tokens(model, env):
+_CLAUDE_5_1M = re.compile(r'claude-(opus|sonnet|fable)-5', re.IGNORECASE)
+_BARE_1M = frozenset({'opus', 'sonnet', 'fable'})
+
+
+def window_tokens(model, env, size=None):
     override = env.get('LONG_CHAT_WINDOW')
     if override:
         try:
             return int(override)
         except ValueError:
             return WINDOW_1M
-    if model and '[1m]' in model:
+    if model:
+        low = model.lower()
+        if 'haiku' in low:
+            return DEFAULT_WINDOW
+        if '[1m]' in model or _CLAUDE_5_1M.search(model):
+            return WINDOW_1M
+        if low.strip() in _BARE_1M:
+            return WINDOW_1M
+    if size is not None and size > DEFAULT_WINDOW:
         return WINDOW_1M
     return DEFAULT_WINDOW
 
@@ -354,7 +367,7 @@ def user_prompt(payload, env):
     size, model = last_context(payload.get('transcript_path'))
     if size is None:
         return {}
-    window = window_tokens(model, env)
+    window = window_tokens(model, env, size)
     soft_frac = float_env(env, 'LONG_CHAT_SOFT', DEFAULT_SOFT)
     hard_frac = float_env(env, 'LONG_CHAT_HARD', DEFAULT_HARD)
     soft_tokens = token_threshold(
@@ -387,7 +400,7 @@ def stop_or_precompact(payload, env, event_name):
     size, model = last_context(payload.get('transcript_path'))
     if size is None:
         return {}
-    window = window_tokens(model, env)
+    window = window_tokens(model, env, size)
     hard_frac = float_env(env, 'LONG_CHAT_HARD', DEFAULT_HARD)
     hard_tokens = token_threshold(
         window, hard_frac, HARD_CAP, env, 'LONG_CHAT_HARD_TOKENS', HARD_CAP)
@@ -563,6 +576,49 @@ def self_test():
             'hook_event_name': 'Stop', 'session_id': sid_hard_1m,
             'transcript_path': hard_1m, 'stop_hook_active': False}
         assert hook(stop_hard_1m, env_1m_host).get('decision') == 'block', '1m 410k -> block'
+
+        opus_150k = write_transcript(
+            place, 'opus_150k.jsonl',
+            {'input_tokens': 150000, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0},
+            model='claude-opus-5-5')
+        opus_410k = write_transcript(
+            place, 'opus_410k.jsonl',
+            {'input_tokens': 410000, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0},
+            model='claude-opus-5-5')
+        unknown_230k = write_transcript(
+            place, 'unknown_230k.jsonl',
+            {'input_tokens': 230000, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0},
+            model='vendor-unknown')
+        haiku_150k = write_transcript(
+            place, 'haiku_150k.jsonl',
+            {'input_tokens': 150000, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0},
+            model='claude-haiku-5-5')
+        env_plain = {'HOME': str(home), 'MULTIPROMPT_TAB': 'live-window-test',
+                     'PATH': f'{bin_dir}:{env.get("PATH", "")}'}
+        (host_dir / 'live-window-test.state.json').write_text(json.dumps({
+            'tmux': 'live-window-test', 'pid': os.getpid()}))
+        stop_opus_low = {
+            'hook_event_name': 'Stop', 'session_id': 'sess-opus-low',
+            'transcript_path': opus_150k, 'stop_hook_active': False}
+        assert hook(stop_opus_low, env_plain) == {}, 'opus 5.5 at 150k -> no block'
+        stop_opus_high = {
+            'hook_event_name': 'Stop', 'session_id': 'sess-opus-high',
+            'transcript_path': opus_410k, 'stop_hook_active': False}
+        assert hook(stop_opus_high, env_plain).get('decision') == 'block', (
+            'opus 5.5 at 410k -> block')
+        stop_unknown = {
+            'hook_event_name': 'Stop', 'session_id': 'sess-unknown',
+            'transcript_path': unknown_230k, 'stop_hook_active': False}
+        assert hook(stop_unknown, env_plain) == {}, 'unknown at 230k -> 1M, no block'
+        stop_haiku = {
+            'hook_event_name': 'Stop', 'session_id': 'sess-haiku',
+            'transcript_path': haiku_150k, 'stop_hook_active': False}
+        assert hook(stop_haiku, env_plain).get('decision') == 'block', (
+            'haiku 5.5 at 150k -> block')
 
     print('long-chat self-test ok')
 
