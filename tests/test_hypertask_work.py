@@ -2260,6 +2260,7 @@ class CallBudgetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
                 patch.object(sys, 'argv', ['reconcile', '--apply']), \
+                patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto'}), \
                 patch.object(r, 'probe_budget', side_effect=r.BudgetRefused('gh budget: over limit')), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
