@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 DEFAULT_WINDOW = 200_000
@@ -24,6 +25,7 @@ DEFAULT_HARD = 0.70
 SOFT_CAP = 300_000
 HARD_CAP = 400_000
 MAX_BLOCKS = 3
+NOHOST_TTL = 30 * 60
 SKILL = '~/.claude/skills/long-chat/SKILL.md'
 READ_CHUNK = 1 << 20
 MAX_TAIL_LINES = 4000
@@ -144,6 +146,117 @@ def multibot_host(env):
     return bool(shutil.which('mp-fresh', path=path))
 
 
+def agent_host_dir(home):
+    return Path(home) / '.local/state/multiprompt/agent-host'
+
+
+def pid_alive(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _tmux_needles(tab):
+    quoted = json.dumps(tab)
+    return (f'"tmux": {quoted}'.encode(), f'"tmux":{quoted}'.encode())
+
+
+def _pid_from_state(path):
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get('pid') is not None:
+        return data.get('pid')
+    return data.get('agent_pid')
+
+
+def host_pid_for_tab(home, tab):
+    root = agent_host_dir(home)
+    if not tab or not root.is_dir():
+        return None
+    needles = _tmux_needles(tab)
+    for path in root.glob('*.config.json'):
+        try:
+            head = path.read_bytes()[:4096]
+        except OSError:
+            continue
+        if not any(n in head for n in needles):
+            continue
+        try:
+            cfg = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(cfg, dict) or cfg.get('tmux') != tab:
+            continue
+        base = path.name[: -len('.config.json')]
+        if not base:
+            return None
+        state_path = path.parent / f'{base}.state.json'
+        if not state_path.is_file():
+            return None
+        return _pid_from_state(state_path)
+    for path in root.glob('*.state.json'):
+        try:
+            head = path.read_bytes()[:8192]
+        except OSError:
+            continue
+        if not any(n in head for n in needles):
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or data.get('tmux') != tab:
+            continue
+        if data.get('pid') is not None:
+            return data.get('pid')
+        if data.get('agent_pid') is not None:
+            return data.get('agent_pid')
+        return None
+    return None
+
+
+def agent_host_live(home, env):
+    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
+    if not tab:
+        return False
+    pid = host_pid_for_tab(home, tab)
+    if pid is None:
+        return False
+    return pid_alive(pid)
+
+
+def nohost_warn(home, session_id, now=None):
+    path = state_dir(home) / f'{session_id}.nohost'
+    try:
+        age = (now if now is not None else time.time()) - path.stat().st_mtime
+    except OSError:
+        return False
+    return age < NOHOST_TTL
+
+
+def handoff_enforced(home, session_id, env, now=None):
+    """True when hard-limit blocking may run (Multibot can accept mp-fresh)."""
+    if not multibot_host(env):
+        return False
+    if nohost_warn(home, session_id, now=now):
+        return False
+    if not agent_host_live(home, env):
+        return False
+    return True
+
+
 def soft_notified(home, session_id, band):
     path = state_dir(home) / f'{session_id}.soft-bands'
     try:
@@ -225,8 +338,9 @@ def hard_block():
 def warn_no_host():
     return {
         'systemMessage': (
-            'This chat is past the long-chat hard limit but has no Multibot host (no '
-            'MULTIPROMPT_TAB or mp-fresh). Hand off manually when you can; autocompact may still run.'
+            'This chat is past the long-chat hard limit but Multibot cannot run a fresh start '
+            '(no tab or mp-fresh, host not running, or a recent no-host marker). Hand off manually '
+            'when you can; autocompact may still run.'
         ),
     }
 
@@ -279,7 +393,7 @@ def stop_or_precompact(payload, env, event_name):
         window, hard_frac, HARD_CAP, env, 'LONG_CHAT_HARD_TOKENS', HARD_CAP)
     if size < hard_tokens:
         return {}
-    if not multibot_host(env):
+    if not handoff_enforced(home, session_id, env):
         return warn_no_host()
     if block_count(home, session_id) >= MAX_BLOCKS:
         return {}
@@ -358,8 +472,42 @@ def self_test():
         (bin_dir / 'mp-fresh').chmod(0o755)
         env_host['PATH'] = f'{bin_dir}:{env.get("PATH", "")}'
 
+        host_dir = agent_host_dir(home)
+        host_dir.mkdir(parents=True)
+        (host_dir / 'live-test.state.json').write_text(json.dumps({
+            'tmux': 'live-test', 'pid': os.getpid()}))
+
+        cfg_host = agent_host_dir(home)
+        (cfg_host / 'pinned.config.json').write_text(json.dumps({
+            'tmux': 'live-cfg', 'sid': 'sid-cfg', 'provider': 'claude'}))
+        (cfg_host / 'pinned.state.json').write_text(json.dumps({
+            'sid': 'sid-cfg', 'provider': 'claude', 'pid': os.getpid()}))
+        env_cfg = {**env_host, 'MULTIPROMPT_TAB': 'live-cfg'}
+        stop_cfg = {**stop_hard, 'session_id': 'sess-cfg'}
+        assert hook(stop_cfg, env_cfg).get('decision') == 'block', (
+            'config.json tmux + state pid -> block')
+
         blocked = hook(stop_hard, env_host)
-        assert blocked.get('decision') == 'block', 'hard + host -> block'
+        assert blocked.get('decision') == 'block', 'hard + live host -> block'
+
+        (host_dir / 'live-test.state.json').unlink()
+        assert hook(stop_hard, env_host) == warn_no_host(), 'hard + missing host state -> warn'
+
+        (host_dir / 'live-test.state.json').write_text(json.dumps({
+            'tmux': 'live-test', 'pid': 2_000_000_000}))
+        assert hook(stop_hard, env_host) == warn_no_host(), 'hard + dead host pid -> warn'
+
+        nohost = state_dir(home) / f'{sid}.nohost'
+        nohost.parent.mkdir(parents=True, exist_ok=True)
+        nohost.write_text('')
+        assert hook(stop_hard, env_host) == warn_no_host(), 'fresh nohost marker -> warn'
+        stale = time.time() - NOHOST_TTL - 60
+        os.utime(nohost, (stale, stale))
+        (host_dir / 'live-test.state.json').write_text(json.dumps({
+            'tmux': 'live-test', 'pid': os.getpid()}))
+        assert hook(stop_hard, env_host).get('decision') == 'block', (
+            'stale nohost + live host -> block')
+        nohost.unlink()
 
         queued_file = state_dir(home) / f'{sid}.queued'
         queued_file.parent.mkdir(parents=True, exist_ok=True)
@@ -400,6 +548,10 @@ def self_test():
             'transcript_path': soft_1m}
         assert hook(payload_soft_1m, env_1m).get('hookSpecificOutput', {}).get(
             'additionalContext'), '1m 350k -> soft context'
+        host_1m = agent_host_dir(home)
+        host_1m.mkdir(parents=True, exist_ok=True)
+        (host_1m / 'live-1m-test.state.json').write_text(json.dumps({
+            'tmux': 'live-1m-test', 'pid': os.getpid()}))
         env_1m_host = {
             **env_1m, 'MULTIPROMPT_TAB': 'live-1m-test',
             'PATH': f'{bin_dir}:{env.get("PATH", "")}'}
