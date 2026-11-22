@@ -11,6 +11,7 @@ FIXTURES = ROOT / 'tests/fixtures/valentin-mode'
 LOADED = FIXTURES / 'command.jsonl'
 PLAIN = FIXTURES / 'plain.jsonl'
 WORKER_MESSAGE = 'BLOCKED by pacer-guard: this chat talks to Valentin, so it hands work to workers'
+CODE_MESSAGE = 'BLOCKED by pacer-guard: this chat talks to Valentin, so it never writes code'
 
 
 def run(payload=None, env=None):
@@ -32,6 +33,17 @@ def payload(command, transcript=LOADED, agent_id=None, agent_type=None):
     return json.dumps(body)
 
 
+def tool_payload(tool_name, tool_input, transcript=LOADED, agent_id=None, agent_type=None):
+    body = {'tool_name': tool_name, 'tool_input': tool_input}
+    if transcript is not None:
+        body['transcript_path'] = str(transcript)
+    if agent_id is not None:
+        body['agent_id'] = agent_id
+    if agent_type is not None:
+        body['agent_type'] = agent_type
+    return json.dumps(body)
+
+
 class PacerGuardPace(unittest.TestCase):
     def test_self_test_runs(self):
         result = subprocess.run([sys.executable, str(GUARD), '--self-test'],
@@ -44,16 +56,36 @@ class PacerGuardPace(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(WORKER_MESSAGE, result.stderr)
 
-    def test_subagent_heavy_bash_passes_with_parent_transcript(self):
+    def test_sub_bash_clone(self):
         heavy = 'git clone https://github.com/x/y /tmp/y && gh pr checkout 13'
         result = run(payload=payload(heavy, agent_id='agent-def456', agent_type='general-purpose'))
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_main_chat_still_blocks_same_heavy_command(self):
+    def test_main_bash_clone(self):
         heavy = 'git clone https://github.com/x/y /tmp/y && gh pr checkout 13'
         result = run(payload=payload(heavy))
         self.assertEqual(result.returncode, 2)
         self.assertIn(WORKER_MESSAGE, result.stderr)
+
+    def test_sub_write_code(self):
+        body = tool_payload('Write', {'file_path': 'x.py', 'content': 'print(1)\n'},
+                            agent_id='agent-def456', agent_type='general-purpose')
+        result = run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1'})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(CODE_MESSAGE, result.stderr)
+
+    def test_sub_edit_code(self):
+        body = tool_payload('Edit', {'file_path': 'hooks/x.py', 'old_string': 'a', 'new_string': 'b'},
+                            agent_id='agent-def456', agent_type='general-purpose')
+        result = run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1'})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(CODE_MESSAGE, result.stderr)
+
+    def test_main_write_code(self):
+        body = tool_payload('Write', {'file_path': 'x.py', 'content': 'print(1)\n'})
+        result = run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1'})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(CODE_MESSAGE, result.stderr)
 
     def test_reads_pass_in_valentin_mode(self):
         for command in ('git status', 'git log -1', 'cat README.md', 'gh pr view 42'):

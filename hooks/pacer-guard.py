@@ -359,14 +359,14 @@ def verdict_worker_bash(tool_name, tool_input):
 def gate(payload):
     if not isinstance(payload, dict):
         return None
-    if subagent.from_hook(payload):
-        return None
     tool_name = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
     if os.environ.get("MULTIPROMPT_TAB"):
         why = verdict_code(tool_name, tool_input)
         if why:
             return why
+    if subagent.from_hook(payload):
+        return None
     if os.environ.get("PACER_GUARD_INLINE", "").lower() == "off":
         return None
     if not valentin.loaded(payload.get("transcript_path")):
@@ -457,8 +457,21 @@ def self_test():
             body = {"tool_name": "Bash", "transcript_path": str(loaded),
                     "tool_input": {"command": "git clone https://github.com/x/y /tmp/y && gh pr checkout 13"}}
             assert gate(body) and "hands work to workers" in gate(body), "main chat still blocks clones"
+            os.environ["MULTIPROMPT_TAB"] = "self-test"
+            sub_write = {"tool_name": "Write", "transcript_path": str(loaded),
+                         "tool_input": {"file_path": "x.py", "content": "print(1)\n"},
+                         "agent_id": "def456", "agent_type": "general-purpose"}
+            assert gate(sub_write) == MESSAGE, "subagent code Write stays blocked"
+            sub_edit = {"tool_name": "Edit", "transcript_path": str(loaded),
+                        "tool_input": {"file_path": "hooks/x.py", "old_string": "a", "new_string": "b"},
+                        "agent_id": "def456", "agent_type": "general-purpose"}
+            assert gate(sub_edit) == MESSAGE, "subagent code Edit stays blocked"
+            main_write = {"tool_name": "Write", "transcript_path": str(loaded),
+                          "tool_input": {"file_path": "x.py", "content": "print(1)\n"}}
+            assert gate(main_write) == MESSAGE, "main chat code Write stays blocked"
         finally:
             os.environ.pop("PACER_GUARD_INLINE", None)
+            os.environ.pop("MULTIPROMPT_TAB", None)
     print('pacer-guard self-test ok')
 
 
