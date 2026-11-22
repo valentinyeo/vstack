@@ -34,4 +34,7 @@ The three tools valentin mode names, each proved by one check in `grade.py`, plu
 | [pacer.md](pacer.md) | `pacer`, `task` | Subscription pacer: workers through `plan-pick --run` |
 | [board-sync.md](board-sync.md) | `board sync` | Board sync: the lease card sync, or a reconcile dry run then `--apply --limit 5` |
 | [SKILL.md](../SKILL.md) | `checks loaded` | Hooks: both hooks the frontmatter declares ran |
+| [responsive.md](responsive.md) | `responsive` | Responsive mode: the `context.py` hook injects its body |
 | [self-audit.md](self-audit.md) | `self-audit` | pstack-diff: load removes a planted extra gate |
+
+Valentin mode's sub-rules have their own skill, `.claude/skills/verify-valentin-subskills`: plain words, report-page, each ask becomes a ticket, the long-chat handover and pr-housekeeping, each with a `--break` run that must fail.

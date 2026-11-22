@@ -1,0 +1,2 @@
+2026-11-22T18:33:01.481Z [DEBUG] Hooks: PreToolUse:Bash [python3 "/home/valentin/.claude/skills/valentin-mode/../responsive-mode/reply-check.py"] finished with status 0 (97ms)
+2026-11-22T18:33:01.481Z [DEBUG] Hooks: Stop [python3 "/home/valentin/.claude/skills/valentin-mode/../responsive-mode/said-started.py"] finished with status 0 (97ms)

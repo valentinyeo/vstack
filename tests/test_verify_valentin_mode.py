@@ -26,7 +26,7 @@ hooks:
     - matcher: "*"
       hooks:
         - type: command
-          command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/reply-check.py"
+          command: python3 "$CLAUDE_PLUGIN_ROOT/context.py"
   Stop:
     - hooks:
         - type: command
@@ -48,12 +48,16 @@ def hook_line(event, name, folder=SCRATCH, matcher=''):
 
 
 def ran_valentin_hooks():
-    return hook_line('PreToolUse', 'reply-check.py', matcher='Bash') + hook_line(
-        'Stop', 'said-started.py')
+    return (hook_line('PreToolUse', 'context.py', matcher='Bash')
+            + hook_line('Stop', 'said-started.py'))
 
 
 def load_grade():
-    loader = importlib.machinery.SourceFileLoader('vvm_grade', str(GRADE))
+    return load_module(GRADE, 'vvm_grade')
+
+
+def load_module(path, name):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     sys.modules[loader.name] = module
@@ -181,9 +185,9 @@ class VerifyValentinModeGrade(unittest.TestCase):
         return (ROOT / 'skills/responsive-mode/SKILL.md').read_text().split('---', 2)[2]
 
     def test_whole_paste_from_the_load_line_grades_pass(self):
-        """valentin-mode pastes responsive mode's body at load, so that counts as loaded."""
+        """A copy of responsive mode's body in a user turn counts as loaded."""
         result = self.grade_with_user_text(
-            '## Responsive mode (pasted in when this skill loads)\n\n' + self.responsive_body())
+            '## Responsive mode\n\n' + self.responsive_body())
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn('PASS responsive: responsive mode pasted in by /valentin-mode',
                       result.stdout)
@@ -191,7 +195,7 @@ class VerifyValentinModeGrade(unittest.TestCase):
     def test_unexpanded_load_line_fails_responsive(self):
         """The shell line on its own means the body never arrived."""
         result = self.grade_with_user_text(
-            '## Responsive mode (pasted in when this skill loads)\n\n'
+            '## Responsive mode\n\n'
             '!`awk \'c>=2{print} /^---$/{c++}\' "x/../responsive-mode/SKILL.md"`')
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('FAIL responsive: responsive mode not loaded', result.stdout)
@@ -199,19 +203,37 @@ class VerifyValentinModeGrade(unittest.TestCase):
     def test_paste_stopped_after_the_first_sentence_fails_responsive(self):
         """A paste cut off before the last sentence loses the end-of-turn rule."""
         result = self.grade_with_user_text(
-            '## Responsive mode (pasted in when this skill loads)\n\n'
+            '## Responsive mode\n\n'
             'The main chat talks. Background agents work.')
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('FAIL responsive: responsive mode not loaded', result.stdout)
 
-    def test_valentin_mode_keeps_the_paste_block(self):
-        """The skill carries the heading and the line that prints responsive mode's body."""
+    def test_hook_injected_fixture_grades_pass_on_the_hook_alone(self):
+        """The fix: no Skill call and no paste, only the hook's injected context."""
+        code, output, _target = self.grade_fixture('hook-injected')
+        self.assertEqual(code, 0, output)
+        self.assertIn('PASS responsive: responsive mode injected by the valentin-mode hook', output)
+
+    def test_todays_chat_that_runs_the_load_line_itself_fails_responsive(self):
+        """The 22 Nov run: the chat ran the load line, the body landed in a tool result, and the
+        grader never saw it as a load. The chat has to be handed the rules, not fetch them."""
+        code, output, _target = self.grade_fixture('paste-in-tool-result')
+        self.assertEqual(code, 1, output)
+        self.assertIn('FAIL responsive: responsive mode not loaded', output)
+        self.assertIn('PASS checks loaded', output)
+
+    def test_valentin_mode_turns_on_the_context_hook(self):
+        """The skill declares the hook, and the body it injects ends with the graded sentence."""
         text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
-        self.assertIn('## Responsive mode (pasted in when this skill loads)', text)
-        self.assertIn('"${CLAUDE_SKILL_DIR}/../responsive-mode/SKILL.md"', text)
-        responsive = (ROOT / 'skills/responsive-mode/SKILL.md').read_text()
-        self.assertIn('The main chat talks. Background agents work.', responsive)
-        self.assertIn('the push lands on the remote with no nudge.', responsive,
+        self.assertIn('python3 "$CLAUDE_PLUGIN_ROOT/context.py"', text)
+        self.assertIn('## Responsive mode', text)
+        self.assertNotIn('"${CLAUDE_SKILL_DIR}/../responsive-mode/SKILL.md"', text,
+                         'a shell line the chat may skip is not a load')
+        context = load_module(ROOT / 'skills/valentin-mode/context.py',
+                              'valentin_mode_context')
+        body = context.body_after_frontmatter(
+            (ROOT / 'skills/responsive-mode/SKILL.md').read_text())
+        self.assertIn('the push lands on the remote with no nudge.', body,
                       'the graded last sentence must be the body\'s last sentence')
 
     def test_not_loaded_fixture_fails_loaded(self):
@@ -341,11 +363,11 @@ class VerifyValentinModeGrade(unittest.TestCase):
         result = self.grade_checks_loaded(HOOKED_VALENTIN, ran_valentin_hooks())
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn('PASS checks loaded:', result.stdout)
-        self.assertIn('reply-check.py', result.stdout)
-        self.assertIn('said-started.py', result.stdout)
+        self.assertIn('context.py (PreToolUse)', result.stdout)
+        self.assertIn('said-started.py (Stop)', result.stdout)
 
     def test_checks_loaded_stop_missing_fails(self):
-        debug = hook_line('PreToolUse', 'reply-check.py', matcher='Bash')
+        debug = hook_line('PreToolUse', 'context.py', matcher='Bash')
         result = self.grade_checks_loaded(HOOKED_VALENTIN, debug)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('FAIL checks loaded:', result.stdout)
@@ -491,13 +513,13 @@ class VerifyValentinModeRunScript(unittest.TestCase):
                       'the chat must start with the test agent name, not the caller\'s tab')
 
     def chat_env_loop(self):
-        """The lines of run that strip the caller's identity from the chat's env."""
+        """The lines of run that strip the caller's identity and shims from the chat's env."""
         lines = RUN.read_text().splitlines()
         starts = [i for i, line in enumerate(lines) if line.strip() == 'CHAT_ENV=(env)']
         self.assertEqual(len(starts), 1, 'expected one CHAT_ENV block in run')
-        ends = [i for i in range(starts[0] + 1, len(lines)) if 'compgen -v' in lines[i]]
-        self.assertTrue(ends, 'the CHAT_ENV loop never ends')
-        return lines[starts[0]:ends[0] + 1]
+        ends = [i for i in range(starts[0] + 1, len(lines)) if 'worker-shims' in lines[i]]
+        self.assertTrue(ends, 'the CHAT_ENV block never drops the worker shims')
+        return lines[starts[0]:ends[0] + 2]
 
     def test_chat_env_drops_the_callers_chat_identity(self):
         """The caller's MULTIPROMPT_* and board tokens must never reach the test chat."""
@@ -511,6 +533,23 @@ class VerifyValentinModeRunScript(unittest.TestCase):
         for name in ('MULTIPROMPT_TAB', 'MULTIPROMPT_MODE', 'HT_TOKEN', 'HYPERTASK_API_TOKEN'):
             self.assertNotIn(name, exported, 'the caller\'s %s leaked into the test chat' % name)
         self.assertEqual(exported.get('KEEP_ME'), 'yes', 'unrelated variables must survive')
+
+    def test_chat_env_drops_the_plan_pick_worker_shims(self):
+        """A run started from inside a plan-pick worker must not hand its shims to the chat.
+
+        token-ladder's worker shim refuses every board write, so a leaked
+        PLAN_PICK_WORKER or shim on PATH makes every board check fail.
+        """
+        script = '\n'.join(self.chat_env_loop()) + '\n"${CHAT_ENV[@]}" env\n'
+        shim = '/home/x/projects/token-ladder/bin/worker-shims'
+        env = dict(os.environ, PLAN_PICK_WORKER='1', PATH=shim + ':/usr/bin:/bin')
+        result = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                                env=env, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        exported = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+        self.assertNotIn('PLAN_PICK_WORKER', exported, 'the worker flag leaked into the test chat')
+        self.assertNotIn('worker-shims', exported.get('PATH', ''), 'a worker shim leaked into PATH')
+        self.assertIn('/usr/bin', exported.get('PATH', ''), 'the rest of PATH survives')
 
     def test_grade_script_has_shebang(self):
         self.assertEqual(GRADE.read_text().splitlines()[0], '#!/usr/bin/env python3')

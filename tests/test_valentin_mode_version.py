@@ -2,10 +2,11 @@
 
 The version is a plain number: commits that touched the skill folder. version.sh
 lives next to the skill and is run here in throwaway repos: one level with
-origin/main, one a commit behind it, and one with no git at all. The load line in
-SKILL.md has to keep calling it.
+origin/main, one a commit behind it, and one with no git at all. The skill's
+context.py hook runs it at the chat's first tool call and hands the line over.
 """
 
+import json
 import os
 from pathlib import Path
 import re
@@ -19,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = ROOT / 'skills/valentin-mode'
 SCRIPT = SKILL_DIR / 'version.sh'
 SKILL = SKILL_DIR / 'SKILL.md'
-LOAD_LINE = '!`sh "${CLAUDE_SKILL_DIR}/version.sh"`'
-BULLET = '- **Version:** your first reply after loading names the version line above.'
+LOAD_HOOK = 'python3 "$CLAUDE_PLUGIN_ROOT/context.py"'
+BULLET = '- **Version:** your first reply after loading names that version line.'
 LATEST = re.compile(r'^valentin-mode v\d+ \(latest\)$')
 BEHIND = re.compile(
     r'^valentin-mode v\d+, latest is v\d+ \(updates itself within 10 minutes\)$')
@@ -139,15 +140,25 @@ class VersionScript(unittest.TestCase):
 
 
 class LoadLine(unittest.TestCase):
-    def test_the_skill_runs_the_version_script_at_load(self):
+    def test_the_skill_turns_on_the_hook_that_loads_the_version(self):
         text = SKILL.read_text()
-        self.assertIn(LOAD_LINE, text)
-        self.assertLess(text.index('# Valentin mode'), text.index(LOAD_LINE))
+        self.assertIn(LOAD_HOOK, text)
 
-    def test_the_line_carries_no_version_prefix(self):
-        text = SKILL.read_text()
-        self.assertNotIn('Version: !`', text)
-        self.assertIn('\n' + LOAD_LINE + '\n', text)
+    def test_the_hook_hands_the_chat_a_version_line(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = subprocess.run(
+                ['python3', str(SKILL_DIR / 'context.py')],
+                input='{"session_id": "load-line"}', capture_output=True, text=True,
+                timeout=60, env=dict(os.environ, HOME=home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        first = context.splitlines()[0]
+        self.assertTrue(LATEST.match(first) or BEHIND.match(first),
+                        'the hook hands over the version line, got %r' % first)
+
+    def test_the_body_carries_no_shell_load_line(self):
+        body = SKILL.read_text().split('---', 2)[2]
+        self.assertNotIn('!`', body, 'a line the chat may skip is not a load')
 
     def test_the_first_reply_names_the_version(self):
         body = SKILL.read_text()

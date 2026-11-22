@@ -1,0 +1,9 @@
+PASS loaded: the chat was started with /valentin-mode (three tools version, no self-start)
+FAIL responsive: responsive mode not loaded
+PASS checks loaded: debug.log shows every declared hook ran: reply-check.py (PreToolUse), said-started.py (Stop)
+PASS session: session sid-pass
+PASS login: board write by VVM Test Agent
+PASS pacer: plan-pick started a worker
+PASS task: hello.txt holds the worker line
+PASS board sync: dry run then apply, apply clean
+VERDICT FAIL

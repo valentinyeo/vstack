@@ -10,7 +10,7 @@ hooks:
     - matcher: "*"
       hooks:
         - type: command
-          command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/reply-check.py"
+          command: python3 "$CLAUDE_PLUGIN_ROOT/context.py"
   Stop:
     - hooks:
         - type: command
@@ -19,17 +19,13 @@ hooks:
 
 # Valentin mode
 
-!`sh "${CLAUDE_SKILL_DIR}/version.sh"`
+The `context.py` hook hands you the version line and responsive mode's rules at your first tool call; a chat without it reads `../responsive-mode/SKILL.md`. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
-If no rules appear under Responsive mode below, load `responsive-mode` before any other tool. A Codex, Cursor or pi chat without bypass gets no paste. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
-
-## Responsive mode (pasted in when this skill loads)
-
-!`awk 'c>=2{print} /^---$/{c++}' "${CLAUDE_SKILL_DIR}/../responsive-mode/SKILL.md"`
+## Responsive mode (injected by the hook)
 
 ## Talking to the user
 
-- **Version:** your first reply after loading names the version line above.
+- **Version:** your first reply after loading names that version line.
 - **Audience:** He is a product owner, not a developer. Short, plain words. Never ask him to merge, review code or run QA.
 - **Links:** Full https:// URLs, never a server path or a bare ticket id.
 - **Screenshots:** One public https URL, never a file path or a second image host.
