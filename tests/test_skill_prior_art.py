@@ -8,7 +8,6 @@ cause it fixes, is usually recovery machinery for a symptom (VSTA-114, Valentin 
 import os
 import re
 import unittest
-from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,10 +72,6 @@ def named_pstack_skills(line, names):
     return found
 
 
-def names_anywhere(text, names):
-    return {n for n in names if re.search(rf'(?<![\w-]){re.escape(n)}(?![\w-])', text)}
-
-
 def executables():
     found = set()
     for folder in EXECUTABLE_DIRS:
@@ -90,16 +85,11 @@ def executables():
 
 
 def parse_registry():
-    """Return (entries, expiring): entries path -> (pstack, why); expiring path -> date."""
-    entries, expiring = {}, {}
+    """Return entries path -> (pstack, why, line)."""
+    entries = {}
     for number, raw in enumerate(REGISTRY.read_text().splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith('#'):
-            continue
-        if line.startswith('expires:'):
-            _, rest = line.split(':', 1)
-            when, path = (part.strip() for part in rest.split('|', 1))
-            expiring[path] = (date.fromisoformat(when), number)
             continue
         fields = [field.strip() for field in line.split('|')]
         if len(fields) != 3:
@@ -108,7 +98,7 @@ def parse_registry():
         path, pstack, why = fields
         entries[path] = (pstack.removeprefix('pstack:').strip(),
                          why.removeprefix('why:').strip(), number)
-    return entries, expiring
+    return entries
 
 
 class SkillPriorArt(unittest.TestCase):
@@ -134,7 +124,7 @@ class SkillPriorArt(unittest.TestCase):
                     f'not say the gap it fills or that it only enforces a pstack rule')
 
     def test_every_executable_is_registered_with_its_pstack_source_and_root_cause(self):
-        entries, _ = parse_registry()
+        entries = parse_registry()
         for path in executables():
             with self.subTest(executable=path):
                 self.assertIn(
@@ -143,32 +133,19 @@ class SkillPriorArt(unittest.TestCase):
                     f'why: <ticket URL or enforces <rule>>`. {RULE}')
 
     def test_every_registry_line_names_a_pstack_source_and_a_root_cause(self):
-        entries, expiring = parse_registry()
-        today = date.today()
+        entries = parse_registry()
         for path, (pstack, why, number) in sorted(entries.items()):
             with self.subTest(entry=path):
                 where = f'{REGISTRY.relative_to(ROOT)}:{number} ({path})'
                 self.assertTrue(pstack, f'{where}: empty pstack field. {RULE}')
                 self.assertTrue(why, f'{where}: empty why field. {RULE}')
                 self.assertTrue(
-                    pstack == 'none' or names_anywhere(pstack, self.names),
+                    pstack in self.names,
                     f'{where}: "{pstack}" is not a pstack skill or principle. {RULE}')
                 self.assertTrue(
-                    why == 'none' or why.lower().startswith('enforces ')
+                    why.lower().startswith('enforces ')
                     or why.startswith('https://app.hypertask.ai/detail/'),
                     f'{where}: why must be a root-cause ticket URL or "enforces <pstack rule>". {RULE}')
-                if pstack != 'none' and why != 'none':
-                    continue
-                self.assertIn(
-                    path, expiring,
-                    f'{where}: no pstack source and no root cause. Delete the file, or write '
-                    f'`pstack: <skill> | why: <ticket URL>`. Temporary only: add '
-                    f'`expires: <YYYY-MM-DD> | {path}` to config/tool-registry.txt. {RULE}')
-                expires, line = expiring[path]
-                self.assertGreater(
-                    expires, today,
-                    f'{where}: the exception expired on {expires}. Delete the file or justify it '
-                    f'with a real pstack source and root cause (line {line})')
 
 
 if __name__ == '__main__':

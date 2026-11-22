@@ -8,7 +8,7 @@ skill-word-budget-reason: The rat-stack migration protocol must stay together.
 
 # /ratstack-transition [app dir]
 
-Prior art: pstack `poteto-mode` — checked shipping playbooks; no rat-stack migration skill there. Body copied from retired house-rules `skills/ratstack-transition`, with vstack paths for `/hypertask` and `scripts/rat-diff`.
+Prior art: pstack `poteto-mode` — checked shipping playbooks; no rat-stack migration skill there. Body copied from retired house-rules `skills/ratstack-transition`, with vstack paths for `/hypertask` and the pinned source comparison.
 
 Valentin, 2026-11-13:
 
@@ -25,30 +25,15 @@ The one rule: **Rat Stack's own files decide.** Its AGENTS.md is law. Its pins a
 ## 1. Pin Rat Stack
 
 - Clone it next to the app: `gh repo clone joelhooks/rat-stack /tmp/rat-stack-<app>`.
-- Record the commit: `SHA=$(git -C /tmp/rat-stack-<app> rev-parse HEAD)`. Every ticket names this commit, and so does every rat-diff run.
+- Record the commit: `SHA=$(git -C /tmp/rat-stack-<app> rev-parse HEAD)`. Every ticket and comparison names this commit.
 - Read in full, in this order: AGENTS.md, VISION.md, README.md, skills/rat-stack-mode/SKILL.md, skills/learn-rat-stack/SKILL.md, skills/keep-or-cut/SKILL.md.
 - Skim every other `skills/*/SKILL.md`. Each slice ticket points at the Rat Stack skill that builds it (`add-a-capability`, `add-a-store`, `add-a-lifecycle-machine`, `add-a-feature-flag`, `ship`, `learn-alchemy`).
 
 ## 2. Diff the app
 
-```
-skills/ratstack-transition/scripts/rat-diff <app dir> --sha $SHA --rat /tmp/rat-stack-<app> --json /tmp/rat-diff-<app>.json
-```
+Compare the app's manifests and layout with the pinned clone. Read its package manifests and configuration, not a hard-coded list of Rat Stack packages. Record packages to keep, bump, drop and add, with the source file for each verdict. Identify missing layout, foreign configuration, native manifests, loose helpers, CDN libraries, self-hosted workflows and Cloudflare Pages markers.
 
-`--sha` pins the cloned commit, so the pin cannot drift. `--rat` reads the clone, not `gh api`. It prints, against that commit:
-- **BUMP**: shared packages at another version. Take Rat Stack's exact pin.
-- **DROP**: packages Rat Stack does not use, each with its replacement. `NO HOME` means cut it or port it by hand onto Effect. Never keep it.
-- **ADD core**: packages every Rat Stack app has. All of them.
-- **ADD by cartridge**: take only with the cartridge that needs them.
-- **LAYOUT missing**: Rat Stack files and folders the app lacks.
-- **FOREIGN files**: configs for tools Rat Stack does not use (wrangler, biome, npm lockfile, raw .env).
-- **NON-JS manifests**: go.mod, Cargo.toml, pyproject.toml and the like.
-- **LOOSE non-JS files**: .py, .go, .sh and other scripts with no manifest.
-- **CDN tags**: script and link tags to Tailwind, Chart.js, React, htmx, fonts and the like. They are not in package.json, so DROP misses them.
-- **SELF-HOSTED CI**: workflow lines with `runs-on: self-hosted`.
-- **PAGES markers**: `pages_build_output_dir`, _routes.json, functions/, `wrangler pages`.
-
-The script cannot see everything. Still read the code for inline `fetch` to outside APIs, server-rendered HTML and anything the sections miss.
+Read inline `fetch` calls, server-rendered HTML and outside APIs too. The pinned Rat Stack skills own the replacements.
 
 ## 3. Inventory what the app does
 
@@ -118,7 +103,7 @@ Rules behind the table:
 
 **Order.** File the parent first. File the children next, each with `--parent-task`. Then edit the parent to add the child links.
 
-**Parent.** "Move <app> to Rat Stack". Description: the pinned commit, the rat-diff counts, the repo choice with its reason, the full map table, the slice list with links.
+**Parent.** "Move <app> to Rat Stack". Description: the pinned commit, the package comparison, the repo choice with its reason, the full map table, the slice list with links.
 
 **Slices, in this order:**
 1. Scaffold: template, cut unused parts, fence green in GitHub CI. Measure the built Worker size.

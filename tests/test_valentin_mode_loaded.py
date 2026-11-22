@@ -64,9 +64,9 @@ class ValentinModeLoaded(unittest.TestCase):
                             '"<command-name>/valentin-mode</command-name>"}}\n')
             self.assertTrue(valentin.loaded(str(path)), 'a load two chunks into a chat is still found')
 
-    def test_install_links_both_lane_hooks_and_their_modules(self):
+    def test_install_links_the_boundary_reader_and_book_check(self):
         text = (ROOT / 'install').read_text()
-        for name in ('plan-pick-only.py', 'claude-helper-gate.py', 'valentin_mode_loaded.py', 'book-check.py'):
+        for name in ('valentin_mode_loaded.py', 'book-check.py'):
             with self.subTest(name=name):
                 self.assertIn(f'link_one {name} "$ROOT/hooks/{name}" "$HOME/.claude/hooks"', text)
 

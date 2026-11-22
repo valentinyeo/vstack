@@ -6,6 +6,17 @@ TEST_HOME=$(mktemp -d "$ROOT/.install-test.XXXXXX")
 trap 'rm -rf "$TEST_HOME"' EXIT
 
 dests=(.claude/skills .codex/skills .cursor/skills .pi/agent/skills .agents/skills)
+retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop skill-update.py)
+mkdir -p "$TEST_HOME/.claude/hooks" "$TEST_HOME/.local/bin"
+for hook in "${retired_hooks[@]}"; do
+  ln -s "$ROOT/hooks/$hook" "$TEST_HOME/.claude/hooks/$hook"
+done
+ln -s "$ROOT/skills/vps-tidy/vps-tidy" "$TEST_HOME/.local/bin/vps-tidy"
+for dest in "${dests[@]}"; do
+  mkdir -p "$TEST_HOME/$dest"
+  ln -s "$ROOT/skills/vps-tidy" "$TEST_HOME/$dest/vps-tidy"
+done
+printf 'user hook\n' > "$TEST_HOME/.claude/hooks/user-hook.py"
 
 for run in 1 2; do
   env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
@@ -17,6 +28,16 @@ for run in 1 2; do
     printf 'PASS run %s: %s/valentin-mode\n' "$run" "$dest"
   done
 done
+
+for hook in "${retired_hooks[@]}"; do
+  [ ! -L "$TEST_HOME/.claude/hooks/$hook" ]
+done
+[ ! -L "$TEST_HOME/.local/bin/vps-tidy" ]
+for dest in "${dests[@]}"; do
+  [ ! -L "$TEST_HOME/$dest/vps-tidy" ]
+done
+[ "$(cat "$TEST_HOME/.claude/hooks/user-hook.py")" = 'user hook' ]
+printf 'PASS retired links removed and unrelated hooks preserved\n'
 
 for name in test-timeout-guard.py pstack-new-gates.py; do
   hook="$TEST_HOME/.claude/hooks/$name"
@@ -69,15 +90,13 @@ printf 'PASS retired ticket folder moved, not deleted\n'
 
 [ "$(sha256sum "$TEST_HOME/.claude/settings.json")" = "$settings" ]
 printf 'PASS install never edits a settings file\n'
-# repo-tidy: the command and the Stop hook land at the paths settings call.
+# repo-tidy remains an explicit command.
 [ -L "$TEST_HOME/.local/bin/repo-tidy" ]
 [ "$(readlink -f "$TEST_HOME/.local/bin/repo-tidy")" = "$ROOT/skills/repo-tidy/repo-tidy" ]
 [ -x "$TEST_HOME/.local/bin/repo-tidy" ]
-[ -L "$TEST_HOME/.claude/hooks/repo-tidy-stop" ]
-[ "$(readlink -f "$TEST_HOME/.claude/hooks/repo-tidy-stop")" = "$ROOT/hooks/repo-tidy-stop" ]
-printf 'PASS repo-tidy command and Stop hook linked\n'
+printf 'PASS repo-tidy command linked\n'
 
-for hook in pacer-guard.py launch-gate.py gh-watch-guard.py; do
+for hook in pacer-guard.py; do
   [ -L "$TEST_HOME/.claude/hooks/$hook" ]
   [ "$(readlink -f "$TEST_HOME/.claude/hooks/$hook")" = "$ROOT/hooks/$hook" ]
   [ -x "$TEST_HOME/.claude/hooks/$hook" ]

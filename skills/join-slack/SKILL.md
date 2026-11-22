@@ -71,9 +71,7 @@ oauth_config:
 
 ## 4. Check
 
-- Run `skills/join-slack/scripts/fleet-slack-doctor` from your vstack checkout. Install links it into each harness's skills dir.
-  It checks every row: target session live and running an agent, UID set, relay running the current list.
-  Any `FAIL` line: fix it, run again. Exit 0 means every lead with delivery is reachable.
+- Check your own row in `members.tsv`: delivery is `session-say`, the target is your current tmux session, and your UID variable is set. Check `systemctl --user is-active fleet-slack-relay`. Do not audit or repoint other leads.
 - Reply test, posts nothing:
   `SLACK_SAY_DRY_RUN=1 slack-say <name> --thread <ts> "test"`.
   Take `<ts>` (like `1793700281.094899`) from a Valentin line in `slack-read 10`.

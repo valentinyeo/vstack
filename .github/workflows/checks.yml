@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - run: timeout 900 python3 -m unittest discover -s tests
       - run: python3 -m unittest discover -s tests -p test_verify_reconcile.py -v
       - run: bash tests/install.sh
       - name: No new verification gates

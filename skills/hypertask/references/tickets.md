@@ -138,4 +138,4 @@ The guard checks human-lane text before it posts:
 scripts/ticket-lint <file>
 ```
 
-Pass `--old <file>` on an edit so only new lines are checked. `scripts/blocker-sweep.py <board>` reports STALE when a marked Question outlived its work. No wrapper? Run `ticket-lint` by hand before any raw `hypertask` write.
+Pass `--old <file>` on an edit so only new lines are checked. Your own board-drain check reports answered waits; read waiting tickets on each tick and clear marks when the work moves. No wrapper? Run `ticket-lint` by hand before any raw `hypertask` write.
