@@ -1,0 +1,46 @@
+{
+  "verdict": "FAIL",
+  "session_id": "sid-pass",
+  "checks": [
+    {
+      "name": "loaded",
+      "pass": true,
+      "reason": "the chat was started with /valentin-mode (three tools version, no self-start)"
+    },
+    {
+      "name": "responsive",
+      "pass": false,
+      "reason": "responsive mode not loaded"
+    },
+    {
+      "name": "checks loaded",
+      "pass": true,
+      "reason": "debug.log shows every declared hook ran: reply-check.py (PreToolUse), said-started.py (Stop)"
+    },
+    {
+      "name": "session",
+      "pass": true,
+      "reason": "session sid-pass"
+    },
+    {
+      "name": "login",
+      "pass": true,
+      "reason": "board write by VVM Test Agent"
+    },
+    {
+      "name": "pacer",
+      "pass": true,
+      "reason": "plan-pick started a worker"
+    },
+    {
+      "name": "task",
+      "pass": true,
+      "reason": "hello.txt holds the worker line"
+    },
+    {
+      "name": "board sync",
+      "pass": true,
+      "reason": "dry run then apply, apply clean"
+    }
+  ]
+}

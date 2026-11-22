@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# One cheap Sonnet chat that triggers one valentin mode sub-rule, then grade
+# whether the chat followed it. Usage: run --scenario <name> [--break <name>] [--keep]
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+GRADE="$HERE/grade.py"
+TICKET=SOFT-2849
+AGENT="VVM Test Agent"
+BOARD=2060
+LABEL=vvm-test
+
+SCENARIO=""
+BREAK=""
+KEEP=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --scenario)
+      SCENARIO=${2:-}
+      shift 2 || { echo "run: --scenario needs a value" >&2; exit 2; }
+      ;;
+    --break)
+      BREAK=${2:-}
+      shift 2 || { echo "run: --break needs a value" >&2; exit 2; }
+      ;;
+    --keep)
+      KEEP=1
+      shift
+      ;;
+    *)
+      echo "run: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$SCENARIO" ]; then
+  echo "run: --scenario <plain-words|report|ticket|handover|prs> is required" >&2
+  exit 2
+fi
+if ! JOB=$("$GRADE" --job "$SCENARIO" 2>&1); then
+  echo "run: $JOB" >&2
+  exit 2
+fi
+if [ -n "$BREAK" ] && [ "$BREAK" != "$SCENARIO" ]; then
+  echo "run: --break names the scenario it proves, so give the same name" >&2
+  exit 2
+fi
+
+VSTACK_ROOT="${VSTACK_DIR:-$HOME/.local/share/vstack}"
+VSTACK_SKILLS="$VSTACK_ROOT/skills"
+# The chat's `/valentin-mode` resolves to the installed copy, not the scratch
+# repo's copy, so a break run has to reach the installed tree and put it back.
+INSTALLED_SKILLS="$VSTACK_SKILLS"
+
+# 1. One Sonnet test chat only while Claude is under pace.
+if ! gate_output=$("$HOME/.local/bin/plan-pick" --claude-helper 2>&1); then
+  printf '%s\n' "$gate_output"
+  echo "Claude is ahead of pace; try later" >&2
+  exit 3
+fi
+
+# 2. The test login writes on the scratch ticket as its own agent.
+TOKEN_FILE="$HOME/.config/hypertask-agents/credentials/sessions/vvm-test-agent-agent-token"
+if [ ! -s "$TOKEN_FILE" ]; then
+  echo "run: test login token missing at $TOKEN_FILE" >&2
+  exit 3
+fi
+TOKEN=$(cat "$TOKEN_FILE")
+
+# 3. Evidence directory, named so a break run never overwrites a real one.
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+E="$HOME/.local/state/verify-valentin-subskills/$RUN_ID-$SCENARIO${BREAK:+-break}"
+mkdir -p "$E"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$E/started_at"
+printf '%s\n' "$SCENARIO" > "$E/scenario.txt"
+
+# 4. Scratch repo the chat works in.
+W=$(mktemp -d /tmp/vvs-scratch.XXXXXX)
+BACKUP=""
+# shellcheck disable=SC2317  # runs from the EXIT trap
+cleanup() {
+  if [ -n "$BACKUP" ] && [ -d "$BACKUP" ]; then
+    rm -rf "$INSTALLED_SKILLS/valentin-mode"
+    mv "$BACKUP" "$INSTALLED_SKILLS/valentin-mode"
+  fi
+  for need in ${NEEDS_BAK:-}; do
+    if [ -d "$need.off" ]; then
+      rm -rf "${need}"
+      mv "$need.off" "$need"
+    fi
+  done
+  if [ "$KEEP" -eq 0 ] && [ -n "${W:-}" ] && [ -d "$W" ]; then
+    rm -rf "$W"
+  fi
+}
+trap cleanup EXIT
+
+git -C "$W" init -q
+{
+  printf '# Scratch project for the valentin mode sub-rule check\n\n'
+  printf 'Hypertask board: %s, label: %s\n\n' "$BOARD" "$LABEL"
+  printf 'Your board login is the agent "%s". Its token is already set up; use SHIP_SESSION_NAME="%s".\n' \
+    "$AGENT" "$AGENT"
+  printf "This project's ticket is %s. Nobody else works it while this check runs.\n" "$TICKET"
+} > "$W/CLAUDE.md"
+printf '# Scratch notes\n\nThe check ran on a fresh chat and kept its evidence.\n' > "$W/NOTES.md"
+mkdir -p "$W/.claude/skills"
+for skill in valentin-mode responsive-mode hypertask unjargon pospeak report-page long-chat pr-housekeeping; do
+  if [ ! -d "$VSTACK_SKILLS/$skill" ]; then
+    echo "run: skill folder missing: $VSTACK_SKILLS/$skill" >&2
+    exit 3
+  fi
+  cp -rL "$VSTACK_SKILLS/$skill" "$W/.claude/skills/$skill"
+done
+if [ -n "$BREAK" ]; then
+  # Both copies lose the rule, so the chat skips it wherever it loads from. The
+  # installed copy is backed up and put back by the EXIT trap.
+  "$GRADE" --break "$BREAK" --skills "$W/.claude/skills"
+  BACKUP=$(mktemp -d /tmp/vvs-installed.XXXXXX)/valentin-mode
+  cp -rL "$INSTALLED_SKILLS/valentin-mode" "$BACKUP"
+  NEEDS_BAK=""
+  if needs=$("$GRADE" --needs "$BREAK" 2>/dev/null) && [ -n "$needs" ]; then
+    NEEDS_BAK="$INSTALLED_SKILLS/$needs"
+    if [ -d "$NEEDS_BAK" ]; then
+      mv "$NEEDS_BAK" "$NEEDS_BAK.off"
+    fi
+  fi
+  "$GRADE" --break "$BREAK" --skills "$INSTALLED_SKILLS"
+fi
+git -C "$W" add CLAUDE.md NOTES.md .claude/skills
+git -C "$W" -c user.name=vvs -c user.email=vvs@invalid commit -qm init
+printf '%s\n' "$W" > "$E/workdir"
+
+# 5. Prompt: valentin mode first, then the scenario's job. It never names a skill.
+printf '/valentin-mode %s\n' "$JOB" > "$E/prompt.txt"
+PROMPT=$(cat "$E/prompt.txt")
+
+# 6. One fresh headless chat.
+CLAUDE_ARGS=(--model sonnet --permission-mode bypassPermissions
+             --output-format stream-json --verbose --debug-file "$E/debug.log" --max-turns 30)
+CHAT_ENV=(env)
+while IFS= read -r name; do
+  case "$name" in
+    MULTIPROMPT_* | HT_TOKEN | HYPERTASK_* | PLAN_PICK_WORKER) CHAT_ENV+=(-u "$name") ;;
+  esac
+done < <(compgen -v || true)
+# A chat started from inside a plan-pick worker inherits the worker's shims, and
+# token-ladder's hypertask shim refuses every board write. The test chat is plain.
+CHAT_ENV+=("PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/worker-shims' | paste -sd: -)")
+echo "run: one test chat for $SCENARIO, 5 to 15 minutes; evidence $E" >&2
+set +e
+(cd "$W" && "${CHAT_ENV[@]}" SHIP_SESSION_NAME="$AGENT" \
+  timeout 1200 "$HOME/.local/bin/claude" -p "$PROMPT" "${CLAUDE_ARGS[@]}" \
+  > "$E/stream.jsonl" 2> "$E/stderr.txt")
+printf '%s\n' "$?" > "$E/claude_exit"
+set -e
+
+# 7. Scrub tokens from anything a person may read.
+python3 - "$E/stream.jsonl" "$E/stderr.txt" <<'PY'
+import re
+import sys
+
+patterns = (
+    re.compile(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
+    re.compile(r'sk-[A-Za-z0-9_-]{16,}'),
+)
+for path in sys.argv[1:]:
+    text = open(path, errors='replace').read()
+    for pattern in patterns:
+        text = pattern.sub('REDACTED', text)
+    with open(path, 'w') as handle:
+        handle.write(text)
+PY
+
+# 8. Grade and report.
+set +e
+"$GRADE" "$E"
+set -e
+echo "Evidence: $E"

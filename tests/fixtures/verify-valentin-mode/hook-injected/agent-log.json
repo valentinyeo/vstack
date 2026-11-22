@@ -1,0 +1,12 @@
+{
+  "success": true,
+  "activities": [
+    {
+      "agentId": "a1",
+      "agentName": "VVM Test Agent",
+      "type": "thought",
+      "text": "worker wrote hello.txt",
+      "createdAt": "2026-11-19T18:55:01.460Z"
+    }
+  ]
+}

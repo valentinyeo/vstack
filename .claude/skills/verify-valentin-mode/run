@@ -130,9 +130,13 @@ CLAUDE_ARGS=(--model sonnet --permission-mode bypassPermissions
 CHAT_ENV=(env)
 while IFS= read -r name; do
   case "$name" in
-    MULTIPROMPT_* | HT_TOKEN | HYPERTASK_*) CHAT_ENV+=(-u "$name") ;;
+    MULTIPROMPT_* | HT_TOKEN | HYPERTASK_* | PLAN_PICK_WORKER) CHAT_ENV+=(-u "$name") ;;
   esac
 done < <(compgen -v || true)
+# A chat that runs this from inside a plan-pick worker inherits the worker's shims,
+# and token-ladder's hypertask shim refuses every board write. The test chat is a
+# plain chat, so its PATH loses the shims folder.
+CHAT_ENV+=("PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/worker-shims' | paste -sd: -)")
 echo "run: one test chat, 5 to 15 minutes; evidence $E" >&2
 set +e
 (cd "$W" && "${CHAT_ENV[@]}" SHIP_SESSION_NAME="$AGENT" \

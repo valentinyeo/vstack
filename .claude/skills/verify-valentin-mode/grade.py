@@ -28,7 +28,11 @@ HOOK_FILE = re.compile(r'[^\s"\'`]+\.[a-z]{2}\b')
 # A debug log line per hook run: "Hooks: <Event>[:<matcher>] [<command>] finished".
 DEBUG_HOOK = re.compile(r'Hooks: ([A-Za-z]+)(?::\S*)?\s+\[([^\]]*)\]')
 # valentin-mode pastes responsive mode's body in at load: these three mark it whole.
-RESPONSIVE_PASTE_HEADING = '## Responsive mode (pasted in when this skill loads)'
+RESPONSIVE_PASTE_HEADING = '## Responsive mode'
+# The hook valentin-mode turns on hands the chat responsive mode's body itself. The
+# debug log names the hook command as configured, `python3 "$CLAUDE_PLUGIN_ROOT/context.py"`.
+CONTEXT_HOOK = 'context.py'
+INJECTED = 'provided additionalContext'
 RESPONSIVE_PASTE_FIRST = 'The main chat talks. Background agents work.'
 RESPONSIVE_PASTE_LAST = 'the push lands on the remote with no nudge.'
 
@@ -300,10 +304,8 @@ def check_loaded(evidence):
 def pasted_responsive(text):
     """True when this text holds responsive mode's body, start to last sentence.
 
-    The skill runs a shell line at load, so the body shows up only once that line
-    ran: the unexpanded line is text too, and it carries the heading without the
-    rules. A paste cut off part way loses the end-of-turn rule, so the last
-    sentence of the body is what proves the whole thing arrived.
+    A cut-off copy loses the end-of-turn rule, so the last sentence of the body is
+    what proves the whole thing arrived.
     """
     return (RESPONSIVE_PASTE_HEADING in text
             and RESPONSIVE_PASTE_FIRST in text
@@ -322,12 +324,29 @@ def responsive_pasted(events):
     return False
 
 
-def check_responsive(events):
+def hook_injected(evidence):
+    """True when valentin mode's context hook handed the chat the whole body.
+
+    Claude Code writes the hook's stdout to the debug log and says how much context
+    it injected, so this reads the harness record of the load, not the chat's word
+    for it. A hook that printed nothing leaves the line out. The body's last
+    sentence has to appear too: a hook that stopped early fails.
+    """
+    text = read_text(evidence / 'debug.log')
+    if not text or CONTEXT_HOOK not in text:
+        return False
+    injected = any(INJECTED in line and CONTEXT_HOOK in line for line in text.splitlines())
+    return injected and RESPONSIVE_PASTE_LAST in text
+
+
+def check_responsive(events, evidence):
     """PASS when the chat loads responsive mode, alone or as valentin mode's first step."""
     if any(responsive_invoked(tool_use) for tool_use in tool_uses(events)):
         return PASS, 'responsive mode loaded by the Skill tool'
     if responsive_prompt(events):
         return PASS, 'responsive mode started by /responsive-mode'
+    if hook_injected(evidence):
+        return PASS, 'responsive mode injected by the valentin-mode hook'
     if responsive_pasted(events):
         return PASS, 'responsive mode pasted in by /valentin-mode'
     return FAIL, 'responsive mode not loaded'
@@ -566,7 +585,7 @@ def grade(evidence, agent, ticket, board, label):
     checks = []
     name, result = 'loaded', check_loaded(evidence)
     checks.append((name, result))
-    checks.append(('responsive', check_responsive(events)))
+    checks.append(('responsive', check_responsive(events, evidence)))
     checks.append(('checks loaded', check_checks_loaded(evidence)))
 
     if session_id is None:
