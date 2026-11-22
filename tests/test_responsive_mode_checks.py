@@ -20,7 +20,8 @@ SKILL = ROOT / 'skills/responsive-mode'
 CHECK = SKILL / 'reply-check.py'
 DENIED = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                 "permissionDecisionReason": ("Valentin's newest message has no reply yet. Answer it "
-                                                             "on its own in one short line, then continue the work.")}}
+                                                             "directly, then continue the work. "
+                                                             "No separate acknowledgment.")}}
 
 
 def human(text):
@@ -141,6 +142,18 @@ class ReplyCheck(unittest.TestCase):
     def test_a_task_notification_is_not_him_talking(self):
         entries = [human('ship it'), say('On it.'), tool_call(), tool_result(), notification(), tool_call()]
         self.assert_allowed(self.hook(entries))
+
+    def test_automated_messages_do_not_demand_an_acknowledgment(self):
+        for text in ('<teammate-message teammate_id="peer">No change.</teammate-message>',
+                     '[Message from session peer] No change.',
+                     '[Cross-session message from peer] No change.',
+                     '[from peer] No change.',
+                     "The user hasn't heard from you in a while",
+                     'The user hasn’t heard from you in a while'):
+            with self.subTest(text=text):
+                self.assert_allowed(self.hook([human('ship it'), say('On it.'), human(text), tool_call()]))
+                self.assert_allowed(self.hook([say('On it.'), queued(text), tool_call()]))
+                self.assert_denied(self.hook([human('status?'), human(text), tool_call()]))
 
     def test_a_tool_result_is_not_him_talking(self):
         entries = [human('ship it'), say('On it.'), tool_call(), tool_result(), tool_call()]

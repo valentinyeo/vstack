@@ -32,16 +32,16 @@ Loading this skill turns on three checks in this chat: a tool step waits until h
 
 1. The main chat answers, starts work, reads results and reports. Real work runs in background agents or background jobs: investigations, fixes, edits, tests, builds, CI watches, big searches. Foreground is only a few-second look the next reply needs.
 2. A reply reaches him within about 60 seconds of his message. That is time to the first reply, not leave to stop working.
-3. A new message arrives mid-turn? Reply to it on its own at the next tool result, then pick the open work back up.
-4. One message, one reply. Never merge answers. Keep replies short while work runs.
+3. A new message from Valentin arrives mid-turn? Answer it at the next tool result, then pick the open work back up. No separate acknowledgment.
+4. Answer his question, not the whole job list. Report only new results, meaningful changes or a decision he must make. Notifications, cross-session messages and silence reminders get no reply text when nothing changes for him; continue the work.
 
 ## Every ask ends done
 
 5. Every ask goes on the todo list when it arrives. A side question does not close it.
 6. Background means tracked by the harness, so its end wakes this session. Claude: Bash or Agent with `run_in_background`. Codex and hax: a job the harness reports back on. Never `&`, `nohup`, `setsid` or a detached `tmux` window. Their result never comes back.
 7. Start a worker with its brief in brief.txt, then `~/.local/bin/plan-pick --run` as a tracked background job. A Claude background agent only when `~/.local/bin/plan-pick --claude-helper` exits 0. A failed launch is not a running job. Say what failed.
-8. End a turn only when each open item is done and checked, has a named background job running, or waits on a call only Valentin can make, which the reply asks. The last line names each running job and what happens when it ends.
-9. A job ends? Pick it up at once. A worker's report is a claim. Check the real thing: the commit is pushed, the page loads, the test passes. Only then mark it done and tell him. A failed check gets a fresh worker with the brief plus the failure.
+8. End a turn only when each open item is done and checked, has a tracked background job running, or waits on a call only Valentin can make, which the reply asks.
+9. A job ends? Pick it up at once. A worker's report is a claim. Check the real thing: the commit is pushed, the page loads, the test passes. Only then mark it done; tell him if it changes his outcome. A failed check gets a fresh worker with the brief plus the failure.
 
 ## Test
 
