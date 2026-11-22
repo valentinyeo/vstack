@@ -1235,14 +1235,21 @@ def tmux_server_alive(ctx, sock):
     return error is None
 
 
+def session_ever_attached(row):
+    if row.get("attached"):
+        return True
+    last = row.get("last_attached")
+    return last is not None and last != 0
+
+
 def private_server_closeable(ctx, sock, name, server_age_limit, protected, patterns, now):
     sessions, serror, scomplete = tmux_session_rows(ctx, sock)
     if serror:
         return False, "sessions unreadable: {}".format(serror)
     if not scomplete:
         return False, "sessions list was incomplete"
-    if any(row.get("attached") for row in sessions):
-        return False, "a session is attached"
+    if any(session_ever_attached(row) for row in sessions):
+        return False, "a session is or was attached"
     if any(session_name_protected(row.get("name"), protected, patterns) for row in sessions):
         return False, "a session name is protected"
     if any((now - row["created"]) < server_age_limit
@@ -1300,7 +1307,7 @@ def tmux_pane_rows(ctx, sock):
 
 def tmux_session_rows(ctx, sock):
     fmt = ("#{session_name}\t#{session_created}\t#{session_attached}\t"
-           "#{session_windows}\t#{window_panes}")
+           "#{session_windows}\t#{window_panes}\t#{session_last_attached}")
     out, error = tmux_command(ctx, sock, ["list-sessions", "-F", fmt], timeout=10)
     if error:
         return None, error, True
@@ -1314,9 +1321,11 @@ def tmux_session_rows(ctx, sock):
             complete = False
             continue
         try:
+            last_text = parts[5].strip() if len(parts) > 5 else ""
+            last_attached = int(last_text) if last_text else 0
             rows.append({"name": parts[0], "created": int(parts[1]),
                          "attached": int(parts[2]), "windows": int(parts[3]),
-                         "panes": int(parts[4])})
+                         "panes": int(parts[4]), "last_attached": last_attached})
         except ValueError:
             complete = False
             continue
@@ -1344,8 +1353,8 @@ def tmux_session_pane(ctx, sock, session):
 
 def tmux_act(item, ctx):
     action = item["action"]
-    if action == "keep":
-        item["result"] = "kept"
+    if action in ("keep", "report"):
+        item["result"] = "kept" if action == "keep" else "reported"
         return
     if not ctx.applied:
         if action in ("close-server", "close-session"):
@@ -1470,9 +1479,9 @@ def scan_tmux(ctx):
                           "session {} is protected by name".format(label),
                           age, extra={"socket": default_sock, "session": label, "target": label})
             continue
-        if session["attached"]:
+        if session_ever_attached(session):
             ctx.candidate("tmux", path, "keep", "tmux-default-3d",
-                          "session {} is attached".format(label), age,
+                          "session {} is or was attached".format(label), age,
                           extra={"socket": default_sock, "session": label, "target": label})
             continue
         if session["panes"] != 1 or session["windows"] != 1:
@@ -1500,9 +1509,9 @@ def scan_tmux(ctx):
                           "session {} pane is not an idle shell".format(label), age,
                           extra={"socket": default_sock, "session": label, "target": label})
             continue
-        item = ctx.candidate("tmux", path, "close-session", "tmux-default-3d",
-                             "default session {} idle shell, untouched {}".format(
-                                 label, fmt_age(age)),
+        item = ctx.candidate("tmux", path, "report", "tmux-default-3d",
+                             "default session {} idle shell, untouched {} "
+                             "(default server never closes)".format(label, fmt_age(age)),
                              age, extra={"socket": default_sock, "session": label, "target": label})
         tmux_act(item, ctx)
 

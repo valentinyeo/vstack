@@ -840,7 +840,7 @@ class TmuxRules(Base):
         item = next(i for i in payload['items'] if i.get('session') == 'live-test-protected')
         self.assertEqual(item['action'], 'keep')
 
-    def test_old_idle_default_session_closes_on_apply(self):
+    def test_old_idle_default_session_reported_never_closed_on_apply(self):
         sock = self.box.tmux_socket('default')
         self.box.start_tmux(sock, session='stale-idle-shell', command=None)
         time.sleep(2.0)
@@ -848,11 +848,11 @@ class TmuxRules(Base):
         self.box.seed_cmdline(pane_pid, ['/bin/bash'])
         payload = self.box.payload('--only', 'tmux', '--apply', tmux_ages=self.AGES)
         item = next(i for i in payload['items'] if i.get('session') == 'stale-idle-shell')
-        self.assertEqual(item['action'], 'close-session')
-        self.assertEqual(item['result'], 'closed')
+        self.assertEqual(item['action'], 'report')
+        self.assertEqual(item['result'], 'reported')
         out = subprocess.run(['tmux', '-S', sock, 'has-session', '-t', 'stale-idle-shell'],
                              capture_output=True)
-        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(out.returncode, 0)
 
     def test_dry_run_reports_would_close_without_acting(self):
         sock = self.box.tmux_socket('delta-test-dry')
@@ -894,6 +894,65 @@ class TmuxRules(Base):
         self.assertEqual(item['action'], 'keep')
         self.assertIn('attached', item['reason'].lower())
         self.assertTrue(tmux_alive(sock))
+
+    def test_private_server_previous_attach_is_kept(self):
+        sock = self.box.tmux_socket('delta-test-was-attached')
+        self.box.start_tmux(sock, session='follow', command='sleep 600')
+        time.sleep(1.2)
+        mod = load_script()
+        ctx_opts = {'apply': True, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                    'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+                    'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+                    'caller': None}
+        ctx = mod.Context(ctx_opts)
+        real_rows = mod.tmux_session_rows
+
+        def rows(side_ctx, side_sock):
+            got, error, complete = real_rows(side_ctx, side_sock)
+            if got:
+                for row in got:
+                    row['attached'] = 0
+                    row['last_attached'] = int(time.time())
+            return got, error, complete
+
+        with unittest.mock.patch.object(mod, 'tmux_session_rows', side_effect=rows):
+            mod.scan_tmux(ctx)
+        item = next(i for i in ctx.items if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertIn('attached', item['reason'].lower())
+        self.assertTrue(tmux_alive(sock))
+
+    def test_default_session_previous_attach_is_kept(self):
+        sock = self.box.tmux_socket('default')
+        self.box.start_tmux(sock, session='was-attached', command=None)
+        time.sleep(2.0)
+        pane_pid = self.box.pane_pid(sock, 'was-attached')
+        self.box.seed_cmdline(pane_pid, ['/bin/bash'])
+        mod = load_script()
+        ctx_opts = {'apply': True, 'json': False, 'parts': ['tmux'], 'budget': 120,
+                    'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+                    'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+                    'caller': None}
+        ctx = mod.Context(ctx_opts)
+        real_rows = mod.tmux_session_rows
+
+        def rows(side_ctx, side_sock):
+            got, error, complete = real_rows(side_ctx, side_sock)
+            if got:
+                for row in got:
+                    if row['name'] == 'was-attached':
+                        row['attached'] = 0
+                        row['last_attached'] = int(time.time())
+            return got, error, complete
+
+        with unittest.mock.patch.object(mod, 'tmux_session_rows', side_effect=rows):
+            mod.scan_tmux(ctx)
+        item = next(i for i in ctx.items if i.get('session') == 'was-attached')
+        self.assertEqual(item['action'], 'keep')
+        self.assertIn('attached', item['reason'].lower())
+        out = subprocess.run(['tmux', '-S', sock, 'has-session', '-t', 'was-attached'],
+                             capture_output=True)
+        self.assertEqual(out.returncode, 0)
 
     def test_private_server_tail_follow_is_kept(self):
         log = self.box.make('build.log', body='line\n')
