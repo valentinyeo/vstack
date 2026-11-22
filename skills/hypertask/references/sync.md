@@ -42,33 +42,9 @@ A PR names a ticket when the key or its board URL appears in the title, in the b
 Board sync is per project and per chat. Nothing user-wide runs it.
 
 1. Add the board line to the project's notes (`AGENTS.md` or `CLAUDE.md`), as `views.md` says.
-2. Add the Stop hook to the project's own `.claude/settings.json`, yourself. Keep every hook already there and add this entry to the `Stop` list:
-
-   ```json
-   {
-     "hooks": {
-       "Stop": [
-         {
-           "hooks": [
-             {
-               "type": "command",
-               "command": "sh -c 'f=\"$HOME/.claude/hooks/reconcile-auto.py\"; [ -f \"$f\" ] || exit 0; exec /usr/bin/python3 \"$f\"'"
-             }
-           ]
-         }
-       ]
-     }
-   }
-   ```
-
-   Never add it to `~/.claude/settings.json`: several chats share this machine and each owns its own setup. `install` links `hooks/reconcile-auto.py` into `~/.claude/hooks` so the path exists; it never edits a settings file. Keep the `[ -f "$f" ] || exit 0`: a missing link makes python exit 2, and a Stop hook that exits 2 holds the turn open.
-3. Run the checkup (`checkup.md`). It verifies the entry is present and the status record is fresh.
-
-## What the hook does
-
-After each turn, at most every 10 minutes, it starts `reconcile --apply --limit 5` for the project's board and the chat's label, detached. A `MULTIPROMPT_TAB` names a Valentin-facing Multibot chat; a headless run passes.
-
-It blocks the chat only for setup the chat is missing: the board line, or the token for its own login. It never blocks on a tool failure. A failed sync is one JSON line in `~/.local/state/reconcile-auto/failures.jsonl`, for the reconcile owner, Hypertask Reconciler. It never stops a chat.
+2. Start workers through `skills/hypertask-work/lease`. Its start and end events sync the ticket whose work moved.
+3. Keep your own `/board-drain` watcher armed. It runs `skills/board-drain/sync` before its snapshot, every fifteen minutes, and records the result for drain-check. A failed sync wakes this chat.
+4. Run the checkup (`checkup.md`). It checks this chat's loop and last sync, not a turn-end hook.
 
 ## Records
 
@@ -78,7 +54,7 @@ The lease writes one card record per phase: `<board>-<ticket>-<phase>.json`, wit
 
 A card sync that cannot read its ticket writes no record; its one line goes to `failures.jsonl`.
 
-A record older than 30 minutes is stale and the next turn starts a run. `exit` 0 and `unknown` 0 is healthy.
+The watcher records its last sync in this chat's board-drain state. `drain-check` rejects a failed sync or one older than 45 minutes. A lease record with `exit` 0 and `unknown` 0 is healthy.
 
 ## Assignment on the lease start
 

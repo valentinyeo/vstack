@@ -38,7 +38,7 @@ Prior art: pstack `poteto-mode` covers the work loop; only his rules and their h
 - **Screenshots:** One public https URL, never a file path or a second image host.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.
-- **Ticket, not chat:** each new ask from him becomes a ticket, then a worker; status, evidence and questions go on it. The `/hypertask` skill owns the ticket rules.
+- **Ticket, not chat:** each new ask becomes a ticket and worker; status and evidence go on it. The `/hypertask` skill owns the ticket rules.
 
 ## Three tools
 
@@ -52,7 +52,7 @@ Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`). It o
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself at session start, after restart or handover, and when this skill loads. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, on restart or handover, and on skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
 
 ### PR owner
 
@@ -60,7 +60,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 
 ## Working
 
-- **Hypertask gaps:** file one at once with `hypertask feedback`, then send him the link.
+- **Gaps in Hypertask, Multi Bot, vstack:** `hypertask feedback`, `multibot-feedback`, or `vstack-feedback` now; send him the link.
 - **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
@@ -68,8 +68,8 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 - **Self-audit on load:** run `~/.claude/skills/pstack-diff/pstack-diff .`; clear every EXTRA in one PR until it exits 0. A new CI gate needs a house-file line naming its pstack sentence.
 - **Server load:** before a worker, build or long test, run `~/.local/bin/vps-state --can-launch worker`; on HOLD start nothing and say so. Time-limit long commands.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
-- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan its history for secrets and client data, then make it public. A repo that must stay private waits: note it once on the ticket; never verify or merge around it.
-- **Cloudflare:** host everything new there, each page included. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
+- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan for secrets and client data, then make it public. A repo that must stay private: note it once on the ticket; never verify or merge around it.
+- **Cloudflare:** host everything new there. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
 - **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
 
 ## Designing

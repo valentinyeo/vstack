@@ -31,7 +31,7 @@ Prior art: pstack `poteto-mode` was checked for task workflow rules; it covers s
 | `references/tickets.md` | Filing, onboarding or writing a ticket or comment: parts, labels, Questions, the guard. |
 | `references/board.md` | Creating or moving a ticket: columns, true column, protected columns, manual overrides, worker leases. |
 | `references/views.md` | Setting up your own view and label, or reading a board line. |
-| `references/sync.md` | Setting up or debugging board sync: the Stop hook, status records, reconcile flags, reporting a miss. |
+| `references/sync.md` | Setting up or debugging board sync: lease events, the board watcher, status records, reconcile flags, reporting a miss. |
 | `references/checkup.md` | Running the checkup: the checks and what each one fixes. |
 
 ## Three commands

@@ -4,87 +4,49 @@
 #
 #   <path> | pstack: <skill or principle> | why: <root cause ticket URL or enforces <rule>>
 #
-# `pstack: none` means no pstack rule covers it: a delete candidate. It needs an expiry
-# line below, and the next PR deletes the file or justifies it with a real pstack source.
-# An expiry in the past fails the test.
 hooks/agent-identity-guard.py | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-2060/2857
 hooks/billing-quiet.py | pstack: principle-encode-lessons-in-structure | why: enforces principle-encode-lessons-in-structure (a repeated correction becomes a check)
 hooks/book-check.py | pstack: poteto-mode | why: enforces poteto-mode (a brief walks the verification book)
-hooks/claude-helper-gate.py | pstack: none | why: https://app.hypertask.ai/detail/project-2060/2924
-hooks/gh-watch-guard.py | pstack: none | why: https://app.hypertask.ai/detail/project-13556/78
-hooks/launch-gate.py | pstack: none | why: https://app.hypertask.ai/detail/project-13556/39
 hooks/long-chat.py | pstack: principle-guard-the-context-window | why: https://app.hypertask.ai/detail/project-13556/97
 hooks/no-bare-ids.py | pstack: principle-minimize-reader-load | why: https://app.hypertask.ai/detail/project-13556/119
 hooks/out-of-bounds.py | pstack: principle-boundary-discipline | why: enforces principle-boundary-discipline
 hooks/pacer-guard.py | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-13556/96
-hooks/plan-pick-only.py | pstack: none | why: https://app.hypertask.ai/detail/project-2060/2924
 hooks/pstack-new-gates.py | pstack: create-verification-skill | why: enforces create-verification-skill (no gate pstack does not ask for)
 hooks/pstack-reply.py | pstack: poteto-mode | why: enforces poteto-mode (advice names the pstack source it follows)
 hooks/pstack-source.py | pstack: poteto-mode | why: enforces poteto-mode (a worker brief and a PR name their pstack source)
-hooks/reconcile-auto.py | pstack: none | why: https://app.hypertask.ai/detail/project-13556/85
-hooks/repo-tidy-stop | pstack: none | why: https://app.hypertask.ai/detail/project-13556/3
 hooks/said-started.py | pstack: poteto-mode | why: enforces poteto-mode (promised work starts now)
-hooks/skill-update.py | pstack: none | why: https://app.hypertask.ai/detail/project-13556/56
-hooks/subagent_call.py | pstack: none | why: none
+hooks/subagent_call.py | pstack: principle-boundary-discipline | why: enforces principle-boundary-discipline (parse harness agent identity at the hook boundary, so parent-only pacing never applies to workers)
 hooks/test-timeout-guard.py | pstack: tdd | why: https://app.hypertask.ai/detail/project-13556/37
 hooks/ticket-way.py | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-2060/2573
-hooks/valentin_mode_loaded.py | pstack: none | why: none
+hooks/valentin_mode_loaded.py | pstack: principle-boundary-discipline | why: enforces principle-boundary-discipline (parse opt-in transcript markers once for long-chat and pacer hooks)
 hooks/vps-state-hook | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/2
 scripts/pacer-check.py | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-2060/2867
 scripts/pick-verifier-model | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2727
 scripts/pr-overlap | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/61
 scripts/run-verifier | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2836
-scripts/skill-check-nightly | pstack: none | why: https://app.hypertask.ai/detail/project-13556/36
 scripts/skill-check.py | pstack: principle-guard-the-context-window | why: https://app.hypertask.ai/detail/project-13556/36
 scripts/verdict.py | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2802
 skills/board-drain/drain-check | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/4
-skills/board-drain/loop-state | pstack: none | why: https://app.hypertask.ai/detail/project-13556/74
+skills/board-drain/loop-state | pstack: poteto-mode | why: enforces poteto-mode autonomous-run step 2 (record this chat's watcher and heartbeat ownership across restarts)
 skills/board-drain/owners | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/44
 skills/board-drain/sync | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/4
-skills/board-drain/watch | pstack: none | why: https://app.hypertask.ai/detail/project-13556/74
+skills/board-drain/watch | pstack: poteto-mode | why: enforces poteto-mode autonomous-run step 2 (wait outside the model for board changes, with a heartbeat fallback)
 skills/cloud-agent/cloud-agent | pstack: swarm | why: https://app.hypertask.ai/detail/project-13556/48
 skills/fleet-report/fleet-report | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/92
 skills/hypertask-work/lease | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/8
 skills/hypertask-work/reconcile | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/85
-skills/hypertask/scripts/blocker-sweep.py | pstack: none | why: none
-skills/hypertask/scripts/ticket-lint | pstack: none | why: none
-skills/join-slack/scripts/fleet-slack-doctor | pstack: none | why: none
+skills/hypertask/scripts/ticket-lint | pstack: correct | why: enforces correct (reject repeated design-pick, secret-paste and unanswerable asks at the ticket-writing boundary)
 skills/pr-housekeeping/pr-queue | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/52
 skills/pstack-diff/pstack-diff | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-13556/65
-skills/ratstack-transition/scripts/rat-diff | pstack: none | why: https://app.hypertask.ai/detail/project-13556/82
 skills/repo-tidy/repo-tidy | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/3
 skills/responsive-mode/idle-stop.py | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/116
-skills/responsive-mode/reply-check.py | pstack: none | why: https://app.hypertask.ai/detail/project-13556/38
+skills/responsive-mode/reply-check.py | pstack: correct | why: enforces correct (the corrected unanswered-message mistake fails at this chat's tool boundary, with a named fix)
 skills/responsive-mode/said-started.py | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/38
 skills/valentin-mode/no-bare-ids.py | pstack: principle-minimize-reader-load | why: https://app.hypertask.ai/detail/project-13556/119
-skills/valentin-mode/context.py | pstack: none | why: https://app.hypertask.ai/detail/project-13556/110
-skills/valentin-mode/version.sh | pstack: none | why: https://app.hypertask.ai/detail/project-13556/72
+skills/valentin-mode/context.py | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/110
+skills/valentin-mode/version.sh | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/72
 skills/vps-state/vps-state | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-2060/2935
-skills/vps-tidy/vps-tidy | pstack: none | why: https://app.hypertask.ai/detail/project-13556/7
-tools/gh-wrapper/gh | pstack: none | why: https://app.hypertask.ai/detail/project-13556/54
+skills/vstack-feedback/vstack-feedback | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-13556/121
+tools/gh-wrapper/gh | pstack: principle-boundary-discipline | why: https://app.hypertask.ai/detail/project-13556/54
 tools/gh-wrapper/replay.py | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/90
-tools/gh-wrapper/wait-checks | pstack: none | why: https://app.hypertask.ai/detail/project-13556/78
-
-# Delete candidates: no pstack rule covers them. Delete or justify before the expiry.
-expires: 2026-12-06 | hooks/claude-helper-gate.py
-expires: 2026-12-06 | hooks/gh-watch-guard.py
-expires: 2026-12-06 | hooks/launch-gate.py
-expires: 2026-12-06 | hooks/plan-pick-only.py
-expires: 2026-12-06 | hooks/reconcile-auto.py
-expires: 2026-12-06 | hooks/repo-tidy-stop
-expires: 2026-12-06 | hooks/skill-update.py
-expires: 2026-12-06 | hooks/subagent_call.py
-expires: 2026-12-06 | hooks/valentin_mode_loaded.py
-expires: 2026-12-06 | scripts/skill-check-nightly
-expires: 2026-12-06 | skills/board-drain/loop-state
-expires: 2026-12-06 | skills/board-drain/watch
-expires: 2026-12-06 | skills/hypertask/scripts/blocker-sweep.py
-expires: 2026-12-06 | skills/hypertask/scripts/ticket-lint
-expires: 2026-12-06 | skills/join-slack/scripts/fleet-slack-doctor
-expires: 2026-12-06 | skills/ratstack-transition/scripts/rat-diff
-expires: 2026-12-06 | skills/responsive-mode/reply-check.py
-expires: 2026-12-06 | skills/valentin-mode/context.py
-expires: 2026-12-06 | skills/valentin-mode/version.sh
-expires: 2026-12-06 | skills/vps-tidy/vps-tidy
-expires: 2026-12-06 | tools/gh-wrapper/gh
-expires: 2026-12-06 | tools/gh-wrapper/wait-checks
+tools/gh-wrapper/wait-checks | pstack: poteto-mode | why: enforces poteto-mode autonomous-run step 2 (wait on this PR's checks outside the model, with a bounded heartbeat)

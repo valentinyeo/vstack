@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""File feedback about vstack on board 13556 under this chat's agent identity.
+
+Usage: vstack-feedback "<want>" --why "<what it blocks>"
+"""
+import argparse
+import html
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
+
+BOARD = '13556'
+LABEL = 'Vstack'
+
+
+def load_session():
+    path = Path(__file__).resolve().parent.parent / 'hypertask-work' / 'session_login.py'
+    spec = importlib.util.spec_from_file_location('session_login', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def normalized(text):
+    return ' '.join(unicodedata.normalize('NFKC', text).split()).casefold()
+
+
+def ticket_url(number):
+    suffix = number.split('-', 1)[1] if '-' in number else number
+    return f'https://app.hypertask.ai/detail/project-{BOARD}/{suffix}'
+
+
+class Client:
+    def __init__(self, token):
+        self.token = token.strip()
+        if not self.token:
+            raise ValueError('agent token is empty')
+        self.binary = shutil.which('hypertask')
+        if not self.binary:
+            raise ValueError('install hypertask before using vstack-feedback')
+
+    def call(self, *args):
+        result = subprocess.run(
+            [self.binary, '--token', self.token, '--json', *args],
+            capture_output=True, text=True, timeout=60)
+        try:
+            data = json.loads(result.stdout)
+        except ValueError:
+            data = None
+        if result.returncode or not isinstance(data, dict) or data.get('success') is False:
+            detail = (result.stderr or result.stdout).replace(self.token, '[redacted]').strip()
+            raise ValueError(f'hypertask failed: {detail or "unknown"}')
+        return data
+
+    def open_titles(self):
+        data = self.call('task', 'list', '--project', BOARD, '--labels', LABEL, '--status', 'Normal')
+        rows = data.get('tasks') or []
+        by_title = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            title = row.get('title')
+            ref = row.get('ticketNumber')
+            if isinstance(title, str) and isinstance(ref, str):
+                by_title[normalized(title)] = ref
+        return by_title
+
+    def create(self, title, why):
+        description = (
+            '<p><strong>Problem</strong></p><p>' + html.escape(why or 'No reason given.') + '</p>'
+            '<p><strong>Fix</strong></p><p>' + html.escape(title) + '</p>'
+            '<p><strong>Done when</strong></p><p>The request works in vstack.</p>'
+            '<p><strong>Risk</strong></p><p>Worst case: duplicate or noisy tickets. Undo: archive.</p>'
+            '<p><strong>Decision</strong></p><p>none</p>')
+        return self.call(
+            'task', 'create', '--project', BOARD, '--title', title,
+            '--description', description, '--labels', LABEL)
+
+
+def resolve_login(env):
+    login = load_session().login_for_session(env)
+    if not login:
+        return None
+    name, path = login
+    if not path.is_file():
+        raise ValueError(f'no agent token for {name}; run the session login flow first')
+    return path.read_text().strip()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('want')
+    parser.add_argument('--why', default='')
+    args = parser.parse_args(argv)
+    title = ' '.join(args.want.split())
+    if not title:
+        print('vstack-feedback: say what you want from vstack', file=sys.stderr)
+        return 2
+    why = ' '.join(args.why.split())
+    try:
+        token = resolve_login(os.environ)
+    except ValueError as exc:
+        print(f'vstack-feedback: {exc}', file=sys.stderr)
+        return 2
+    if not token:
+        print('vstack-feedback: this chat has no agent token; never use a person token', file=sys.stderr)
+        return 2
+    try:
+        client = Client(token)
+        existing = client.open_titles().get(normalized(title))
+        if existing:
+            url = ticket_url(existing)
+            print(f'duplicate: open ticket already titled like this: {url}')
+            return 0
+        task = client.create(title, why).get('task') or {}
+        ref = task.get('ticketNumber')
+        if not isinstance(ref, str) or not ref:
+            raise ValueError('ticket creation returned no number')
+        print(ticket_url(ref))
+        return 0
+    except ValueError as exc:
+        print(f'vstack-feedback: {exc}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
