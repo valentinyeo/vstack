@@ -1,16 +1,15 @@
 {
   "now": 1763800800,
-  "roster": "Multi Bot Features (live-d, claude, /tmp)\n",
   "tasks": [
     {
       "ticketNumber": "FACT-11",
       "projectId": 99001,
       "section": "Todo",
-      "title": "Desktop window resize regression",
+      "title": "Chat label names the wrong assignee",
       "updatedAt": "2025-11-21T12:00:00.000Z",
       "staleness": {"sectionChangedAt": "2025-11-20T12:00:00.000Z"},
-      "labels": [{"name": "Multiprompt"}, {"name": "Desktop App"}],
-      "assignees": [{"type": "agent", "displayName": "Multi Bot Features"}]
+      "labels": [{"name": "Multi Bot Features"}],
+      "assignees": [{"type": "agent", "displayName": "Board Drain Loop"}]
     }
   ]
 }

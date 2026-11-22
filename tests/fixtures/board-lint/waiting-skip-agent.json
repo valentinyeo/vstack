@@ -1,0 +1,16 @@
+{
+  "now": 1763800800,
+  "tasks": [
+    {
+      "ticketNumber": "FACT-41",
+      "projectId": 99001,
+      "section": "Doing",
+      "title": "Stale assignee but waiting on Valentin",
+      "updatedAt": "2025-11-21T12:00:00.000Z",
+      "waitingOnUserId": 1,
+      "staleness": {"sectionChangedAt": "2025-11-20T12:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}],
+      "assignees": [{"type": "agent", "displayName": "Multiprompt Android Dev"}]
+    }
+  ]
+}

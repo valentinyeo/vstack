@@ -208,9 +208,16 @@ def load_pulls(board, tasks, fixture_pulls=None):
     now = time.time()
     try:
         if saved and reconcile.saved_facts_fresh(saved, now) and keys:
+            items = reconcile.probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
             known = saved.get('tickets') or {}
-            pulls = {key: list(known.get(key, {}).get('pulls', [])) for key in keys}
-            reconcile.restore_pull_facts(saved)
+            new_keys = {key for key in keys if key not in known}
+            board_changed = reconcile.board_task_changes(saved, candidates, keys)
+            pr_changed = reconcile.tickets_from_probe(items, keys, board, saved) | new_keys
+            pulls = reconcile.discover_quiet(keys, created=created, saved=saved, probe_items=items,
+                                             github_refresh=pr_changed, **options)
+            if pr_changed:
+                reconcile.prefetch({key: pulls[key] for key in pr_changed if key in pulls},
+                                   clear=False, **options)
         else:
             pulls = reconcile.discover(keys, created=created, **options)
             reconcile.prefetch(pulls, **options)
@@ -250,8 +257,43 @@ def armed_chats(board_id):
     return names
 
 
+def waiting_or_blocked(task):
+    return bool(task.get('waitingOnUserId') or task.get('blockerCommentId'))
+
+
+def chat_naming_labels(args, board_id):
+    """Labels that name a chat: live roster names, or a loop label only when it equals the chat name."""
+    names = set(live_names(args))
+    try:
+        paths = sorted(loop_state.state_dir().glob('*.json'))
+    except OSError:
+        return names
+    for path in paths:
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, TypeError, ValueError):
+            continue
+        if not isinstance(state, dict) or str(state.get('board')) != str(board_id):
+            continue
+        chat = (state.get('name') or '').strip()
+        label = (state.get('label') or '').strip()
+        if not chat:
+            continue
+        try:
+            if loop_state.state_path(chat) != path or loop_state.status(chat)[0] != 0:
+                continue
+        except ERRORS:
+            continue
+        names.add(slug_agent(chat))
+        if label and slug_agent(label) == slug_agent(chat):
+            names.add(slug_agent(label))
+    return names
+
+
 def check_agent_assignee(task, live, breaks):
     if task.get('section') not in OPEN:
+        return
+    if waiting_or_blocked(task):
         return
     agents = agent_assignees(task)
     if not agents and task.get('section') in WORKING:
@@ -266,13 +308,14 @@ def check_agent_assignee(task, live, breaks):
                                 f'assignee {name!r} is not a live chat; fix name or reassign'))
 
 
-def check_true_column(task, facts, board, names, options, breaks):
+def check_true_column(task, facts, board, names, breaks):
     if task.get('section') not in board.managed:
         return
     column, reason = reconcile.target(facts, board, names)
-    if column != task.get('section'):
-        breaks.append(Break(task['ticketNumber'], 'true-column', owner_chat(task),
-                            f'move {task.get("section")} -> {column} ({reason}) or run reconcile dry'))
+    if column == task.get('section'):
+        return
+    breaks.append(Break(task['ticketNumber'], 'true-column', owner_chat(task),
+                        f'move {task.get("section")} -> {column} ({reason}) or run reconcile dry'))
 
 
 def check_done_proof(task, pulls, comments, breaks):
@@ -287,19 +330,21 @@ def check_done_proof(task, pulls, comments, breaks):
                         'add merged PR proof or a Done comment with evidence'))
 
 
-def check_label_assignee(task, breaks):
+def check_label_assignee(task, chat_names, breaks):
     if task.get('section') not in OPEN:
         return
     labels = chat_labels(task)
     agents = agent_assignees(task)
     if not labels or not agents:
         return
-    label = slug_agent(labels[0])
-    for agent in agents:
-        if label and slug_agent(agent) != label:
-            breaks.append(Break(task['ticketNumber'], 'label-assignee', labels[0],
-                                f'label {labels[0]!r} does not match assignee {agent!r}; relabel or reassign'))
-            return
+    for label in labels:
+        if slug_agent(label) not in chat_names:
+            continue
+        for agent in agents:
+            if slug_agent(agent) != slug_agent(label):
+                breaks.append(Break(task['ticketNumber'], 'label-assignee', label,
+                                    f'label {label!r} names chat {label!r} but assignee is {agent!r}; relabel or reassign'))
+                return
 
 
 def check_no_owner_label(task, breaks):
@@ -435,6 +480,7 @@ def lint(args):
     options = {} if board.id == reconcile.BOARD else {'board': board}
     roster_args = argparse.Namespace(roster=args.roster)
     live = live_names(args) | owners.owned_labels(args.board)
+    chat_names = chat_naming_labels(args, args.board)
     comments = collect_comments(tasks, data, args)
     breaks = []
     for task in tasks:
@@ -448,9 +494,9 @@ def lint(args):
         except ERRORS:
             continue
         check_agent_assignee(task, live, breaks)
-        check_true_column(task, facts, board, names, options, breaks)
+        check_true_column(task, facts, board, names, breaks)
         check_done_proof(task, pulls, comments, breaks)
-        check_label_assignee(task, breaks)
+        check_label_assignee(task, chat_names, breaks)
         check_no_owner_label(task, breaks)
         check_unnamed_identity(task, breaks)
         check_stale(task, now, breaks)

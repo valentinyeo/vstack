@@ -45,9 +45,25 @@ class BoardLintTests(unittest.TestCase):
         self.assert_rule(result.stdout, 'agent-assignee')
 
     def test_wrong_view_label_assignee(self):
-        result = self.run_lint('wrong-view.json')
+        roster = ('Multi Bot Features (live-d, claude, /tmp)\n'
+                  'Board Drain Loop (live-a, claude, /tmp)\n')
+        result = self.run_lint('wrong-view.json', roster_text=roster)
         self.assertEqual(result.returncode, 1)
         self.assert_rule(result.stdout, 'label-assignee')
+
+    def test_app_label_does_not_trigger_label_assignee(self):
+        roster = 'Multi Bot Android Verifiy (live-v, claude, /tmp)\n'
+        result = self.run_lint('app-label-ok.json', roster_text=roster)
+        self.assert_rule(result.stdout, 'label-assignee', present=False)
+
+    def test_waiting_ticket_skips_stale_agent(self):
+        result = self.run_lint('waiting-skip-agent.json')
+        self.assert_rule(result.stdout, 'agent-assignee', present=False)
+
+    def test_unlinked_open_pr(self):
+        result = self.run_lint('unlinked-pr.json')
+        self.assertEqual(result.returncode, 1)
+        self.assert_rule(result.stdout, 'unlinked-work')
 
     def test_no_owner_label_todo(self):
         result = self.run_lint('no-label-todo.json')

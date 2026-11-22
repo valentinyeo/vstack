@@ -1,0 +1,15 @@
+{
+  "now": 1763800800,
+  "tasks": [
+    {
+      "ticketNumber": "FACT-31",
+      "projectId": 99001,
+      "section": "Doing",
+      "title": "App label names the product, not the chat",
+      "updatedAt": "2025-11-21T12:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-20T12:00:00.000Z"},
+      "labels": [{"name": "Multiprompt Android"}],
+      "assignees": [{"type": "agent", "displayName": "Multi Bot Android Verifiy"}]
+    }
+  ]
+}

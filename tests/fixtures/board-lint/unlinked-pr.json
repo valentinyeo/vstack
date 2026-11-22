@@ -1,0 +1,30 @@
+{
+  "now": 1763800800,
+  "tasks": [
+    {
+      "ticketNumber": "FACT-51",
+      "projectId": 99001,
+      "section": "Doing",
+      "title": "Linked ticket on board",
+      "updatedAt": "2025-11-21T12:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-20T12:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}],
+      "assignees": [{"type": "agent", "displayName": "Board Drain Loop"}]
+    }
+  ],
+  "pulls": {
+    "FACT-51": [
+      {
+        "url": "https://github.com/org/repo/pull/99",
+        "number": 99,
+        "state": "OPEN",
+        "checks": "green",
+        "passed": true,
+        "title": "fix without ticket key",
+        "body": "No ticket in body",
+        "headRefName": "orphan-fix",
+        "repository": {"nameWithOwner": "org/repo"}
+      }
+    ]
+  }
+}
