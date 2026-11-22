@@ -1393,7 +1393,8 @@ def check_state(checks):
 def verifier_policy(repo, ref):
     """The trusted base policy at one commit. A commit's policy never changes, so
     the answer, including a repo that has no policy, is cached on disk."""
-    key = f'policy:{repo}@{ref}'
+    # Old entries used {} for both a missing policy and an existing empty one.
+    key = f'policy-v2:{repo}@{ref}'
     cached = cache_read(key)
     if isinstance(cached, dict) and 'policy' in cached:
         return cached['policy']
@@ -1403,7 +1404,7 @@ def verifier_policy(repo, ref):
         if '(HTTP 404)' not in str(error):
             raise
         result = None
-    policy = {} if result is None else json.loads(base64.b64decode(json.loads(result)['content']))
+    policy = None if result is None else json.loads(base64.b64decode(json.loads(result)['content']))
     cache_write(key, {'policy': policy})
     return policy
 
@@ -1440,6 +1441,23 @@ def pass_on_head(comments, head, author, repo, policy):
                               'self-hosted' not in job.get('labels', []) for job in jobs)
 
 
+def pstack_pass_on_head(checks, head, repo):
+    for check in checks:
+        suite = check.get('checkSuite') or {}
+        workflow = suite.get('workflowRun') or {}
+        if (check.get('__typename') != 'CheckRun' or check.get('name') != 'pstack-verifier' or
+                check.get('status') != 'COMPLETED' or check.get('conclusion') != 'SUCCESS' or
+                (suite.get('commit') or {}).get('oid') != head or not workflow.get('databaseId')):
+            continue
+        pages = json.loads(run('gh', 'api', '--paginate', '--slurp',
+                               f'repos/{repo}/actions/runs/{workflow["databaseId"]}/jobs?per_page=100'))
+        jobs = [job for page in pages for job in page['jobs']]
+        if jobs and all((job.get('runner_name') or '').startswith('GitHub Actions') and
+                        'self-hosted' not in job.get('labels', []) for job in jobs):
+            return True
+    return False
+
+
 def pull_facts(pull, board=DEFAULT):
     """A product board needs only the state its search already returned; every other
     board reads checks, base and verifier verdicts in batches of its own.
@@ -1451,7 +1469,8 @@ def pull_facts(pull, board=DEFAULT):
 
 PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid author{login}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
- ... on CheckRun{status conclusion} ... on StatusContext{state}}}}
+ ... on CheckRun{name status conclusion checkSuite{commit{oid} workflowRun{databaseId}}}
+ ... on StatusContext{state}}}}
  comments(last:100){totalCount nodes{databaseId body updatedAt author{login}}}'''
 # PR facts read once per run, and refilled by the batched read.
 PULLS = {}
@@ -1494,10 +1513,13 @@ def pull_from_node(repo, number, node):
     head = node['headRefOid']
     author = (node.get('author') or {}).get('login') or ''
     policy = verifier_policy(repo, node['baseRefOid'])
-    passed = pass_on_head(comments, head, author, repo, policy)
-    if not passed and total > len(comments):
-        # A verdict older than the newest hundred still counts; read them all.
-        passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
+    if policy is None:
+        passed = pstack_pass_on_head(contexts.get('nodes') or [], head, repo)
+    else:
+        passed = pass_on_head(comments, head, author, repo, policy)
+        if not passed and total > len(comments):
+            # A verdict older than the newest hundred still counts; read them all.
+            passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
     return Pull(node['url'], node['state'], checks, passed, moment(node.get('mergedAt')))
 
 

@@ -2129,6 +2129,72 @@ class CallBudgetTest(unittest.TestCase):
                 r.read_pull(broken, 1)
             run.assert_not_called()
 
+    def pstack_check(self, name='pstack-verifier', conclusion='SUCCESS', head=HEAD):
+        return {'__typename': 'CheckRun', 'name': name, 'status': 'COMPLETED',
+                'conclusion': conclusion, 'checkSuite': {
+                    'commit': {'oid': head}, 'workflowRun': {'databaseId': 9}}}
+
+    def test_pstack_verifier_on_head_passes_without_a_policy(self):
+        node = self.node(checks=[self.pstack_check(),
+                                self.pstack_check('pstack-verifier (BLOCKED)', 'NEUTRAL'),
+                                self.pstack_check('pstack-verifier report')])
+        node['state'] = 'MERGED'
+        data = {'data': {'p0': {'pullRequest': node}}}
+        jobs = [{'jobs': [{'runner_name': 'GitHub Actions 7', 'labels': ['ubuntu-latest']}]}]
+        with patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps(jobs)]) as run, \
+                patch.object(r, 'verifier_policy', return_value=None):
+            result = r.read_pull_batch([('valentinyeo/another-repo', 1)])[('valentinyeo/another-repo', 1)]
+        self.assertTrue(result.passed)
+        self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(result,))),
+                         ('AI Review', 'merged PR with PASS; live proof pending'))
+        self.assertEqual(run.call_count, 2)
+        self.assertIn('name', run.call_args_list[0].args[-1])
+        self.assertIn('workflowRun', run.call_args_list[0].args[-1])
+        self.assertEqual(run.call_args_list[1].args[-1],
+                         'repos/valentinyeo/another-repo/actions/runs/9/jobs?per_page=100')
+
+    def test_pstack_verifier_requires_exact_success_on_current_head(self):
+        cases = [[], [self.pstack_check(head='c' * 40)],
+                 [self.pstack_check('pstack-verifier (BLOCKED)', 'NEUTRAL')],
+                 [self.pstack_check('pstack-verifier report')],
+                 [self.pstack_check(conclusion='FAILURE')],
+                 [self.pstack_check(conclusion='NEUTRAL')],
+                 [{**self.pstack_check(), 'status': 'IN_PROGRESS'}],
+                 [{**self.pstack_check(), 'checkSuite': None}],
+                 [{**self.pstack_check(), 'checkSuite': {'commit': {'oid': HEAD}, 'workflowRun': None}}]]
+        for checks in cases:
+            data = {'data': {'p0': {'pullRequest': self.node(checks=checks, total=150)}}}
+            with self.subTest(checks=checks), \
+                    patch.object(r, 'run', return_value=json.dumps(data)) as run, \
+                    patch.object(r, 'verifier_policy', return_value=None):
+                result = r.read_pull_batch([('valentinyeo/another-repo', 1)])
+            self.assertFalse(result[('valentinyeo/another-repo', 1)].passed)
+            self.assertEqual(run.call_count, 1)
+
+    def test_policy_repositories_ignore_pstack_check_runs(self):
+        data = {'data': {'p0': {'pullRequest': self.node(checks=[self.pstack_check()])}}}
+        for policy in (POLICY, {}):
+            with self.subTest(policy=policy), \
+                    patch.object(r, 'run', return_value=json.dumps(data)) as run, \
+                    patch.object(r, 'verifier_policy', return_value=policy):
+                result = r.read_pull_batch([('valentinyeo/another-repo', 1)])
+            self.assertFalse(result[('valentinyeo/another-repo', 1)].passed)
+            self.assertEqual(run.call_count, 1)
+
+    def test_pstack_verifier_requires_github_hosted_jobs(self):
+        data = {'data': {'p0': {'pullRequest': self.node(checks=[self.pstack_check()])}}}
+        for jobs in ([], [{'runner_name': None, 'labels': []}],
+                     [{'runner_name': 'my-server', 'labels': ['ubuntu-latest']}],
+                     [{'runner_name': 'GitHub Actions 7', 'labels': ['self-hosted']}],
+                     [{'runner_name': 'GitHub Actions 7', 'labels': ['ubuntu-latest']},
+                      {'runner_name': 'my-server', 'labels': ['self-hosted']}]):
+            pages = [{'jobs': jobs}]
+            with self.subTest(jobs=jobs), \
+                    patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps(pages)]), \
+                    patch.object(r, 'verifier_policy', return_value=None):
+                result = r.read_pull_batch([('valentinyeo/another-repo', 1)])
+            self.assertFalse(result[('valentinyeo/another-repo', 1)].passed)
+
     def test_policy_is_cached_on_disk_and_counted(self):
         payload = json.dumps({'content': base64.b64encode(json.dumps(POLICY).encode()).decode()})
         with tempfile.TemporaryDirectory() as home, \
@@ -2140,12 +2206,21 @@ class CallBudgetTest(unittest.TestCase):
         self.assertIn('repos/valentinyeo/another-repo/contents/.verify/policy.json?ref=' + HEAD,
                       run.call_args.args[-1])
 
+    def test_empty_policy_is_distinct_from_missing_and_legacy_cache(self):
+        repo = 'valentinyeo/another-repo'
+        r.cache_write(f'policy:{repo}@{HEAD}', {'policy': {}})
+        payload = json.dumps({'content': base64.b64encode(b'{}').decode()})
+        with patch.object(r, 'run', return_value=payload) as run:
+            self.assertEqual(r.verifier_policy(repo, HEAD), {})
+            self.assertEqual(r.verifier_policy(repo, HEAD), {})
+        self.assertEqual(run.call_count, 1)
+
     def test_missing_policy_is_cached_too(self):
         with tempfile.TemporaryDirectory() as home, \
                 patch.object(r.Path, 'home', return_value=Path(home)), \
                 patch.object(r, 'run', side_effect=RuntimeError('gh api failed: gh: Not Found (HTTP 404)')) as run:
-            self.assertEqual(r.verifier_policy('valentinyeo/another-repo', HEAD), {})
-            self.assertEqual(r.verifier_policy('valentinyeo/another-repo', HEAD), {})
+            self.assertIsNone(r.verifier_policy('valentinyeo/another-repo', HEAD))
+            self.assertIsNone(r.verifier_policy('valentinyeo/another-repo', HEAD))
         self.assertEqual(run.call_count, 1)
 
     def test_quiet_cache_preserves_merge_time_and_reopen_guard(self):
