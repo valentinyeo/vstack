@@ -12,6 +12,8 @@ William Zinsser (1922-2015), journalist and Yale writing teacher, wrote "On Writ
 
 Apply these principles to all English text you write or edit: articles, newsletters, ads, emails, reports, web copy. The rules are guidelines, not laws. As Orwell's last rule says, break any of them sooner than write something barbarous, but never to sound clever.
 
+Prior art: pstack `unslop` is a checklist of AI tells; this skill adds only the method behind it, Zinsser's and Orwell's plain-English rules with their sources.
+
 ## Workflow
 
 **Writing new text**
