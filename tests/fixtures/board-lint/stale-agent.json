@@ -1,0 +1,16 @@
+{
+  "now": 1763800800,
+  "roster": "Multi Bot Android Bugs (live-b, claude, /tmp)\nMulti Bot Android Features (live-c, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-10",
+      "projectId": 99001,
+      "section": "Doing",
+      "title": "Android parity fix for notification channels",
+      "updatedAt": "2025-11-22T08:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T09:00:00.000Z"},
+      "labels": [{"name": "Multi Bot Android Bugs"}, {"name": "brain-medium"}],
+      "assignees": [{"type": "agent", "displayName": "Multiprompt Android Dev"}]
+    }
+  ]
+}

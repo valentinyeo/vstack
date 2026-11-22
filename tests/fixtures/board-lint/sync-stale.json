@@ -1,0 +1,13 @@
+{
+  "now": 1763800800,
+  "board": 99001,
+  "tasks": [],
+  "loop_states": [
+    {
+      "name": "Board Drain Loop",
+      "board": 99001,
+      "label": "Board Drain Loop",
+      "last_sync": {"at": "2025-11-20T08:00:00.000Z", "ok": true, "reason": ""}
+    }
+  ]
+}

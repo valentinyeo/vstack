@@ -1,0 +1,24 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-40",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Board lint read-only script",
+      "updatedAt": "2025-11-22T00:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-22T00:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}]
+    },
+    {
+      "ticketNumber": "FACT-41",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Board Lint Read-Only Script",
+      "updatedAt": "2025-11-21T00:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T00:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}]
+    }
+  ]
+}

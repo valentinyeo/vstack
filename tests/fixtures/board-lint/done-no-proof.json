@@ -1,0 +1,18 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-30",
+      "projectId": 99001,
+      "section": "Done",
+      "title": "Shipped without proof on card",
+      "updatedAt": "2025-11-20T12:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-20T12:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}]
+    }
+  ],
+  "comments": {
+    "FACT-30": [{"kind": "qa", "text": "Done, trust me", "creator": {"displayName": "Agent"}}]
+  }
+}

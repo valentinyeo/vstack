@@ -1,0 +1,16 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-1",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Clean ticket with label",
+      "updatedAt": "2025-11-21T10:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T10:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}, {"name": "brain-medium"}],
+      "assignees": [{"type": "agent", "displayName": "Board Drain Loop"}]
+    }
+  ]
+}

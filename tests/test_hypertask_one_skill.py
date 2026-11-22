@@ -87,7 +87,7 @@ class RestatingLint(unittest.TestCase):
 
     def test_the_owning_skill_has_the_seven_references(self):
         expected = {'identity.md', 'cli.md', 'tickets.md', 'board.md', 'views.md',
-                    'sync.md', 'checkup.md'}
+                    'sync.md', 'checkup.md', 'board-lint-rules.md'}
         actual = {path.name for path in (OWNER / 'references').glob('*.md')}
         self.assertEqual(actual, expected)
 

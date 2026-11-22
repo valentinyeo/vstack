@@ -1,0 +1,19 @@
+{
+  "now": 1763800800,
+  "roster": "Responsive Mode (live-f, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-13",
+      "projectId": 99001,
+      "section": "Checks",
+      "title": "Gate timing follow-up",
+      "updatedAt": "2025-11-22T06:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T06:00:00.000Z"},
+      "labels": [{"name": "Responsive Mode"}],
+      "assignees": [{"type": "agent", "displayName": "Valentins Claude Code CLI"}]
+    }
+  ],
+  "pulls": {
+    "FACT-13": [{"url": "https://github.com/org/repo/pull/9", "number": 9, "state": "OPEN", "checks": "green", "passed": false, "title": "FACT-13: gate", "body": "Ticket: FACT-13", "headRefName": "fact-13-gate", "repository": {"nameWithOwner": "org/repo"}}]
+  }
+}

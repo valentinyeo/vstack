@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""Read-only board lint: one line per rule break, no writes."""
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import sys
+import time
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+
+session_loader = importlib.machinery.SourceFileLoader('fleet_session', str(HERE / 'session_login.py'))
+session_spec = importlib.util.spec_from_loader(session_loader.name, session_loader)
+session_login = importlib.util.module_from_spec(session_spec)
+sys.modules[session_loader.name] = session_login
+session_loader.exec_module(session_login)
+
+reconcile_loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(HERE / 'reconcile'))
+reconcile_spec = importlib.util.spec_from_loader(reconcile_loader.name, reconcile_loader)
+reconcile = importlib.util.module_from_spec(reconcile_spec)
+sys.modules[reconcile_loader.name] = reconcile
+reconcile_loader.exec_module(reconcile)
+
+owners_loader = importlib.machinery.SourceFileLoader('board_drain_owners', str(ROOT / 'skills/board-drain/owners'))
+owners_spec = importlib.util.spec_from_loader(owners_loader.name, owners_loader)
+owners = importlib.util.module_from_spec(owners_spec)
+sys.modules[owners_loader.name] = owners
+owners_loader.exec_module(owners)
+
+drain_loader = importlib.machinery.SourceFileLoader('board_drain_check', str(ROOT / 'skills/board-drain/drain-check'))
+drain_spec = importlib.util.spec_from_loader(drain_loader.name, drain_loader)
+drain_check = importlib.util.module_from_spec(drain_spec)
+sys.modules[drain_loader.name] = drain_check
+drain_loader.exec_module(drain_check)
+
+loop_loader = importlib.machinery.SourceFileLoader('board_drain_loop_state', str(ROOT / 'skills/board-drain/loop-state'))
+loop_spec = importlib.util.spec_from_loader(loop_loader.name, loop_loader)
+loop_state = importlib.util.module_from_spec(loop_spec)
+sys.modules[loop_loader.name] = loop_state
+loop_loader.exec_module(loop_state)
+
+OPEN = frozenset({'Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier', 'Verification Backlog'})
+DONE = 'Done'
+WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
+TODO = 'Todo'
+FALLBACK_AGENT = frozenset({'valentins claude code cli', 'valentins claude code'})
+HUMAN_BOARDS = frozenset({15, 4060})
+ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError)
+
+STALE_SEC = {
+    'Todo': 14 * 86400,
+    'Verification Backlog': 14 * 86400,
+    'Doing': 2 * 86400,
+    'Building': 2 * 86400,
+    'Checks': 3 * 86400,
+    'AI Review': 7 * 86400,
+    'Verifier': 7 * 86400,
+}
+
+RULE_ROWS = (
+    {'id': 'agent-assignee', 'ref': 'skills/hypertask/references/identity.md', 'enforcer': 'board-lint'},
+    {'id': 'true-column', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
+    {'id': 'done-proof', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
+    {'id': 'unlinked-work', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'board-lint'},
+    {'id': 'duplicate-title', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'written only'},
+    {'id': 'stale-idle', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
+    {'id': 'human-board-write', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'none yet'},
+    {'id': 'label-assignee', 'ref': 'skills/hypertask/references/views.md', 'enforcer': 'board-lint'},
+    {'id': 'sync-record', 'ref': 'skills/hypertask/references/sync.md', 'enforcer': 'board-lint'},
+    {'id': 'no-owner-label', 'ref': 'skills/hypertask/references/views.md', 'enforcer': 'board-lint'},
+    {'id': 'unnamed-identity', 'ref': 'skills/hypertask/references/identity.md', 'enforcer': 'board-lint'},
+)
+
+
+@dataclass(frozen=True)
+class Break:
+    ticket: str
+    rule: str
+    owner: str
+    fix: str
+
+
+def slug_agent(name):
+    return (name or '').strip().casefold()
+
+
+def agent_assignees(task):
+    found = []
+    for row in task.get('assignees') or ():
+        if not isinstance(row, dict):
+            continue
+        if (row.get('type') or '').strip().lower() == 'agent':
+            found.append((row.get('displayName') or '').strip())
+    return found
+
+
+def chat_labels(task):
+    return [(label.get('name') or '').strip() for label in task.get('labels') or ()
+            if isinstance(label, dict) and not owners.is_generic(label.get('name') or '')]
+
+
+def owner_chat(task):
+    agents = agent_assignees(task)
+    if agents:
+        return agents[0]
+    labels = chat_labels(task)
+    return labels[0] if labels else '(none)'
+
+
+def section_changed_at(task):
+    stale = task.get('staleness') if isinstance(task.get('staleness'), dict) else {}
+    value = stale.get('sectionChangedAt') or task.get('sectionChangedAt')
+    if not value:
+        return None
+    try:
+        return reconcile.stamp(value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def normalize_title(title):
+    text = re.sub(r'[^a-z0-9]+', ' ', (title or '').casefold()).strip()
+    return re.sub(r'\s+', ' ', text)
+
+
+def merged_proof(pulls):
+    for pull in pulls or ():
+        if isinstance(pull, dict):
+            state = (pull.get('state') or '').upper()
+            passed = pull.get('passed')
+        else:
+            state = (pull.state or '').upper()
+            passed = pull.passed
+        if state == 'MERGED' and passed is not False:
+            return True
+    return False
+
+
+def done_comment_proof(comments):
+    for row in comments or ():
+        kind = (row.get('kind') or '').strip().casefold()
+        if kind != 'done':
+            continue
+        text = (row.get('text') or row.get('commentText') or '').strip()
+        if len(text) > 40:
+            return True
+    return False
+
+
+def load_fixture(path):
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, dict):
+        raise ValueError('fixture must be a JSON object')
+    tasks = data.get('tasks') or []
+    if not tasks and data.get('rows'):
+        tasks = [row['task'] for row in data['rows'] if isinstance(row, dict) and row.get('task')]
+    return data, tasks
+
+
+def pull_map_from_fixture(data):
+    pulls = data.get('pulls') or {}
+    out = {}
+    for key, rows in pulls.items():
+        out[key] = tuple(dict(row) for row in rows if isinstance(row, dict))
+    return out
+
+
+def seed_fixture_pulls(pulls):
+    reconcile.PULLS.clear()
+    for rows in pulls.values():
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            repo = (row.get('repository') or {}).get('nameWithOwner') or 'org/repo'
+            number = int(row.get('number') or re.search(r'/pull/(\d+)', row.get('url') or '').group(1))
+            reconcile.PULLS[(repo, number)] = reconcile.Pull(
+                row.get('url') or '', (row.get('state') or 'OPEN').upper(),
+                row.get('checks') or '', bool(row.get('passed')))
+
+
+def rows_for(args):
+    if args.fixture:
+        data, tasks = load_fixture(args.fixture)
+        board = reconcile.BOARDS.get(args.board) or owners.fixture_board(args.board, [{'task': t} for t in tasks])
+        return data, board, tasks, pull_map_from_fixture(data)
+    board = reconcile.board_config(args.board)
+    tasks = reconcile.tickets(board=board)
+    if args.label:
+        tasks = [t for t in tasks if reconcile.carries_label(t, args.label)]
+    return {}, board, tasks, None
+
+
+def load_pulls(board, tasks, fixture_pulls=None):
+    if fixture_pulls is not None:
+        return fixture_pulls
+    reconcile.reset_github_count()
+    candidates = [t for t in tasks if t.get('section') in board.managed]
+    keys = [t['ticketNumber'] for t in candidates]
+    created = {t['ticketNumber']: t.get('createdAt') for t in candidates}
+    saved = reconcile.read_board_facts(board.id)
+    options = {} if board.id == reconcile.BOARD else {'board': board}
+    now = time.time()
+    try:
+        if saved and reconcile.saved_facts_fresh(saved, now) and keys:
+            known = saved.get('tickets') or {}
+            pulls = {key: list(known.get(key, {}).get('pulls', [])) for key in keys}
+            reconcile.restore_pull_facts(saved)
+        else:
+            pulls = reconcile.discover(keys, created=created, **options)
+            reconcile.prefetch(pulls, **options)
+    except reconcile.BudgetRefused:
+        if saved:
+            known = saved.get('tickets') or {}
+            pulls = {key: list(known.get(key, {}).get('pulls', [])) for key in keys}
+            reconcile.restore_pull_facts(saved)
+        else:
+            pulls = {key: [] for key in keys}
+    return pulls
+
+
+def live_names(args):
+    roster_args = argparse.Namespace(roster=args.roster)
+    return owners.live_names(roster_args)
+
+
+def armed_chats(board_id):
+    names = []
+    try:
+        paths = sorted(loop_state.state_dir().glob('*.json'))
+    except OSError:
+        return names
+    for path in paths:
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, TypeError, ValueError):
+            continue
+        if not isinstance(state, dict):
+            continue
+        if str(state.get('board')) != str(board_id):
+            continue
+        name = (state.get('name') or '').strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def check_agent_assignee(task, live, breaks):
+    if task.get('section') not in OPEN:
+        return
+    agents = agent_assignees(task)
+    if not agents and task.get('section') in WORKING:
+        breaks.append(Break(task['ticketNumber'], 'agent-assignee', owner_chat(task),
+                            'assign a live agent or move back to Todo'))
+        return
+    for name in agents:
+        if slug_agent(name) in FALLBACK_AGENT:
+            continue
+        if slug_agent(name) not in live:
+            breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
+                                f'assignee {name!r} is not a live chat; fix name or reassign'))
+
+
+def check_true_column(task, facts, board, names, options, breaks):
+    if task.get('section') not in board.managed:
+        return
+    column, reason = reconcile.target(facts, board, names)
+    if column != task.get('section'):
+        breaks.append(Break(task['ticketNumber'], 'true-column', owner_chat(task),
+                            f'move {task.get("section")} -> {column} ({reason}) or run reconcile dry'))
+
+
+def check_done_proof(task, pulls, comments, breaks):
+    if task.get('section') != DONE:
+        return
+    ticket_pulls = pulls.get(task['ticketNumber'], ())
+    if merged_proof(ticket_pulls):
+        return
+    if done_comment_proof(comments.get(task['ticketNumber'])):
+        return
+    breaks.append(Break(task['ticketNumber'], 'done-proof', owner_chat(task),
+                        'add merged PR proof or a Done comment with evidence'))
+
+
+def check_label_assignee(task, breaks):
+    if task.get('section') not in OPEN:
+        return
+    labels = chat_labels(task)
+    agents = agent_assignees(task)
+    if not labels or not agents:
+        return
+    label = slug_agent(labels[0])
+    for agent in agents:
+        if label and slug_agent(agent) != label:
+            breaks.append(Break(task['ticketNumber'], 'label-assignee', labels[0],
+                                f'label {labels[0]!r} does not match assignee {agent!r}; relabel or reassign'))
+            return
+
+
+def check_no_owner_label(task, breaks):
+    if task.get('section') != TODO:
+        return
+    if chat_labels(task):
+        return
+    breaks.append(Break(task['ticketNumber'], 'no-owner-label', '(none)',
+                        'add your chat label so your view shows this ticket'))
+
+
+def check_unnamed_identity(task, breaks):
+    for name in agent_assignees(task):
+        if slug_agent(name) in FALLBACK_AGENT:
+            breaks.append(Break(task['ticketNumber'], 'unnamed-identity', name,
+                                'rename the chat session so ship-identity sets a real agent name'))
+
+
+def check_stale(task, now, breaks):
+    if task.get('section') not in OPEN:
+        return
+    limit = STALE_SEC.get(task.get('section'))
+    if not limit:
+        return
+    moment = section_changed_at(task)
+    if moment is None:
+        return
+    if now - moment > limit:
+        days = int((now - moment) // 86400)
+        breaks.append(Break(task['ticketNumber'], 'stale-idle', owner_chat(task),
+                            f'idle {days}d in {task.get("section")} since section change; work or re-triage'))
+
+
+def check_duplicates(tasks, breaks):
+    buckets = defaultdict(list)
+    for task in tasks:
+        if task.get('section') not in OPEN:
+            continue
+        norm = normalize_title(task.get('title'))
+        if norm:
+            buckets[norm].append(task['ticketNumber'])
+    for _norm, keys in buckets.items():
+        if len(keys) < 2:
+            continue
+        keys = sorted(keys)
+        for key in keys:
+            others = ', '.join(k for k in keys if k != key)
+            breaks.append(Break(key, 'duplicate-title', owner_chat(next(t for t in tasks if t['ticketNumber'] == key)),
+                                f'suggestion: possible duplicate of {others}'))
+
+
+def pull_row(pull):
+    if isinstance(pull, dict):
+        return pull
+    return {'url': pull.url, 'state': pull.state, 'title': '', 'body': '', 'headRefName': ''}
+
+
+def check_unlinked_prs(board, tasks, pulls, breaks):
+    keys = {t['ticketNumber'] for t in tasks}
+    seen = set()
+    for rows in pulls.values():
+        for pull in rows:
+            row = pull_row(pull)
+            url = row.get('url')
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            state = (row.get('state') or '').upper()
+            if state != 'OPEN':
+                continue
+            body = {'title': row.get('title'), 'body': row.get('body'),
+                    'headRefName': row.get('headRefName')}
+            if any(reconcile.names_ticket(body, ticket, board) for ticket in keys):
+                continue
+            breaks.append(Break('(board)', 'unlinked-work', '(board)',
+                                f'suggestion: open PR {url} names no ticket on this board'))
+
+
+def check_sync(board_id, chats, now, breaks):
+    for name in chats:
+        for line in drain_check.sync_findings(name, now):
+            breaks.append(Break('(sync)', 'sync-record', name, line))
+
+
+def check_human_writes(board_id, tasks_by_key, comments_by_ticket, breaks):
+    if board_id not in HUMAN_BOARDS:
+        return
+    for key, comments in comments_by_ticket.items():
+        for row in comments:
+            if row.get('agent') or row.get('agent_display_name'):
+                continue
+            creator = row.get('creator') or {}
+            if not isinstance(creator, dict):
+                continue
+            if 'valentin' in (creator.get('displayName') or '').casefold():
+                task = tasks_by_key.get(key, {'ticketNumber': key, 'labels': []})
+                breaks.append(Break(key, 'human-board-write', owner_chat(task),
+                                    'human wrote on a board lane; use agent login for agent work'))
+                break
+
+
+def collect_comments(tasks, data, args):
+    out = dict(data.get('comments') or {})
+    if args.fixture or args.skip_comments:
+        return out
+    for task in tasks:
+        key = task['ticketNumber']
+        if task.get('section') != DONE and task.get('section') not in HUMAN_BOARDS:
+            continue
+        if key in out:
+            continue
+        try:
+            page = reconcile.api('comment', 'list', key, '--limit', '50')
+            out[key] = page.get('comments') or []
+        except ERRORS:
+            out[key] = []
+    return out
+
+
+def lint(args):
+    reconcile.reset_github_count()
+    data, board, tasks, fixture_pulls = rows_for(args)
+    now = float(data.get('now') or time.time())
+    pulls = load_pulls(board, tasks, fixture_pulls)
+    if fixture_pulls is not None:
+        seed_fixture_pulls(pulls)
+    sections = {t['section'] for t in tasks}
+    if board.columns:
+        sections |= board.columns
+    elif not reconcile.product_board(board):
+        sections |= reconcile.read_sections(board)
+    names = {} if reconcile.product_board(board) else reconcile.stage_names(sections=sections)
+    options = {} if board.id == reconcile.BOARD else {'board': board}
+    roster_args = argparse.Namespace(roster=args.roster)
+    live = live_names(args) | owners.owned_labels(args.board)
+    comments = collect_comments(tasks, data, args)
+    breaks = []
+    for task in tasks:
+        if str(task.get('projectId', board.id)) != str(board.id):
+            continue
+        ticket_pulls = pulls.get(task['ticketNumber'], ()) if pulls else ()
+        try:
+            facts = (reconcile.collect(task, ticket_pulls, now, **options)
+                     if task.get('section') in board.managed
+                     else reconcile.Facts(task.get('section', ''), now - reconcile.stamp(task.get('updatedAt', now))))
+        except ERRORS:
+            continue
+        check_agent_assignee(task, live, breaks)
+        check_true_column(task, facts, board, names, options, breaks)
+        check_done_proof(task, pulls, comments, breaks)
+        check_label_assignee(task, breaks)
+        check_no_owner_label(task, breaks)
+        check_unnamed_identity(task, breaks)
+        check_stale(task, now, breaks)
+    check_duplicates(tasks, breaks)
+    if pulls:
+        check_unlinked_prs(board, tasks, pulls, breaks)
+    check_sync(args.board, armed_chats(args.board), now, breaks)
+    tasks_by_key = {t['ticketNumber']: t for t in tasks}
+    check_human_writes(args.board, tasks_by_key, comments, breaks)
+    return breaks
+
+
+def emit(breaks, args):
+    if args.json:
+        print(json.dumps([{'ticket': b.ticket, 'rule': b.rule, 'owner': b.owner, 'fix': b.fix} for b in breaks],
+                         indent=2))
+    else:
+        for item in breaks:
+            print(f'{item.ticket} | {item.rule} | {item.owner} | {item.fix}')
+        counts = Counter(b.rule for b in breaks)
+        if counts:
+            summary = ', '.join(f'{rule}={counts[rule]}' for rule in sorted(counts))
+            print(f'board-lint: {len(breaks)} breaks ({summary})', flush=True)
+        else:
+            print('board-lint: clean', flush=True)
+    print(reconcile.github_summary(), file=sys.stderr, flush=True)
+
+
+def ensure_token():
+    path = session_login.token_path(Path.home(), 'Hypertask Reconciler')
+    if path.is_file():
+        os.environ.setdefault('HT_TOKEN', path.read_text().strip())
+    reconcile.session_bus()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board', type=int, required=True)
+    parser.add_argument('--label', help='Only tickets carrying this label')
+    parser.add_argument('--fixture', help='JSON board snapshot instead of the API')
+    parser.add_argument('--roster', help='roster-live output file for tests')
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--skip-comments', action='store_true', help='Skip Done comment fetches')
+    args = parser.parse_args(argv)
+    if args.board < 1:
+        parser.error('--board must be positive')
+    try:
+        if not args.fixture:
+            ensure_token()
+        breaks = lint(args)
+        emit(breaks, args)
+        return 1 if breaks else 0
+    except ERRORS as error:
+        print(f'board-lint: read failed: {error}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())
