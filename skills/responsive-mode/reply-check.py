@@ -54,13 +54,15 @@ def text_of(content):
     return "".join(block.get("text") or "" for block in blocks(content) if block.get("type") == "text")
 
 
-def timeline(transcript):
-    """One mark per entry, in file order: "human" for his message, "reply" for assistant text."""
-    marks = []
+def events(transcript):
+    """One event per entry, in file order: ("human", his text) or ("reply", assistant text).
+
+    The one reader of a transcript in this repo. Every stop or tool guard builds on it.
+    """
     try:
         lines = Path(transcript).read_text(errors="ignore").splitlines()[-2000:]
     except (OSError, TypeError):
-        return marks
+        return
     for line in lines:
         try:
             entry = json.loads(line)
@@ -73,25 +75,39 @@ def timeline(transcript):
             attachment = entry.get("attachment")
             if not isinstance(attachment, dict) or attachment.get("type") != QUEUED:
                 continue
-            if not entry.get("isMeta") and typed(text_of(attachment.get("prompt"))):
-                marks.append("human")
+            text = text_of(attachment.get("prompt"))
+            if not entry.get("isMeta") and typed(text):
+                yield "human", text
         elif kind == "user":
             if entry.get("isMeta"):
                 continue
             message = entry.get("message")
             content = message.get("content") if isinstance(message, dict) else None
-            if typed(text_of(content)):
-                marks.append("human")
+            text = text_of(content)
+            if typed(text):
+                yield "human", text
         elif kind == "assistant":
             if entry.get("isSidechain"):
                 continue
             message = entry.get("message")
             content = message.get("content") if isinstance(message, dict) else None
-            for block in blocks(content):
-                if block.get("type") == "text" and (block.get("text") or "").strip():
-                    marks.append("reply")
-                    break
-    return marks
+            text = text_of(content)
+            if text.strip():
+                yield "reply", text
+
+
+def timeline(transcript):
+    """One mark per event, in file order: "human" for his message, "reply" for assistant text."""
+    return [kind for kind, _ in events(transcript)]
+
+
+def last_reply(transcript):
+    """The newest assistant text in the transcript, read through events, or ""."""
+    text = ""
+    for kind, entry_text in events(transcript):
+        if kind == "reply":
+            text = entry_text
+    return text
 
 
 def unanswered(marks):
@@ -180,12 +196,21 @@ def self_test():
          "a slash command without args is not a message"),
         ([], False, "an empty transcript allows"),
     ]
+    replies = [
+        ([human("a"), say("first"), say("second")], "second", "the newest reply wins"),
+        ([human("a"), call(), result()], "", "a turn without text has no reply"),
+    ]
     bad = []
     for entries, want, why in cases:
         if unanswered(timeline(write(entries))) != want:
             bad.append(why)
+    for entries, want, why in replies:
+        if last_reply(write(entries)) != want:
+            bad.append(why)
     if unanswered("/nonexistent/transcript.jsonl"):
         bad.append("a missing transcript allows")
+    if last_reply("/nonexistent/transcript.jsonl"):
+        bad.append("a missing transcript has no reply")
     print("reply-check self-test ok" if not bad else f"reply-check self-test FAILED {bad}")
     return 1 if bad else 0
 
