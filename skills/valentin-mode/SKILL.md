@@ -21,6 +21,8 @@ hooks:
 
 The `context.py` hook hands you the version line and responsive mode's rules at your first tool call; a chat without it reads `../responsive-mode/SKILL.md`. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
+Prior art: pstack `poteto-mode` runs the work when he asks for it; this skill adds only his rules and the hooks that hand them to the chat.
+
 ## Responsive mode (injected by the hook)
 
 ## Talking to the user

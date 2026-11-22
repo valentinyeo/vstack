@@ -10,6 +10,8 @@ skill-word-budget-reason: Hidden from the default skill list and read only on de
 
 The reader is Valentin. He is a **product owner, not a senior dev.** He decides what to build and whether it shipped right. He does not read diffs, stack traces, or architecture talk. Fable and Opus keep giving him intricate technical detail he cannot use. Stop that.
 
+Prior art: pstack `bro` restates the last message plainly and `teach` explains work; neither writes for a product owner who does not read code, nor re-posts through unslop and i-have-adhd. This skill adds only that reader and that pass.
+
 ## The trigger phrase
 
 Valentin can paste this in any session, and it must be obeyed exactly:

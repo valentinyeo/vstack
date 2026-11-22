@@ -12,6 +12,8 @@ Make writing sound human and make technical work understandable to a smart reade
 
 Simplify the explanation, not the truth. Never hide risk, uncertainty, constraints, or meaningful technical detail.
 
+Prior art: pstack `unslop` cuts AI tells and `bro` restates plainly; neither translates a technical explanation for a non-coder while keeping exact commands and errors. This skill adds only that translation.
+
 ## Process
 
 1. Identify what the reader needs to understand, decide, approve, or do.

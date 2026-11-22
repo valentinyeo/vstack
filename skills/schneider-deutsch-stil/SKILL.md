@@ -12,6 +12,8 @@ Wolf Schneider (1925–2022), journalist, author and long-time head of the Henri
 
 Apply these principles to all German text you write or edit: articles, newsletters, ads, emails, reports, web copy. The rules are guidelines, not laws. Break one when the result is clearer or more alive, never to sound clever.
 
+Prior art: pstack `unslop` and `technical-writing` cover English style and AI tells; neither covers German, Nominalstil, or Wolf Schneider's rules. This skill adds only the German method.
+
 ## Workflow
 
 **Writing new text**
