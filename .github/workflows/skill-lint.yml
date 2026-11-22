@@ -20,6 +20,15 @@ jobs:
           fetch-depth: 0
           path: change
           persist-credentials: false
+      - name: Check the tree main will get
+        if: github.event_name == 'pull_request'
+        working-directory: change
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin "$BASE_REF"
+          git -c user.name=skill-lint -c user.email=skill-lint@invalid merge --no-edit FETCH_HEAD
       - uses: actions/checkout@v4
         with:
           repository: valentinyeo/house-rules
