@@ -51,6 +51,9 @@ _spec.loader.exec_module(ttg)
 _spec = importlib.util.spec_from_file_location("valentin_mode_loaded", _here.with_name("valentin_mode_loaded.py"))
 valentin = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(valentin)
+_spec = importlib.util.spec_from_file_location("subagent_call", _here.with_name("subagent_call.py"))
+subagent = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(subagent)
 
 
 def clean(path):
@@ -362,6 +365,8 @@ def gate(payload):
         why = verdict_code(tool_name, tool_input)
         if why:
             return why
+    if subagent.from_hook(payload):
+        return None
     if os.environ.get("PACER_GUARD_INLINE", "").lower() == "off":
         return None
     if not valentin.loaded(payload.get("transcript_path")):
@@ -445,8 +450,28 @@ def self_test():
             os.environ["PACER_GUARD_INLINE"] = "off"
             assert gate(body) is None, "override allows heavy bash"
             del os.environ["PACER_GUARD_INLINE"]
+            body = {"tool_name": "Bash", "transcript_path": str(loaded),
+                    "tool_input": {"command": "git clone https://github.com/x/y /tmp/y && gh pr checkout 13"},
+                    "agent_id": "def456", "agent_type": "general-purpose"}
+            assert gate(body) is None, "subagent heavy bash passes with parent valentin transcript"
+            body = {"tool_name": "Bash", "transcript_path": str(loaded),
+                    "tool_input": {"command": "git clone https://github.com/x/y /tmp/y && gh pr checkout 13"}}
+            assert gate(body) and "hands work to workers" in gate(body), "main chat still blocks clones"
+            os.environ["MULTIPROMPT_TAB"] = "self-test"
+            sub_write = {"tool_name": "Write", "transcript_path": str(loaded),
+                         "tool_input": {"file_path": "x.py", "content": "print(1)\n"},
+                         "agent_id": "def456", "agent_type": "general-purpose"}
+            assert gate(sub_write) == MESSAGE, "subagent code Write stays blocked"
+            sub_edit = {"tool_name": "Edit", "transcript_path": str(loaded),
+                        "tool_input": {"file_path": "hooks/x.py", "old_string": "a", "new_string": "b"},
+                        "agent_id": "def456", "agent_type": "general-purpose"}
+            assert gate(sub_edit) == MESSAGE, "subagent code Edit stays blocked"
+            main_write = {"tool_name": "Write", "transcript_path": str(loaded),
+                          "tool_input": {"file_path": "x.py", "content": "print(1)\n"}}
+            assert gate(main_write) == MESSAGE, "main chat code Write stays blocked"
         finally:
             os.environ.pop("PACER_GUARD_INLINE", None)
+            os.environ.pop("MULTIPROMPT_TAB", None)
     print('pacer-guard self-test ok')
 
 
