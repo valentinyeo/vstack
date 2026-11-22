@@ -5,10 +5,13 @@ The fixtures are hand-written JSONL that copies the shapes found in a real 2.1.3
 text is copied here.
 """
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -88,15 +91,20 @@ def tempdir(test):
 
 
 class ReplyCheck(unittest.TestCase):
-    def hook(self, entries=None, transcript=None, payload=None):
+    def hook(self, entries=None, transcript=None, payload=None, env=None):
         if transcript is None:
             transcript = str(tempdir(self) / 'transcript.jsonl')
             Path(transcript).write_text(''.join(json.dumps(entry) + '\n' for entry in entries or []))
         if payload is None:
             payload = json.dumps({'hook_name': 'PreToolUse', 'tool_name': 'Bash',
                                   'transcript_path': transcript})
+        run_env = os.environ.copy()
+        run_env.setdefault('REPLY_CHECK_RETRIES', '3')
+        run_env.setdefault('REPLY_CHECK_DELAY_MS', '1')
+        if env:
+            run_env.update(env)
         return subprocess.run([sys.executable, str(CHECK)], input=payload, text=True,
-                              capture_output=True, check=False)
+                              capture_output=True, check=False, env=run_env)
 
     def assert_denied(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -173,6 +181,35 @@ class ReplyCheck(unittest.TestCase):
                                 capture_output=True, check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('reply-check self-test ok', result.stdout)
+
+    def test_late_transcript_reply_is_allowed_after_retry(self):
+        """Mimics Claude Code appending the assistant text line after the hook starts."""
+        folder = tempdir(self)
+        transcript = folder / 'transcript.jsonl'
+        transcript.write_text(json.dumps(human('wait for me')) + '\n' + json.dumps(tool_call()) + '\n')
+
+        def append_reply():
+            time.sleep(0.5)
+            with transcript.open('a') as handle:
+                handle.write(json.dumps(say('On it.')) + '\n')
+
+        threading.Thread(target=append_reply, daemon=True).start()
+        fast = {'REPLY_CHECK_RETRIES': '12', 'REPLY_CHECK_DELAY_MS': '100'}
+        self.assert_allowed(self.hook(transcript=str(transcript), env=fast))
+
+    def test_still_unanswered_denies_after_retries(self):
+        fast = {'REPLY_CHECK_RETRIES': '3', 'REPLY_CHECK_DELAY_MS': '10'}
+        started = time.monotonic()
+        self.assert_denied(self.hook([human('no answer coming'), tool_call()], env=fast))
+        self.assertGreaterEqual(time.monotonic() - started, 0.02)
+
+    def test_existing_reply_allows_without_waiting(self):
+        slow = {'REPLY_CHECK_RETRIES': '8', 'REPLY_CHECK_DELAY_MS': '250'}
+        started = time.monotonic()
+        entries = [human('ship it'), say('Pushed.'), tool_call()]
+        self.assert_allowed(self.hook(entries, env=slow))
+        # Seven sleeps would take 1.75s; a hit on the first read must finish well before that.
+        self.assertLess(time.monotonic() - started, 1.0)
 
 
 class SkillWiring(unittest.TestCase):

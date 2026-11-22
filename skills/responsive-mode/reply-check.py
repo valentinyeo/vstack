@@ -17,8 +17,10 @@ Fails open: a missing or unreadable transcript, or any shape this file does not 
 reply-check.py --self-test
 """
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
 
 MESSAGE = ("Valentin's newest message has no reply yet. Answer it on its own in one short line, then continue "
@@ -100,6 +102,32 @@ def unanswered(marks):
     return "reply" not in marks[last + 1:]
 
 
+def _retry_count():
+    try:
+        return max(1, int(os.environ.get("REPLY_CHECK_RETRIES", "8")))
+    except ValueError:
+        return 8
+
+
+def _retry_delay_sec():
+    try:
+        return max(0, int(os.environ.get("REPLY_CHECK_DELAY_MS", "250"))) / 1000.0
+    except ValueError:
+        return 0.25
+
+
+def unanswered_after_retries(transcript_path):
+    """True when his newest message still has no reply after re-reading the transcript."""
+    path = transcript_path or ""
+    delay = _retry_delay_sec()
+    for attempt in range(_retry_count()):
+        if not unanswered(timeline(path)):
+            return False
+        if attempt + 1 < _retry_count():
+            time.sleep(delay)
+    return True
+
+
 def self_test():
     import tempfile
 
@@ -172,7 +200,7 @@ def main():
     if not isinstance(data, dict):
         return 0
     try:
-        if unanswered(timeline(data.get("transcript_path") or "")):
+        if unanswered_after_retries(data.get("transcript_path") or ""):
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                                     "permissionDecision": "deny",
                                                     "permissionDecisionReason": MESSAGE}}))
