@@ -222,7 +222,7 @@ def load_pulls(board, tasks, fixture_pulls=None):
         else:
             pulls = reconcile.discover(keys, created=created, **options)
             reconcile.prefetch(pulls, **options)
-    except reconcile.BudgetRefused:
+    except (reconcile.BudgetRefused, reconcile.RateLimit):
         if saved:
             known = saved.get('tickets') or {}
             pulls = {key: list(known.get(key, {}).get('pulls', [])) for key in keys}
@@ -235,6 +235,14 @@ def load_pulls(board, tasks, fixture_pulls=None):
 def live_names(args):
     roster_args = argparse.Namespace(roster=args.roster)
     return owners.live_names(roster_args)
+
+
+def loop_armed_chat_names(board_id):
+    """Live chat names from armed loop files, including loops expiring within 24h."""
+    names = set()
+    for name in armed_chats(board_id):
+        names.add(slug_agent(name))
+    return names
 
 
 def armed_chats(board_id):
@@ -482,12 +490,12 @@ def lint(args):
     sections = {t['section'] for t in tasks}
     if board.columns:
         sections |= board.columns
-    elif not reconcile.product_board(board):
+    elif not args.fixture and not reconcile.product_board(board):
         sections |= reconcile.read_sections(board)
     names = {} if reconcile.product_board(board) else reconcile.stage_names(sections=sections)
     options = {} if board.id == reconcile.BOARD else {'board': board}
     roster_args = argparse.Namespace(roster=args.roster)
-    live = live_names(args) | owners.owned_labels(args.board)
+    live = live_names(args) | owners.owned_labels(args.board) | loop_armed_chat_names(args.board)
     chat_names = chat_naming_labels(args, args.board)
     comments = collect_comments(tasks, data, args, board.id)
     breaks = []
@@ -557,7 +565,8 @@ def main(argv=None):
         breaks = lint(args)
         emit(breaks, args)
         return 1 if breaks else 0
-    except ERRORS as error:
+    except (reconcile.BudgetRefused, reconcile.RateLimit, ValueError, KeyError,
+            TypeError, OSError, RuntimeError) as error:
         print(f'board-lint: read failed: {error}', file=sys.stderr)
         return 2
 
