@@ -33,12 +33,11 @@ Rules that follow from the pyramid:
 2. **Build the pyramid.** Pick the 2 to 4 key points that prove it. At most 3 top items get a card. Everything else goes in one short table or is left out. Method and evidence go last.
 3. **Write with `../web-writing/SKILL.md`** (read it, the Skill tool refuses a hidden skill). Conclusion first, about half the words of a normal draft, one idea per paragraph, bold keywords, plain headings, no hype.
 4. **Clean with `unslop`** (if installed), then **`../zinsser-english-style/SKILL.md`**, read with the Read tool. Cut AI phrasing, clutter and stale phrases. Short sentences, active verbs, concrete words. Use `../schneider-deutsch-stil/SKILL.md` instead for a German page.
-5. **Build from `template.html`** in this folder. Keep its structure:
-   - Verdict box at the top: the answer in bold, then at most one sentence and the next step.
-   - Cards for the top items: a title, one proof line with the key number and a source link, and images inline when they help.
-   - A warning box only when something must be fixed or watched.
-   - A short table for the rest.
-   - Method last, in two or three sentences.
+5. **Build from `template.html`** in this folder. Pages match [yeoux.net](https://yeoux.net) explorations (Rat Stack): one inlined `rat-site.css` block in `<style>` (do not link hashed `/assets/` CSS), the site header (`Software Factory Companion` nav), then one `<main>` of semantic HTML.
+   - BLUF in a `div.callout` at the top (accent left border), not a separate card chrome.
+   - Sections use plain `h2` / `h3` / `p` / `ul`; proof lines use `p.meta`.
+   - Every table sits in `<div class="table-wrapper">`; wide tables also `table-wide`. Put `data-label` on each `td` from its column header for phone layout.
+   - Optional warning: another `div.callout`. Method last, two or three sentences.
 6. **Images inline.** Shrink to about 640px wide JPEG, then embed as base64 so the page is one file. Look at every image yourself before it goes on the page.
 7. **Publish.** Upload the single HTML file to your host, then open it and check: it loads, images show, it reads well at phone width, dark mode works.
 
@@ -50,11 +49,11 @@ Rules that follow from the pyramid:
 - **Links are full URLs** on the visible text that names the thing ("See it", the video title, the ticket title), never bare ids.
 - **No em dashes, no emoji headings, sentence case headings.**
 - **No secrets, tokens or private customer data** on the page.
-- **Phone first:** 16px side margins, no sideways scrolling, tables hide minor columns on small screens (`class="hide-mobile"`).
+- **Phone first:** Rat grid side margins, horizontal scroll inside `.table-wrapper`, stacked rows via `data-label` on `td` (not `hide-mobile`).
 
 ## Final check
 
-- Does the verdict box alone tell the reader what to do? (BLUF)
+- Does the top callout alone tell the reader what to do? (BLUF)
 - Does each key point support the bottom line, without overlap? (Minto)
 - Are the headings statements a reader could quote back?
 - Is the reading time shown, and under 3 minutes?
