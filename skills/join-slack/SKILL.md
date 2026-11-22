@@ -71,7 +71,7 @@ oauth_config:
 
 ## 4. Check
 
-- Check your own row in `members.tsv`: delivery is `session-say`, the target is your current tmux session, and your UID variable is set. Check `systemctl --user is-active fleet-slack-relay`. Do not audit or repoint other leads.
+- Check your own row in `~/.config/fleet-slack/members.tsv`: delivery is `session-say`, the target is your current tmux session, and your UID variable is set. Check `systemctl --user is-active fleet-slack-relay`. Do not audit or repoint other leads.
 - Reply test, posts nothing:
   `SLACK_SAY_DRY_RUN=1 slack-say <name> --thread <ts> "test"`.
   Take `<ts>` (like `1793700281.094899`) from a Valentin line in `slack-read 10`.
