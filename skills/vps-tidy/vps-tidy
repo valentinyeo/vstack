@@ -4,7 +4,7 @@
     vps-tidy                       dry run, human report, deletes nothing
     vps-tidy --apply               do the work, SIGTERM then SIGKILL, log every act
     vps-tidy --json                the same report as data
-    vps-tidy --only tmp,processes  pick parts: tmp, caches, docker, evidence, processes
+    vps-tidy --only tmp,tmux       pick parts: tmp, caches, docker, evidence, tmux, processes
 
 The rules are the union of the old host cleaners, each with the safety rule that
 came with it. docs/housekeeping-map.md is the map this follows.
@@ -37,8 +37,16 @@ import uuid
 DAY = 86400
 HOUR = 3600
 
-PARTS = ("tmp", "caches", "docker", "evidence", "processes")
+PARTS = ("tmp", "caches", "docker", "evidence", "processes", "tmux")
 FILES_PARTS = ("tmp", "caches", "docker", "evidence")
+TMUX_SESSION_PREFIXES = ("live-", "term-", "projects", "mp-")
+TMUX_PRIVATE_IDLE_COMMANDS = frozenset({"cat", "sleep"})
+TMUX_SESSION_SHELL_COMMANDS = frozenset({"bash", "sh", "zsh"})
+TMUX_DEAD_SERVER_MARKERS = ("no server running", "error connecting")
+TMUX_DEAD_PROBE_GAP = 3
+TMUX_SERVER_AGE = DAY
+TMUX_DEAD_SOCKET_AGE = 3600
+TMUX_SESSION_AGE = 3 * DAY
 PART_ALIASES = {"files": FILES_PARTS}
 
 # Map thresholds. Each one is the age at which its old cleaner acted.
@@ -88,7 +96,7 @@ NEVER_TOUCH_DIRS = {"gh-shared-cache", "gh-shared-cache-app", "worktrees", ".wor
 SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 
 USAGE = ("usage: vps-tidy [--apply | --dry-run] [--json] "
-         "[--only tmp,caches,docker,evidence,processes] [--budget SECONDS] "
+         "[--only tmp,caches,docker,evidence,tmux,processes] [--budget SECONDS] "
          "[--ps-file FILE] [--proc-root DIR] [--root DIR] [--grace SECONDS] "
          "[--statvfs-json FILE] [--caller NAME]")
 
@@ -190,6 +198,7 @@ class Context:
         self.items = []
         self.kills = []
         self.applied = opts["apply"]
+        self.tmux_dir = os.path.join(self.tmp, "tmux-{}".format(self.uid))
 
     def _device(self):
         try:
@@ -981,6 +990,555 @@ def tool_cache_commands(ctx):
         run_tool(list(command), ctx, rule=rule)
 
 
+# ---------------------------------------------------------------- tmux
+
+def _tmux_age_env(name, default):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def tmux_server_age_limit(_ctx):
+    return _tmux_age_env("VPS_TIDY_TMUX_SERVER_AGE", TMUX_SERVER_AGE)
+
+
+def tmux_dead_socket_age_limit(_ctx):
+    return _tmux_age_env("VPS_TIDY_TMUX_DEAD_SOCKET_AGE", TMUX_DEAD_SOCKET_AGE)
+
+
+def tmux_session_age_limit(_ctx):
+    return _tmux_age_env("VPS_TIDY_TMUX_SESSION_AGE", TMUX_SESSION_AGE)
+
+
+def tmux_slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+
+
+def roster_pattern_regex(text):
+    body = re.escape(str(text))
+    body = (body.replace(r"\{n\}", r"[0-9]+").replace(r"\{\*\}", r".*")
+            .replace(r"\{x\}", r"[A-Za-z]"))
+    return re.compile("^" + body + "$", re.IGNORECASE)
+
+
+def roster_name_is_pattern(value):
+    return "{" in value
+
+
+def protected_session_names(ctx):
+    exact = set()
+    patterns = []
+    roster = os.path.join(ctx.home, ".local", "share", "house-rules", "fleet", "roster.json")
+    try:
+        data = json.loads(read_text(roster, limit=1 << 20) or "{}")
+    except ValueError:
+        data = {}
+    for row in data.get("rows") or ():
+        if not isinstance(row, dict):
+            continue
+        for key in ("tmux", "multibot", "name"):
+            value = str(row.get(key) or "").strip()
+            if not value:
+                continue
+            if roster_name_is_pattern(value):
+                patterns.append(roster_pattern_regex(value))
+            else:
+                exact.add(value)
+        label = str(row.get("multibot") or "").strip()
+        if label:
+            exact.add(tmux_slug(label))
+    return exact, patterns
+
+
+def session_name_protected(name, exact, patterns=()):
+    if not name:
+        return True
+    if any(name.startswith(prefix) for prefix in TMUX_SESSION_PREFIXES):
+        return True
+    low = name.lower()
+    if low in {part.lower() for part in exact}:
+        return True
+    return any(pattern.match(name) for pattern in patterns)
+
+
+def read_cmdline(pid, ctx):
+    path = os.path.join(ctx.proc, str(pid), "cmdline")
+    text = read_text(path, limit=4096)
+    if not text:
+        return None
+    parts = [part for part in text.split("\0") if part]
+    return parts or None
+
+
+def interactive_shell_pane(pid, ctx):
+    parts = read_cmdline(pid, ctx)
+    if not parts:
+        return False
+    base = os.path.basename(parts[0]).lower()
+    if base not in TMUX_SESSION_SHELL_COMMANDS:
+        return False
+    if "-c" in parts:
+        return False
+    return not any(not part.startswith("-") for part in parts[1:])
+
+
+def child_pids(pid, ctx):
+    found = []
+    complete = True
+    try:
+        entries = os.listdir(ctx.proc)
+    except OSError:
+        return found, False
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        if ctx.budget.spent():
+            complete = False
+            break
+        stat_path = os.path.join(ctx.proc, entry, "stat")
+        text = read_text(stat_path, limit=512)
+        if not text:
+            continue
+        right = text.rsplit(")", 1)
+        if len(right) < 2:
+            continue
+        fields = right[1].split()
+        if len(fields) < 2:
+            continue
+        try:
+            ppid = int(fields[1])
+        except ValueError:
+            continue
+        if ppid == pid:
+            found.append(int(entry))
+    return found, complete
+
+
+def pane_has_children_or_unknown(pid, ctx):
+    children, complete = child_pids(pid, ctx)
+    if not complete:
+        return True
+    return bool(children)
+
+
+def parent_pid(pid, ctx):
+    stat_path = os.path.join(ctx.proc, str(pid), "stat")
+    text = read_text(stat_path, limit=512)
+    if not text:
+        return None
+    right = text.rsplit(")", 1)
+    if len(right) < 2:
+        return None
+    fields = right[1].split()
+    if len(fields) < 2:
+        return None
+    try:
+        return int(fields[1])
+    except ValueError:
+        return None
+
+
+def pane_parent_scripted_shell(pid, ctx):
+    ppid = parent_pid(pid, ctx)
+    if ppid is None:
+        return False
+    parts = read_cmdline(ppid, ctx)
+    if not parts:
+        return False
+    base = os.path.basename(parts[0]).lower()
+    if base not in TMUX_SESSION_SHELL_COMMANDS:
+        return False
+    return "-c" in parts
+
+
+def private_pane_idle(command, pid, ctx):
+    base = (command or "").strip().lower()
+    if base in TMUX_PRIVATE_IDLE_COMMANDS:
+        if pane_parent_scripted_shell(pid, ctx):
+            return False
+        return not pane_has_children_or_unknown(pid, ctx)
+    if base in TMUX_SESSION_SHELL_COMMANDS:
+        return (interactive_shell_pane(pid, ctx)
+                and not pane_has_children_or_unknown(pid, ctx))
+    return False
+
+
+def tmux_error_means_dead(error):
+    if not error:
+        return False
+    low = error.lower()
+    return any(marker in low for marker in TMUX_DEAD_SERVER_MARKERS)
+
+
+def tmux_probe_dead(ctx, sock):
+    _, error = tmux_command(ctx, sock, ["list-sessions"], timeout=5)
+    if error is None:
+        return "alive"
+    if not tmux_error_means_dead(error):
+        return "inconclusive"
+    return "dead"
+
+
+def confirm_dead_sockets_batch(ctx, socks):
+    """One probe pass, one sleep, one re-probe pass for every candidate socket."""
+    if not socks:
+        return set()
+    first = {}
+    for sock in socks:
+        if ctx.budget.spent():
+            break
+        first[sock] = tmux_probe_dead(ctx, sock)
+    maybe_dead = [sock for sock in socks if first.get(sock) == "dead"]
+    second = {}
+    if maybe_dead:
+        gap = min(TMUX_DEAD_PROBE_GAP, ctx.budget.left() or TMUX_DEAD_PROBE_GAP)
+        if gap > 0:
+            time.sleep(gap)
+        for sock in maybe_dead:
+            if ctx.budget.spent():
+                break
+            second[sock] = tmux_probe_dead(ctx, sock)
+    return {sock for sock in maybe_dead
+            if first.get(sock) == "dead" and second.get(sock) == "dead"}
+
+
+def tmux_server_confirmed_dead(ctx, sock):
+    return sock in confirm_dead_sockets_batch(ctx, [sock])
+
+
+def tmux_kill_env():
+    env = os.environ.copy()
+    env.pop("TMUX", None)
+    env["MULTIPROMPT_ALLOW_TMUX_KILL_SERVER"] = "1"
+    return env
+
+
+def tmux_command(ctx, sock, extra, timeout=10, env=None):
+    if shutil.which("tmux") is None:
+        return None, "tmux is not installed"
+    command = ["tmux"]
+    if sock is not None:
+        command += ["-S", sock]
+    command += extra
+    run_env = env if env is not None else None
+    try:
+        done = subprocess.run(command, capture_output=True, text=True,
+                              timeout=max(1, min(timeout, ctx.budget.left() or 1)),
+                              env=run_env)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, str(error)
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "tmux failed").strip()
+        return None, detail[:200] if detail else "tmux failed"
+    return done.stdout, None
+
+
+def tmux_server_alive(ctx, sock):
+    _, error = tmux_command(ctx, sock, ["list-sessions"], timeout=5)
+    return error is None
+
+
+def session_ever_attached(row):
+    if row.get("attached"):
+        return True
+    last = row.get("last_attached")
+    return last is not None and last != 0
+
+
+def private_server_closeable(ctx, sock, name, server_age_limit, protected, patterns, now):
+    sessions, serror, scomplete = tmux_session_rows(ctx, sock)
+    if serror:
+        return False, "sessions unreadable: {}".format(serror)
+    if not scomplete:
+        return False, "sessions list was incomplete"
+    if any(session_ever_attached(row) for row in sessions):
+        return False, "a session is or was attached"
+    if any(session_name_protected(row.get("name"), protected, patterns) for row in sessions):
+        return False, "a session name is protected"
+    if any((now - row["created"]) < server_age_limit
+           for row in sessions if row.get("created")):
+        return False, "a session is younger than {}".format(fmt_age(server_age_limit))
+    started = tmux_server_start_epoch(ctx, sock)
+    server_age = (now - started) if started is not None else None
+    if server_age is None or server_age < server_age_limit:
+        return False, "server younger than {}".format(fmt_age(server_age_limit))
+    panes, perror, pcomplete = tmux_pane_rows(ctx, sock)
+    if perror:
+        return False, "panes unreadable: {}".format(perror)
+    if not pcomplete:
+        return False, "pane list was incomplete"
+    if not panes:
+        return False, "no panes"
+    if all(private_pane_idle(row["command"], row["pid"], ctx) for row in panes):
+        return True, server_age
+    return False, "a pane is busy or has children"
+
+
+def tmux_server_start_epoch(ctx, sock):
+    out, error = tmux_command(ctx, sock, ["display-message", "-p", "#{start_time}"], timeout=5)
+    if error or not out:
+        return None
+    try:
+        return int(out.strip().splitlines()[0].strip())
+    except (ValueError, IndexError):
+        return None
+
+
+def tmux_pane_rows(ctx, sock):
+    fmt = "#{pane_current_command}\t#{pane_pid}"
+    out, error = tmux_command(ctx, sock, ["list-panes", "-a", "-F", fmt], timeout=10)
+    if error:
+        return None, error, True
+    rows = []
+    complete = True
+    for line in (out or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            complete = False
+            continue
+        command, pid_text = parts[0].strip(), parts[1].strip()
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            complete = False
+            continue
+        rows.append({"command": command, "pid": pid})
+    return rows, None, complete
+
+
+def tmux_session_rows(ctx, sock):
+    fmt = ("#{session_name}\t#{session_created}\t#{session_attached}\t"
+           "#{session_windows}\t#{window_panes}\t#{session_last_attached}")
+    out, error = tmux_command(ctx, sock, ["list-sessions", "-F", fmt], timeout=10)
+    if error:
+        return None, error, True
+    rows = []
+    complete = True
+    for line in (out or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            complete = False
+            continue
+        try:
+            last_text = parts[5].strip() if len(parts) > 5 else ""
+            last_attached = int(last_text) if last_text else 0
+            rows.append({"name": parts[0], "created": int(parts[1]),
+                         "attached": int(parts[2]), "windows": int(parts[3]),
+                         "panes": int(parts[4]), "last_attached": last_attached})
+        except ValueError:
+            complete = False
+            continue
+    return rows, None, complete
+
+
+def tmux_session_pane(ctx, sock, session):
+    out, error = tmux_command(ctx, sock,
+                             ["list-panes", "-t", session, "-F",
+                              "#{pane_current_command}\t#{pane_pid}"],
+                             timeout=5)
+    if error:
+        return None, error
+    lines = [line for line in (out or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return None, "pane count is not one"
+    parts = lines[0].split("\t", 1)
+    if len(parts) != 2:
+        return None, "pane unreadable"
+    try:
+        return {"command": parts[0].strip(), "pid": int(parts[1].strip())}, None
+    except ValueError:
+        return None, "pane pid unreadable"
+
+
+def tmux_act(item, ctx):
+    action = item["action"]
+    if action in ("keep", "report"):
+        item["result"] = "kept" if action == "keep" else "reported"
+        return
+    if not ctx.applied:
+        if action in ("close-server", "close-session"):
+            item["result"] = "would-close"
+        elif action == "remove":
+            item["result"] = "would-remove"
+        else:
+            item["result"] = "would-act"
+        return
+    if action == "close-server":
+        sock = item.get("socket")
+        if not sock:
+            item["action"] = "keep"
+            item["result"] = "kept"
+            item["reason"] = "{} (blocked: no socket)".format(item["reason"])
+            return
+        _, error = tmux_command(ctx, sock, ["kill-server"], timeout=10,
+                                env=tmux_kill_env())
+        item["result"] = "closed" if error is None else "failed"
+        if error:
+            item["action"] = "keep"
+            item["reason"] = "{} (blocked: {})".format(item["reason"], error)
+        return
+    if action == "close-session":
+        sock = item.get("socket")
+        session = item.get("session")
+        if not sock or not session:
+            item["action"] = "keep"
+            item["result"] = "kept"
+            item["reason"] = "{} (blocked: no socket or session)".format(item["reason"])
+            return
+        _, error = tmux_command(ctx, sock, ["kill-session", "-t", session], timeout=10)
+        item["result"] = "closed" if error is None else "failed"
+        if error:
+            item["action"] = "keep"
+            item["reason"] = "{} (blocked: {})".format(item["reason"], error)
+        return
+    if action == "remove":
+        sock = item.get("socket") or item.get("path")
+        if sock and tmux_server_alive(ctx, sock):
+            item["action"] = "keep"
+            item["result"] = "kept"
+            item["reason"] = "{} (blocked: server alive at removal)".format(item["reason"])
+            return
+        act_on(item, ctx)
+
+
+def scan_tmux(ctx):
+    if shutil.which("tmux") is None:
+        ctx.candidate("tmux", None, "keep", "tmux-missing", "tmux is not installed")
+        return
+    socket_root = ctx.tmux_dir
+    server_age_limit = tmux_server_age_limit(ctx)
+    dead_sock_limit = tmux_dead_socket_age_limit(ctx)
+    session_age_limit = tmux_session_age_limit(ctx)
+    protected, patterns = protected_session_names(ctx)
+    default_sock = os.path.join(socket_root, "default")
+    try:
+        entries = sorted(os.listdir(socket_root))
+    except OSError:
+        entries = []
+    now = time.time()
+    dead_candidates = []
+    for name in entries:
+        if ctx.budget.spent():
+            return
+        sock_path = os.path.join(socket_root, name)
+        try:
+            st = os.lstat(sock_path)
+        except OSError:
+            continue
+        if not statmod.S_ISSOCK(st.st_mode):
+            continue
+        if name == "default":
+            continue
+        alive = tmux_server_alive(ctx, sock_path)
+        if alive:
+            ok, detail = private_server_closeable(
+                ctx, sock_path, name, server_age_limit, protected, patterns, now)
+            age = detail if isinstance(detail, (int, float)) else None
+            if ok:
+                item = ctx.candidate("tmux", sock_path, "close-server", "tmux-server-24h",
+                                     "private server {} idle {} with only safe panes".format(
+                                         name, fmt_age(age)),
+                                     age, extra={"socket": sock_path, "target": name})
+                tmux_act(item, ctx)
+            else:
+                ctx.candidate("tmux", sock_path, "keep", "tmux-server-24h",
+                              "server {} kept: {}".format(name, detail),
+                              age, extra={"socket": sock_path, "target": name})
+            continue
+        dead_candidates.append((sock_path, name, st))
+    confirmed_dead = confirm_dead_sockets_batch(ctx, [row[0] for row in dead_candidates])
+    for sock_path, name, st in dead_candidates:
+        if ctx.budget.spent():
+            return
+        age = now - st.st_mtime
+        if sock_path not in confirmed_dead:
+            ctx.candidate("tmux", sock_path, "keep", "tmux-dead-socket",
+                          "socket {} probe inconclusive or server alive".format(name),
+                          age, extra={"socket": sock_path, "target": name})
+            continue
+        if age < dead_sock_limit:
+            ctx.candidate("tmux", sock_path, "keep", "tmux-dead-socket",
+                          "dead socket {} is only {}".format(name, fmt_age(age)),
+                          age, extra={"socket": sock_path, "target": name})
+            continue
+        item = ctx.candidate("tmux", sock_path, "remove", "tmux-dead-socket",
+                              "dead socket {} with no server, mtime {}".format(
+                                  name, fmt_age(age)),
+                              age, st.st_size, extra={"socket": sock_path, "target": name})
+        tmux_act(item, ctx)
+
+    if ctx.budget.spent():
+        return
+    if not tmux_server_alive(ctx, default_sock):
+        return
+    sessions, error, scomplete = tmux_session_rows(ctx, default_sock)
+    if error:
+        ctx.candidate("tmux", default_sock, "keep", "tmux-default",
+                      "default server sessions unreadable: {}".format(error),
+                      extra={"socket": default_sock, "target": "default"})
+        return
+    if not scomplete:
+        ctx.candidate("tmux", default_sock, "keep", "tmux-default",
+                      "default server session list was incomplete",
+                      extra={"socket": default_sock, "target": "default"})
+        return
+    for session in sessions:
+        if ctx.budget.spent():
+            return
+        label = session["name"]
+        path = "default:{}".format(label)
+        created = session["created"]
+        age = now - created if created else None
+        if session_name_protected(label, protected, patterns):
+            ctx.candidate("tmux", path, "keep", "tmux-default-3d",
+                          "session {} is protected by name".format(label),
+                          age, extra={"socket": default_sock, "session": label, "target": label})
+            continue
+        if session_ever_attached(session):
+            ctx.candidate("tmux", path, "keep", "tmux-default-3d",
+                          "session {} is or was attached".format(label), age,
+                          extra={"socket": default_sock, "session": label, "target": label})
+            continue
+        if session["panes"] != 1 or session["windows"] != 1:
+            ctx.candidate("tmux", path, "keep", "tmux-default-3d",
+                          "session {} does not have exactly one pane".format(label), age,
+                          extra={"socket": default_sock, "session": label, "target": label})
+            continue
+        if age is None or age < session_age_limit:
+            ctx.candidate("tmux", path, "keep", "tmux-default-3d",
+                          "session {} younger than {}".format(label,
+                                                              fmt_age(session_age_limit)),
+                          age, extra={"socket": default_sock, "session": label, "target": label})
+            continue
+        pane, perror = tmux_session_pane(ctx, default_sock, label)
+        if perror or pane is None:
+            ctx.candidate("tmux", path, "keep", "tmux-default-3d",
+                          "session {} pane unreadable".format(label), age,
+                          extra={"socket": default_sock, "session": label, "target": label})
+            continue
+        shell = pane["command"].strip().lower()
+        if (shell not in TMUX_SESSION_SHELL_COMMANDS
+                or not interactive_shell_pane(pane["pid"], ctx)
+                or pane_has_children_or_unknown(pane["pid"], ctx)):
+            ctx.candidate("tmux", path, "keep", "tmux-default-3d",
+                          "session {} pane is not an idle shell".format(label), age,
+                          extra={"socket": default_sock, "session": label, "target": label})
+            continue
+        item = ctx.candidate("tmux", path, "report", "tmux-default-3d",
+                             "default session {} idle shell, untouched {} "
+                             "(default server never closes)".format(label, fmt_age(age)),
+                             age, extra={"socket": default_sock, "session": label, "target": label})
+        tmux_act(item, ctx)
+
+
 # ---------------------------------------------------------------- docker
 
 def docker(ctx, args, timeout=60):
@@ -1448,7 +2006,7 @@ def write_status(ctx, payload):
 def human_lines(payload):
     lines = []
     titles = {"tmp": "Temp files", "evidence": "Evidence", "caches": "Caches",
-              "docker": "Docker", "processes": "Processes"}
+              "docker": "Docker", "tmux": "Tmux", "processes": "Processes"}
     for part in PARTS:
         if part not in payload["parts"]:
             continue
@@ -1458,6 +2016,14 @@ def human_lines(payload):
                                          "item" if len(mine) == 1 else "items"))
         for item in mine:
             lines.append(format_item(item))
+        if part == "tmux" and mine:
+            planned = [item for item in mine
+                       if item["action"] in ("close-server", "close-session", "remove")]
+            would = sum(1 for item in planned
+                        if item.get("result") in ("would-close", "would-remove"))
+            did = sum(1 for item in planned if item.get("result") in ("closed", "removed"))
+            lines.append("  tmux totals: {} planned, {} would act, {} acted".format(
+                len(planned), would, did))
         if not mine:
             lines.append("  nothing to report")
     summary = payload["summary"]
@@ -1487,6 +2053,10 @@ def human_lines(payload):
 
 
 def format_item(item):
+    if item["part"] == "tmux":
+        target = item.get("target") or item.get("path") or item.get("reason")
+        return "{:<7} {} ({}) {}".format(
+            item["action"], target, item["rule"], item["reason"])
     if item["part"] == "processes":
         if item.get("pid") is None:
             return "{:<7} {}".format(item["action"], item["reason"])
@@ -1591,6 +2161,8 @@ def collect(ctx):
         scan_docker(ctx)
     if "processes" in ctx.opts["parts"]:
         scan_processes(ctx)
+    if "tmux" in ctx.opts["parts"]:
+        scan_tmux(ctx)
     return disk_before
 
 
@@ -1600,7 +2172,11 @@ def payload_of(ctx, disk_before, caller):
     freed = 0
     if disk_before["free_bytes"] is not None and disk_after["free_bytes"] is not None:
         freed = max(0, disk_after["free_bytes"] - disk_before["free_bytes"])
-    removed = sum(1 for item in ctx.items if item.get("result") == "removed")
+    if ctx.applied:
+        removed = sum(1 for item in ctx.items
+                      if item.get("result") in ("removed", "closed"))
+    else:
+        removed = 0
     kept = sum(1 for item in ctx.items if item["action"] == "keep")
     failed = sum(1 for item in ctx.items if item.get("result") == "failed")
     would_free = sum(item.get("bytes") or 0 for item in ctx.items

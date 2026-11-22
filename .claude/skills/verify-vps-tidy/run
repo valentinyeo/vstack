@@ -37,7 +37,7 @@ MB = 1024 * 1024
 UID = os.getuid()
 RUN_TIMEOUT = 240
 HOST_PARTS = (("tmp", 200, 300), ("evidence", 60, 120), ("caches", 60, 120),
-              ("docker", 60, 120), ("processes", 30, 60))
+              ("docker", 60, 120), ("processes", 30, 60), ("tmux", 30, 120))
 
 
 def run_id():
