@@ -1,0 +1,1 @@
+../../hooks/no-bare-ids.py

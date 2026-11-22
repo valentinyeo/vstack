@@ -15,6 +15,8 @@ hooks:
     - hooks:
         - type: command
           command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/said-started.py"
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/no-bare-ids.py"
 ---
 
 # Valentin mode
