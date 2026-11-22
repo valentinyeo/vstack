@@ -561,6 +561,9 @@ def check_unnamed_identity(task, breaks):
 def check_stale(task, now, breaks):
     if task.get('section') not in OPEN:
         return
+    # A card waiting on Valentin or BlockedBy stays put; its age is not idleness.
+    if waiting_or_blocked(task):
+        return
     limit = STALE_SEC.get(task.get('section'))
     if not limit:
         return
@@ -736,9 +739,19 @@ def emit(breaks, args):
 
 
 def ensure_token():
-    path = session_login.token_path(Path.home(), 'Hypertask Reconciler')
-    if path.is_file():
-        os.environ.setdefault('HT_TOKEN', path.read_text().strip())
+    """The caller's own login first; the read-only Reconciler login only when it has none.
+
+    A chat that runs the lint keeps its own token, so reads never pretend to be
+    another chat. A scheduled or headless run borrows the Reconciler's read-only
+    login, and HT_TOKEN set by the caller always wins.
+    """
+    if not os.environ.get('HT_TOKEN'):
+        login = session_login.login_for_session()
+        path = login[1] if login else None
+        if path is None or not path.is_file():
+            path = session_login.token_path(Path.home(), 'Hypertask Reconciler')
+        if path.is_file():
+            os.environ['HT_TOKEN'] = path.read_text().strip()
     reconcile.session_bus()
 
 

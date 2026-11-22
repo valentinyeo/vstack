@@ -1,3 +1,5 @@
+import importlib.machinery
+import importlib.util
 import json
 import os
 import socket
@@ -6,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 LINT = ROOT / 'skills/hypertask-work/board-lint'
@@ -17,6 +20,15 @@ def roster_path(temp, text):
     path = Path(temp) / 'roster.txt'
     path.write_text(text or 'Board Drain Loop (live-a, claude, /tmp)\n')
     return path
+
+
+def load_board_lint():
+    loader = importlib.machinery.SourceFileLoader('board_lint_module', str(LINT))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
 
 
 class BoardLintTests(unittest.TestCase):
@@ -150,6 +162,36 @@ class BoardLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assert_rule(result.stdout, 'stale-idle')
         self.assertIn('section change', result.stdout)
+
+    def test_stale_idle_skips_waiting_on_valentin(self):
+        result = self.run_lint('waiting-stale.json')
+        self.assert_rule(result.stdout, 'stale-idle', present=False)
+
+    def test_caller_login_wins_over_reconciler(self):
+        module = load_board_lint()
+        with tempfile.TemporaryDirectory() as temp:
+            sessions = Path(temp) / '.config/hypertask-agents/credentials/sessions'
+            sessions.mkdir(parents=True)
+            (sessions / 'my-chat-agent-token').write_text('CHAT-TOKEN')
+            (sessions / 'hypertask-reconciler-agent-token').write_text('RECONCILER-TOKEN')
+            with mock.patch.dict(os.environ, {'HOME': temp, 'SHIP_SESSION_NAME': 'My Chat'}):
+                os.environ.pop('HT_TOKEN', None)
+                os.environ.pop('MULTIPROMPT_TAB', None)
+                module.ensure_token()
+                self.assertEqual(os.environ.get('HT_TOKEN'), 'CHAT-TOKEN')
+
+    def test_reconciler_login_only_when_caller_has_none(self):
+        module = load_board_lint()
+        with tempfile.TemporaryDirectory() as temp:
+            sessions = Path(temp) / '.config/hypertask-agents/credentials/sessions'
+            sessions.mkdir(parents=True)
+            (sessions / 'hypertask-reconciler-agent-token').write_text('RECONCILER-TOKEN')
+            with mock.patch.dict(os.environ, {'HOME': temp}):
+                os.environ.pop('HT_TOKEN', None)
+                os.environ.pop('SHIP_SESSION_NAME', None)
+                os.environ.pop('MULTIPROMPT_TAB', None)
+                module.ensure_token()
+                self.assertEqual(os.environ.get('HT_TOKEN'), 'RECONCILER-TOKEN')
 
     def test_expired_loop_not_armed_for_sync(self):
         with tempfile.TemporaryDirectory() as temp:
