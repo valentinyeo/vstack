@@ -218,7 +218,7 @@ class SkillWiring(unittest.TestCase):
     def setUp(self):
         self.text = (SKILL / 'SKILL.md').read_text()
 
-    def test_the_frontmatter_registers_both_checks(self):
+    def test_the_frontmatter_registers_the_checks(self):
         for line in ('  PreToolUse:', '    - matcher: "*"', '  Stop:',
                      'command: python3 "$CLAUDE_PLUGIN_ROOT/reply-check.py"',
                      'command: python3 "$CLAUDE_PLUGIN_ROOT/said-started.py"'):
@@ -234,8 +234,8 @@ class SkillWiring(unittest.TestCase):
         self.assertEqual(link.resolve().name, 'said-started.py')
         self.assertEqual(link.resolve().parent, ROOT / 'hooks')
 
-    def test_the_body_names_the_two_checks(self):
-        self.assertIn('Loading this skill turns on two checks in this chat', self.text)
+    def test_the_body_names_the_checks(self):
+        self.assertIn('Loading this skill turns on three checks in this chat', self.text)
 
 
 if __name__ == '__main__':

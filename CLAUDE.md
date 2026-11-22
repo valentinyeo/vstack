@@ -22,6 +22,7 @@ Nobody pushes to main.
 | Briefs and PRs walk every book item | `hooks/book-check.py` |
 | Advice replies name their pstack source | `hooks/pstack-reply.py` |
 | Promised work starts in that turn | `hooks/said-started.py` |
+| A chat with an open ticket never ends its turn idle | `skills/responsive-mode/idle-stop.py`, `tests/test_idle_stop.py` |
 | Advisors respect configured project boundaries | `hooks/out-of-bounds.py` |
 | Claude helpers start only when plan-pick --claude-helper allows | `hooks/claude-helper-gate.py` |
 | Lane hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |

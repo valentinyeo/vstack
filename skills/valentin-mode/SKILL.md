@@ -3,8 +3,8 @@ name: valentin-mode
 description: >-
   Work in Valentin's style on top of pstack, on his projects (Hypertask, Multi Bot, Software Factory, Pecunia, vstack, his personal apps). Starts only when invoked with /valentin-mode, never on its own.
 disable-model-invocation: true
-skill-word-budget: 1050
-skill-word-budget-reason: The index names hidden skills; the hooks block points at responsive-mode without duplicating it.
+skill-word-budget: 1100
+skill-word-budget-reason: The index names hidden skills; the hooks block points at responsive-mode without duplicating it; the Stop list now names the three checks it runs.
 hooks:
   PreToolUse:
     - matcher: "*"
@@ -17,6 +17,9 @@ hooks:
           command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/said-started.py"
         - type: command
           command: python3 "$CLAUDE_PLUGIN_ROOT/no-bare-ids.py"
+    - hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/idle-stop.py"
 ---
 
 # Valentin mode
