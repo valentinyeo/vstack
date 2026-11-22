@@ -72,8 +72,11 @@ class Client:
 
     def create(self, title, why):
         description = (
-            '<p><strong>Want</strong></p><p>' + html.escape(title) + '</p>'
-            '<p><strong>Blocks</strong></p><p>' + html.escape(why or 'No reason given.') + '</p>')
+            '<p><strong>Problem</strong></p><p>' + html.escape(why or 'No reason given.') + '</p>'
+            '<p><strong>Fix</strong></p><p>' + html.escape(title) + '</p>'
+            '<p><strong>Done when</strong></p><p>The request works in vstack.</p>'
+            '<p><strong>Risk</strong></p><p>Worst case: duplicate or noisy tickets. Undo: archive.</p>'
+            '<p><strong>Decision</strong></p><p>none</p>')
         return self.call(
             'task', 'create', '--project', BOARD, '--title', title,
             '--description', description, '--labels', LABEL)
