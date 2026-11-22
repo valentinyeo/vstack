@@ -51,6 +51,9 @@ _spec.loader.exec_module(ttg)
 _spec = importlib.util.spec_from_file_location("valentin_mode_loaded", _here.with_name("valentin_mode_loaded.py"))
 valentin = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(valentin)
+_spec = importlib.util.spec_from_file_location("subagent_call", _here.with_name("subagent_call.py"))
+subagent = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(subagent)
 
 
 def clean(path):
@@ -356,6 +359,8 @@ def verdict_worker_bash(tool_name, tool_input):
 def gate(payload):
     if not isinstance(payload, dict):
         return None
+    if subagent.from_hook(payload):
+        return None
     tool_name = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
     if os.environ.get("MULTIPROMPT_TAB"):
@@ -445,6 +450,13 @@ def self_test():
             os.environ["PACER_GUARD_INLINE"] = "off"
             assert gate(body) is None, "override allows heavy bash"
             del os.environ["PACER_GUARD_INLINE"]
+            body = {"tool_name": "Bash", "transcript_path": str(loaded),
+                    "tool_input": {"command": "git clone https://github.com/x/y /tmp/y && gh pr checkout 13"},
+                    "agent_id": "def456", "agent_type": "general-purpose"}
+            assert gate(body) is None, "subagent heavy bash passes with parent valentin transcript"
+            body = {"tool_name": "Bash", "transcript_path": str(loaded),
+                    "tool_input": {"command": "git clone https://github.com/x/y /tmp/y && gh pr checkout 13"}}
+            assert gate(body) and "hands work to workers" in gate(body), "main chat still blocks clones"
         finally:
             os.environ.pop("PACER_GUARD_INLINE", None)
     print('pacer-guard self-test ok')

@@ -21,10 +21,14 @@ def run(payload=None, env=None):
                           capture_output=True, env=base, cwd=str(ROOT))
 
 
-def payload(command, transcript=LOADED):
+def payload(command, transcript=LOADED, agent_id=None, agent_type=None):
     body = {'tool_name': 'Bash', 'tool_input': {'command': command}}
     if transcript is not None:
         body['transcript_path'] = str(transcript)
+    if agent_id is not None:
+        body['agent_id'] = agent_id
+    if agent_type is not None:
+        body['agent_type'] = agent_type
     return json.dumps(body)
 
 
@@ -37,6 +41,17 @@ class PacerGuardPace(unittest.TestCase):
 
     def test_valentin_mode_blocks_a_test_run(self):
         result = run(payload=payload('python3 -m unittest discover -s tests'))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(WORKER_MESSAGE, result.stderr)
+
+    def test_subagent_heavy_bash_passes_with_parent_transcript(self):
+        heavy = 'git clone https://github.com/x/y /tmp/y && gh pr checkout 13'
+        result = run(payload=payload(heavy, agent_id='agent-def456', agent_type='general-purpose'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_main_chat_still_blocks_same_heavy_command(self):
+        heavy = 'git clone https://github.com/x/y /tmp/y && gh pr checkout 13'
+        result = run(payload=payload(heavy))
         self.assertEqual(result.returncode, 2)
         self.assertIn(WORKER_MESSAGE, result.stderr)
 
