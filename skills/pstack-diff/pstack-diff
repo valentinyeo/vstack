@@ -43,10 +43,22 @@ AI_JUDGE = re.compile(
 )
 
 EXTRA_JOB_HINTS = re.compile(
-    r"\bpacer-check\b|\bscorecard\b|\brepro-must-fail\b|coverage.*ratchet|ratchet.*coverage|"
+    r"\bpacer-check\b|\bscorecard\b|\brepro[-_]must[-_]fail\b|\bbugfix[-_]repro\b|"
+    r"coverage.*ratchet|ratchet.*coverage|"
     r"\bfreeze\b|\bbudget\b|cap gate",
     re.I,
 )
+
+EXTRA_JOB_ID = re.compile(
+    r"^(?:bugfix[-_]repro|repro[-_]must[-_]fail)(?:[-_.]|$)",
+    re.I,
+)
+
+def _is_extra_ci_gate(job_id: str, body: str) -> bool:
+    if EXTRA_JOB_ID.match(job_id):
+        return True
+    return bool(EXTRA_JOB_HINTS.search(_strip_yaml_comments(body)))
+
 
 def _strip_yaml_comments(text: str) -> str:
     """Remove YAML # comments (line-start or after whitespace, outside quotes)."""
@@ -330,7 +342,7 @@ def classify_workflows(root: Path, pinned_verifier: str | None = None) -> list[s
                     continue
                 ai_judges.append((f"{label} job {job_id}", body, judge_order))
                 judge_order += 1
-            elif EXTRA_JOB_HINTS.search(_strip_yaml_comments(body)):
+            elif _is_extra_ci_gate(job_id, body):
                 lines.append(f"EXTRA workflow: {label} job {job_id}")
             else:
                 lines.append(f"ASKED CI workflow: {label} job {job_id}")
@@ -342,7 +354,6 @@ def classify_workflows(root: Path, pinned_verifier: str | None = None) -> list[s
             lines.append(f"EXTRA workflow: {extra}")
     elif saw_pr_workflow:
         lines.append("GAP verifier workflow: no pull_request job runs an AI verifier")
-
     return lines
 
 

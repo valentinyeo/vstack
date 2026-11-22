@@ -298,6 +298,33 @@ class PstackDiffTest(unittest.TestCase):
         self.assertNotIn("GAP verifier workflow", result.stdout)
         self.assertIn("ASKED verifier workflow:", result.stdout)
 
+    def test_bugfix_repro_gate_extra_not_asked_ci(self):
+        result = run_diff(FIXTURES / "ai-chatbot-bugfix-repro")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "EXTRA workflow: .github/workflows/pstack-verifier.yml job bugfix-repro",
+            result.stdout,
+        )
+        self.assertNotIn(
+            "ASKED CI workflow: .github/workflows/pstack-verifier.yml job bugfix-repro",
+            result.stdout,
+        )
+        self.assertIn("ASKED CI workflow: .github/workflows/ci.yml job checks", result.stdout)
+        self.assertIn("ASKED verifier workflow:", result.stdout)
+
+    def test_ordinary_unit_test_jobs_stay_asked_ci(self):
+        for snippet in (
+            "    steps:\n      - run: node --test verify/diff.test.mjs\n",
+            "    steps:\n      - run: pnpm test\n",
+            "    steps:\n      - run: python3 -m unittest discover -s tests\n",
+        ):
+            with self.subTest(snippet=snippet.split("\n")[1].strip()):
+                body = "    runs-on: ubuntu-latest\n" + snippet
+                self.assertFalse(
+                    PSTACK_DIFF.EXTRA_JOB_HINTS.search(PSTACK_DIFF._strip_yaml_comments(body)),
+                    body,
+                )
+
     def test_multiprompt_verdict_job_wins_over_comment_sicko(self):
         result = run_diff(FIXTURES / "multiprompt-verifier-rank")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
