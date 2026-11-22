@@ -6,7 +6,7 @@ description: >-
   make its view and label, write the board line, file one ticket, and sync the
   board dry then apply. Starts one headless chat in an empty scratch repo, then
   grades the evidence PASS or FAIL per check. Use after any change to
-  skills/hypertask, hooks/reconcile-auto.py or skills/hypertask-work/lease.
+  skills/hypertask, skills/hypertask-work/lease.
 ---
 
 # Verify hypertask
@@ -78,7 +78,7 @@ The chat files one ticket in label `vvm-test` on board 2060. `run` prints it. Ar
 
 ## When it runs
 
-Every change to `skills/hypertask`, `hooks/reconcile-auto.py` or `skills/hypertask-work/lease` runs it here, verdict on the PR. GitHub CI runs only `tests/test_verify_hypertask.py`: the live run needs this server, and self-hosted runners are banned.
+Every change to `skills/hypertask`, `skills/hypertask-work/lease` runs it here, verdict on the PR. GitHub CI runs only `tests/test_verify_hypertask.py`: the live run needs this server, and self-hosted runners are banned.
 
 ## Gotchas
 

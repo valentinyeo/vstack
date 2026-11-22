@@ -1,0 +1,311 @@
+{
+  "captured": "2026-11-22T22:00:13.588033+00:00",
+  "cutoff": "2026-11-15T22:00:13.588033+00:00",
+  "transcript_files_scanned": 362,
+  "matching_entries": 3738,
+  "scripts": {
+    "hooks/claude-helper-gate.py": {
+      "wiring": [
+        ".claude/settings.json",
+        "CLAUDE.md",
+        "install",
+        "skills/valentin-mode/setup.md",
+        "tests/test_claude_helper_gate.py",
+        "tests/test_valentin_mode_loaded.py",
+        "~/.claude/settings.json:PreToolUse"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 27,
+      "block_result_entries": 1
+    },
+    "hooks/gh-watch-guard.py": {
+      "wiring": [
+        ".claude/settings.json",
+        "install",
+        "skills/valentin-mode/setup.md",
+        "tests/install.sh",
+        "tests/test_gh_watch_guard.py",
+        "tools/gh-wrapper/README.md"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 17,
+      "block_result_entries": 16
+    },
+    "hooks/launch-gate.py": {
+      "wiring": [
+        ".claude/skills/verify-launch-gate/SKILL.md",
+        ".claude/skills/verify-launch-gate/features/README.md",
+        ".claude/skills/verify-launch-gate/features/check-project.md",
+        ".claude/skills/verify-launch-gate/features/doctor.md",
+        ".claude/skills/verify-launch-gate/features/heal.md",
+        ".claude/skills/verify-launch-gate/features/install.md",
+        ".claude/skills/verify-launch-gate/features/registered-command.md",
+        ".claude/skills/verify-launch-gate/grade.py",
+        ".claude/skills/verify-launch-gate/run",
+        "install",
+        "skills/valentin-mode/setup.md",
+        "skills/vps-state/SKILL.md",
+        "tests/install.sh",
+        "tests/test_launch_gate.py",
+        "tests/test_valentin_mode_settings.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 32,
+      "block_result_entries": 1
+    },
+    "hooks/plan-pick-only.py": {
+      "wiring": [
+        ".claude/settings.json",
+        "CLAUDE.md",
+        "install",
+        "skills/valentin-mode/setup.md",
+        "tests/test_plan_pick_only.py",
+        "tests/test_valentin_mode_loaded.py",
+        "~/.claude/settings.json:PreToolUse"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 41,
+      "block_result_entries": 5
+    },
+    "hooks/reconcile-auto.py": {
+      "wiring": [
+        ".claude/skills/verify-hypertask/SKILL.md",
+        "CLAUDE.md",
+        "install",
+        "skills/hypertask/references/sync.md",
+        "tests/test_reconcile_auto.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 11,
+      "block_result_entries": 0,
+      "recent_state_files": 707
+    },
+    "hooks/repo-tidy-stop": {
+      "wiring": [
+        "install",
+        "skills/repo-tidy/SKILL.md",
+        "tests/install.sh",
+        "tests/test_repo_tidy.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 6,
+      "block_result_entries": 0,
+      "recent_state_files": 0
+    },
+    "hooks/skill-update.py": {
+      "wiring": [
+        ".claude/settings.json",
+        "install",
+        "skills/valentin-mode/setup.md",
+        "tests/test_skill_update.py",
+        "~/.claude/settings.json:UserPromptSubmit"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 49,
+      "block_result_entries": 3,
+      "recent_state_files": 67
+    },
+    "hooks/subagent_call.py": {
+      "wiring": [
+        "hooks/pacer-guard.py",
+        "tests/test_subagent_call.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 0,
+      "block_result_entries": 0
+    },
+    "hooks/valentin_mode_loaded.py": {
+      "wiring": [
+        "CLAUDE.md",
+        "hooks/claude-helper-gate.py",
+        "hooks/long-chat.py",
+        "hooks/pacer-guard.py",
+        "hooks/plan-pick-only.py",
+        "install",
+        "skills/valentin-mode/setup.md",
+        "tests/test_valentin_mode_loaded.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 15,
+      "block_result_entries": 0
+    },
+    "scripts/skill-check-nightly": {
+      "wiring": [
+        "tests/test_skill_check.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 15,
+      "block_result_entries": 0,
+      "recent_state_files": 6
+    },
+    "skills/board-drain/loop-state": {
+      "wiring": [
+        ".claude/skills/verify-board-drain/run",
+        "skills/fleet-report/fleet-report",
+        "tests/fixtures/verify-board-drain/pass/stream.jsonl",
+        "tests/test_verify_board_drain.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 36,
+      "block_result_entries": 0,
+      "recent_state_files": 26
+    },
+    "skills/board-drain/watch": {
+      "wiring": [
+        ".claude/skills/verify-board-drain/SKILL.md",
+        ".claude/skills/verify-board-drain/features/restart-rearm.md",
+        ".claude/skills/verify-board-drain/grade.py",
+        "tests/fixtures/verify-board-drain/pass/stream.jsonl",
+        "tests/test_verify_board_drain.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 292,
+      "block_result_entries": 0,
+      "recent_state_files": 26
+    },
+    "skills/hypertask/scripts/blocker-sweep.py": {
+      "wiring": [
+        "docs/housekeeping-map.json",
+        "docs/housekeeping-map.md",
+        "skills/hypertask/references/tickets.md",
+        "tests/test_ticket_question_rules.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 3,
+      "block_result_entries": 0
+    },
+    "skills/hypertask/scripts/ticket-lint": {
+      "wiring": [
+        "skills/hypertask/references/tickets.md",
+        "tests/test_ticket_gate_label.py",
+        "tests/test_ticket_question_rules.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 371,
+      "block_result_entries": 0
+    },
+    "skills/join-slack/scripts/fleet-slack-doctor": {
+      "wiring": [
+        "skills/join-slack/SKILL.md"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 0,
+      "block_result_entries": 0
+    },
+    "skills/ratstack-transition/scripts/rat-diff": {
+      "wiring": [
+        "skills/ratstack-transition/SKILL.md"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 0,
+      "block_result_entries": 0,
+      "recent_cache_files": 0
+    },
+    "skills/responsive-mode/reply-check.py": {
+      "wiring": [
+        ".claude/skills/verify-responsive-mode/features/README.md",
+        ".claude/skills/verify-responsive-mode/grade.py",
+        ".claude/skills/verify-valentin-mode/SKILL.md",
+        "hooks/no-bare-ids.py",
+        "skills/responsive-mode/SKILL.md",
+        "skills/valentin-mode/context.py",
+        "skills/valentin-mode/no-bare-ids.py",
+        "tests/fixtures/verify-valentin-mode/hook-injected/verdict.json",
+        "tests/fixtures/verify-valentin-mode/hook-injected/verdict.txt",
+        "tests/fixtures/verify-valentin-mode/paste-in-tool-result/debug.log",
+        "tests/fixtures/verify-valentin-mode/paste-in-tool-result/installed-valentin-mode.md",
+        "tests/fixtures/verify-valentin-mode/paste-in-tool-result/verdict.json",
+        "tests/fixtures/verify-valentin-mode/paste-in-tool-result/verdict.txt",
+        "tests/test_responsive_mode_checks.py",
+        "tests/test_verify_responsive_mode.py",
+        "tests/test_verify_valentin_mode.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 15,
+      "block_result_entries": 229
+    },
+    "skills/valentin-mode/context.py": {
+      "wiring": [
+        ".claude/skills/verify-valentin-mode/SKILL.md",
+        ".claude/skills/verify-valentin-mode/features/responsive.md",
+        "CLAUDE.md",
+        "tests/fixtures/verify-valentin-mode/hook-injected/debug.log",
+        "tests/test_valentin_mode_context.py",
+        "tests/test_verify_valentin_mode.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 0,
+      "block_result_entries": 0,
+      "recent_state_files": 15
+    },
+    "skills/valentin-mode/version.sh": {
+      "wiring": [
+        "skills/fleet-report/SKILL.md",
+        "skills/fleet-report/fleet-report",
+        "tests/test_valentin_mode_version.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 123,
+      "block_result_entries": 0
+    },
+    "skills/vps-tidy/vps-tidy": {
+      "wiring": [
+        ".claude/skills/verify-vps-tidy/SKILL.md",
+        ".claude/skills/verify-vps-tidy/features/README.md",
+        ".claude/skills/verify-vps-tidy/run",
+        "install",
+        "tests/test_vps_tidy.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 9,
+      "block_result_entries": 0,
+      "recent_state_files": 21
+    },
+    "tools/gh-wrapper/gh": {
+      "wiring": [
+        "tests/test_gh_budget.py",
+        "tests/test_gh_caller_session.py",
+        "tests/test_gh_wrapper.py",
+        "tools/gh-wrapper/README.md",
+        "tools/gh-wrapper/replay.py"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 26,
+      "block_result_entries": 0,
+      "recent_state_files": 6638
+    },
+    "tools/gh-wrapper/wait-checks": {
+      "wiring": [
+        "hooks/gh-watch-guard.py",
+        "skills/valentin-mode/setup.md",
+        "tests/test_gh_budget.py",
+        "tests/test_gh_watch_guard.py",
+        "tests/test_wait_checks.py",
+        "tools/gh-wrapper/README.md",
+        "tools/gh-wrapper/USING-GITHUB.md",
+        "tools/gh-wrapper/gh"
+      ],
+      "debug_files": 0,
+      "transcript_tool_calls": 52,
+      "block_result_entries": 0
+    }
+  },
+  "runtime_counts": {
+    ".local/state/gh-call-log/calls.tsv": {
+      "recent_lines": 88803
+    },
+    ".local/state/skill-update/updates.log": {
+      "recent_lines": 21
+    },
+    "board-drain": {
+      "recent_files": 26
+    },
+    "vps-tidy": {
+      "recent_files": 21
+    },
+    "skill-check": {
+      "recent_files": 6
+    },
+    "deployed_gh_matches_checkout": false
+  }
+}

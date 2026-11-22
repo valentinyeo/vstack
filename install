@@ -97,17 +97,14 @@ for name in ticket hypertask-checkup; do
   done
 done
 
-# These hooks need a ~/.claude/hooks path. This script never edits a settings
-# file: each chat adds the Stop hook and its PreToolUse guards to its own
-# project's .claude/settings.json.
+# These hooks need a ~/.claude/hooks path. Registration belongs to each chat;
+# the retirement migration below removes only commands for deleted hooks.
 
 # Claude settings call this guard at its ~/.claude/hooks path; the copy lives here (SOFT-2845).
 link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.claude/hooks"
 link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
-link_one reconcile-auto.py "$ROOT/hooks/reconcile-auto.py" "$HOME/.claude/hooks"
 link_one test-timeout-guard.py "$ROOT/hooks/test-timeout-guard.py" "$HOME/.claude/hooks"
 link_one pstack-new-gates.py "$ROOT/hooks/pstack-new-gates.py" "$HOME/.claude/hooks"
-link_one gh-watch-guard.py "$ROOT/hooks/gh-watch-guard.py" "$HOME/.claude/hooks"
 
 # vps-state answers "can this server take another chat or worker", and the
 # SessionStart hook can print that answer as a session opens. This script only
@@ -116,30 +113,13 @@ link_one gh-watch-guard.py "$ROOT/hooks/gh-watch-guard.py" "$HOME/.claude/hooks"
 link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
 link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
 
-# vps-tidy is the one cleaner for temp files, caches, docker leftovers and stray
-# programs. Any chat runs it from its own loop; this script only links the tool.
-link_one vps-tidy "$ROOT/skills/vps-tidy/vps-tidy" "$HOME/.local/bin"
-# launch-gate blocks a worker, build or test run while vps-state says HOLD; each
-# chat registers it in its own project with --install-for-project.
-link_one launch-gate.py "$ROOT/hooks/launch-gate.py" "$HOME/.claude/hooks"
-link_one plan-pick-only.py "$ROOT/hooks/plan-pick-only.py" "$HOME/.claude/hooks"
-link_one claude-helper-gate.py "$ROOT/hooks/claude-helper-gate.py" "$HOME/.claude/hooks"
-
-# skill-update keeps the shared checkout current and tells a chat to re-read a
-# changed valentin-mode (VSTA-56). It still needs registering as a
-# UserPromptSubmit hook in each project's .claude/settings.json.
-link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
 link_one long-chat.py "$ROOT/hooks/long-chat.py" "$HOME/.claude/hooks"
 
 # long-chat acts only when valentin-mode is loaded, so it is safe to register
 # once in the global ~/.claude/settings.json (VSTA-97). Per-project copies would
 # run the hook twice in vstack chats.
 
-# The two lane hooks act only in a chat that loaded valentin-mode, so they are
-# safe to register once in the global ~/.claude/settings.json (VSTA-70). They
-# import their sibling modules by path, so those are linked too.
-link_one plan-pick-only.py "$ROOT/hooks/plan-pick-only.py" "$HOME/.claude/hooks"
-link_one claude-helper-gate.py "$ROOT/hooks/claude-helper-gate.py" "$HOME/.claude/hooks"
+# The long-chat and pacer hooks share the opt-in boundary reader.
 link_one valentin_mode_loaded.py "$ROOT/hooks/valentin_mode_loaded.py" "$HOME/.claude/hooks"
 link_one book-check.py "$ROOT/hooks/book-check.py" "$HOME/.claude/hooks"
 
@@ -149,7 +129,56 @@ else
   echo "vstack install: linked skills from $ROOT; plain copies in $DUPES"
 fi
 
-# repo-tidy: the command, and the Stop hook each chat adds to its own project (SOFT-2937).
+# repo-tidy runs explicitly after this chat merges work.
 link_one repo-tidy "$ROOT/skills/repo-tidy/repo-tidy" "$HOME/.local/bin"
-link_one repo-tidy-stop "$ROOT/hooks/repo-tidy-stop" "$HOME/.claude/hooks"
 link_one vstack-feedback "$ROOT/skills/vstack-feedback/vstack-feedback" "$HOME/.local/bin"
+
+# Remove retired registrations before their links, including the old bare Python
+# command that would otherwise block every prompt when its file disappears.
+retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop skill-update.py)
+python3 - "$HOME/.claude/settings.json" "$ROOT/.claude/settings.local.json" -- "${retired_hooks[@]}" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+split = sys.argv.index('--')
+pattern = re.compile(r'/hooks/(?:' + '|'.join(re.escape(name) for name in sys.argv[split + 1:])
+                     + r''')(?=[\s"';]|$)''')
+for name in sys.argv[1:split]:
+    path = Path(name)
+    if not path.is_file():
+        continue
+    data = json.loads(path.read_text())
+    changed = False
+    for event, groups in list(data.get('hooks', {}).items()):
+        kept = []
+        event_changed = False
+        for group in groups:
+            hooks = group.get('hooks', [])
+            remaining = [hook for hook in hooks if not pattern.search(hook.get('command', ''))]
+            if len(remaining) == len(hooks):
+                kept.append(group)
+                continue
+            event_changed = True
+            if remaining:
+                kept.append(dict(group, hooks=remaining))
+        if event_changed:
+            changed = True
+            data['hooks'][event] = kept
+    if changed:
+        temporary = path.with_name(path.name + '.vstack-tmp')
+        temporary.write_text(json.dumps(data, indent=2) + '\n')
+        temporary.chmod(path.stat().st_mode & 0o777)
+        os.replace(temporary, path)
+PY
+
+# Drop retired links from older installs; preserve real files and unrelated hooks.
+for name in "${retired_hooks[@]}"; do
+  [ ! -L "$HOME/.claude/hooks/$name" ] || rm -f "$HOME/.claude/hooks/$name"
+done
+[ ! -L "$HOME/.local/bin/vps-tidy" ] || rm -f "$HOME/.local/bin/vps-tidy"
+for dest in "${dests[@]}"; do
+  [ ! -L "$dest/vps-tidy" ] || rm -f "$dest/vps-tidy"
+done

@@ -24,7 +24,7 @@ LOAD_HOOK = 'python3 "$CLAUDE_PLUGIN_ROOT/context.py"'
 BULLET = '- **Version:** your first reply after loading names that version line.'
 LATEST = re.compile(r'^valentin-mode v\d+ \(latest\)$')
 BEHIND = re.compile(
-    r'^valentin-mode v\d+, latest is v\d+ \(updates itself within 10 minutes\)$')
+    r'^valentin-mode v\d+, latest is v\d+ \(update the shared checkout\)$')
 
 
 def git(cwd, *args):
@@ -109,7 +109,7 @@ class VersionScript(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.strip(),
-            'valentin-mode v1, latest is v2 (updates itself within 10 minutes)')
+            'valentin-mode v1, latest is v2 (update the shared checkout)')
 
     def test_a_commit_elsewhere_does_not_count(self):
         work, origin = self.build_repo()

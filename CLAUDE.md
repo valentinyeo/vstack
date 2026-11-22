@@ -17,15 +17,13 @@ Nobody pushes to main.
 | Rule | Enforced by |
 |---|---|
 | Worker briefs name pstack and the worker kickoff | `hooks/pstack-source.py` |
-| Workers start only through plan-pick | `hooks/plan-pick-only.py` |
 | PRs name a real pstack source | `hooks/pstack-source.py` |
 | Briefs and PRs walk every book item | `hooks/book-check.py` |
 | Advice replies name their pstack source | `hooks/pstack-reply.py` |
 | Promised work starts in that turn | `hooks/said-started.py` |
 | A chat with an open ticket never ends its turn idle | `skills/responsive-mode/idle-stop.py`, `tests/test_idle_stop.py` |
 | Advisors respect configured project boundaries | `hooks/out-of-bounds.py` |
-| Claude helpers start only when plan-pick --claude-helper allows | `hooks/claude-helper-gate.py` |
-| Lane hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |
+| Long-chat and pacing hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |
 | Responsive mode's rules reach the chat without the chat choosing to fetch them | `skills/valentin-mode/context.py`, `.claude/skills/verify-valentin-mode/grade.py`, `tests/test_valentin_mode_context.py` |
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | No bare ticket ids to Valentin | `hooks/no-bare-ids.py`, `tests/test_no_bare_ids.py` |
@@ -38,7 +36,7 @@ Nobody pushes to main.
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
 | Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
 | Reconcile keeps boards 15 and 2060 truthful | `skills/hypertask-work/reconcile`, `tests/test_hypertask_work.py` |
-| Boards stay true without anyone asking | lease start/end sync, `hooks/reconcile-auto.py`, `bin/hand-moves` |
+| Boards stay true without anyone asking | lease start/end sync, `skills/board-drain/watch`, `bin/hand-moves` |
 | Skill budgets, copied rules, references and new-skill prior art pass | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
 | Loaded skills stay lean: no dead links, duplicate names, retired terms or oversized descriptions | `scripts/skill-check.py`, `tests/test_skill_check.py` |
 | A PR adds no verification gate pstack does not ask for | `hooks/pstack-new-gates.py`, `checks` workflow step |

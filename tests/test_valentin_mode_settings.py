@@ -17,7 +17,7 @@ def hooks_named_in_setup():
     return re.findall(r'\|\s*`([^`]+\.py)`\s*\|', text)
 
 
-GLOBAL_ONLY = {'launch-gate.py', 'long-chat.py'}
+GLOBAL_ONLY = {'long-chat.py'}
 
 
 def hooks_required_in_settings():
@@ -34,7 +34,7 @@ def command_strings(settings):
 
 
 class ValentinModeSettings(unittest.TestCase):
-    def test_settings_registers_every_setup_hook_except_launch_gate(self):
+    def test_settings_registers_every_project_setup_hook(self):
         settings = json.loads(SETTINGS.read_text())
         commands = command_strings(settings)
         for name in hooks_required_in_settings():

@@ -238,7 +238,7 @@ class ModuleTests(unittest.TestCase):
 
     def test_owner_ignores_generic_chat_names(self):
         chats = [chat('Claude', repo='o/r')]
-        self.assertIsNone(self.m.owner_chat('claude-helper-gate', 'o/r', chats))
+        self.assertIsNone(self.m.owner_chat('unowned-helper', 'o/r', chats))
 
     def test_owner_from_the_board_assignee(self):
         chats = [chat('Board Drain Loop', repo='o/r'), chat('VPS Admin', repo='o/r')]

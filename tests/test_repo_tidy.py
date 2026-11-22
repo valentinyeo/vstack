@@ -450,53 +450,6 @@ class TestStreamingManyRepos(unittest.TestCase):
         proc.wait(timeout=120)
 
 
-class TestStopHook(unittest.TestCase):
-    """The Stop hook finds the script beside itself, so a chat needs no install.
-
-    Without that, a chat that follows SKILL.md and adds the hook to its own
-    settings gets a hook that silently does nothing.
-    """
-
-    def test_hook_runs_the_script_beside_it(self):
-        workspace = Path(tempfile.mkdtemp(prefix="repo-tidy-hook-"))
-        self.addCleanup(shutil.rmtree, workspace, ignore_errors=True)
-        root = workspace / "vstack"
-        (root / "hooks").mkdir(parents=True)
-        (root / "skills/repo-tidy").mkdir(parents=True)
-        shutil.copy(str(ROOT / "hooks/repo-tidy-stop"), str(root / "hooks/repo-tidy-stop"))
-        marker = workspace / "called.txt"
-        stub = root / "skills/repo-tidy/repo-tidy"
-        stub.write_text('#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s"\n' % marker)
-        stub.chmod(0o755)
-
-        home = workspace / "home"
-        home.mkdir()
-        repo = workspace / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        binary = workspace / "bin"
-        binary.mkdir()
-        # A stripped PATH: no repo-tidy on it, and no ~/.local/bin fallback.
-        for tool in ("bash", "git", "cksum", "date", "mkdir", "cat", "cut",
-                     "setsid", "readlink", "nohup"):
-            found = shutil.which(tool)
-            if found:
-                (binary / tool).symlink_to(found)
-
-        env = {"HOME": str(home), "PATH": str(binary), "CLAUDE_PROJECT_DIR": str(repo)}
-        result = subprocess.run([str(root / "hooks/repo-tidy-stop")],
-                                capture_output=True, text=True, env=env, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "")
-        for _ in range(200):
-            if marker.exists():
-                break
-            time.sleep(0.05)
-        self.assertTrue(marker.exists(), "the hook never ran the script beside it")
-        self.assertIn("--apply", marker.read_text())
-        self.assertIn("--mine %s" % repo, marker.read_text())
-
-
 class TestVerifySkill(unittest.TestCase):
     """The proof skill drives its own sandbox and grades itself."""
 

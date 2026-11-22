@@ -67,8 +67,7 @@ hour and the live remaining REST core and GraphQL budget from one cached `rate_l
 
 `tools/gh-wrapper/wait-checks <repo> <pr>` polls `gh pr checks` once a minute through the cache,
 prints one line and exits 0 when every check passed, 1 when a check failed, 2 at the 30 minute cap.
-`hooks/gh-watch-guard.py` blocks `gh --watch` and shell loops that call gh with a sleep under 60 s
-and names this command instead. The short rules every chat follows are in `USING-GITHUB.md`.
+The wrapper itself floors `--watch` at 60 seconds and caches repeated reads, so no separate command-parsing hook is needed. The short rules every chat follows are in `USING-GITHUB.md`.
 
 ## Pruning
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive scripts/skill-check.py and the nightly wrapper against throwaway homes."""
+"""Drive scripts/skill-check.py against throwaway homes."""
 import json
 import os
 from pathlib import Path
@@ -11,7 +11,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/skill-check.py'
-NIGHTLY = ROOT / 'scripts/skill-check-nightly'
 
 FAKE_HYPERTASK = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -427,170 +426,6 @@ class Output(HomeCase):
         first = result.stdout.splitlines()[0]
         self.assertTrue(first.startswith('duplicate-name: shared: '), first)
 
-
-class Nightly(HomeCase):
-    def nightly(self, *args, env=None):
-        if env is None:
-            env = {'PATH': os.environ['PATH'], 'HOME': str(self.home)}
-        return subprocess.run(
-            ['bash', str(NIGHTLY),
-             '--state-dir', str(self.base / 'state'), '--check', str(SCRIPT), *args],
-            capture_output=True, text=True, env=env)
-
-    def test_without_a_ticket_it_only_writes_the_state_report(self):
-        self.add_skill('one')
-        state = self.base / 'state'
-        result = self.nightly()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        latest = json.loads((state / 'latest.json').read_text())
-        self.assertEqual(latest['findings'], [])
-        self.assertFalse((state / 'posted.digest').exists())
-
-    def test_the_host_label_reaches_the_state_report(self):
-        self.add_skill('one')
-        state = self.base / 'state'
-        result = self.nightly('--host-label', 'hetzner')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        latest = json.loads((state / 'latest.json').read_text())
-        self.assertEqual(latest['host'], 'hetzner')
-
-    def test_the_host_label_defaults_to_the_hostname(self):
-        self.add_skill('one')
-        state = self.base / 'state'
-        result = self.nightly()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        latest = json.loads((state / 'latest.json').read_text())
-        self.assertEqual(latest['host'], socket.gethostname())
-
-    def test_the_usage_names_the_host_label(self):
-        result = self.nightly('--help')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('--host-label', result.stdout)
-
-    def test_a_crashing_check_leaves_no_stale_report(self):
-        state = self.base / 'state'
-        state.mkdir(parents=True)
-        stale = state / 'latest.json'
-        stale.write_text(json.dumps({'host': 'last-night', 'findings': []}))
-        broken = self.base / 'crashing-check'
-        broken.write_text('import sys\nsys.exit(3)\n')
-        result = self.nightly('--check', str(broken))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('exit 3', result.stderr)
-        self.assertFalse(stale.exists())
-
-
-class NightlyHypertask(HomeCase):
-    """Drive the nightly wrapper against a fake hypertask that records its argv."""
-
-    def setUp(self):
-        super().setUp()
-        self.add_skill('one')
-        self.bin = self.base / 'bin'
-        self.bin.mkdir(parents=True)
-        fake = self.bin / 'hypertask'
-        fake.write_text(FAKE_HYPERTASK)
-        fake.chmod(0o755)
-        self.token = self.base / 'token'
-        self.token.write_text('private-test-token\n')
-        self.state = self.base / 'state'
-        self.record = self.base / 'calls.json'
-
-    def nightly(self, *args, fail=False, env=None):
-        self.record.write_text(json.dumps({'calls': [], 'fail': fail}))
-        full = {'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
-                'HOME': str(self.home),
-                'FAKE_HYPERTASK_STATE': str(self.record)}
-        full.update(env or {})
-        return subprocess.run(
-            ['bash', str(NIGHTLY), '--state-dir', str(self.state), '--check', str(SCRIPT),
-             '--token-file', str(self.token), '--ticket', 'VSTA-36',
-             '--project', '13556', *[str(a) for a in args]],
-            capture_output=True, text=True, env=full)
-
-    def fake_ssh_serving(self, payload):
-        fake = self.bin / 'ssh'
-        fake.write_text('#!/usr/bin/env bash\ncat ' + str(payload) + '\n')
-        fake.chmod(0o755)
-
-    def test_an_unreadable_remote_age_counts_as_a_missing_report(self):
-        payload = self.base / 'remote.json'
-        payload.write_text(json.dumps(
-            {'host': 'hetzner', 'time': 'whenever',
-             'findings': [{'kind': 'dead-link', 'subject': 'gone',
-                           'detail': '/x/gone -> /x/missing'}],
-             'totals': {}}))
-        self.fake_ssh_serving(payload)
-        # A python that dies inside the age snippet prints no age at all.
-        mute = self.bin / 'python-mute-age'
-        mute.write_text('#!/usr/bin/env bash\n'
-                        'if [ "$1" = "-" ] && [ "$#" -eq 2 ]; then exit 0; fi\n'
-                        'exec ' + sys.executable + ' "$@"\n')
-        mute.chmod(0o755)
-        result = self.nightly('--remote', 'box:%s' % payload,
-                              env={'PYTHON': str(mute)})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        body = (self.state / 'comment.html').read_text()
-        self.assertIn('remote-report: missing', body)
-        self.assertNotIn('/x/missing', body)
-
-    def test_a_fresh_remote_report_is_reported(self):
-        payload = self.base / 'remote.json'
-        stamp = subprocess.run(
-            [sys.executable, '-c',
-             'import datetime; print(datetime.datetime.now(datetime.timezone.utc)'
-             '.strftime("%Y-%m-%dT%H:%M:%SZ"))'],
-            capture_output=True, text=True, check=True).stdout.strip()
-        payload.write_text(json.dumps(
-            {'host': 'hetzner', 'time': stamp,
-             'findings': [{'kind': 'dead-link', 'subject': 'gone',
-                           'detail': '/x/gone -> /x/missing'}],
-             'totals': {}}))
-        self.fake_ssh_serving(payload)
-        result = self.nightly('--remote', 'box:%s' % payload)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        body = (self.state / 'comment.html').read_text()
-        self.assertIn('/x/missing', body)
-        self.assertNotIn('remote-report: missing', body)
-
-    def calls(self, verb):
-        return [call for call in json.loads(self.record.read_text())['calls']
-                if call[:2] == [verb, 'add']]
-
-    def test_the_comment_carries_kind_qa(self):
-        result = self.nightly()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        comments = self.calls('comment')
-        self.assertEqual(len(comments), 1, comments)
-        comment = comments[0]
-        self.assertIn('--kind', comment, comment)
-        self.assertEqual(comment[comment.index('--kind') + 1], 'qa', comment)
-        self.assertIn('--file', comment, comment)
-
-    def test_the_activity_log_stays_without_a_kind(self):
-        result = self.nightly()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        logs = self.calls('activity')
-        self.assertEqual(len(logs), 1, logs)
-        self.assertNotIn('--kind', logs[0], logs[0])
-
-    def test_the_token_is_never_printed(self):
-        result = self.nightly()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn('private-test-token', result.stdout + result.stderr)
-
-    def test_a_failed_comment_leaves_the_digest_unstored(self):
-        result = self.nightly(fail=True)
-        self.assertEqual(result.returncode, 1)
-        self.assertFalse((self.state / 'posted.digest').exists())
-
-    def test_a_second_run_with_the_same_findings_posts_nothing(self):
-        self.assertEqual(self.nightly().returncode, 0)
-        self.assertTrue((self.state / 'posted.digest').exists())
-        result = self.nightly()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(self.calls('comment')), 0)
-        self.assertIn('nothing new to post', result.stdout)
 
 
 if __name__ == '__main__':
