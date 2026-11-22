@@ -152,3 +152,4 @@ fi
 # repo-tidy: the command, and the Stop hook each chat adds to its own project (SOFT-2937).
 link_one repo-tidy "$ROOT/skills/repo-tidy/repo-tidy" "$HOME/.local/bin"
 link_one repo-tidy-stop "$ROOT/hooks/repo-tidy-stop" "$HOME/.claude/hooks"
+link_one vstack-feedback "$ROOT/skills/vstack-feedback/vstack-feedback" "$HOME/.local/bin"
