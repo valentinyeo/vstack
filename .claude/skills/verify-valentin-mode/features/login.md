@@ -19,7 +19,9 @@ A chat writes on the board under its own agent login, never under Valentin's use
 
 Preconditions: the token file `vvm-test-agent-agent-token` exists; `run` sets `SHIP_SESSION_NAME="VVM Test Agent"`.
 
-The lease and the Stop hook read `skills/hypertask-work/session_login.py`. A chat with no `MULTIPROMPT_TAB` (a headless test run) resolves its login from `SHIP_SESSION_NAME` and that name's token file on disk. `run` exits 3 when the token file is missing.
+The lease, the Stop hook and the identity guard read `skills/hypertask-work/session_login.py`. A chat with no `MULTIPROMPT_TAB` (a headless test run) resolves its login from `SHIP_SESSION_NAME` and that name's token file on disk. `run` exits 3 when the token file is missing.
+
+A write that carries the chat's token under either name the CLI documents (`HT_TOKEN=`, or `HYPERTASKS_JWT_TOKEN=` from `skills/hypertask/references/cli.md`) passes the guard; one without a token is refused.
 
 `run` also strips the caller's `MULTIPROMPT_*`, `HT_TOKEN` and `HYPERTASK_*` from the chat's environment. Leaked, they made the lease resolve the caller's tab and sync the card as the caller (20 Nov: "board write by Vstack Maintainer").
 

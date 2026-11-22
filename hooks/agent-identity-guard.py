@@ -2,21 +2,31 @@
 """PreToolUse guard: a chat never writes to a Hypertask board as Valentin, with plain `hypertask`, the `ht`
 REST helper, or the claude.ai Hypertask connector.
 
-The chat's name is its Multibot name (chat-names.json via MULTIPROMPT_TAB), else its Claude session name.
-Its board login is the agent token file named after that name. Has one: use it. Has none: get one named
-exactly like the chat with the /hypertask skill first. One name everywhere: Multibot, Claude, Hypertask.
+The chat's name and login come from skills/hypertask-work/session_login.py, the one resolver the lease and the
+Stop hook read: a tab names it through the roster and the chat-name file, and a chat with no tab (a headless
+test or a scripted run) is named by SHIP_SESSION_NAME. This hook kept its own copy of that rule, so on 22 Nov
+a test chat named "VVM Test Agent" was read as its scratch folder, "vvm-scratch-qgj0dg-a5", and its own
+board note was refused as Valentin's write.
+
+A write that carries the chat's token passes, under either name the CLI documents: `HT_TOKEN=`, or
+`HYPERTASKS_JWT_TOKEN=`, which skills/hypertask/references/cli.md tells every chat to use.
 
 An `ht` write that only names /mcp/agents is agent setup (its name, its board access), not a board write,
 so it passes: an agent cannot change its own board access, the owner's saved login must. Each `ht` call is
 judged on its own, so a chain that adds a ticket write still blocks.
 
 agent-identity-guard.py --self-test"""
+import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 SESSIONS = Path.home() / ".config/hypertask-agents/credentials/sessions"
+SHARED_LOGIN = Path(__file__).resolve().parent.parent / "skills/hypertask-work/session_login.py"
+# A command that sets the CLI's token env var writes as that agent, not as Valentin.
+TOKEN_ENV = re.compile(r"(?<![A-Za-z0-9_])(?:HT_TOKEN|HYPERTASKS_JWT_TOKEN)=")
 WRITE = re.compile(
     r"(^|[;&|(\s/])hypertask\s+(--json\s+)?(task|tasks|comment|comments|page|pages|section|sections|label|labels|decision|blockers)\s+"
     r"(create|add|update|edit|move|move-board|assign|unassign|delete|archive|done|resolve|clear|set|react)\b")
@@ -54,8 +64,33 @@ def session_name():
     return ""
 
 
+def shared_login():
+    """vstack's one name and login resolver, or None when it is not installed beside this hook."""
+    try:
+        spec = importlib.util.spec_from_file_location("session_login", SHARED_LOGIN)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def agent_identity():
+    """(name, has_login) for this chat, read the same way the lease and the Stop hook read it."""
+    shared = shared_login()
+    if shared is not None:
+        try:
+            found = shared.login_for_session()
+        except Exception:
+            found = None
+        if found:
+            return found[0], Path(found[1]).is_file()
+    name = multibot_name() or session_name()
+    return name, bool(name) and (SESSIONS / f"{slug(name)}-agent-token").is_file()
+
+
 def multibot_name(env=None):
-    tab = (env if env is not None else __import__("os").environ).get("MULTIPROMPT_TAB")
+    tab = (env if env is not None else os.environ).get("MULTIPROMPT_TAB")
     if not tab:
         return ""
     try:
@@ -92,7 +127,7 @@ def mcp_verdict(tool_name, tool_input):
 
 
 def verdict(cmd, name, has_login):
-    if not (WRITE.search(cmd) or ht_board_writes(cmd)) or "HT_TOKEN=" in cmd or re.search(r"\s(--help|-h)\b", cmd):
+    if not (WRITE.search(cmd) or ht_board_writes(cmd)) or TOKEN_ENV.search(cmd) or re.search(r"\s(--help|-h)\b", cmd):
         return None
     if not name:
         return ("BLOCKED by agent-identity-guard: this chat has no name, so this write would post as Valentin. "
@@ -115,6 +150,10 @@ def self_test():
     assert "no name" in verdict(w, "", False), "a chat with no name never writes as Valentin"
     assert verdict('HT_TOKEN="$T" ' + w, "", False) is None, "a nameless chat with an agent token writes"
     assert verdict("HT_TOKEN=x " + w, "Poteto", False) is None
+    assert verdict('HYPERTASKS_JWT_TOKEN="$T" ' + w, "Poteto", False) is None, "the documented token env var passes"
+    assert verdict('HYPERTASKS_JWT_TOKEN="$T" ' + w, "Poteto", True) is None, "a chat with its own login passes too"
+    assert verdict('export HYPERTASKS_JWT_TOKEN=$(cat "$S/x"); ' + w, "", False) is None, "an export line passes"
+    assert verdict('MY_HYPERTASKS_JWT_TOKEN=1 ' + w, "Poteto", False), "a lookalike name is not a token"
     assert verdict("ht POST /mcp/comments '{}'", "Poteto", False), "an `ht` POST must block"
     assert verdict("ht GET /mcp/tasks", "Poteto", False) is None, "an `ht` read passes"
     assert verdict("HT_TOKEN=\"$T\" ht PATCH /mcp/tasks/1 '{}'", "", False) is None, "an `ht` write with a token passes"
@@ -158,8 +197,8 @@ def main():
         why = mcp_verdict(tool_name, tool_input)
     else:
         cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-        name = multibot_name() or session_name()
-        why = verdict(cmd, name, bool(name) and (SESSIONS / f"{slug(name)}-agent-token").is_file())
+        name, has_login = agent_identity()
+        why = verdict(cmd, name, has_login)
     if not why:
         return 0
     print(why, file=sys.stderr)
