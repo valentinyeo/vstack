@@ -6,8 +6,8 @@ Read-only checker: `skills/hypertask-work/board-lint --board <id>`. No board wri
 |---|---|---|
 | `agent-assignee` | Open ticket with no agent assignee, or assignee name not a live chat; skips waiting on Valentin or BlockedBy (`identity.md`, `board.md`) | board-lint |
 | `true-column` | Card not in the column reconcile would move it to (`board.md` true column) | board-lint; reconcile applies the fix |
-| `done-proof` | Done with no merged PR and no Done comment with evidence | board-lint (suggestion on judgment edge cases) |
-| `unlinked-work` | Open PR or live worker naming no ticket on this board | board-lint |
+| `done-proof` | Done without live proof (`board.md`); merged PR alone is not Done on factory boards | board-lint |
+| `unlinked-work` | Open PR or live worker naming no ticket on this board | written only (fixture-tested); ticket-scoped PR discovery cannot see unlinked open PRs yet |
 | `duplicate-title` | Likely duplicate open tickets (same normalized title) | written only; lint prints suggestion |
 | `stale-idle` | Open ticket idle past column stale age (`sectionChangedAt`, not `updatedAt`) | board-lint |
 | `human-board-write` | On boards 15 or 4060, Valentin user wrote where an agent did the work | none yet when author type missing |

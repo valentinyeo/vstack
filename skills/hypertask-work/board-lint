@@ -67,7 +67,7 @@ RULE_ROWS = (
     {'id': 'agent-assignee', 'ref': 'skills/hypertask/references/identity.md', 'enforcer': 'board-lint'},
     {'id': 'true-column', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
     {'id': 'done-proof', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
-    {'id': 'unlinked-work', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'board-lint'},
+    {'id': 'unlinked-work', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'written only'},
     {'id': 'duplicate-title', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'written only'},
     {'id': 'stale-idle', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
     {'id': 'human-board-write', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'none yet'},
@@ -256,7 +256,7 @@ def armed_chats(board_id):
         if not name:
             continue
         try:
-            if loop_state.state_path(name) != path or loop_state.status(name)[0] != 0:
+            if loop_state.state_path(name) != path or loop_state.status(name)[0] not in (0, 3):
                 continue
         except ERRORS:
             continue
@@ -287,7 +287,7 @@ def chat_naming_labels(args, board_id):
         if not chat:
             continue
         try:
-            if loop_state.state_path(chat) != path or loop_state.status(chat)[0] != 0:
+            if loop_state.state_path(chat) != path or loop_state.status(chat)[0] not in (0, 3):
                 continue
         except ERRORS:
             continue
@@ -325,16 +325,16 @@ def check_true_column(task, facts, board, names, breaks):
                         f'move {task.get("section")} -> {column} ({reason}) or run reconcile dry'))
 
 
-def check_done_proof(task, pulls, comments, breaks):
+def check_done_proof(task, pulls, comments, board, breaks):
     if task.get('section') != DONE:
-        return
-    ticket_pulls = pulls.get(task['ticketNumber'], ())
-    if merged_proof(ticket_pulls):
         return
     if done_comment_proof(comments.get(task['ticketNumber'])):
         return
+    ticket_pulls = pulls.get(task['ticketNumber'], ())
+    if reconcile.product_board(board) and merged_proof(ticket_pulls):
+        return
     breaks.append(Break(task['ticketNumber'], 'done-proof', owner_chat(task),
-                        'add merged PR proof or a Done comment with evidence'))
+                        'add live Done proof (Done comment with evidence); merged PR alone is not Done'))
 
 
 def check_label_assignee(task, chat_names, breaks):
@@ -503,13 +503,13 @@ def lint(args):
             continue
         check_agent_assignee(task, live, breaks)
         check_true_column(task, facts, board, names, breaks)
-        check_done_proof(task, pulls, comments, breaks)
+        check_done_proof(task, pulls, comments, board, breaks)
         check_label_assignee(task, chat_names, breaks)
         check_no_owner_label(task, breaks)
         check_unnamed_identity(task, breaks)
         check_stale(task, now, breaks)
     check_duplicates(tasks, breaks)
-    if pulls:
+    if pulls and args.fixture:
         check_unlinked_prs(board, tasks, pulls, breaks)
     check_sync(args.board, armed_chats(args.board), now, breaks)
     tasks_by_key = {t['ticketNumber']: t for t in tasks}

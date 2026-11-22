@@ -86,7 +86,22 @@ class BoardLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assert_rule(result.stdout, 'done-proof')
 
-    def test_done_with_merged_pr_clean(self):
+    def test_done_with_merged_pr_needs_live_proof(self):
+        fixture = json.loads((FIXTURES / 'done-with-proof.json').read_text())
+        fixture.pop('comments', None)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'done-merged-only.json'
+            path.write_text(json.dumps(fixture))
+            roster = roster_path(temp, 'Board Drain Loop (live-a, claude, /tmp)\n')
+            result = subprocess.run(
+                [str(LINT), '--board', str(BOARD), '--fixture', str(path),
+                 '--roster', str(roster), '--skip-comments'],
+                capture_output=True, text=True,
+                env=dict(os.environ, BOARD_DRAIN_STATE_DIR=temp))
+            self.assertEqual(result.returncode, 1)
+            self.assert_rule(result.stdout, 'done-proof')
+
+    def test_done_with_merged_pr_and_comment_clean(self):
         result = self.run_lint('done-with-proof.json')
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assert_rule(result.stdout, 'done-proof', present=False)
