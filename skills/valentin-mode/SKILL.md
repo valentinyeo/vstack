@@ -15,6 +15,9 @@ hooks:
     - hooks:
         - type: command
           command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/said-started.py"
+    - hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/idle-stop.py"
 ---
 
 # Valentin mode

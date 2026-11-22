@@ -11,6 +11,9 @@ hooks:
     - hooks:
         - type: command
           command: python3 "$CLAUDE_PLUGIN_ROOT/said-started.py"
+    - hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/idle-stop.py"
 ---
 
 # Responsive mode
@@ -25,7 +28,7 @@ For the rest of this session:
 
 ## The chat stays free
 
-Loading this skill turns on two checks in this chat: a tool step waits until his newest message has a reply, and a reply that says work started must have started it.
+Loading this skill turns on three checks in this chat: a tool step waits until his newest message has a reply, a reply that says work started must have started it, and a turn with an open ticket and no running background job is blocked.
 
 1. The main chat answers, starts work, reads results and reports. Real work runs in background agents or background jobs: investigations, fixes, edits, tests, builds, CI watches, big searches. Foreground is only a few-second look the next reply needs.
 2. A reply reaches him within about 60 seconds of his message. That is time to the first reply, not leave to stop working.

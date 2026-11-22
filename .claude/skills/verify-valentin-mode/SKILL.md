@@ -43,7 +43,7 @@ A run takes 5 to 15 minutes and costs one small Sonnet chat plus one pacer worke
 
 Read the `loaded` line first. It needs the `/valentin-mode` prompt, the command in the chat's command list, and an installed copy with the Three tools section and `disable-model-invocation: true` (saved as installed-valentin-mode.md). Any Skill call for valentin-mode fails it: the chat started it by itself. Then read `responsive`: it passes when valentin mode's `skills/valentin-mode/context.py` hook handed the chat responsive mode's body whole (debug.log shows its `provided additionalContext` line and the body's last sentence), on a Skill call for responsive-mode, or a user prompt starting `/responsive-mode`. [responsive.md](features/responsive.md).
 
-`checks loaded` reads debug.log for a run of each hook the frontmatter declares: `skills/responsive-mode/reply-check.py` (PreToolUse), `skills/responsive-mode/said-started.py` (Stop). A hook that never ran leaves no line and fails it.
+`checks loaded` reads debug.log for a run of each hook the frontmatter declares: `skills/responsive-mode/reply-check.py` (PreToolUse), `skills/responsive-mode/said-started.py` (Stop), `skills/responsive-mode/idle-stop.py` (Stop). A hook that never ran leaves no line and fails it.
 
 `login` and `board sync` grading: [login.md](features/login.md) and [board-sync.md](features/board-sync.md).
 
