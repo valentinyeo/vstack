@@ -10,6 +10,8 @@ Most people do not read web pages. They scan them. In Nielsen's study 79% of use
 
 Source: Jakob Nielsen, "How Users Read on the Web", Nielsen Norman Group, https://www.nngroup.com/articles/how-users-read-on-the-web/
 
+Prior art: pstack `technical-writing` and `unslop` say how to write clearly; neither covers Nielsen's scan-first evidence or web layout rules. This skill adds only the web page rules.
+
 ## What the study measured
 
 Five versions of the same site, same facts, different writing. Usability (task time, errors, memory, sense of site structure) compared with a promotional control version:

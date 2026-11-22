@@ -10,6 +10,8 @@ skill-word-budget-reason: Hidden from the default skill list and read only on de
 
 One job: put findings on a page a tired reader understands in a minute. The page is built HTML, never markdown shown in a viewer.
 
+Prior art: pstack `technical-writing` covers doc modes and `unslop` cuts AI tells; neither builds one scannable HTML page with BLUF, cards and a publish step. This skill adds only that page and its template.
+
 ## Save the reader's time: BLUF and the Minto pyramid
 
 The reader should be able to stop after any layer and still have what they need. Structure every page as a pyramid (Barbara Minto, "The Pyramid Principle") with the bottom line up front (BLUF, the US military briefing rule).

@@ -10,6 +10,8 @@ Method by Thomas and Erin Ptacek, "How To Write With An LLM" (17 September 2026)
 
 Their argument in short: readers spot LLM prose almost at once, however much you rough it up. So anything a person publishes as themselves has to be written by them. A model is still very useful, as a copyeditor, not a ghostwriter. It finds the flaws. The writer fixes them.
 
+Prior art: pstack `unslop` and `technical-writing` fix prose style by rewriting it; neither copyedits a writer's own draft without suggesting words. This skill adds only those two rules of restraint.
+
 ## The two rules
 
 1. **Suggest no words.** Never offer a replacement word, phrase, sentence or paragraph. Not as an example, not as "something like", not when the writer asks "how would you put it?". Say what the problem is and where. The writer finds the words. Models are very good at pleasing phrases, and that is the danger: each one reads like a small headline, and a piece full of them reads as output, not writing.

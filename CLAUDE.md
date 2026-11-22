@@ -28,6 +28,7 @@ Nobody pushes to main.
 | Lane hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |
 | Responsive mode's rules reach the chat without the chat choosing to fetch them | `skills/valentin-mode/context.py`, `.claude/skills/verify-valentin-mode/grade.py`, `tests/test_valentin_mode_context.py` |
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
+| No bare ticket ids to Valentin | `hooks/no-bare-ids.py`, `tests/test_no_bare_ids.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `tests/test_pr_queue.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
 | A vstack tool acts only on the chat that runs it; the building chat is never its operator | `tests/test_own_chat_only.py` |
@@ -41,6 +42,7 @@ Nobody pushes to main.
 | Skill budgets, copied rules, references and new-skill prior art pass | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
 | Loaded skills stay lean: no dead links, duplicate names, retired terms or oversized descriptions | `scripts/skill-check.py`, `tests/test_skill_check.py` |
 | A PR adds no verification gate pstack does not ask for | `hooks/pstack-new-gates.py`, `checks` workflow step |
+| New skill, script or hook names its pstack skill and root cause | `tests/test_skill_prior_art.py`, `config/tool-registry.txt` |
 
 Skill-lint commands and exceptions: [shared reference](https://github.com/valentinyeo/house-rules/blob/d60a2c149b29ef555dec42f20afc074543624f7b/docs/skill-lint.md).
 
