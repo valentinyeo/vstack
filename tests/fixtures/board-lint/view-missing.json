@@ -1,0 +1,48 @@
+{
+  "now": 1763800800,
+  "roster": "Multi Bot Features (live-f, claude, /tmp)\n",
+  "chats": [
+    "Multi Bot Features"
+  ],
+  "agents": [
+    "a-feat"
+  ],
+  "labels": [
+    {
+      "id": "L-feat",
+      "name": "Multi Bot Features"
+    },
+    {
+      "id": "L-other",
+      "name": "Other App"
+    }
+  ],
+  "views": [],
+  "tasks": [
+    {
+      "ticketNumber": "FACT-70",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Card in the chat view",
+      "updatedAt": "2025-11-22T02:00:00.000Z",
+      "staleness": {
+        "sectionChangedAt": "2025-11-22T01:00:00.000Z"
+      },
+      "labels": [
+        {
+          "name": "Multi Bot Features"
+        },
+        {
+          "name": "brain-medium"
+        }
+      ],
+      "assignees": [
+        {
+          "type": "agent",
+          "displayName": "Multi Bot Features",
+          "agentId": "a-feat"
+        }
+      ]
+    }
+  ]
+}

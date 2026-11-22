@@ -44,6 +44,40 @@ class BoardLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assert_rule(result.stdout, 'agent-assignee')
 
+    def test_agent_assignee_accepts_closed_chat(self):
+        result = self.run_lint('agent-closed-chat.json')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee', present=False)
+
+    def test_agent_assignee_flags_name_no_chat_ever_had(self):
+        result = self.run_lint('agent-unknown-chat.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee')
+        self.assertIn('matches no Multibot chat ever', result.stdout)
+
+    def test_agent_assignee_flags_revoked_agent(self):
+        result = self.run_lint('agent-revoked.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee')
+        self.assertIn('revoked', result.stdout)
+
+    def test_agent_assignee_flags_person(self):
+        result = self.run_lint('agent-person.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee')
+        self.assertIn('is a person, not an agent', result.stdout)
+
+    def test_agent_assignee_flags_doing_without_worker(self):
+        result = self.run_lint('agent-doing-no-worker.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee')
+        self.assertIn('Doing with no live worker', result.stdout)
+
+    def test_agent_assignee_accepts_doing_with_worker(self):
+        result = self.run_lint('agent-doing-with-worker.json')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee', present=False)
+
     def test_wrong_view_label_assignee(self):
         roster = ('Multi Bot Features (live-d, claude, /tmp)\n'
                   'Board Drain Loop (live-a, claude, /tmp)\n')
@@ -150,6 +184,44 @@ class BoardLintTests(unittest.TestCase):
                 capture_output=True, text=True, env=env)
             self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
             self.assert_rule(result.stdout, 'sync-record')
+
+    VIEW_ROSTER = ('Multi Bot Features (live-f, claude, /tmp)\n'
+                   'Board Drain Loop (live-a, claude, /tmp)\n')
+
+    def run_view_lint(self, fixture):
+        return self.run_lint(fixture, roster_text=self.VIEW_ROSTER)
+
+    def test_view_filter_flags_missing_view(self):
+        result = self.run_view_lint('view-missing.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'view-filter')
+        self.assertIn('hypertask view create', result.stdout)
+
+    def test_view_filter_flags_view_without_label_filter(self):
+        result = self.run_view_lint('view-no-filter.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'view-filter')
+        self.assertIn('no label filter', result.stdout)
+        self.assertIn('hypertask view update v-empty --label "Multi Bot Features"', result.stdout)
+
+    def test_view_filter_flags_filter_on_another_label(self):
+        result = self.run_view_lint('view-other-label.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'view-filter')
+        self.assertIn('another label', result.stdout)
+
+    def test_view_filter_and_owner_clean(self):
+        result = self.run_view_lint('view-ok.json')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'view-filter', present=False)
+        self.assert_rule(result.stdout, 'view-owner', present=False)
+
+    def test_view_owner_flags_person_owned_view(self):
+        result = self.run_view_lint('view-owner-person.json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'view-owner')
+        self.assertIn('not the chat agent', result.stdout)
+        self.assert_rule(result.stdout, 'view-filter', present=False)
 
     def test_human_board_write_on_board_15(self):
         fixture = {

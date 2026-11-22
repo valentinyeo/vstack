@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
@@ -51,7 +52,9 @@ WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
 TODO = 'Todo'
 FALLBACK_AGENT = frozenset({'valentins claude code cli', 'valentins claude code'})
 HUMAN_BOARDS = frozenset({15, 4060})
-ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError)
+ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
+SESSION_TIMEOUT = 60
+CHAT_LOGIN = "as the chat's own login"
 
 STALE_SEC = {
     'Todo': 14 * 86400,
@@ -75,6 +78,8 @@ RULE_ROWS = (
     {'id': 'sync-record', 'ref': 'skills/hypertask/references/sync.md', 'enforcer': 'board-lint'},
     {'id': 'no-owner-label', 'ref': 'skills/hypertask/references/views.md', 'enforcer': 'board-lint'},
     {'id': 'unnamed-identity', 'ref': 'skills/hypertask/references/identity.md', 'enforcer': 'board-lint'},
+    {'id': 'view-filter', 'ref': 'skills/hypertask/references/views.md', 'enforcer': 'board-lint'},
+    {'id': 'view-owner', 'ref': 'skills/hypertask/references/views.md', 'enforcer': 'board-lint'},
 )
 
 
@@ -276,6 +281,199 @@ def waiting_or_blocked(task):
     return bool(task.get('waitingOnUserId') or task.get('blockerCommentId'))
 
 
+def mp_session_names():
+    """Every chat the desktop app publishes. Closed chats keep their published name."""
+    try:
+        done = subprocess.run(['mp-sessions', '--json'], capture_output=True, text=True,
+                              timeout=SESSION_TIMEOUT)
+    except ERRORS:
+        return set()
+    if done.returncode:
+        return set()
+    try:
+        rows = json.loads(done.stdout or '[]')
+    except ValueError:
+        return set()
+    return {slug_agent(row.get('name')) for row in rows
+            if isinstance(row, dict) and row.get('name')}
+
+
+def published_names():
+    """Names the app has stored for chats, closed ones included; mp-sessions reads the same store."""
+    try:
+        names = json.loads(session_login.chat_names_path(Path.home()).read_text())
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(names, dict):
+        return set()
+    return {slug_agent(entry.get('name')) for entry in names.values()
+            if isinstance(entry, dict) and entry.get('name')}
+
+
+def known_chats(args, data):
+    """Chat names that ever existed: live now, published by the app, or on the roster.
+
+    A closed chat is not an abandoned ticket, so a name in this set never counts as
+    stale. Only a name that matches no chat at all does.
+    """
+    names = live_names(args)
+    if args.fixture:
+        if 'chats' in data:
+            names |= {slug_agent(name) for name in data.get('chats') or ()
+                      if isinstance(name, str) and name.strip()}
+        return names
+    return names | mp_session_names() | published_names()
+
+
+def member_agents(board_id, data, args):
+    """Agent identities still on the board. None when a fixture does not model them."""
+    if args.fixture:
+        rows = data.get('agents')
+        if rows is None:
+            return None
+        return {str(row.get('id') if isinstance(row, dict) else row) for row in rows}
+    rows = reconcile.api('project', 'members', str(board_id)).get('members') or []
+    return {str(row['id']) for row in rows
+            if isinstance(row, dict) and row.get('id') and not str(row['id']).isdigit()}
+
+
+def live_worker(task, facts, data, args):
+    """A live worker for a Doing card: reconcile's own fact, pinned in a fixture."""
+    if args.fixture:
+        workers = data.get('workers')
+        return bool(workers.get(task['ticketNumber'])) if isinstance(workers, dict) else False
+    return bool(facts.alive)
+
+
+def read_views(board_id):
+    """Every view on the board, keyed by slug, from `hypertask view list`."""
+    rows = reconcile.api('view', 'list', '--project', str(board_id), '--limit', '100').get('views') or []
+    views = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        slug = (row.get('slug') or session_login.slug(row.get('title') or '')).strip()
+        if slug:
+            views[slug] = row
+    return views
+
+
+def view_detail(view):
+    """One view with its board_filters: `view list` omits them, `view get` carries them."""
+    if 'board_filters' in view or not view.get('id'):
+        return view
+    return reconcile.api('view', 'get', str(view['id'])).get('view') or view
+
+
+def fixture_views(data):
+    return {view['slug']: view for view in data.get('views') or ()
+            if isinstance(view, dict) and view.get('slug')}
+
+
+def read_label_ids(board_id):
+    """Label name to id, the way `board_filters` stores its label filter."""
+    rows = reconcile.api('label', 'list', '--project', str(board_id)).get('labels') or []
+    return {slug_agent(row.get('name')): str(row.get('id')) for row in rows
+            if isinstance(row, dict) and row.get('id') and row.get('name')}
+
+
+def fixture_label_ids(data):
+    return {slug_agent(row.get('name')): str(row.get('id')) for row in data.get('labels') or ()
+            if isinstance(row, dict) and row.get('id') and row.get('name')}
+
+
+def view_label_ids(view):
+    ids = set()
+    filters = view.get('board_filters') if isinstance(view.get('board_filters'), dict) else {}
+    for item in filters.get('addedFilters') or ():
+        if not isinstance(item, dict) or not (item.get('type') or '').casefold().startswith('label'):
+            continue
+        for payload in item.get('searchPayload') or ():
+            if isinstance(payload, dict) and payload.get('id'):
+                ids.add(str(payload['id']))
+    return ids
+
+
+def board_chat_views(tasks, known, views):
+    """One (label, view or None) per label on this board that names a chat."""
+    labels = {}
+    for task in tasks:
+        for label in chat_labels(task):
+            if slug_agent(label) in known:
+                labels.setdefault(slug_agent(label), label)
+    for key in sorted(labels):
+        label = labels[key]
+        yield label, views.get(session_login.slug(label))
+
+
+def check_agent_assignee(task, facts, live, known, members, data, args, breaks):
+    """A person, a revoked agent, a name no chat ever had, or Doing with no worker."""
+    if task.get('section') not in OPEN:
+        return
+    if waiting_or_blocked(task):
+        return
+    rows = [row for row in task.get('assignees') or () if isinstance(row, dict)]
+    agents = agent_assignees(task)
+    for row in rows:
+        if (row.get('type') or '').strip().lower() != 'agent':
+            name = (row.get('displayName') or '').strip() or '(person)'
+            breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
+                                f'assignee {name!r} is a person, not an agent; assign the chat agent'))
+            return
+    for name in agents:
+        if slug_agent(name) in FALLBACK_AGENT:
+            continue
+        agent_id = next((str(row.get('agentId') or '') for row in rows
+                         if (row.get('displayName') or '').strip() == name), '')
+        if members is not None and agent_id and agent_id not in members:
+            breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
+                                f'assignee {name!r} is revoked or no longer a board member; reassign a live agent'))
+            return
+        if slug_agent(name) not in known:
+            breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
+                                f'assignee {name!r} matches no Multibot chat ever; fix the name or reassign'))
+            return
+    if not agents and task.get('section') in WORKING:
+        breaks.append(Break(task['ticketNumber'], 'agent-assignee', owner_chat(task),
+                            'assign a live agent or move back to Todo'))
+        return
+    if task.get('section') == 'Doing' and not live_worker(task, facts, data, args):
+        breaks.append(Break(task['ticketNumber'], 'agent-assignee', owner_chat(task),
+                            'Doing with no live worker; start a worker or move back to Todo'))
+
+
+def check_view_filter(board, label, view, label_ids, breaks):
+    """A chat's view must exist and filter on the chat's own label."""
+    if not view:
+        breaks.append(Break('(view)', 'view-filter', label,
+                            f'no view for label {label!r}; create it: hypertask view create --project '
+                            f'{board.id} --title "{label}" --label "{label}" {CHAT_LOGIN}'))
+        return
+    wanted = label_ids.get(slug_agent(label))
+    if not wanted:
+        return
+    filters = view_label_ids(view)
+    if wanted in filters:
+        return
+    reason = 'view shows the whole board (no label filter)' if not filters else 'view filters on another label'
+    breaks.append(Break('(view)', 'view-filter', label,
+                        f'{reason}; fix with hypertask view update {view.get("id")} --label '
+                        f'"{label}" {CHAT_LOGIN}'))
+
+
+def check_view_owner(label, view, breaks):
+    """A chat's view belongs to the chat's agent, never to a person."""
+    if not view:
+        return
+    owner = ((view.get('owner') or {}).get('displayName') or '').strip()
+    if not owner:
+        return
+    if session_login.is_person(owner) or slug_agent(owner) != slug_agent(label):
+        breaks.append(Break('(view)', 'view-owner', label,
+                            f'view {label!r} is owned by {owner!r}, not the chat agent; '
+                            'recreate the view as the agent login'))
+
+
 def chat_naming_labels(args, board_id):
     """Labels that name a chat: live roster names, or a loop label only when it equals the chat name."""
     names = set(live_names(args))
@@ -303,24 +501,6 @@ def chat_naming_labels(args, board_id):
         if label and slug_agent(label) == slug_agent(chat):
             names.add(slug_agent(label))
     return names
-
-
-def check_agent_assignee(task, live, breaks):
-    if task.get('section') not in OPEN:
-        return
-    if waiting_or_blocked(task):
-        return
-    agents = agent_assignees(task)
-    if not agents and task.get('section') in WORKING:
-        breaks.append(Break(task['ticketNumber'], 'agent-assignee', owner_chat(task),
-                            'assign a live agent or move back to Todo'))
-        return
-    for name in agents:
-        if slug_agent(name) in FALLBACK_AGENT:
-            continue
-        if slug_agent(name) not in live:
-            breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
-                                f'assignee {name!r} is not a live chat; fix name or reassign'))
 
 
 def check_true_column(task, facts, board, names, breaks):
@@ -494,8 +674,13 @@ def lint(args):
         sections |= reconcile.read_sections(board)
     names = {} if reconcile.product_board(board) else reconcile.stage_names(sections=sections)
     options = {} if board.id == reconcile.BOARD else {'board': board}
-    roster_args = argparse.Namespace(roster=args.roster)
     live = live_names(args) | owners.owned_labels(args.board) | loop_armed_chat_names(args.board)
+    known = known_chats(args, data)
+    members = member_agents(board.id, data, args)
+    # A fixture that models no views cannot judge them; a live run always can.
+    view_rules = not args.fixture or 'views' in data
+    views = fixture_views(data) if args.fixture else read_views(board.id)
+    label_ids = fixture_label_ids(data) if args.fixture else read_label_ids(board.id)
     chat_names = chat_naming_labels(args, args.board)
     comments = collect_comments(tasks, data, args, board.id)
     breaks = []
@@ -509,7 +694,12 @@ def lint(args):
                      else reconcile.Facts(task.get('section', ''), now - reconcile.stamp(task.get('updatedAt', now))))
         except ERRORS:
             continue
-        check_agent_assignee(task, live, breaks)
+        if args.fixture and isinstance(data.get('workers'), dict):
+            # One fixture fact for both the column rule and the Doing worker rule.
+            facts = reconcile.Facts(facts.column, facts.age,
+                                    bool(data['workers'].get(task['ticketNumber'])),
+                                    facts.pulls, facts.waiting, facts.blocked, facts.verification)
+        check_agent_assignee(task, facts, live, known, members, data, args, breaks)
         check_true_column(task, facts, board, names, breaks)
         check_done_proof(task, pulls, comments, board, breaks)
         check_label_assignee(task, chat_names, breaks)
@@ -519,6 +709,10 @@ def lint(args):
     check_duplicates(tasks, breaks)
     if pulls and args.fixture:
         check_unlinked_prs(board, tasks, pulls, breaks)
+    for label, view in (board_chat_views(tasks, known, views) if view_rules else ()):
+        detail = view_detail(view) if view else None
+        check_view_filter(board, label, detail, label_ids, breaks)
+        check_view_owner(label, detail, breaks)
     check_sync(args.board, armed_chats(args.board), now, breaks)
     tasks_by_key = {t['ticketNumber']: t for t in tasks}
     check_human_writes(args.board, tasks_by_key, comments, breaks)
@@ -565,8 +759,7 @@ def main(argv=None):
         breaks = lint(args)
         emit(breaks, args)
         return 1 if breaks else 0
-    except (reconcile.BudgetRefused, reconcile.RateLimit, ValueError, KeyError,
-            TypeError, OSError, RuntimeError) as error:
+    except (reconcile.BudgetRefused, reconcile.RateLimit) + ERRORS as error:
         print(f'board-lint: read failed: {error}', file=sys.stderr)
         return 2
 

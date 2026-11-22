@@ -1,0 +1,38 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "chats": [
+    "Runner 8",
+    "Board Drain Loop"
+  ],
+  "agents": [
+    "a-feat"
+  ],
+  "tasks": [
+    {
+      "ticketNumber": "FACT-63",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Revoked runner still assigned",
+      "updatedAt": "2025-11-22T02:00:00.000Z",
+      "staleness": {
+        "sectionChangedAt": "2025-11-22T01:00:00.000Z"
+      },
+      "labels": [
+        {
+          "name": "Board Drain Loop"
+        },
+        {
+          "name": "brain-medium"
+        }
+      ],
+      "assignees": [
+        {
+          "type": "agent",
+          "displayName": "Runner 8",
+          "agentId": "a-gone"
+        }
+      ]
+    }
+  ]
+}
