@@ -51,8 +51,7 @@ ln -s "$TEST_HOME/missing" "$TEST_HOME/.pi/agent/skills/valentin-mode"
 rm "$TEST_HOME/.claude/skills/valentin-mode"
 mkdir "$TEST_HOME/.claude/skills/valentin-mode"
 printf 'keep this copy\n' > "$TEST_HOME/.claude/skills/valentin-mode/SKILL.md"
-# A local skill that now lives inside the hypertask skill, and a settings file
-# install must never touch.
+# A local skill that now lives inside hypertask, and settings without retired hooks.
 mkdir "$TEST_HOME/.claude/skills/ticket"
 printf 'old ticket skill\n' > "$TEST_HOME/.claude/skills/ticket/SKILL.md"
 ln -s "$TEST_HOME/now-gone" "$TEST_HOME/.claude/skills/hypertask-checkup"
@@ -89,7 +88,35 @@ retired=("$TEST_HOME"/.local/state/skill-dupes-*/.claude/skills/ticket/SKILL.md)
 printf 'PASS retired ticket folder moved, not deleted\n'
 
 [ "$(sha256sum "$TEST_HOME/.claude/settings.json")" = "$settings" ]
-printf 'PASS install never edits a settings file\n'
+printf 'PASS settings without retired hooks stay byte-for-byte unchanged\n'
+python3 - "$TEST_HOME/.claude/settings.json" "${retired_hooks[@]}" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+retired = [{'type': 'command', 'command': 'python3 ~/.claude/hooks/' + name} for name in sys.argv[2:]]
+kept = {'type': 'command', 'command': 'echo unrelated', 'timeout': 7}
+path.write_text(json.dumps({'env': {'KEEP': 'yes'}, 'hooks': {
+    'UserPromptSubmit': [{'hooks': retired}],
+    'PreToolUse': [{'matcher': '*', 'hooks': [retired[0], kept]}],
+    'Stop': [{'hooks': []}]
+}}))
+path.chmod(0o600)
+PY
+env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
+python3 - "$TEST_HOME/.claude/settings.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+assert json.loads(path.read_text()) == {'env': {'KEEP': 'yes'}, 'hooks': {
+    'UserPromptSubmit': [],
+    'PreToolUse': [{'matcher': '*', 'hooks': [{'type': 'command', 'command': 'echo unrelated', 'timeout': 7}]}],
+    'Stop': [{'hooks': []}]
+}}
+assert path.stat().st_mode & 0o777 == 0o600
+PY
+printf 'PASS retired registrations removed without changing unrelated settings\n'
 # repo-tidy remains an explicit command.
 [ -L "$TEST_HOME/.local/bin/repo-tidy" ]
 [ "$(readlink -f "$TEST_HOME/.local/bin/repo-tidy")" = "$ROOT/skills/repo-tidy/repo-tidy" ]

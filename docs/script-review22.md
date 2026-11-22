@@ -56,7 +56,7 @@ All named sources exist under the installed pstack 0.15.46 skills directory. No 
 
 ## Migration and verification
 
-The repository settings no longer register deleted hooks. Install removes old symlinks but preserves real files and does not edit settings. After merge, remove retired hook entries from the installed global/repo settings without touching unrelated hooks; do not deploy an unmerged worktree to every chat. Existing lease status paths remain data owned by the lease and session-login reader, not a legacy executable API.
+The repository settings no longer register deleted hooks. Install removes retired registrations from global settings and this checkout's local settings before dropping old symlinks. It preserves unrelated hooks, empty unrelated groups, other settings, file permissions and real hook files. After merge, update the shared checkout and install it; do not deploy an unmerged worktree to every chat. Existing lease status paths remain data owned by the lease and session-login reader, not a legacy executable API.
 
 Full tests run on GitHub-hosted runners with `timeout 900 python3 -m unittest discover -s tests`. Skill lint runs exactly as `.github/workflows/skill-lint.yml` specifies, using its pinned script, pstack and catalog and checking the merge-result tree. Focused local tests cover only the changed registry, installer and surviving callers.
 

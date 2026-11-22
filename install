@@ -97,9 +97,8 @@ for name in ticket hypertask-checkup; do
   done
 done
 
-# These hooks need a ~/.claude/hooks path. This script never edits a settings
-# file: each chat adds the Stop hook and its PreToolUse guards to its own
-# project's .claude/settings.json.
+# These hooks need a ~/.claude/hooks path. Registration belongs to each chat;
+# the retirement migration below removes only commands for deleted hooks.
 
 # Claude settings call this guard at its ~/.claude/hooks path; the copy lives here (SOFT-2845).
 link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.claude/hooks"
@@ -132,9 +131,51 @@ fi
 
 # repo-tidy runs explicitly after this chat merges work.
 link_one repo-tidy "$ROOT/skills/repo-tidy/repo-tidy" "$HOME/.local/bin"
+link_one vstack-feedback "$ROOT/skills/vstack-feedback/vstack-feedback" "$HOME/.local/bin"
+
+# Remove retired registrations before their links, including the old bare Python
+# command that would otherwise block every prompt when its file disappears.
+retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop skill-update.py)
+python3 - "$HOME/.claude/settings.json" "$ROOT/.claude/settings.local.json" -- "${retired_hooks[@]}" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+split = sys.argv.index('--')
+pattern = re.compile(r'/hooks/(?:' + '|'.join(re.escape(name) for name in sys.argv[split + 1:])
+                     + r''')(?=[\s"';]|$)''')
+for name in sys.argv[1:split]:
+    path = Path(name)
+    if not path.is_file():
+        continue
+    data = json.loads(path.read_text())
+    changed = False
+    for event, groups in list(data.get('hooks', {}).items()):
+        kept = []
+        event_changed = False
+        for group in groups:
+            hooks = group.get('hooks', [])
+            remaining = [hook for hook in hooks if not pattern.search(hook.get('command', ''))]
+            if len(remaining) == len(hooks):
+                kept.append(group)
+                continue
+            event_changed = True
+            if remaining:
+                kept.append(dict(group, hooks=remaining))
+        if event_changed:
+            changed = True
+            data['hooks'][event] = kept
+    if changed:
+        temporary = path.with_name(path.name + '.vstack-tmp')
+        temporary.write_text(json.dumps(data, indent=2) + '\n')
+        temporary.chmod(path.stat().st_mode & 0o777)
+        os.replace(temporary, path)
+PY
 
 # Drop retired links from older installs; preserve real files and unrelated hooks.
-for name in claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop skill-update.py; do
+for name in "${retired_hooks[@]}"; do
   [ ! -L "$HOME/.claude/hooks/$name" ] || rm -f "$HOME/.claude/hooks/$name"
 done
 [ ! -L "$HOME/.local/bin/vps-tidy" ] || rm -f "$HOME/.local/bin/vps-tidy"
