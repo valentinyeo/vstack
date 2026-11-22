@@ -1020,8 +1020,13 @@ def tmux_slug(text):
 
 def roster_pattern_regex(text):
     body = re.escape(str(text))
-    body = body.replace(r"\{n\}", r"[0-9]+").replace(r"\{\*\}", r".*")
+    body = (body.replace(r"\{n\}", r"[0-9]+").replace(r"\{\*\}", r".*")
+            .replace(r"\{x\}", r"[A-Za-z]"))
     return re.compile("^" + body + "$", re.IGNORECASE)
+
+
+def roster_name_is_pattern(value):
+    return "{" in value
 
 
 def protected_session_names(ctx):
@@ -1039,7 +1044,7 @@ def protected_session_names(ctx):
             value = str(row.get(key) or "").strip()
             if not value:
                 continue
-            if "{n}" in value or "{*}" in value:
+            if roster_name_is_pattern(value):
                 patterns.append(roster_pattern_regex(value))
             else:
                 exact.add(value)
@@ -1076,7 +1081,9 @@ def interactive_shell_pane(pid, ctx):
     base = os.path.basename(parts[0]).lower()
     if base not in TMUX_SESSION_SHELL_COMMANDS:
         return False
-    return "-c" not in parts
+    if "-c" in parts:
+        return False
+    return not any(not part.startswith("-") for part in parts[1:])
 
 
 def child_pids(pid, ctx):
@@ -1366,6 +1373,11 @@ def tmux_act(item, ctx):
         return
     if action == "close-server":
         sock = item.get("socket")
+        if not sock:
+            item["action"] = "keep"
+            item["result"] = "kept"
+            item["reason"] = "{} (blocked: no socket)".format(item["reason"])
+            return
         _, error = tmux_command(ctx, sock, ["kill-server"], timeout=10,
                                 env=tmux_kill_env())
         item["result"] = "closed" if error is None else "failed"
@@ -1376,6 +1388,11 @@ def tmux_act(item, ctx):
     if action == "close-session":
         sock = item.get("socket")
         session = item.get("session")
+        if not sock or not session:
+            item["action"] = "keep"
+            item["result"] = "kept"
+            item["reason"] = "{} (blocked: no socket or session)".format(item["reason"])
+            return
         _, error = tmux_command(ctx, sock, ["kill-session", "-t", session], timeout=10)
         item["result"] = "closed" if error is None else "failed"
         if error:
@@ -1383,6 +1400,12 @@ def tmux_act(item, ctx):
             item["reason"] = "{} (blocked: {})".format(item["reason"], error)
         return
     if action == "remove":
+        sock = item.get("socket") or item.get("path")
+        if sock and tmux_server_alive(ctx, sock):
+            item["action"] = "keep"
+            item["result"] = "kept"
+            item["reason"] = "{} (blocked: server alive at removal)".format(item["reason"])
+            return
         act_on(item, ctx)
 
 

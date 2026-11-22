@@ -1086,6 +1086,30 @@ class TmuxRoundThree(unittest.TestCase):
         protected, patterns = mod.protected_session_names(ctx)
         self.assertTrue(mod.session_name_protected('poteto-cursor-3', protected, patterns))
 
+    def test_roster_pattern_protects_multibot_runner_x(self):
+        self.box.roster_rows([{'multibot': 'multibot-runner-{x}', 'status': 'live'}])
+        mod = load_script()
+        ctx = mod.Context({
+            'apply': False, 'json': False, 'parts': ['tmux'], 'budget': 120,
+            'ps_file': str(self.box.ps_file), 'proc_root': str(self.box.proc),
+            'root': str(self.box.root), 'grace': 10, 'statvfs_json': None,
+            'caller': None})
+        protected, patterns = mod.protected_session_names(ctx)
+        self.assertTrue(mod.session_name_protected('multibot-runner-a', protected, patterns))
+
+    def test_private_server_bash_script_pane_is_kept(self):
+        script = self.box.make('waiter.sh', body='#!/bin/bash\nread -r _\n')
+        script.chmod(0o755)
+        sock = self.box.tmux_socket('delta-bash-script')
+        self.box.start_tmux(sock, command='bash {}'.format(script))
+        time.sleep(1.2)
+        pane_pid = self.box.pane_pid(sock, 's1')
+        self.box.seed_cmdline(pane_pid, ['bash', str(script)])
+        payload = self.box.payload('--only', 'tmux', '--apply', tmux_ages=TmuxRules.AGES)
+        item = next(i for i in payload['items'] if i.get('socket') == sock)
+        self.assertEqual(item['action'], 'keep')
+        self.assertTrue(tmux_alive(sock))
+
     def test_private_server_bash_c_pane_is_kept(self):
         sock = self.box.tmux_socket('delta-bash-c')
         self.box.start_tmux(sock, command="bash -c 'sleep 600'")
