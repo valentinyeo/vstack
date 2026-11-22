@@ -39,7 +39,7 @@ Nobody pushes to main.
 | Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
 | Reconcile keeps boards 15 and 2060 truthful | `skills/hypertask-work/reconcile`, `tests/test_hypertask_work.py` |
 | Boards stay true without anyone asking | lease start/end sync, `hooks/reconcile-auto.py`, `bin/hand-moves` |
-| Skill budgets, copied rules, references and new-skill prior art pass | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
+| Skill budgets, copied rules, references and new-skill prior art pass (pstack `poteto-mode/playbooks/authoring-a-skill.md`: "When in doubt, delete. Keep only prose that changes a decision.") | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
 | Loaded skills stay lean: no dead links, duplicate names, retired terms or oversized descriptions | `scripts/skill-check.py`, `tests/test_skill_check.py` |
 | A PR adds no verification gate pstack does not ask for | `hooks/pstack-new-gates.py`, `checks` workflow step |
 | New skill, script or hook names its pstack skill and root cause | `tests/test_skill_prior_art.py`, `config/tool-registry.txt` |
