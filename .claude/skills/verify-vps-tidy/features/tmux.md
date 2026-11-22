@@ -7,7 +7,7 @@ default-server sessions that outlived a chat.
 
 | Rule | Threshold | Safety rule |
 | --- | --- | --- |
-| `tmux-server-24h` | private socket, server older than 24h | every pane `cat`/`sleep` or an interactive shell with no children; no attached session and no non-zero `session_last_attached`; no protected session name; roster `name`/`tmux`/`multibot` and `{n}`/`{*}` patterns count as protected |
+| `tmux-server-24h` | private socket, server older than 24h | every pane `cat`/`sleep` or a bare interactive shell with no children; `bash` with a script is busy; no attached session and no non-zero `session_last_attached`; no protected session name; roster `name`/`tmux`/`multibot` and `{n}`/`{*}`/`{x}` patterns count as protected |
 | `tmux-dead-socket` | socket with no server, mtime older than 60m | two matching no-server probes with one 3s sleep for the whole batch; never delete `default` |
 | `tmux-default-3d` | default session older than 3d | report-only on the default server: lists idle shells, never `kill-session`; same age/pane/name guards; never attached or previously attached |
 

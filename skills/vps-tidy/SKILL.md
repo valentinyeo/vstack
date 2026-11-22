@@ -50,7 +50,7 @@ That keeps your own temp files and orphaned programs in check without a central 
 - vcc-evidence as a cache: a video stays unless the board read succeeds and the ticket is not open.
 - Another user's files or processes. Only your uid.
 - claude, tmux, codex, pi and interactive shells, and any process tree holding one of them.
-- Live chat tmux: `live-*`, `term-*`, `projects*`, `mp-*`, fleet roster row names (including `{n}` and `{*}` patterns), attached sessions, any session with a non-zero `session_last_attached`, and any server younger than 24 hours or with a busy pane. The default tmux server is report-only: it may list old idle shells but never closes them, even with `--apply`. Private servers treat `tail` and scripted shells as busy; dead sockets batch one sleep for every candidate, then two matching no-server probes.
+- Live chat tmux: `live-*`, `term-*`, `projects*`, `mp-*`, fleet roster row names (including `{n}`, `{*}` and `{x}` patterns), attached sessions, any session with a non-zero `session_last_attached`, and any server younger than 24 hours or with a busy pane. The default tmux server is report-only: it may list old idle shells but never closes them, even with `--apply`. Private servers treat `tail` and scripted shells as busy; dead sockets batch one sleep for every candidate, then two matching no-server probes.
 - A symlink, a mount point, a foreign owner, a special file, or a path a process holds open.
 - Anything under a config, ssh, claude or codex directory: those names are on its never-touch list.
 
