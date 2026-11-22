@@ -23,9 +23,12 @@ import sys
 import time
 from pathlib import Path
 
-MESSAGE = ("Valentin's newest message has no reply yet. Answer it on its own in one short line, then continue "
-           "the work.")
-SKIP = ("<task-notification", "<system-reminder", "[SYSTEM NOTIFICATION", "Base directory for this skill")
+MESSAGE = ("Valentin's newest message has no reply yet. Answer it directly, then continue the work. "
+           "No separate acknowledgment.")
+SKIP = ("<task-notification", "<system-reminder", "<teammate-message", "<cross-session",
+        "[SYSTEM NOTIFICATION", "[Message from", "[Cross-session", "[from ",
+        "Cross-session message", "Message from session", "Message from chat", "Base directory for this skill")
+SILENCE_REMINDER = re.compile(r"^The user (?:hasn['’]t|has not) heard from you\b", re.I)
 SLASH = re.compile(r"<command-name>/\S+</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 QUEUED = "queued_command"
@@ -42,7 +45,7 @@ def blocks(content):
 def typed(text):
     """Is this text something Valentin typed himself, rather than the harness talking?"""
     text = (text or "").strip()
-    if not text or text.startswith(SKIP):
+    if not text or text.startswith(SKIP) or SILENCE_REMINDER.search(text):
         return False
     if SLASH.search(text):
         args = COMMAND_ARGS.search(text)

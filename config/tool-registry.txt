@@ -33,6 +33,7 @@ hooks/vps-state-hook | pstack: principle-prove-it-works | why: https://app.hyper
 scripts/pacer-check.py | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-2060/2867
 scripts/pick-verifier-model | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2727
 scripts/pr-overlap | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/61
+scripts/reply-verbosity.py | pstack: principle-build-the-lever | why: https://app.hypertask.ai/detail/project-13556/125
 scripts/run-verifier | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2836
 scripts/skill-check-nightly | pstack: none | why: https://app.hypertask.ai/detail/project-13556/36
 scripts/skill-check.py | pstack: principle-guard-the-context-window | why: https://app.hypertask.ai/detail/project-13556/36
