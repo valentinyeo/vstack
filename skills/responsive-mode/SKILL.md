@@ -2,6 +2,11 @@
 name: responsive-mode
 description: "responsive mode;stay responsive;answer me while you work;like grok. /responsive-mode: the chat stays free to talk while background agents do the work, and every job still ends done. Use when Valentin says responsive mode, or a session ignores his messages while busy, merges answers, or replies fast but leaves the job undone."
 hooks:
+  PreToolUse:
+    - matcher: "*"
+      hooks:
+        - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/reply-check.py"
   Stop:
     - hooks:
         - type: command
