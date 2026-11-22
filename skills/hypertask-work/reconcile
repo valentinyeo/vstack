@@ -60,6 +60,8 @@ VALUE_FLAGS = {
 }
 AGENTS = {'hax', 'pi', 'codex', 'cursor-agent', 'claude', 'opencode', 'gemini'}
 LEASE_TOOL = 'lease'
+FACTS_MAX_AGE = 3600
+BUDGET_REFUSED = re.compile(r'gh budget:', re.I)
 # These read a ticket; they never work one, however their arguments spell it.
 NON_WORKERS = {'grep', 'rg', 'ps', 'pgrep', 'pkill', 'sed', 'awk', 'cat', 'less', 'tail',
                'head', 'journalctl', 'gh', 'git', 'hypertask'}
@@ -476,6 +478,14 @@ class RateLimit(Exception):
         super().__init__(f'GitHub rate limit; reset {reset}')
 
 
+class BudgetRefused(Exception):
+    """The shared gh wrapper refused a read for this chat's hourly budget."""
+
+    def __init__(self, line):
+        self.line = line
+        super().__init__(line)
+
+
 # Only an error surface counts. Prose that mentions a rate limit is not one, so a
 # ticket or PR body quoting this failure can never stop a run.
 RATE_LIMIT_TYPE = re.compile(r'"type"\s*:\s*"RATE_LIMITED"')
@@ -565,6 +575,8 @@ def run(*args):
     if result.returncode:
         # Only gh's error channel: a failed batch still carries resolved PRs on
         # stdout, and a comment there may quote a rate limit without being one.
+        if result.returncode == 75 and BUDGET_REFUSED.search(result.stderr):
+            raise BudgetRefused(result.stderr.strip().splitlines()[0])
         if rate_limited(result.stderr):
             raise RateLimit(budget_reset())
         raise RuntimeError(f'{args[0]} {args[1]} failed: {result.stderr.strip()[-250:]}')
@@ -605,6 +617,222 @@ def cache_write(key, value):
             os.replace(temporary, path)
         except OSError:
             pass
+
+
+def board_facts_key(board_id):
+    return f'board-facts-{board_id}.json'
+
+
+def read_board_facts(board_id):
+    value = cache_read(board_facts_key(board_id))
+    return value if isinstance(value, dict) else None
+
+
+def write_board_facts(board_id, payload):
+    cache_write(board_facts_key(board_id), payload)
+
+
+def saved_facts_fresh(saved, now):
+    try:
+        return now - float(saved['at']) <= FACTS_MAX_AGE
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def probe_scope(board, repos=()):
+    if board.repository:
+        return f'repo:{board.repository}'
+    repos = tuple(sorted(set(repos)))
+    if repos:
+        return ' '.join(f'repo:{repo}' for repo in repos)
+    return '(user:valentinyeo OR user:hypertask-ai)'
+
+
+def saved_pull_index(saved):
+    """Saved pull metadata keyed by URL for probe rows that omit branch names."""
+    index = {}
+    for entry in (saved.get('tickets') or {}).values():
+        for pull in entry.get('pulls') or []:
+            url = pull.get('url')
+            if url:
+                index[url] = pull
+    return index
+
+
+def search_item_to_pull(item, saved_index=()):
+    url = item.get('html_url') or item.get('url') or ''
+    match = re.search(r'github\.com/([^/]+/[^/]+)/pull/(\d+)', url)
+    repo = match.group(1) if match else ''
+    number = int(item.get('number') or (match.group(2) if match else 0) or 0)
+    state = (item.get('state') or 'open').upper()
+    if state == 'OPEN':
+        state = 'OPEN'
+    elif state == 'CLOSED':
+        pull = item.get('pull_request') or {}
+        state = 'MERGED' if pull.get('merged_at') else 'CLOSED'
+    saved = saved_index.get(url) if isinstance(saved_index, dict) else {}
+    head = item.get('headRefName') or (saved or {}).get('headRefName') or ''
+    return {'url': url, 'title': item.get('title') or '', 'body': item.get('body') or '',
+            'headRefName': head, 'state': state, 'number': number,
+            'repository': {'nameWithOwner': repo or (saved or {}).get('repository', {}).get('nameWithOwner', '')}}
+
+
+def probe_changed_prs(board, since_iso, repos=()):
+    """One REST search: what PRs changed since the last sync (wrapper-cacheable)."""
+    query = f'is:pr {probe_scope(board, repos)} updated:>={since_iso}'
+    page = json.loads(run('gh', 'api', '--method', 'GET', 'search/issues',
+                          '-f', f'q={query}', '-f', 'per_page=100'))
+    return [item for item in page.get('items') or [] if item.get('html_url')]
+
+
+def board_task_changes(saved, tasks, keys):
+    touched, known = set(), saved.get('tickets') or {}
+    keys = set(keys)
+    for task in tasks:
+        key = task['ticketNumber']
+        if key not in keys:
+            continue
+        if key not in known or known[key].get('updated_at') != task.get('updatedAt'):
+            touched.add(key)
+    return touched
+
+
+def probe_ticket_keys(pull, keys, board, url_keys):
+    matched = set(url_keys.get(pull['url'], ()))
+    for key in keys:
+        if names_ticket(pull, key, board):
+            matched.add(key)
+    return matched
+
+
+def tickets_from_probe(items, keys, board, saved=None):
+    """Tickets whose PRs appeared in the change probe."""
+    touched = set()
+    saved_index = saved_pull_index(saved or {})
+    url_keys = {}
+    for key in keys:
+        for pull in ((saved or {}).get('tickets') or {}).get(key, {}).get('pulls') or []:
+            url = pull.get('url')
+            if url:
+                url_keys.setdefault(url, set()).add(key)
+    for item in items:
+        pull = search_item_to_pull(item, saved_index)
+        if not pull['url'] or not allowed_repository(pull, board):
+            continue
+        touched |= probe_ticket_keys(pull, keys, board, url_keys)
+    return touched
+
+
+def merge_probe_pulls(found, items, keys, board, saved=None):
+    saved_index = saved_pull_index(saved or {})
+    url_keys = {}
+    for key in keys:
+        for pull in ((saved or {}).get('tickets') or {}).get(key, {}).get('pulls') or []:
+            url = pull.get('url')
+            if url:
+                url_keys.setdefault(url, set()).add(key)
+    for item in items:
+        pull = search_item_to_pull(item, saved_index)
+        if not pull['url'] or not allowed_repository(pull, board):
+            continue
+        matched = probe_ticket_keys(pull, keys, board, url_keys)
+        if not matched:
+            continue
+        if pull['state'] == 'CLOSED':
+            for key in matched:
+                found[key] = [p for p in found[key] if p['url'] != pull['url']]
+            continue
+        for key in matched:
+            urls = {p['url'] for p in found[key]}
+            if pull['url'] not in urls:
+                found[key].append(pull)
+            else:
+                found[key] = [pull if p['url'] == pull['url'] else p for p in found[key]]
+
+
+def restore_pull_facts(saved):
+    for entry in (saved.get('tickets') or {}).values():
+        for ref, fact in (entry.get('facts') or {}).items():
+            repo, number = ref.rsplit('#', 1)
+            PULLS[(repo, int(number))] = Pull(fact['url'], fact['state'], fact['checks'], fact['passed'])
+
+
+def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved_at=None):
+    tickets = {}
+    for task in tasks:
+        key = task['ticketNumber']
+        plist = pulls.get(key)
+        if plist is None:
+            continue
+        entry = {'updated_at': task.get('updatedAt'), 'pulls': plist, 'facts': {}}
+        if not product_board(board):
+            for pull in plist:
+                repo = pull['repository']['nameWithOwner']
+                ref = (repo, pull['number'])
+                if ref in PULLS:
+                    got = PULLS[ref]
+                    entry['facts'][f'{repo}#{pull["number"]}'] = {
+                        'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed}
+        tickets[key] = entry
+    repos = sorted({pull['repository']['nameWithOwner'] for plist in pulls.values() for pull in plist})
+    return {'at': saved_at if saved_at is not None else now,
+            'probe_since': probe_since or format_reset(now), 'repos': repos, 'tickets': tickets}
+
+
+def github_search_batch(keys, board=DEFAULT):
+    """GraphQL ticket search only, without branch scans."""
+    found = {key: [] for key in keys}
+    valid = []
+    for key in keys:
+        try:
+            ticket_index(key, board)
+            valid.append(key)
+        except ValueError:
+            continue
+    if not valid:
+        return found
+
+    def search(batch):
+        fields = []
+        for n, key in enumerate(batch):
+            scope = f'repo:{board.repository}' if board.repository else 'user:valentinyeo user:hypertask-ai'
+            query = f'is:pr {scope} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
+            fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
+                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number repository{nameWithOwner}}}}')
+        result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
+        if result.get('errors'):
+            raise ValueError('GitHub search errors')
+        for n, key in enumerate(batch):
+            page = result['data'][f'q{n}']
+            if page['pageInfo']['hasNextPage']:
+                raise ValueError(f'{key}: GitHub search truncated')
+            found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board)
+                          and names_ticket(p, key, board) and p['state'] != 'CLOSED']
+    with phase('search'):
+        for offset in range(0, len(valid), 12):
+            search(valid[offset:offset + 12])
+    return found
+
+
+def discover_quiet(keys, board=DEFAULT, created=None, saved=None, probe_items=(), github_refresh=()):
+    """Reuse saved PR links; read GitHub only for tickets the probe or board flagged."""
+    found = {key: list((saved.get('tickets') or {}).get(key, {}).get('pulls', [])) for key in keys}
+    merge_probe_pulls(found, probe_items, keys, board, saved)
+    missing = [key for key in keys if key not in (saved.get('tickets') or {})]
+    if missing:
+        discovered = discover(missing, created={key: (created or {}).get(key) for key in missing}, board=board)
+        found.update(discovered)
+    refresh = [key for key in github_refresh if key not in missing]
+    if refresh:
+        with phase('search'):
+            searched = github_search_batch(refresh, board)
+        for key, pulls in searched.items():
+            urls = {p['url'] for p in found[key]}
+            for pull in pulls:
+                if pull['url'] not in urls:
+                    found[key].append(pull)
+    restore_pull_facts(saved)
+    return found
 
 
 def api(*args):
@@ -1036,7 +1264,7 @@ def refreshed(pulls, board=DEFAULT):
     return [{**pull, 'state': read_product_pull(pull['number']).state} for pull in pulls]
 
 
-def prefetch(pulls, board=DEFAULT):
+def prefetch(pulls, board=DEFAULT, clear=True):
     """Read every PR once, a batch at a time. A failed read is retried and reported
     by collect, so it still prints UNKNOWN for its own ticket only.
     """
@@ -1049,7 +1277,8 @@ def prefetch(pulls, board=DEFAULT):
             read_pull_batch(batch)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
             pass
-    PULLS.clear()
+    if clear:
+        PULLS.clear()
     refs = sorted({(p['repository']['nameWithOwner'], p['number'])
                    for found in pulls.values() for p in found})
     for n in range(0, len(refs), PULL_BATCH):
@@ -1187,6 +1416,8 @@ def probe_budget():
     """Stop before reading anything when GitHub has nothing left to give."""
     try:
         resources = json.loads(run('gh', 'api', 'rate_limit'))['resources']
+    except BudgetRefused:
+        raise
     except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
         return
     spent = [r['reset'] for r in resources.values()
@@ -1341,8 +1572,12 @@ def board_run():
         if args.apply:
             # A spent budget can only fail slowly, one 403 per ticket. The rate_limit
             # call is free, so an --apply run checks before it reads anything.
-            with phase('budget'):
-                probe_budget()
+            try:
+                with phase('budget'):
+                    probe_budget()
+            except BudgetRefused as refused:
+                print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
+                return 0
         with phase('tickets'):
             tasks = [one] if args.ticket else tickets(args.section, **options)
         with phase('sections'):
@@ -1370,9 +1605,42 @@ def board_run():
                 print(f'NOTE {candidate["ticketNumber"]} | unparsable createdAt {value!r}; searched full history', flush=True)
                 value = None
             created[candidate['ticketNumber']] = value
-        pulls = discover([t['ticketNumber'] for t in candidates], created=created, **options)
-        with phase('pulls'):
-            prefetch(pulls, **options)
+        keys = [t['ticketNumber'] for t in candidates]
+        saved = None if args.ticket else read_board_facts(board.id)
+        budget_skip = False
+        probe_since = None
+        facts_refreshed = True
+        try:
+            if saved and saved_facts_fresh(saved, time.time()) and not args.ticket and keys:
+                with phase('probe'):
+                    probe_since = format_reset(time.time())
+                    items = probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
+                known = saved.get('tickets') or {}
+                new_keys = {key for key in keys if key not in known}
+                board_changed = board_task_changes(saved, candidates, keys)
+                pr_changed = tickets_from_probe(items, keys, board, saved) | new_keys
+                facts_refreshed = bool(pr_changed or board_changed)
+                pulls = discover_quiet(keys, created=created, saved=saved, probe_items=items,
+                                       github_refresh=pr_changed, **options)
+                if pr_changed:
+                    with phase('pulls'):
+                        prefetch({key: pulls[key] for key in pr_changed if key in pulls},
+                                 clear=False, **options)
+                print(f'reconcile: quiet sync; probe={len(items)} PR updates, '
+                      f'refresh={len(pr_changed)} tickets', file=sys.stderr, flush=True)
+            else:
+                pulls = discover(keys, created=created, **options)
+                with phase('pulls'):
+                    prefetch(pulls, **options)
+        except BudgetRefused as refused:
+            budget_skip = True
+            if saved:
+                pulls = {key: list((saved.get('tickets') or {}).get(key, {}).get('pulls', []))
+                         for key in keys}
+                restore_pull_facts(saved)
+            else:
+                pulls = {key: [] for key in keys}
+            print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
         now, errors = time.time(), 0
         if product_board(board) and candidates:
             # One read for the whole board, before the loop. A failure here is not
@@ -1388,6 +1656,16 @@ def board_run():
         with phase('facts'):
             for task in tasks:
                 try:
+                    if budget_skip:
+                        if task['section'] in board.managed:
+                            print(f'KEEP {task["ticketNumber"]} {task["section"]} -> {task["section"]} '
+                                  f'| kept saved facts; budget refused', flush=True)
+                        else:
+                            facts = Facts(task['section'], now - stamp(task['updatedAt']),
+                                          waiting=bool(task.get('waitingOnUserId')),
+                                          blocked=bool(task.get('blockerCommentId')))
+                            reconcile(task, facts, names=names, **options)
+                        continue
                     if task['section'] not in board.managed:
                         facts = Facts(task['section'], now - stamp(task['updatedAt']),
                                       waiting=bool(task.get('waitingOnUserId')),
@@ -1402,8 +1680,16 @@ def board_run():
         if os.environ.get('RECONCILE_TIMING'):
             print(timing_table(), file=sys.stderr, flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
-        if args.apply and not errors:
-            return apply_plan(plans, args.limit, pulls, names=names, **options)
+        if not budget_skip and not args.ticket and not errors and candidates:
+            saved_at = (saved or {}).get('at') if saved and not facts_refreshed else None
+            write_board_facts(board.id, serialize_board_facts(board, candidates, pulls, time.time(),
+                                                              probe_since=probe_since, saved_at=saved_at))
+        if args.apply and not errors and not budget_skip:
+            try:
+                return apply_plan(plans, args.limit, pulls, names=names, **options)
+            except BudgetRefused as refused:
+                print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
+                return 0
         return bool(errors)
 
 

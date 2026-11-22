@@ -88,6 +88,8 @@ The lease's start sync runs `agent take` for the ticket as the chat's own login 
 
 A run spends GitHub calls, and the account shares one hourly budget. The first response that reports a spent budget stops the run at once: 403 and 429 errors that name a rate limit or a secondary rate limit, and GraphQL's `RATE_LIMITED`. The run prints one line with the reset time from `gh api rate_limit`, applies no move, and exits 0. Only error text counts, so a PR or comment that talks about a rate limit is not one. Every run prints its call count to stderr: `reconcile: github calls=N (graphql=a, rest=b)`. A PR's state comes from the search the run already paid for, so no PR costs a call of its own.
 
+When nothing changed on the board or on GitHub since the last dry run, reconcile keeps one REST probe and reuses saved PR facts from `~/.cache/vstack/reconcile/board-facts-<board>.json`. Facts older than one hour or a new ticket still force a full read. A refused `gh` budget (exit 75) keeps the saved facts, plans nothing new, and writes no update.
+
 ## A miss
 
 When the reconcile leaves a card in the wrong column, or moves one it should not:
