@@ -270,8 +270,12 @@ def mine(task, name):
 
 
 def cli():
-    return (os.environ.get('IDLE_STOP_CLI') or shutil.which('hypertask')
-            or str(Path.home() / '.local/bin/hypertask'))
+    """The board command. The real CLI first: a worker shim earlier on PATH exits 3, no board login."""
+    chosen = os.environ.get('IDLE_STOP_CLI')
+    if chosen:
+        return chosen
+    real = Path.home() / '.local/bin/hypertask'
+    return str(real) if real.is_file() else (shutil.which('hypertask') or 'hypertask')
 
 
 def open_tickets(board, label, name, token):

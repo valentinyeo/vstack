@@ -198,6 +198,20 @@ class IdleStop(unittest.TestCase):
                          '--assigned-to me', 'task list'):
             self.assertIn(expected, args)
 
+    def test_the_real_cli_beats_a_worker_shim_on_path(self):
+        home = self.folder / 'home'
+        (home / '.local/bin').mkdir(parents=True)
+        real = home / '.local/bin/hypertask'
+        real.write_text('#!/bin/sh\nprintf %s ' + json.dumps(json.dumps({'tasks': [ticket('VSTA-7')]})) + '\n')
+        real.chmod(0o755)
+        shim_dir = self.folder / 'shims'
+        shim_dir.mkdir()
+        shim = shim_dir / 'hypertask'
+        shim.write_text('#!/bin/sh\necho "plan-pick worker: no board login." >&2\nexit 3\n')
+        shim.chmod(0o755)
+        env = {'HOME': str(home), 'IDLE_STOP_CLI': '', 'PATH': str(shim_dir) + os.pathsep + os.environ['PATH']}
+        self.assert_blocked(self.hook([human('ship it'), say('Nothing running.')], env=env), 'VSTA-7')
+
     def test_garbage_input_and_a_missing_transcript_allow(self):
         for payload in ('not json', '', '[1, 2, 3]', 'null', json.dumps({'cwd': str(self.project)})):
             with self.subTest(payload=payload):
