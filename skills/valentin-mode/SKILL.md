@@ -6,11 +6,6 @@ disable-model-invocation: true
 skill-word-budget: 1050
 skill-word-budget-reason: The index names hidden skills; the hooks block points at responsive-mode without duplicating it.
 hooks:
-  PreToolUse:
-    - matcher: "*"
-      hooks:
-        - type: command
-          command: python3 "$CLAUDE_PLUGIN_ROOT/../responsive-mode/reply-check.py"
   Stop:
     - hooks:
         - type: command
