@@ -212,7 +212,8 @@ def load_pulls(board, tasks, fixture_pulls=None):
             known = saved.get('tickets') or {}
             new_keys = {key for key in keys if key not in known}
             board_changed = reconcile.board_task_changes(saved, candidates, keys)
-            pr_changed = reconcile.tickets_from_probe(items, keys, board, saved) | new_keys
+            pr_changed = (reconcile.tickets_from_probe(items, keys, board, saved)
+                          | new_keys | board_changed)
             pulls = reconcile.discover_quiet(keys, created=created, saved=saved, probe_items=items,
                                              github_refresh=pr_changed, **options)
             if pr_changed:
@@ -252,8 +253,14 @@ def armed_chats(board_id):
         if str(state.get('board')) != str(board_id):
             continue
         name = (state.get('name') or '').strip()
-        if name:
-            names.append(name)
+        if not name:
+            continue
+        try:
+            if loop_state.state_path(name) != path or loop_state.status(name)[0] != 0:
+                continue
+        except ERRORS:
+            continue
+        names.append(name)
     return names
 
 
@@ -446,14 +453,15 @@ def check_human_writes(board_id, tasks_by_key, comments_by_ticket, breaks):
                 break
 
 
-def collect_comments(tasks, data, args):
+def collect_comments(tasks, data, args, board_id):
     out = dict(data.get('comments') or {})
     if args.fixture or args.skip_comments:
         return out
     for task in tasks:
         key = task['ticketNumber']
-        if task.get('section') != DONE and task.get('section') not in HUMAN_BOARDS:
-            continue
+        if task.get('section') != DONE:
+            if board_id not in HUMAN_BOARDS:
+                continue
         if key in out:
             continue
         try:
@@ -481,7 +489,7 @@ def lint(args):
     roster_args = argparse.Namespace(roster=args.roster)
     live = live_names(args) | owners.owned_labels(args.board)
     chat_names = chat_naming_labels(args, args.board)
-    comments = collect_comments(tasks, data, args)
+    comments = collect_comments(tasks, data, args, board.id)
     breaks = []
     for task in tasks:
         if str(task.get('projectId', board.id)) != str(board.id):

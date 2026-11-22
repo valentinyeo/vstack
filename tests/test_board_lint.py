@@ -102,6 +102,23 @@ class BoardLintTests(unittest.TestCase):
         self.assert_rule(result.stdout, 'stale-idle')
         self.assertIn('section change', result.stdout)
 
+    def test_expired_loop_not_armed_for_sync(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = {'name': 'Board Drain Loop', 'board': BOARD, 'label': 'Board Drain Loop',
+                     'armed_at': '2020-01-01T00:00:00Z', 'expires_at': '2020-01-02T00:00:00Z',
+                     'owner_pid': os.getpid(), 'host': socket.gethostname(),
+                     'last_sync': {'at': '2020-01-01T00:00:00Z', 'ok': True, 'reason': ''}}
+            states = Path(temp)
+            (states / 'board-drain-loop.json').write_text(json.dumps(state))
+            roster = roster_path(temp, 'Board Drain Loop (live-a, claude, /tmp)\n')
+            env = dict(os.environ, BOARD_DRAIN_STATE_DIR=temp)
+            result = subprocess.run(
+                [str(LINT), '--board', str(BOARD), '--fixture', str(FIXTURES / 'clean.json'),
+                 '--roster', str(roster), '--skip-comments'],
+                capture_output=True, text=True, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assert_rule(result.stdout, 'sync-record', present=False)
+
     def test_sync_stale_record(self):
         with tempfile.TemporaryDirectory() as temp:
             state = {'name': 'Board Drain Loop', 'board': BOARD, 'label': 'Board Drain Loop',
