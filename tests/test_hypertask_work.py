@@ -2060,6 +2060,70 @@ class CallBudgetTest(unittest.TestCase):
         self.assertEqual(len(gh_calls), 1)
         discover.assert_not_called()
 
+    def test_probe_scope_fallback_is_a_search_github_accepts(self):
+        scope = r.probe_scope(r.DEFAULT, ())
+        self.assertEqual(scope, 'user:valentinyeo user:hypertask-ai')
+        for rejected in ('(', ')', ' OR '):
+            self.assertNotIn(rejected, scope)
+        with patch.object(r, 'run', return_value=json.dumps({'items': []})) as run:
+            r.probe_changed_prs(r.DEFAULT, '2026-01-01T00:00:00Z')
+        query = next(arg for arg in run.call_args.args if str(arg).startswith('q='))
+        self.assertEqual(query, 'q=is:pr user:valentinyeo user:hypertask-ai updated:>=2026-01-01T00:00:00Z')
+        self.assertNotIn('OR', query)
+
+    def test_saved_repos_scope_keeps_repo_qualifiers(self):
+        self.assertEqual(r.probe_scope(r.DEFAULT, ['valentinyeo/another-repo']),
+                         'repo:valentinyeo/another-repo')
+        self.assertEqual(r.probe_scope(r.BOARDS[15], ()), 'repo:hypertask-ai/hypertask')
+
+    def test_probe_refused_with_422_reads_every_fact_and_keeps_the_full_plan(self):
+        t1 = {**task('Doing'), 'ticketNumber': 'SOFT-1', 'updatedAt': NOW - 8000}
+        t2 = {**task('Todo'), 'ticketNumber': 'SOFT-2', 'updatedAt': NOW - 9000}
+        pulls = {'SOFT-1': [], 'SOFT-2': []}
+        saved = {'at': NOW - 60, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
+                 'tickets': {'SOFT-1': {'updated_at': t1['updatedAt'], 'pulls': [], 'facts': {}},
+                            'SOFT-2': {'updated_at': t2['updatedAt'], 'pulls': [], 'facts': {}}}}
+
+        def refused_probe(*args, **kwargs):
+            if args[:2] == ('gh', 'api') and 'search/issues' in args:
+                raise RuntimeError('gh api failed: gh: Validation Failed (HTTP 422)')
+            return json.dumps({'data': {}})
+
+        def sync(facts):
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(r.Path, 'home', return_value=Path(directory)), \
+                    patch.object(sys, 'argv', ['reconcile']), \
+                    patch.object(r.time, 'time', return_value=NOW), \
+                    patch.object(r, 'tickets', return_value=[t1, t2]), \
+                    patch.object(r, 'read_sections', return_value=set()), \
+                    patch.object(r, 'live_lease', return_value=False), \
+                    patch.object(r, 'process_tickets', return_value=set()), \
+                    patch.object(r, 'read_board_facts', return_value=facts), \
+                    patch.object(r, 'discover', return_value=pulls) as discover, \
+                    patch.object(r, 'prefetch'), \
+                    patch.object(r, 'run', side_effect=refused_probe), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                r.reset_github_count()
+                r.PULLS.clear()
+                code = r.main()
+            return code, out.getvalue(), err.getvalue(), discover
+
+        clear_cache()
+        refused_code, refused_plan, refused_err, discover = sync(saved)
+        full_code, full_plan, _, _ = sync(None)
+        self.assertEqual(refused_code, 0)
+        self.assertEqual(refused_code, full_code)
+        discover.assert_called_once()
+        for line in full_plan.splitlines():
+            if line.startswith(('PLAN', 'KEEP')):
+                self.assertIn(line, refused_plan)
+        self.assertIn('DRY RUN', refused_plan)
+        named = [line for line in refused_err.splitlines() if 'probe failed' in line]
+        self.assertEqual(len(named), 1, refused_err)
+        self.assertIn('422', named[0])
+        self.assertNotIn('Traceback', refused_err)
+
     def test_changed_pr_refreshes_facts_and_moves_card(self):
         key = 'SOFT-1'
         t = {**task('Doing'), 'ticketNumber': key, 'updatedAt': NOW - 8000}
