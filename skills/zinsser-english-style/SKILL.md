@@ -2,8 +2,6 @@
 name: "zinsser-english-style"
 description: "Write or edit English text in the plain style taught by William Zinsser (On Writing Well) and George Orwell (Politics and the English Language): short sentences, strong verbs, concrete words, no clutter, jargon or stale phrases. Use for any English writing or editing task."
 disable-model-invocation: true
-skill-word-budget: 1500
-skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # Plain English after Zinsser and Orwell

@@ -2,8 +2,6 @@
 name: report-page
 description: Turn research, a plan, an analysis or a status update into one clean HTML page a busy person can scan in a minute. Bottom line up front, Minto pyramid structure, reading time shown. Writes with web-writing, cleans with unslop and zinsser-english-style, builds from the bundled template, then publishes. Use for /report-page, any report, research write-up, plan, comparison, audit or findings page meant for a person to read.
 disable-model-invocation: true
-skill-word-budget: 900
-skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # report-page

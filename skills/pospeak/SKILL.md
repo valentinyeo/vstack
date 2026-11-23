@@ -2,8 +2,6 @@
 name: pospeak
 description: Rewrite the last reply (or any text) for a product owner who is not a senior dev, then pass it through unslop and i-have-adhd, and post it again. Persistent for the session. Use when Valentin says "/pospeak", "po speak", "dumb it down", "I don't understand", "too technical", "explain for a product owner", "I'm not a dev", or "repeat that in plain English".
 disable-model-invocation: true
-skill-word-budget: 1300
-skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # PO speak

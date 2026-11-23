@@ -12,76 +12,27 @@ concurrency:
 jobs:
   skill-lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          path: change
           persist-credentials: false
-      - name: Check the tree main will get
-        if: github.event_name == 'pull_request'
-        working-directory: change
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags --quiet origin "$BASE_REF"
-          git -c user.name=skill-lint -c user.email=skill-lint@invalid merge --no-edit FETCH_HEAD
-      - uses: actions/checkout@v4
-        with:
-          repository: valentinyeo/house-rules
-          ref: 6b3d15a26ecf02760fe39ef75fb8ab7b7235c52d
-          path: lint-source
-          persist-credentials: false
-      - name: Read caller's pinned sources
+      - name: Read pinned pstack ref
         id: pins
-        working-directory: change
         run: |
           python3 - <<'PY'
           import json, os, re
           pins = json.load(open('.skill-lint.json'))
-          for key in ('pstack-ref', 'catalog-ref'):
-              assert re.fullmatch('[0-9a-f]{40}', pins[key]), f'{key}: pin a full commit SHA'
-          assert re.fullmatch(r'\d+(\.\d+)+', pins['pstack-version'])
-          assert pins['catalog-repository'] in ('valentinyeo/house-rules', 'valentinyeo/vstack')
+          ref = pins['pstack-ref']
+          assert re.fullmatch('[0-9a-f]{40}', ref), 'pstack-ref: pin a full commit SHA'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              for key, value in pins.items():
-                  output.write(f'{key}={value}\n')
+              output.write(f'pstack-ref={ref}\n')
           PY
       - uses: actions/checkout@v4
         with:
           repository: cursor/plugins
           ref: ${{ steps.pins.outputs.pstack-ref }}
-          path: pstack-source
+          path: .pstack-source
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.pins.outputs.catalog-repository }}
-          ref: ${{ steps.pins.outputs.catalog-ref }}
-          path: catalog
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: python3 -m pip install PyYAML==6.0.2
-      - name: Lint changed skills with the shared script
-        working-directory: change
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          # The base ref is fetched live, so the event's base.sha can be older than the
-          # tree the merge step built. Judge that tree against the base branch itself.
-          if [ -n "${BASE_REF:-}" ]; then
-            git fetch --no-tags --quiet origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
-            BASE=$(git merge-base "refs/remotes/origin/$BASE_REF" HEAD)
-          else
-            BASE=$BEFORE
-          fi
-          test -n "$BASE"
-          test "$BASE" != 0000000000000000000000000000000000000000
-          if [ -f house-rules.md ]; then house=house-rules.md; else house=../catalog/house-rules.md; fi
-          python3 ../lint-source/scripts/skill-lint --base "$BASE" --pstack ../pstack-source/pstack/skills --house-rules "$house" --catalog ../catalog/skills
+      - name: Validate skills per pstack authoring-a-skill.md
+        run: python3 scripts/skill-validate.py --pstack .pstack-source/pstack/skills

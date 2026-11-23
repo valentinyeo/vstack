@@ -2,8 +2,6 @@
 name: verify-vstack
 description: >-
   Prove that a vstack change keeps every chat working: install the checkout into a scratch HOME, run Doctor over its hook wiring, skill links and install record, then start one fresh headless chat that loads /valentin-mode and runs a Bash command. Fails when a chat is wired to a hook the change stopped shipping. Use on any change to hooks/, install, a skill's frontmatter hooks or settings, and as the proof on such a PR.
-skill-word-budget: 800
-skill-word-budget-reason: Launch, Doctor, Drive, the evidence table and the base-wiring rule each need their own line; the feature map holds the rest.
 ---
 
 # Verify vstack

@@ -2,8 +2,6 @@
 name: "schneider-deutsch-stil"
 description: "Write or edit German text in Wolf Schneider's style: short sentences, strong verbs, concrete words, no Nominalstil or filler. Use for any German writing or editing task."
 disable-model-invocation: true
-skill-word-budget: 1400
-skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # Deutsch schreiben nach Wolf Schneider

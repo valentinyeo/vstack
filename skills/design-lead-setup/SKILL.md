@@ -2,8 +2,6 @@
 name: design-lead-setup
 description: Sets an AI agent up as the design lead for an existing product repo, then runs the work. The agent captures the real app, brings it into Figma with the code's own tokens, audits it against written rules with file:line evidence, files one problem report per case, and shows fixes as edits on the real screen. The owner only approves. Use for /design-lead-setup, "be our design lead", "audit our UI", "set up Figma from our app", or "propose a fix for this screen".
 disable-model-invocation: true
-skill-word-budget: 2900
-skill-word-budget-reason: Hidden from the default skill list and read only on demand, so its size costs nothing at session start (VSTA-36).
 ---
 
 # /design-lead-setup

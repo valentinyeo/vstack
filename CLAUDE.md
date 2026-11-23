@@ -45,12 +45,9 @@ Nobody pushes to main.
 | Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
 | Reconcile keeps boards 15 and 2060 truthful | `skills/hypertask-work/reconcile`, `tests/test_hypertask_work.py` |
 | Boards stay true without anyone asking | lease start/end sync, `skills/board-drain/watch`, `bin/hand-moves` |
-| Skill budgets, copied rules, references and new-skill prior art pass (pstack `poteto-mode/playbooks/authoring-a-skill.md`: "When in doubt, delete. Keep only prose that changes a decision.") | `.github/workflows/skill-lint.yml`, pinned shared house-rules script |
+| Skills pass pstack authoring validation (pstack `skills/poteto-mode/playbooks/authoring-a-skill.md`: "Validate the skill: frontmatter has `name` and `description`, referenced files exist, cross-skill links resolve.") | `scripts/skill-validate.py`, `.github/workflows/skill-lint.yml`, `tests/test_skill_validate.py` |
 | Loaded skills stay lean: no dead links, duplicate names, retired terms or oversized descriptions | `scripts/skill-check.py`, `tests/test_skill_check.py` |
 | A PR adds no verification gate pstack does not ask for | `hooks/pstack-new-gates.py`, `checks` workflow step |
-| New skill, script or hook names its pstack skill and root cause | `tests/test_skill_prior_art.py`, `config/tool-registry.txt` |
-
-Skill-lint commands and exceptions: [shared reference](https://github.com/valentinyeo/house-rules/blob/d60a2c149b29ef555dec42f20afc074543624f7b/docs/skill-lint.md).
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.
