@@ -909,6 +909,178 @@ class ReconcileTest(unittest.TestCase):
             self.assertFalse(r.pass_on_head([comment()], HEAD, 'writer', 'valentinyeo/another-repo', POLICY))
 
 
+class MovedKeyTest(unittest.TestCase):
+    """A card that moved keeps its column: its PRs still name the key it left."""
+
+    def setUp(self):
+        clear_cache()
+        r.reset_aliases()
+        r.PULLS.clear()
+        r.reset_github_count()
+        self.addCleanup(r.reset_aliases)
+        for patcher in (patch.object(r, 'process_tickets', return_value=set()),
+                        patch.object(r, 'live_lease', return_value=False)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def fake_board(self, board_id=90001, prefix='FAKE'):
+        """A board configured at runtime, like any board a project names."""
+        board = r.make_board(board_id, prefix, r.MANAGED, r.PROTECTED,
+                             r.FACTORY_STAGE_COLUMN, r.FACTORY_COLUMN_STAGE)
+        self.addCleanup(r.reset_aliases)
+        return board
+
+    def answering(self, terms, pull):
+        """A fake gh whose aliased searches answer `pull` to the queries quoting `terms`."""
+        queries = []
+
+        def respond(*args, **kwargs):
+            query = next(a for a in args if a.startswith('query=query{'))
+            queries.append(query)
+            quoted = query.replace('\\', '')
+            fields = re.findall(r'(q\d+):search\(query:', query)
+            hit = [pull] if any(f'"{term}"' in quoted for term in terms) else []
+            data = {alias: {'pageInfo': {'hasNextPage': False}, 'nodes': hit} for alias in fields}
+            return json.dumps({'data': data})
+        return respond, queries
+
+    def named_pull(self, key, number, state='OPEN'):
+        return {'title': f'{key}: work', 'body': f'Ticket: {key}',
+                'headRefName': f'{key.lower()}-work', 'state': state, 'number': number,
+                'url': f'https://github.com/valentinyeo/another-repo/pull/{number}',
+                'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+
+    def plan_line(self, task, pulls, board, *names):
+        details = tuple(p if isinstance(p, r.Pull) else
+                        r.Pull(p['url'], p['state'], 'green', False) for p in pulls)
+        facts = r.Facts(task['section'], 8000, False, details)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            r.reconcile(task, facts, board=board)
+        line = out.getvalue().strip()
+        for name in names:
+            self.assertIn(name, line)
+        return line
+
+    def seed(self):
+        data = json.loads((ROOT / 'skills/hypertask-work/aliases/13734.json').read_text())
+        old, new = next((old, row['newKey']) for old, row in sorted(data.items()))
+        return old, new
+
+    def test_a_moved_card_keeps_its_column_when_its_pr_names_the_old_key(self):
+        old, new = self.seed()
+        board = r.make_board(13734, new.rsplit('-', 1)[0], r.MANAGED, r.PROTECTED,
+                             r.FACTORY_STAGE_COLUMN, r.FACTORY_COLUMN_STAGE)
+        card = {'ticketNumber': new, 'section': 'AI Review', 'projectId': 13734,
+                'updatedAt': NOW - 8000}
+        pr = self.named_pull(old, 7)
+        respond, queries = self.answering((old,), pr)
+        with patch.object(r, 'run', side_effect=respond), \
+                patch.object(r, 'api', side_effect=AssertionError('the seed answers without a board read')):
+            found = r.discover([new], board=board)
+        self.assertEqual([p['url'] for p in found[new]], [pr['url']])
+        self.assertTrue(any(old in q.replace('\\', '') for q in queries),
+                        'the old key is searched with the card\'s own key')
+        # What the operator sees now: PLAN to Todo on a card that has an open PR.
+        self.assertIn('PLAN', self.plan_line(card, (), board, 'Todo', 'no live worker and no PR'))
+        # What it must see: the PR keeps the column the card already sits in.
+        self.assertIn('KEEP', self.plan_line(card, found[new], board, 'open PR checks green'))
+
+    def probe_item(self, pull):
+        """The row GitHub's change probe returns for one pull."""
+        return {'html_url': pull['url'], 'number': pull['number'], 'title': pull['title'],
+                'body': pull['body'], 'headRefName': pull['headRefName'], 'state': pull['state']}
+
+    def test_an_unknown_old_key_is_resolved_once_and_cached(self):
+        board = self.fake_board()
+        pr = self.named_pull('GONE-7', 9)
+        respond, _ = self.answering(('GONE-7',), pr)
+        reads = []
+
+        def api(*args):
+            reads.append(args)
+            return {'tasks': [{'ticketNumber': 'FAKE-2', 'projectId': 90001, 'section': 'AI Review'}]}
+
+        # A quiet sync sees the pull in its change probe and has no key for it.
+        with patch.object(r, 'run', side_effect=respond), \
+                patch.object(r, 'api', side_effect=api):
+            found = r.discover_quiet(['FAKE-2'], board=board, saved={},
+                                     probe_items=[self.probe_item(pr)])
+        self.assertEqual(reads, [('task', 'get', 'GONE-7')])
+        self.assertEqual([p['url'] for p in found['FAKE-2']], [pr['url']],
+                         'the card gets its PR on the run that learns the old key')
+        self.assertTrue(r.names_ticket(pr, 'FAKE-2', board=board))
+        self.assertEqual(r.cache_read('aliases-90001.json'), {'GONE-7': 'FAKE-2'})
+
+        r.reset_aliases()
+        respond, queries = self.answering(('GONE-7',), pr)
+        with patch.object(r, 'run', side_effect=respond), \
+                patch.object(r, 'api', side_effect=AssertionError('a resolved key is never asked again')):
+            again = r.discover(['FAKE-2'], board=board)
+        self.assertEqual([p['url'] for p in again['FAKE-2']], [pr['url']])
+        self.assertTrue(any('GONE-7' in q.replace('\\', '') for q in queries))
+
+    def test_a_card_keeps_every_old_key_it_had(self):
+        board = self.fake_board(90003)
+        r.cache_write('aliases-90003.json', {'GONE-1': 'FAKE-4'})
+        with patch.object(r, 'api', return_value={
+                'tasks': [{'ticketNumber': 'FAKE-4', 'projectId': 90003}]}):
+            r.learn_aliases([self.named_pull('GONE-2', 11)], ['FAKE-4'], board)
+        self.assertEqual(sorted(r.aliases_of('FAKE-4', board)), ['GONE-1', 'GONE-2'])
+        self.assertEqual(r.cache_read('aliases-90003.json'),
+                         {'GONE-1': 'FAKE-4', 'GONE-2': 'FAKE-4'})
+
+    def test_a_branch_written_with_the_old_key_is_found(self):
+        board = self.fake_board(90005)
+        r.cache_write('aliases-90005.json', {'GONE-9': 'FAKE-7'})
+        r.reset_aliases()
+        pr = {'title': 'work', 'body': '', 'headRefName': 'gone-9-work', 'state': 'OPEN',
+              'number': 12, 'url': 'https://github.com/valentinyeo/another-repo/pull/12',
+              'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+
+        def respond(*args):
+            quoted = next(a for a in args if a.startswith('query=query{')).replace('\\', '')
+            hit = [pr] if 'head:GONE-9' in quoted else []
+            fields = re.findall(r'(q\d+):search\(query:', quoted)
+            data = {alias: {'pageInfo': {'hasNextPage': False}, 'nodes': hit} for alias in fields}
+            return json.dumps({'data': data})
+
+        with patch.object(r, 'run', side_effect=respond), \
+                patch.object(r, 'api', side_effect=AssertionError('the alias is already known')):
+            found = r.discover(['FAKE-7'], board=board)
+        self.assertEqual([p['url'] for p in found['FAKE-7']], [pr['url']])
+
+    def test_a_card_whose_old_keys_changed_is_read_again(self):
+        board = self.fake_board(90004)
+        r.cache_write('aliases-90004.json', {'GONE-3': 'FAKE-5'})
+        r.reset_aliases()
+        saved = {'tickets': {'FAKE-5': {'aliases': []}, 'FAKE-6': {'aliases': []}}}
+        self.assertEqual(r.alias_changed(saved, ['FAKE-5', 'FAKE-6'], board), {'FAKE-5'})
+        saved['tickets']['FAKE-5']['aliases'] = ['GONE-3']
+        self.assertEqual(r.alias_changed(saved, ['FAKE-5', 'FAKE-6'], board), set())
+
+    def test_a_key_that_resolves_to_another_board_is_ignored(self):
+        board = self.fake_board(90002)
+        pr = self.named_pull('GONE-8', 10)
+        reads = []
+
+        def api(*args):
+            reads.append(args)
+            return {'tasks': [{'ticketNumber': 'OTHER-1', 'projectId': 13556, 'section': 'Doing'}]}
+
+        with patch.object(r, 'api', side_effect=api):
+            self.assertEqual(r.learn_aliases([pr], ['FAKE-3'], board), set())
+        self.assertEqual(reads, [('task', 'get', 'GONE-8')])
+        self.assertFalse(r.names_ticket(pr, 'FAKE-3', board=board))
+        self.assertEqual(r.cache_read('aliases-90002.json'), {'GONE-8': None})
+
+        respond, _ = self.answering(('GONE-8',), pr)
+        r.reset_aliases()
+        with patch.object(r, 'run', side_effect=respond), \
+                patch.object(r, 'api', side_effect=AssertionError('a refused key is remembered as refused')):
+            self.assertEqual(r.discover(['FAKE-3'], board=board), {'FAKE-3': []})
+
+
 class Board15Test(unittest.TestCase):
     CREATED = '2026-11-20T09:51:00Z'
 
