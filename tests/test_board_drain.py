@@ -1,5 +1,6 @@
 import contextlib
 from datetime import datetime, timezone
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -1449,6 +1450,29 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(calls[0]['env']['HT_TOKEN'], 'from-env')
         self.assertEqual(calls[0]['env']['SHIP_SESSION_NAME'], 'other-chat')
+
+    def test_labels_sharing_a_prefix_get_their_own_budget_session(self):
+        bugs = sync.caller(13734, 'Multi Bot Bugs')
+        features = sync.caller(13734, 'Multi Bot Features')
+        self.assertEqual(bugs, 'sync:13734:multi-bo-' + hashlib.sha1(b'Multi Bot Bugs').hexdigest()[:4])
+        self.assertNotEqual(bugs, features)
+        self.assertNotEqual(sync.caller(13734, 'Multi Bot Bugs'), sync.caller(2060, 'Multi Bot Bugs'))
+
+    def test_each_reconcile_call_carries_the_caller(self):
+        self.write_token()
+        code, out, calls = self.run_sync([(0, 'ok\n', ''), (0, 'ok\n', '')])
+        self.assertEqual(code, 0, out)
+        expected = sync.caller(2060, 'Poteto')
+        for call in calls:
+            self.assertEqual(call['env']['GH_CALLER'], expected)
+
+    def test_an_existing_gh_caller_is_kept(self):
+        self.write_token()
+        with patch.dict(os.environ, {'GH_CALLER': 'reconcile:2060:mine'}):
+            code, out, calls = self.run_sync([(0, 'ok\n', ''), (0, 'ok\n', '')])
+        self.assertEqual(code, 0, out)
+        for call in calls:
+            self.assertEqual(call['env']['GH_CALLER'], 'reconcile:2060:mine')
 
     def test_no_token_anywhere_fails(self):
         code, out, calls = self.run_sync([])

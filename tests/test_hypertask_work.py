@@ -1946,6 +1946,22 @@ class LeaseTest(unittest.TestCase):
             self.assertEqual(env['DBUS_SESSION_BUS_ADDRESS'],
                              f'unix:path=/run/user/{os.getuid()}/bus')
 
+    def test_card_sync_names_the_lease_as_its_gh_caller(self):
+        self.spawned = []
+        self.assertTrue(lease.sync_card('SOFT-1', 'start', {'HOME': str(self.directory)}))
+        caller = self.spawned[-1][1]['GH_CALLER']
+        self.assertEqual(caller, 'lease:SOFT-1')
+        self.assertTrue(lease.sync_card('VSTA-179', 'end', {'HOME': str(self.directory)}))
+        self.assertEqual(self.spawned[-1][1]['GH_CALLER'], 'lease:VSTA-179')
+        for _command, env in self.spawned:
+            self.assertLessEqual(len('script:' + env['GH_CALLER']), 32)
+
+    def test_card_sync_keeps_an_existing_gh_caller(self):
+        self.spawned = []
+        env = {'HOME': str(self.directory), 'GH_CALLER': 'drain-worker:7'}
+        self.assertTrue(lease.sync_card('SOFT-1', 'start', env))
+        self.assertEqual(self.spawned[-1][1]['GH_CALLER'], 'drain-worker:7')
+
     def test_run_and_watch_sync_at_their_own_start_and_end(self):
         self.spawned = []
         self.assertEqual(self.lease_main(['SOFT-1', 'run', '--', sys.executable, '-c', 'pass']), 0)

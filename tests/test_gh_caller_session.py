@@ -138,6 +138,13 @@ class ScriptSessionTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GH_CALLER": "cursor-agent"}, clear=True):
             self.assertEqual(self.mod.log_session(), "-")
 
+    def test_a_sync_caller_fits_the_budget_session_untruncated(self):
+        with mock.patch.dict(os.environ, {"GH_CALLER": "sync:13734:multi-bo-1a2b"}, clear=True):
+            self.assertEqual(self.mod.log_session(), "script:sync:13734:multi-bo-1a2b")
+            self.assertEqual(self.mod.budget_session(), "script:sync:13734:multi-bo-1a2b")
+            self.assertTrue(self.mod.budget_session().endswith("multi-bo-1a2b"))
+            self.assertLessEqual(len(self.mod.budget_session()), 32)
+
     def test_agent_feed_stays_script_session(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch.object(self.mod, "_classify_caller_proc", return_value=("agent-feed", 88)):

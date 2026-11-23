@@ -518,7 +518,7 @@ def _fallback_script_session() -> str:
         stable = script_ancestor_name()
     if not stable:
         return ""
-    return "script:" + re.sub(r"[^A-Za-z0-9_.:-]", "_", stable)[:24]
+    return "script:" + re.sub(r"[^A-Za-z0-9_.:-]", "_", stable)[:25]
 
 
 def log_session() -> str:
