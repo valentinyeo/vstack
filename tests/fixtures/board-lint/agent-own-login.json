@@ -1,0 +1,24 @@
+{
+  "now": 1763800800,
+  "roster": "Multi Bot Android Features (live-f, claude, /tmp)\n",
+  "chats": ["Multi Bot Android Features"],
+  "own_agent_id": "7e61b4e1-c796-4dd9-a851-62bb1ff32341",
+  "tasks": [
+    {
+      "ticketNumber": "MUBO-201",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Chat's own agent, which carries another name",
+      "updatedAt": "2025-11-21T12:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T12:00:00.000Z"},
+      "labels": [{"name": "Multi Bot Android Features"}, {"name": "brain-medium"}],
+      "assignees": [
+        {
+          "type": "agent",
+          "displayName": "Multiprompt Android Dev",
+          "agentId": "7e61b4e1-c796-4dd9-a851-62bb1ff32341"
+        }
+      ]
+    }
+  ]
+}

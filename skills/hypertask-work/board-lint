@@ -104,6 +104,26 @@ def agent_assignees(task):
     return found
 
 
+def agent_row(task, name):
+    """The assignee row behind one display name, or {} when it has none."""
+    return next((row for row in task.get('assignees') or ()
+                 if isinstance(row, dict) and (row.get('displayName') or '').strip() == name), {})
+
+
+def agent_id_of(task, name):
+    return str(agent_row(task, name).get('agentId') or '').strip()
+
+
+def own_agent(args, data):
+    """This chat's own agent id: pinned in a fixture, else read from its login."""
+    if args.fixture:
+        return str(data.get('own_agent_id') or '').strip()
+    try:
+        return session_login.own_agent_id(getattr(args, 'label', '') or '')
+    except ERRORS:
+        return ''
+
+
 def chat_labels(task):
     return [(label.get('name') or '').strip() for label in task.get('labels') or ()
             if isinstance(label, dict) and not owners.is_generic(label.get('name') or '')]
@@ -425,7 +445,7 @@ def board_chat_views(tasks, known, views):
         yield label, views.get(session_login.slug(label))
 
 
-def check_agent_assignee(task, facts, live, known, members, data, args, breaks):
+def check_agent_assignee(task, facts, live, known, members, data, args, breaks, own=''):
     """A person, a revoked agent, a name no chat ever had, or Doing with no worker."""
     if task.get('section') not in OPEN:
         return
@@ -442,8 +462,10 @@ def check_agent_assignee(task, facts, live, known, members, data, args, breaks):
     for name in agents:
         if slug_agent(name) in FALLBACK_AGENT:
             continue
-        agent_id = next((str(row.get('agentId') or '') for row in rows
-                         if (row.get('displayName') or '').strip() == name), '')
+        agent_id = agent_id_of(task, name)
+        # This chat's own agent under another name: its login settles it, not the name.
+        if own and agent_id == own:
+            continue
         if members is not None and agent_id and agent_id not in members:
             breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
                                 f'assignee {name!r} is revoked or no longer a board member; only a '
@@ -565,7 +587,7 @@ def check_done_proof(task, pulls, comments, board, breaks):
                         'add live Done proof (Done comment with evidence); merged PR alone is not Done'))
 
 
-def check_label_assignee(task, chat_names, breaks):
+def check_label_assignee(task, chat_names, breaks, own='', own_label=''):
     if task.get('section') not in OPEN:
         return
     labels = chat_labels(task)
@@ -575,11 +597,16 @@ def check_label_assignee(task, chat_names, breaks):
     for label in labels:
         if slug_agent(label) not in chat_names:
             continue
+        mine = bool(own and slug_agent(label) == slug_agent(own_label))
         for agent in agents:
-            if slug_agent(agent) != slug_agent(label):
-                breaks.append(Break(task['ticketNumber'], 'label-assignee', label,
-                                    f'label {label!r} names chat {label!r} but assignee is {agent!r}; relabel or reassign'))
-                return
+            if slug_agent(agent) == slug_agent(label):
+                continue
+            # This chat's own agent under another name still owns its own label.
+            if mine and agent_id_of(task, agent) == own:
+                continue
+            breaks.append(Break(task['ticketNumber'], 'label-assignee', label,
+                                f'label {label!r} names chat {label!r} but assignee is {agent!r}; relabel or reassign'))
+            return
 
 
 def check_no_owner_label(task, breaks):
@@ -767,6 +794,7 @@ def lint(args, shared=None):
     views = fixture_views(data) if args.fixture else read_views(board.id)
     label_ids = fixture_label_ids(data) if args.fixture else read_label_ids(board.id)
     chat_names = chat_naming_labels(args, args.board, data)
+    own = own_agent(args, data)
     comments = collect_comments(tasks, data, args, board.id)
     breaks = []
     for task in tasks:
@@ -782,11 +810,12 @@ def lint(args, shared=None):
         if args.fixture and isinstance(data.get('workers'), dict):
             # One fixture fact for both the column rule and the Doing worker rule.
             facts = replace(facts, alive=bool(data['workers'].get(task['ticketNumber'])))
-        check_agent_assignee(task, facts, live, known, members, data, args, breaks)
+        check_agent_assignee(task, facts, live, known, members, data, args, breaks, own=own)
         if pull_rules and (known_pulls is None or task['ticketNumber'] in known_pulls):
             check_true_column(task, facts, board, names, breaks)
             check_done_proof(task, pulls, comments, board, breaks)
-        check_label_assignee(task, chat_names, breaks)
+        check_label_assignee(task, chat_names, breaks, own=own,
+                             own_label=getattr(args, 'label', '') or '')
         check_no_owner_label(task, breaks)
         check_unnamed_identity(task, breaks)
         check_stale(task, now, breaks)

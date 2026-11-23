@@ -5,6 +5,7 @@ fleet roster, and its login is that name's agent token. A chat with no tab (a
 headless test run, a scripted run) is named by SHIP_SESSION_NAME instead. The
 after-turn hook and the lease both read it from here; neither keeps its own copy.
 """
+import base64
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,51 @@ def chat_names_path(home):
 
 def token_path(home, name):
     return Path(home) / TOKENS / f'{slug(name)}-agent-token'
+
+
+def token_agent_id(token):
+    """The agent id a chat token carries, or '' when it carries none.
+
+    The token's own claim names the agent, the same way identity.md step 1 reads
+    it. The token is never printed, logged or written anywhere.
+    """
+    try:
+        payload = str(token or '').strip().split('.')[1]
+        payload += '=' * (-len(payload) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(payload)).get('agentId')
+    except (IndexError, TypeError, ValueError):
+        return ''
+    return str(claim or '').strip()
+
+
+def own_agent_id(name, env=None):
+    """The agent id behind this chat's own login, or '' when it cannot be read.
+
+    The login is the chat's own token file when it has one, else the caller's
+    HT_TOKEN, else the session login. One agent can show a name that differs
+    from its chat (only the owner renames an agent), so board rules compare this
+    id as well as the name.
+    """
+    env = os.environ if env is None else env
+    path = token_path(home(env), name) if name and not is_person(name) else None
+    token = ''
+    if path is not None and path.is_file():
+        try:
+            token = path.read_text().strip()
+        except OSError:
+            token = ''
+    if not token:
+        token = str(env.get('HT_TOKEN') or '').strip()
+    if not token:
+        login = login_for_session(env)
+        path = login[1] if login else None
+        if path is None or not path.is_file():
+            return ''
+        try:
+            token = path.read_text().strip()
+        except OSError:
+            return ''
+    return token_agent_id(token)
 
 
 def session_name(home, tab):

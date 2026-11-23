@@ -1,3 +1,4 @@
+import base64
 import importlib.machinery
 import importlib.util
 import json
@@ -16,6 +17,12 @@ FIXTURES = ROOT / 'tests/fixtures/board-lint'
 BOARD = 99001
 
 
+def fake_token(agent_id):
+    """A token shaped like the CLI's: its payload carries the agent id."""
+    payload = base64.urlsafe_b64encode(json.dumps({'agentId': agent_id}).encode()).decode()
+    return f'header.{payload.rstrip("=")}.signature'
+
+
 def roster_path(temp, text):
     path = Path(temp) / 'roster.txt'
     path.write_text(text or 'Board Drain Loop (live-a, claude, /tmp)\n')
@@ -32,7 +39,7 @@ def load_board_lint():
 
 
 class BoardLintTests(unittest.TestCase):
-    def run_lint(self, fixture, board=BOARD, extra_env=None, roster_text=None):
+    def run_lint(self, fixture, board=BOARD, extra_env=None, roster_text=None, label=None):
         with tempfile.TemporaryDirectory() as temp:
             env = dict(os.environ, BOARD_DRAIN_STATE_DIR=temp)
             if extra_env:
@@ -40,6 +47,8 @@ class BoardLintTests(unittest.TestCase):
             roster = roster_path(temp, roster_text)
             args = [str(LINT), '--board', str(board), '--fixture', str(FIXTURES / fixture),
                     '--roster', str(roster), '--skip-comments']
+            if label:
+                args += ['--label', label]
             return subprocess.run(args, capture_output=True, text=True, env=env)
 
     def assert_rule(self, output, rule, present=True):
@@ -78,6 +87,47 @@ class BoardLintTests(unittest.TestCase):
         result = self.run_lint('agent-closed-chat.json')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assert_rule(result.stdout, 'agent-assignee', present=False)
+
+    def test_own_agent_under_another_name_is_accepted(self):
+        # Real case: chat "Multi Bot Android Features" uses the agent "Multiprompt
+        # Android Dev". Only the owner renames an agent, so its login settles it.
+        result = self.run_lint('agent-own-login.json', label='Multi Bot Android Features')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee', present=False)
+        self.assert_rule(result.stdout, 'label-assignee', present=False)
+
+    def test_own_agent_under_another_name_breaks_without_its_login(self):
+        # The same card as main read it: no agent id, so the name mismatch stands.
+        data = json.loads((FIXTURES / 'agent-own-login.json').read_text())
+        data.pop('own_agent_id')
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Path(temp) / 'no-login.json'
+            fixture.write_text(json.dumps(data))
+            result = self.run_lint(fixture)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee')
+        self.assert_rule(result.stdout, 'label-assignee')
+
+    def test_another_agent_with_the_same_name_mismatch_still_breaks(self):
+        result = self.run_lint('agent-other-login.json', label='Multi Bot Android Features')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee')
+        self.assert_rule(result.stdout, 'label-assignee')
+
+    def test_the_own_agent_id_comes_from_the_chats_own_token(self):
+        login = load_board_lint().session_login
+        chat = 'Multi Bot Android Features'
+        agent = '7e61b4e1-c796-4dd9-a851-62bb1ff32341'
+        with tempfile.TemporaryDirectory() as temp:
+            path = login.token_path(temp, chat)
+            path.parent.mkdir(parents=True)
+            path.write_text(fake_token(agent))
+            self.assertEqual(login.own_agent_id(chat, {'HOME': temp}), agent)
+            # Another chat's name never borrows this token.
+            self.assertEqual(login.own_agent_id('Board Drain Loop', {'HOME': temp}), '')
+            # With no token file of its own, the chat's exported token answers.
+            env = {'HOME': temp, 'HT_TOKEN': fake_token(agent)}
+            self.assertEqual(login.own_agent_id('Board Drain Loop', env), agent)
 
     def test_agent_assignee_flags_name_no_chat_ever_had(self):
         result = self.run_lint('agent-unknown-chat.json')
