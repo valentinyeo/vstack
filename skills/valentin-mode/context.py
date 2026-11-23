@@ -120,8 +120,7 @@ def answer(payload, home=None):
         guard = reply_check()
         output = {'hookSpecificOutput': {
             'hookEventName': 'PreToolUse',
-            'permissionDecision': 'deny',
-            'permissionDecisionReason': guard.MESSAGE}}
+            'additionalContext': guard.MESSAGE}}
     if already_sent(home, key):
         return output
     context = payload_context()
@@ -129,7 +128,8 @@ def answer(payload, home=None):
         return output
     mark_sent(home, key)
     output.setdefault('hookSpecificOutput', {'hookEventName': 'PreToolUse'})
-    output['hookSpecificOutput']['additionalContext'] = context
+    hook = output['hookSpecificOutput']
+    hook['additionalContext'] = (hook.get('additionalContext', '') + '\n\n' + context).strip()
     return output
 
 

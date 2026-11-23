@@ -230,8 +230,7 @@ def main():
     try:
         if unanswered_after_retries(data.get("transcript_path") or ""):
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                                    "permissionDecision": "deny",
-                                                    "permissionDecisionReason": MESSAGE}}))
+                                                    "additionalContext": MESSAGE}}))
     except Exception:
         return 0
     return 0
