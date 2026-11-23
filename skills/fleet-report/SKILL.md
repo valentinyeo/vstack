@@ -2,8 +2,9 @@
 name: fleet-report
 description: >-
   Snapshot of every live chat on this server: valentin-mode version loaded,
-  latest version, board-drain loop, and pstack-diff self-check. Message each failing chat;
-  it fixes itself.
+  latest version, board-drain loop, and pstack-diff self-check. Show Valentin
+  the list (the published report link); each failing chat fixes itself on its
+  own next load.
 ---
 
 # fleet-report
@@ -24,4 +25,4 @@ Sources: mp-sessions --json and the house-rules fleet roster-live helper for liv
 
 Columns: loaded valentin-mode version, latest from skills/valentin-mode/version.sh, board-drain loop-state status, pstack-diff EXTRA/GAP counts (always re-run on upstream default after fetch), verdict tags (**OK**, **BEHIND**, **NO VALENTIN-MODE**, **LOOP OFF**, **FIX**, **GAPS**, **UNKNOWN**, **STALE**), and a short **ACTION** column.
 
-**Do not fix other chats from here.** Message each failing chat; it fixes itself.
+**Do not fix other chats from here.** Show Valentin the list (the published report link). Each failing chat fixes itself on its own next load when it loads valentin-mode and runs pstack-diff on itself.
