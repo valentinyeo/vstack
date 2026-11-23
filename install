@@ -56,6 +56,8 @@ dests=(
   "$HOME/.cursor/skills"
   "$HOME/.pi/agent/skills"
   "$HOME/.agents/skills"
+  "$HOME/.gemini/antigravity-cli/skills"
+  "$HOME/.gemini/config/skills"
 )
 
 link_one() {
@@ -145,6 +147,11 @@ if [ "$moved" -eq 0 ]; then
 else
   echo "vstack install: linked skills from $ROOT; plain copies in $DUPES"
 fi
+
+python3 "$ROOT/scripts/merge-antigravity-hooks.py" || {
+  echo "vstack install: merge-antigravity-hooks failed" >&2
+  exit 1
+}
 
 # Record the commit this install came from. A chat links to this checkout, so a
 # chat that reports a broken hook can be tied to the tree it is actually

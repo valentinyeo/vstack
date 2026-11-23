@@ -1,0 +1,37 @@
+{
+  "vstack-valentin-mode": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/valentin-mode/context.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/responsive-mode/said-started.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/valentin-mode/no-bare-ids.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/responsive-mode/idle-stop.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
