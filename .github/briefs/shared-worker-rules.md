@@ -25,4 +25,6 @@ These reporting rules override legacy workaround instructions.
 PR body: add one line `Author model: <family>/<model>` per author,
 for example `Author model: deepseek/deepseek-v4.1-flash`,
 `Author model: anthropic/claude-sonnet`, `Author model: openai/gpt-6.1-sol`.
+Also add `Owner chat: <owning chat name>` as a whole line in every PR body.
+Copy the real `Pacer launch: <lane> <ISO time>` line from your launch output.
 The verifier picks a model from another family than every author; the family is read from the whole string (`opencode-go/deepseek-...` is DeepSeek). A PR without the line, or with an unknown family, fails its verifier.

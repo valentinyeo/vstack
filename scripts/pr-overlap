@@ -29,9 +29,24 @@ def load(name, path):
     return module
 
 
-_prq = load('pr_overlap_queue', ROOT / 'skills/pr-housekeeping/pr-queue')
-ticket_key = _prq.ticket_key
-is_bot = _prq.is_bot
+import re
+
+KEY = re.compile(r'\b([A-Z][A-Z0-9]{1,9}-\d+)\b')
+NOT_KEYS = {'DEV', 'RUNNER', 'AGENT', 'CURSOR', 'CODEX', 'WORKER', 'INFRA-RUNNER'}
+BOTS = ('dependabot', 'renovate', 'github-actions')
+
+
+def ticket_key(title, branch):
+    """Ticket key from the title, else from the uppercased branch, else None."""
+    for text in (title or '', (branch or '').upper()):
+        for key in KEY.findall(text):
+            if key.rsplit('-', 1)[0] not in NOT_KEYS:
+                return key
+    return None
+
+
+def is_bot(login):
+    return any(bot in (login or '').lower() for bot in BOTS)
 
 
 def read_guarded(path):

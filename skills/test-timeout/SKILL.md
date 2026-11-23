@@ -61,6 +61,20 @@ It reads the command the way a shell does, so a timeout still counts through `en
 
 Two shapes slip through on purpose: a runner hidden inside `bash -c '...'`, and one a pipe builds, such as `printf ... | xargs -I{} {}`. The guard reads the command, not the command the command would build. Do not use those shapes to dodge it; add the timeout.
 
+## Heavy work stays on GitHub
+
+Each chat merges this entry into its own project's Bash `PreToolUse` hooks in `.claude/settings.json`. Preserve existing hooks. The shared install supplies `$HOME/.claude/hooks/heavy-local-guard.py`; report a missing link. Never run `./install` yourself.
+
+```json
+{
+  "type": "command",
+  "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/heavy-local-guard.py\"",
+  "timeout": 5
+}
+```
+
+Refuses heavy jobs under `timeout`, naming `gh workflow run` or push-to-CI. Light tests still pass. Prove registration with JSON payloads using [the heavy-local feature](../../.claude/skills/verify-vstack/features/heavy-local.md), never a real heavy job. Shell `-c` is inspected; scripts, aliases and generated commands are not expanded. Do not use them to dodge the rule.
+
 ## Prove the guard itself
 
 `.claude/skills/verify-test-timeout/SKILL.md` feeds the real hook real hook input and watches a real 5 second timeout kill a real 60 second sleep. Run it after any change to the hook.
