@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Run a hook unchanged; only a missing or non-executable script fails open."""
+import errno
+import os
+from pathlib import Path
+import sys
+
+
+def main():
+    script, *args = sys.argv[1:]
+    try:
+        os.execv(script, [script, *args])
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ENOTDIR, errno.EACCES):
+            raise
+        warning = (f'vstack: hook missing or not executable: {script!r}; '
+                   'reinstall vstack: ~/.local/share/vstack/install or remove the hook\n')
+        print(warning, end='', file=sys.stderr)
+        try:
+            log = Path.home() / '.local/state/vstack/hook-missing.log'
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open('a') as output:
+                output.write(warning)
+        except OSError:
+            pass  # A full or read-only state directory must not swallow a prompt either.
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

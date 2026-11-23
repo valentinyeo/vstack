@@ -21,7 +21,7 @@ Run this focused journey from the checkout under test:
 timeout 600 nice -n 19 env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_heavy_local_guard.py -v
 ```
 
-The wiring journey reads this checkout's actual Bash registration, copies the two guard files into a temporary checkout, links them into a temporary HOME, and feeds the registered shell command real PreToolUse JSON. It requires exit 2 for heavy commands, exit 0 for light commands, and checks missing-link behavior. It never executes a heavy command or runs `install`.
+The wiring journey reads this checkout's actual Bash registration, runs `install` into a temporary HOME, and feeds the registered shell command real PreToolUse JSON. It requires exit 2 for heavy commands and exit 0 for light commands. Removing the hook link must still exit 0, with one warning on stderr and in the missing-hook log. It never executes a heavy command or installs into the real HOME.
 
 Expected evidence includes:
 

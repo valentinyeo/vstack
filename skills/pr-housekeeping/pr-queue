@@ -8,12 +8,17 @@ Ownership comes only from `Owner chat: <name>` in the PR body. pstack Babysit dr
 conflicts, threads and CI; this script only lists yours and flags staleness.
 
 Exit 0 when none are stale; 1 when one is stale past --stale-hours (default 72);
-2 on gh error or when --mine is missing.
+2 on gh error or when --mine is missing. Merged PRs stay as cleanup until local copies go;
+cleanup also returns 1. Records stay in each chat's own local state; no deletion runs here.
 """
 import argparse
 import datetime
+import fcntl
+import hashlib
+import os
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_USER = 'valentinyeo'
 GH_TIMEOUT = 90
+GIT_TIMEOUT = 20
 OWNER_CHAT = re.compile(r'^Owner chat:\s*(.+?)\s*$', re.M | re.I)
 RED = frozenset({'FAILURE', 'ERROR', 'TIMED_OUT', 'ACTION_REQUIRED'})
 PENDING = frozenset({'PENDING', 'EXPECTED', 'REQUESTED', 'IN_PROGRESS'})
@@ -30,7 +36,7 @@ SEARCH_QUERY = '''query($q: String!, $after: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number url title body updatedAt
+        number url title body updatedAt headRefName headRefOid
         repository { nameWithOwner }
         commits(last: 1) { nodes { commit { committedDate } } }
         statusCheckRollup { state }
@@ -116,6 +122,8 @@ def row_from_node(node, now, stale_hours):
         'number': node['number'],
         'url': node.get('url') or '',
         'title': node.get('title') or '',
+        'branch': node.get('headRefName') or '',
+        'head_sha': node.get('headRefOid') or '',
         'owner_chat': owner_chat(body),
         'hours_since_push': round(hours, 2),
         'ci': ci,
@@ -144,11 +152,15 @@ def search_scope(repo):
 
 
 def gh_graphql(query, fields):
-    argv = ['gh', 'api', 'graphql', '-f', f'query={query}']
+    args = ['api', 'graphql', '-f', f'query={query}']
     for key, value in fields.items():
-        argv.extend(['-f', f'{key}={value}'])
+        args.extend(['-f', f'{key}={value}'])
+    return gh_json(args)
+
+
+def gh_json(args):
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=GH_TIMEOUT)
+        proc = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
     except (subprocess.TimeoutExpired, FileNotFoundError) as err:
         raise GhError(str(err)) from err
     if proc.returncode != 0:
@@ -181,6 +193,124 @@ def bulk_prs(scope):
     return nodes
 
 
+def worktree_branches(checkout):
+    result = subprocess.run(['git', '-C', checkout, 'worktree', 'list', '--porcelain'],
+                            capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    if result.returncode != 0:
+        raise GhError(f'cannot inspect cleanup worktrees: {result.stderr.strip()}')
+    trees, path = {}, None
+    for line in result.stdout.splitlines():
+        if line.startswith('worktree '):
+            path = line[len('worktree '):]
+            trees[path] = None
+        elif path and line.startswith('branch refs/heads/'):
+            trees[path] = line[len('branch refs/heads/'):]
+    return trees
+
+
+def cleanup_rows(rows, mine, repo=None):
+    """Keep this chat's observed PRs after merge until its local copies are gone."""
+    directory = Path.home() / '.local/state/pr-housekeeping'
+    directory.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(mine.casefold().encode()).hexdigest()
+    path = directory / f'cleanup-{key}.json'
+    with (directory / f'cleanup-{key}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = json.loads(path.read_text()) if path.exists() else {}
+        current = set()
+        for row in rows:
+            if (row.get('owner_chat') or '').casefold() != mine.casefold():
+                continue
+            current.add(f'{row["repo"]}#{row["number"]}')
+            if not row.get('branch'):
+                continue
+            name = row['repo'].split('/')[-1]
+            candidates = (Path.cwd(), Path.home() / 'projects' / name,
+                          Path.home() / '.local/share' / name)
+            for candidate in dict.fromkeys(candidates):
+                if not candidate.is_dir():
+                    continue
+                remote = subprocess.run(['git', '-C', str(candidate), 'config', '--get',
+                                         'remote.origin.url'], capture_output=True, text=True,
+                                        timeout=GIT_TIMEOUT)
+                match = re.search(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$', remote.stdout.strip())
+                if remote.returncode != 0 or not match or match[1] != row['repo']:
+                    continue
+                result = subprocess.run(['git', '-C', candidate, 'rev-parse',
+                                         '--path-format=absolute', '--git-common-dir'],
+                                        capture_output=True, text=True, timeout=GIT_TIMEOUT)
+                common = Path(result.stdout.strip()).resolve()
+                if result.returncode == 0 and common.name == '.git':
+                    local = subprocess.run(['git', '-C', str(common.parent), 'show-ref', '--verify',
+                                            '--quiet', f'refs/heads/{row["branch"]}'],
+                                           capture_output=True, text=True, timeout=GIT_TIMEOUT)
+                    if local.returncode == 1:
+                        continue
+                    if local.returncode != 0:
+                        raise GhError(f'cannot inspect cleanup branch: {local.stderr.strip()}')
+                    trees = worktree_branches(str(common.parent))
+                    identity = f'{row["repo"]}#{row["number"]}:{common}'
+                    previous = saved.get(identity) or {}
+                    copies = set(previous.get('worktrees') or ())
+                    copies.update(p for p, b in trees.items() if b == row['branch'])
+                    saved[identity] = {'row': row, 'checkout': str(common.parent), 'merged': False,
+                                       'worktrees': sorted(copies)}
+        pending = []
+        for identity, record in list(saved.items()):
+            row = record['row']
+            if f'{row["repo"]}#{row["number"]}' in current or (repo and row['repo'] != repo):
+                continue
+            if not Path(record['checkout']).exists():
+                if any(Path(p).exists() for p in record['worktrees']):
+                    pending.append(dict(row, cleanup=True, next_action=
+                                        'cleanup: checkout missing; recorded worktrees remain. '
+                                        'Restore it or inspect ownership; do not delete them.'))
+                else:
+                    del saved[identity]
+                continue
+            if not record['merged']:
+                pr = gh_json(['api', f'repos/{row["repo"]}/pulls/{row["number"]}'])
+                if not isinstance(pr, dict):
+                    raise GhError(f'cannot read cleanup PR {identity}')
+                claimed = owner_chat(pr.get('body'))
+                if claimed and claimed.casefold() != mine.casefold():
+                    del saved[identity]
+                    continue
+                if pr.get('merged_at'):
+                    record['merged'] = True
+                    row['head_sha'] = (pr.get('head') or {}).get('sha') or row['head_sha']
+                elif pr.get('state') == 'closed':
+                    del saved[identity]
+                    continue
+                else:
+                    continue
+            result = subprocess.run(['git', '-C', record['checkout'], 'for-each-ref',
+                                     '--format=%(refname) %(objectname)', 'refs/heads', 'refs/remotes/origin'],
+                                    capture_output=True, text=True, timeout=GIT_TIMEOUT)
+            if result.returncode != 0:
+                raise GhError(f'cannot inspect cleanup for {identity}: {result.stderr.strip()}')
+            branch = row['branch']
+            refs = dict(line.split() for line in result.stdout.splitlines())
+            tips = [refs[ref] for ref in (f'refs/heads/{branch}', f'refs/remotes/origin/{branch}')
+                    if ref in refs]
+            trees = worktree_branches(record['checkout'])
+            copies = set(record['worktrees']) & trees.keys()
+            if not tips and not copies:
+                del saved[identity]
+                continue
+            if any(tip != row['head_sha'] for tip in tips) or any(trees[p] != branch for p in copies):
+                action = 'Branch or worktree changed. Inspect ownership before cleanup; do not delete it.'
+            else:
+                command = shlex.join([str(Path.home() / '.local/bin/repo-tidy'), '--apply',
+                                      '--mine', record['checkout'], '--branch', branch])
+                action = f'Run {command}. Keep every gate; retry holds next tick.'
+            pending.append(dict(row, cleanup=True, next_action='cleanup: ' + action))
+        tmp = path.with_suffix(f'.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(saved, indent=2) + '\n')
+        tmp.replace(path)
+        return pending
+
+
 def render(rows, mine, stale_hours):
     lines = []
     for row in rows:
@@ -190,9 +320,11 @@ def render(rows, mine, stale_hours):
         lines.append(f"  {row['next_action']}")
     lines.append('')
     stale_n = sum(1 for r in rows if r['stale'])
+    cleanup_n = sum(bool(r.get('cleanup')) for r in rows)
+    open_n = len(rows) - cleanup_n
     lines.append(
-        f"pr-queue: {len(rows)} open PR{'s' if len(rows) != 1 else ''} for Owner chat {mine!r}, "
-        f"stale after {stale_hours}h ({stale_n} stale)"
+        f"pr-queue: {open_n} open PR{'s' if open_n != 1 else ''} for Owner chat {mine!r}, "
+        f"stale after {stale_hours}h ({stale_n} stale, {cleanup_n} cleanup)"
     )
     return lines
 
@@ -222,8 +354,13 @@ def main(argv):
         return 2
     now = datetime.datetime.now(datetime.timezone.utc)
     rows = build_rows(nodes, args.mine, now, args.stale_hours)
+    try:
+        rows += cleanup_rows(rows, args.mine, args.repo)
+    except (GhError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+        print(f'pr-queue: cleanup tracking failed: {error}', file=sys.stderr)
+        return 2
     print('\n'.join(render(rows, args.mine, args.stale_hours)))
-    return 1 if any(row['stale'] for row in rows) else 0
+    return 1 if any(row['stale'] or row.get('cleanup') for row in rows) else 0
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -65,10 +66,16 @@ class ValentinModeLoaded(unittest.TestCase):
             self.assertTrue(valentin.loaded(str(path)), 'a load two chunks into a chat is still found')
 
     def test_install_links_the_boundary_reader_and_book_check(self):
-        text = (ROOT / 'install').read_text()
-        for name in ('valentin_mode_loaded.py', 'book-check.py'):
-            with self.subTest(name=name):
-                self.assertIn(f'link_one {name} "$ROOT/hooks/{name}" "$HOME/.claude/hooks"', text)
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            env = {**os.environ, 'HOME': raw, 'VSTACK_INSTALL_ANYWHERE': '1',
+                   'VSTACK_DIR': str(home / '.local/share/vstack')}
+            result = subprocess.run([str(ROOT / 'install')], env=env, capture_output=True,
+                                    text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in ('valentin_mode_loaded.py', 'book-check.py'):
+                with self.subTest(name=name):
+                    self.assertTrue((home / '.claude/hooks' / name).samefile(ROOT / 'hooks' / name))
 
 
 if __name__ == '__main__':

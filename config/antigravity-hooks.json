@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/valentin-mode/context.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.local/share/vstack/skills/valentin-mode/context.py\"",
             "timeout": 30
           }
         ]
@@ -17,17 +17,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/responsive-mode/said-started.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.local/share/vstack/skills/responsive-mode/said-started.py\"",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/valentin-mode/no-bare-ids.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.local/share/vstack/skills/valentin-mode/no-bare-ids.py\"",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "sh -c 'f=\"$HOME/.local/share/vstack/skills/responsive-mode/idle-stop.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.local/share/vstack/skills/responsive-mode/idle-stop.py\"",
             "timeout": 15
           }
         ]

@@ -21,13 +21,13 @@ No central enforcer runs this for you. Set up your own check, once, for your own
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "sh -c 'f=\"$HOME/.claude/hooks/vps-state-hook\"; [ -f \"$f\" ] || exit 0; exec \"$f\"'" } ] }
+      { "hooks": [ { "type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/vps-state-hook\"" } ] }
     ]
   }
 }
 ```
 
-If that file already has a `SessionStart` list, add this entry to the list. Keep the `[ -f "$f" ] || exit 0`: a missing or broken link must let the session open, not stop it.
+If that file already has a `SessionStart` list, add this entry to the list. `run-hook` warns and exits 0 for a missing or non-executable script, so the session still opens.
 
 ## When to run
 

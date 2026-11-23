@@ -23,7 +23,7 @@ python3 skills/fleet-report/fleet-report --html /tmp/fleetpub/fleet-report.html
 
 Sources: mp-sessions --json and the house-rules fleet roster-live helper for live chats; Claude transcripts under ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl.
 
-Columns: loaded valentin-mode version, latest from skills/valentin-mode/version.sh, board-drain loop-state status, pstack-diff EXTRA/GAP counts (always re-run on upstream default after fetch), verdict tags (**OK**, **BEHIND**, **NO VALENTIN-MODE**, **LOOP OFF**, **FIX**, **GAPS**, **UNKNOWN**, **STALE**), and a short **ACTION** column.
+Columns: loaded valentin-mode version, latest from skills/valentin-mode/version.sh, board-drain loop-state status, pstack-diff EXTRA/GAP counts (always re-run on upstream default after fetch), hook paths from `scripts/check-hook-paths` (global and project settings, read-only; excludes the inne user), verdict tags (**OK**, **BEHIND**, **NO VALENTIN-MODE**, **LOOP OFF**, **FIX**, **GAPS**, **UNKNOWN**, **STALE**), and a short **ACTION** column.
 
 **Do not fix other chats from here.** Run the report and show Valentin the list as the published link. Each failing chat fixes itself on its own next load when it loads valentin-mode and runs pstack-diff on itself.
 

@@ -30,11 +30,12 @@ Nobody pushes to main.
 | Each chat refuses heavy local builds and tests before they start | `hooks/heavy-local-guard.py`, `tests/test_heavy_local_guard.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | A vstack change keeps chats working | `.claude/skills/verify-vstack/run` (Doctor in CI, Drive by the PR owner), `tests/test_verify_vstack.py` |
-| A settings file or install line never names a hook this repo deleted | `tests/test_hook_wiring.py` |
+| A hook never points at a missing script | `hooks/run-hook` (fail open), `scripts/check-hook-paths`, `tests/test_hook_paths.py` |
 | A change ships only when a journey exercised it | `scripts/uncovered_gate.py` (behind every vstack review), `GAP uncovered pass gate` in `skills/pstack-diff`, `tests/test_uncovered_gate.py` |
 | Every chat reads one true server facts file | `docs/servers.md`, `config/servers.json`, `tests/test_server_facts.py` |
 | A merged rule reaches a running chat without anyone asking | `hooks/skill-update.py`, `tests/test_skill_update.py` |
 | vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `scripts/pacer-check.py` (`Owner chat:`), `tests/test_pr_queue.py`, `tests/test_pacer_enforce.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
+| A chat retains its merged PR until its own local copies are gone | `skills/pr-housekeeping/pr-queue`, `tests/test_pr_queue.py`; branch-only cleanup in `skills/repo-tidy/repo-tidy`, `tests/test_repo_tidy.py` |
 | A vstack tool acts only on the chat that runs it; the building chat is never its operator | `tests/test_own_chat_only.py` |
 | A PR never collides with an older open PR on a guarded file or ticket | `scripts/pr-overlap`, `.github/workflows/pr-overlap.yml`, `tests/test_pr_overlap.py` |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |

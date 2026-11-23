@@ -6,20 +6,22 @@ description: >-
 
 # PR housekeeping
 
-Prior art: pstack `poteto-mode` **Babysit** and **Autopilot-full** drive conflicts, threads, CI and merge prep; the older `hypertask-triage` `pr-queue` reads from the board. This skill only adds per-chat listing via `Owner chat:` in the PR body.
+Prior art: pstack `poteto-mode` Babysit and Autopilot-full own PR follow-up. This adds per-chat listing through `Owner chat:` in the body.
 
-Whoever opens a PR carries it to merge or closes it with a reason. Never open a second PR for one ticket.
-
-Each tick: run `pr-queue --mine "<your live chat name>"`, then Babysit in **drive** mode on each row, or **Autopilot-full** when several need owners in parallel.
+Carry each PR to merge or close it with a reason. Never open a second PR for one ticket.
 
 ## Set up your own check
 
-Once per chat, add this to your loop or loop playbook:
+Add this to your loop:
 
 ```sh
 ~/.claude/skills/pr-housekeeping/pr-queue --mine "<your live chat name>"
 ```
 
-A nonzero exit means one of your PRs is stale: finish it, close it with a reason, or note why it waits on the ticket before new work.
+Each tick, use Babysit in **drive** mode, or **Autopilot-full** for several rows. Nonzero means stale or cleanup pending. Resolve it or record the wait before new work.
 
-Proof: `tests/test_pr_queue.py` (fixtures only). Gaps go to board 13556, label PR Housekeeping.
+Run before handing a worker its merge. The queue retains your observed PRs until local copies disappear. Run its named-branch repo-tidy command outside the worktree. Keep every hold; retry next tick. Changed tips or detached worktrees need ownership checks, not deletion.
+
+Records cover matching current, projects and shared clones. Keep your loop alive after workers exit. Unobserved old merges need an explicit audit. No central cleanup runs.
+
+Proof: `tests/test_pr_queue.py`. Gaps go to board 13556, label PR Housekeeping.

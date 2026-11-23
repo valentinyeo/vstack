@@ -13,6 +13,7 @@ Health-check your own board and view, then fix your own gaps. Run it on a new pr
 7. **Outdated or duplicate.** Close each with a one-line reason and a link to the ticket that replaces it. Move it to Done by hand; never delete. A ticket waiting on Valentin is his to close: ask him.
 8. **Misfiled.** A ticket another chat owns moves to that chat's label or board. Tell that chat. A ticket of yours on another view gets your label.
 9. **Own view.** You own a view named after your Multibot chat, or after your repo when the repo has one chat. Create it with your label when missing (`views.md`), then work from it. The view must filter on your label: a view with no filter shows the whole board.
+10. **Hook files.** Run `~/.local/share/vstack/scripts/check-hook-paths --root <your-project-root>`. It reads your global settings and project `.claude/settings*.json` without changing them. Show missing-file warnings and their reinstall/remove fix in the checkup. Fleet-report also shows the same check per chat; never repair other chats or inspect the inne user's files.
 
 ## Fix the tool, not just the card
 

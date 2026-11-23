@@ -48,8 +48,7 @@ def base_wiring(checkout, commit):
     if not commit:
         return set(), set()
     settings = read_json_text(git(checkout, 'show', f'{commit}:.claude/settings.json').stdout)
-    registered = {match.group(1) for _, command in commands(settings)
-                  for match in [HOOK_PATH.search(command)] if match}
+    registered = {name for _, command in commands(settings) for name in HOOK_PATH.findall(command)}
     shipped = {Path(line).name for line in
                git(checkout, 'ls-tree', '--name-only', commit, 'hooks/').stdout.split() if line}
     return registered, shipped
@@ -88,21 +87,11 @@ def check_base_wiring(checkout, launch):
 
 
 def check_wiring(scratch, checkout):
-    settings = read_json(Path(scratch) / '.claude/settings.json') or {}
-    home = Path(scratch)
-    missing = []
-    for event, command in commands(settings):
-        match = HOOK_PATH.search(command)
-        if not match:
-            continue
-        name = match.group(1)
-        path = (Path(checkout) / 'hooks' / name
-                if 'CLAUDE_PROJECT_DIR' in command else home / '.claude/hooks' / name)
-        if not path.exists():
-            missing.append(f'{event} {name}')
-    if missing:
-        return False, 'missing hook files: ' + ', '.join(sorted(set(missing)))
-    return True, 'every registered hook command names an existing file'
+    checker = Path(__file__).resolve().parents[3] / 'scripts/check-hook-paths'
+    result = subprocess.run(
+        [sys.executable, str(checker), '--root', str(checkout), '--home', str(scratch)],
+        capture_output=True, text=True, timeout=60)
+    return result.returncode == 0, (result.stdout + result.stderr).strip().replace('\n', '; ')
 
 
 def check_links(scratch, folder):

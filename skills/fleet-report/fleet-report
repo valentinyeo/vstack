@@ -701,11 +701,28 @@ def verdict(
     return "; ".join(tags), reason, action
 
 
+def check_hook_paths(cwd: str) -> tuple[str, str]:
+    checker = vstack_root() / "scripts/check-hook-paths"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(checker), "--root", expand_cwd(cwd) or str(home()),
+             "--home", str(home())], capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return "UNKNOWN", str(error)
+    if result.returncode == 0:
+        return "OK", ""
+    return ("MISSING" if result.returncode == 1 else "UNKNOWN"), result.stderr.strip()
+
+
 def build_rows() -> list[dict]:
     latest_label, latest_num = fetch_latest_version()
     sessions = load_sessions()
     rows = []
     for session in sessions:
+        if Path(expand_cwd(session.get("cwd", ""))).resolve().is_relative_to(Path("/home/inne")):
+            continue
+        hook_status, hook_details = check_hook_paths(session.get("cwd", ""))
         path = transcript_path(session.get("cwd", ""), session.get("sid", ""))
         loaded_label, loaded_num, transcript_latest = last_valentin_version(path, session.get("harness", ""))
         effective_latest = latest_num if latest_num is not None else transcript_latest
@@ -730,9 +747,14 @@ def build_rows() -> list[dict]:
             pstack["checker_unreliable"],
             pstack["checker_reason"],
         )
+        if hook_status != "OK":
+            status = "; ".join(tag for tag in (status, "HOOKS " + hook_status) if tag != "OK")
+            action = "; ".join(filter(None, (action, "reinstall vstack or remove the missing hook")))
         rows.append(
             dict(
                 name=session["name"],
+                hook_paths=hook_status,
+                hook_details=hook_details,
                 harness=session.get("harness") or "",
                 cwd=session.get("cwd") or "",
                 loaded=loaded_label,
@@ -772,6 +794,7 @@ def format_table(rows: list[dict]) -> str:
         ("LATEST", "latest"),
         ("BOARD", "board"),
         ("SELF-CHECK", "self_check"),
+        ("HOOKS", "hook_paths"),
         ("VERDICT", "verdict"),
         ("ACTION", "action"),
     ]
@@ -788,6 +811,9 @@ def format_table(rows: list[dict]) -> str:
                 text = f"{text} ({row['reason']})"
             cells.append(text.ljust(widths[index]))
         lines.append("  ".join(cells))
+    for row in rows:
+        if row.get("hook_details"):
+            lines.append(f"{row['name']}: {row['hook_details']}")
     return "\n".join(lines)
 
 
@@ -799,6 +825,7 @@ def write_html(path: Path, rows: list[dict]) -> None:
         "Latest",
         "Board loop",
         "Self-check",
+        "Hooks",
         "Verdict",
         "Action",
     ]
@@ -815,6 +842,7 @@ def write_html(path: Path, rows: list[dict]) -> None:
                 row["latest"],
                 row["board"],
                 row["self_check"],
+                row.get("hook_paths", "?") + (" " + row["hook_details"] if row.get("hook_details") else ""),
                 verdict,
                 row.get("action") or "",
             ]
@@ -823,7 +851,7 @@ def write_html(path: Path, rows: list[dict]) -> None:
     for cells in body_rows:
         tds = "".join(f"<td>{html.escape(str(cell))}</td>" for cell in cells)
         cls = ""
-        verdict_cell = cells[6]
+        verdict_cell = cells[7]
         if verdict_cell != "OK" and not verdict_cell.startswith("BEHIND"):
             cls = ' class="fail"'
         elif verdict_cell.startswith("BEHIND") or verdict_cell.endswith("BEHIND"):
