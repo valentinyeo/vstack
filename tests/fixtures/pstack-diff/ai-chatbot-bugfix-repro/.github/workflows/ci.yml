@@ -1,0 +1,10 @@
+name: ci
+
+on:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm turbo run check test build

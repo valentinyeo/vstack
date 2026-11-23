@@ -1,0 +1,28 @@
+name: Verifier
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - run: node verify/pick-engine.mjs
+
+  bugfix-repro:
+    name: bugfix-repro
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          node verify/bugfix-repro.mjs \
+            --pr-json "$RUNNER_TEMP/bugfix-pr.json" \
+            --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA"
+
+  pstack-verifier:
+    needs: [engine, bugfix-repro]
+    runs-on: ubuntu-latest
+    steps:
+      - run: codex exec --output-last-message verdict.md - < prompt.md
