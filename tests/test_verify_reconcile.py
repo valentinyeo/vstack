@@ -7,9 +7,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / '.claude/skills/verify-reconcile'
+SKILL = ROOT / '.claude/skills/verify-vstack/tools/reconcile'
 GRADE = SKILL / 'grade.py'
 RUN = SKILL / 'run'
+MAP = ROOT / '.claude/skills/verify-vstack/features/reconcile.md'
 FIXTURES = ROOT / 'tests/fixtures/verify-reconcile'
 
 
@@ -280,19 +281,17 @@ class VerifyReconcileSkill(unittest.TestCase):
         self.assertFalse((SKILL / 'cases').exists(),
                          'cases are written per report, so the skill ships none')
 
-    def test_skill_has_frontmatter_naming_the_script(self):
-        text = (SKILL / 'SKILL.md').read_text()
-        self.assertTrue(text.startswith('---\nname: verify-reconcile\n'), text[:80])
-        self.assertIn('skills/hypertask-work/reconcile', text)
+    def test_the_tool_keeps_a_run_and_a_grade(self):
+        self.assertTrue(RUN.is_file(), 'the tool needs its run')
+        self.assertTrue(GRADE.is_file(), 'the tool needs its grade.py')
 
-    def test_feature_map_names_every_file(self):
-        features = sorted(path.name for path in (SKILL / 'features').glob('*.md')
-                          if path.name != 'README.md')
-        self.assertEqual(features, ['apply-converges.md', 'call-budget.md', 'dry-run.md',
-                                    'real-cards.md', 'user-bus.md'])
-        readme = (SKILL / 'features' / 'README.md').read_text()
-        for name in features:
-            self.assertIn('(%s)' % name, readme)
+    def test_feature_file_covers_every_check(self):
+        text = MAP.read_text()
+        self.assertIn('skills/hypertask-work/reconcile', text)
+        for check in ('finished', 'unknown', 'bus', 'calls', 'apply', 'settled',
+                      'converged', 'cases'):
+            self.assertIn('`%s`' % check, text, check)
+        self.assertIn('(reconcile.md)', (MAP.parent / 'README.md').read_text())
 
 
 if __name__ == '__main__':

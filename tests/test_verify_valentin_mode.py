@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / '.claude/skills/verify-valentin-mode'
+SKILL = ROOT / '.claude/skills/verify-vstack/tools/valentin-mode'
 GRADE = SKILL / 'grade.py'
 RUN = SKILL / 'run'
 RESOLVER = ROOT / 'skills/hypertask-work/session_login.py'

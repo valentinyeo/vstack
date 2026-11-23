@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / '.claude/skills/verify-valentin-subskills'
+SKILL = ROOT / '.claude/skills/verify-vstack/tools/valentin-subskills'
 GRADE = SKILL / 'grade.py'
 HANDOVER_FIRST = ('If valentin-mode is not loaded in this chat, read '
                   '~/.claude/skills/valentin-mode/SKILL.md in full first, then run /board-drain.')

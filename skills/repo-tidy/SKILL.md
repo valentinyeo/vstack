@@ -78,7 +78,7 @@ directory under repo-tidy.
 
 ## Proof
 
-`.claude/skills/verify-repo-tidy/run` builds a throwaway git world with every
+`.claude/skills/verify-vstack/tools/repo-tidy/run` builds a throwaway git world with every
 state and grades a real apply run. `tests/test_repo_tidy.py` covers each gate,
 the cap, a broken gh, a repo mid-rebase, and an 800-worktree dry run under 60
 seconds.

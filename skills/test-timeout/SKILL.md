@@ -78,4 +78,4 @@ Light tests still pass. Prove registration with JSON payloads using [the heavy-l
 
 ## Prove the guard itself
 
-`.claude/skills/verify-test-timeout/SKILL.md` feeds the real hook real input and watches a real 5 second timeout kill a real 60 second sleep. Run it after any change to the hook.
+`.claude/skills/verify-vstack/features/test-timeout.md` feeds the real hook real input and watches a real 5 second timeout kill a real 60 second sleep. Run it after any change to the hook.

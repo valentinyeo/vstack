@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / '.claude/skills/verify-responsive-mode'
+SKILL = ROOT / '.claude/skills/verify-vstack/tools/responsive-mode'
 GRADE = SKILL / 'grade.py'
 RUN = SKILL / 'run'
 

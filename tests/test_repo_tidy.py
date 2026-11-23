@@ -1,7 +1,7 @@
 """Tests for skills/repo-tidy and its proof skill.
 
 Every test builds the throwaway world from
-.claude/skills/verify-repo-tidy/sandbox.py: a bare origin, one clone, worktrees
+.claude/skills/verify-vstack/tools/repo-tidy/sandbox.py: a bare origin, one clone, worktrees
 in every state repo-tidy must tell apart, and a fake gh that serves fixture
 PR data and records every write.
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TIDY = ROOT / "skills/repo-tidy/repo-tidy"
-VERIFY = ROOT / ".claude/skills/verify-repo-tidy"
+VERIFY = ROOT / ".claude/skills/verify-vstack/tools/repo-tidy"
 SANDBOX_PY = VERIFY / "sandbox.py"
 RUN = VERIFY / "run"
 
