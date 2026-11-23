@@ -26,17 +26,7 @@ local commit is pushed, the current branch exists on origin (pushed when missing
 file is modified. A cloud agent clones GitHub, so local work it cannot see would be silently
 missing.
 
-  cursor  There is no API key and none is needed: the CLI login works. `cursor-agent -p` ignores
-          the `&` prefix and runs locally, and --cloud/--background are gone, so this drives the
-          interactive keys in tmux: `&` alone, then the brief, then Enter. The pane prints
-          `Open Cloud Agent in: https://cursor.com/agents/bc-...` once the task is submitted.
-          Only Composer and Grok models are allowed: our Cursor plan includes them, so a cloud
-          task costs nothing extra. The brief goes in as one tmux bracketed paste, because typing
-          its bytes drops the tail of a long brief and the terminal REPL would collapse it to one
-          line. The REPL then shows `[Pasted text #1 +N lines]`, where N counts the brief's
-          newlines plus one; the launcher compares N with the brief and refuses to submit a brief
-          the REPL only half received. Enter is pressed again when Cursor does not react, because
-          the first one lands while the paste is still being drawn and is ignored.
+  cursor  Refused: Cursor is off since 2026-11-23 (plan downgraded); use codex.
 
   codex   `codex cloud exec --env ENV "<brief>"`. Experiment 2026-11-20: --env accepts the
           environment LABEL shown by `codex cloud list --json` (environment_label, e.g.
@@ -48,18 +38,16 @@ missing.
   claude  Wraps ~/.local/bin/claude-cloud-task. Exit 3 there means the Claude GitHub App is
           missing, so the session would get an upload it cannot push; this reports that message.
 
-Claude cloud is for Claude-native jobs only; code workers go to codex or cursor
+Claude cloud is for Claude-native jobs only; code workers go to codex
 (rule ~/.claude/rules/pstack-models.md).
 
-Every external command has a timeout. No `&`, nohup or setsid. Every tmux session this
-creates is killed in a finally block.
+Every external command has a timeout. No `&`, nohup or setsid.
 """
 import argparse
 import datetime
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -76,31 +64,16 @@ VENDORS = ('cursor', 'codex', 'claude')
 COMMAND_TIMEOUT = 120
 GIT_TIMEOUT = 60
 GH_TIMEOUT = 90
-TMUX_TIMEOUT = 30
 PR_POLL_SECONDS = 60
 CODEX_POLL_SECONDS = 30
-CURSOR_PROMPT_SECONDS = 60
-CURSOR_CLOUD_SECONDS = 60
-CURSOR_SUBMIT_SECONDS = 240
-CURSOR_PASTE_LAND_SECONDS = 15
-CURSOR_PASTE_SETTLE_SECONDS = 1
-CURSOR_ENTER_CONFIRM_SECONDS = 15
-CURSOR_ENTER_MAX = 3
-DEFAULT_CURSOR_MODEL = 'composer-2.5'
 CODEX_ENVS = HOME / '.config/cloud-agent/codex-envs.json'
 
 LIMIT = re.compile(r'usage limit|rate limit|quota', re.I)
-CURSOR_LIMIT = re.compile(r'usage limit|rate limit|quota|upgrade', re.I)
-CURSOR_URL = re.compile(r'https://cursor\.com/agents/(bc-[0-9a-f-]+)')
 CLAUDE_URL = re.compile(r'https://claude\.ai/code/session_[A-Za-z0-9]+')
 CODEX_TASK = re.compile(r'task_e_[0-9a-z]+')
 CODEX_TASK_URL = re.compile(r'https://chatgpt\.com/codex/tasks/(task_e_[0-9a-z]+)')
 PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
 GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
-CURSOR_MODEL = re.compile(r'^(?:composer-2\.5(?:-[a-z]+)*|(?:cursor-)?grok-\d+(?:\.\d+)?(?:-[a-z]+)*)$')
-SUBMITTED = re.compile(r'Checking git status|Sending to cloud|Open Cloud Agent in:')
-CURSOR_PASTE_TOKEN = re.compile(r'\[Pasted text #\d+ \+(\d+) lines?\]')
-CURSOR_PUSH_DIALOG = re.compile(r'Branch Not Pushed|Push to remote before kicking off', re.I)
 UPSTREAM = re.compile(r'^[^/]+/(.+)$')
 
 
@@ -167,76 +140,9 @@ def read_brief(path):
         return None
 
 
-def expected_paste_lines(text):
-    """The +N a whole brief shows in cursor's `[Pasted text #1 +N lines]`: newlines plus one.
-
-    Labelled on the real CLI, 2026-11-23: 60 lines with a trailing newline showed +61, the same
-    brief without one showed +60, and a flattened 4.8k-character brief showed +1.
-    """
-    return (text or '').count('\n') + 1
-
-
-def brief_line_count(text):
-    """How many lines the brief has, counting a last line with no newline after it."""
-    body = (text or '').rstrip('\n')
-    return body.count('\n') + 1 if body else 0
-
-
-def paste_token_lines(pane):
-    """The +N of the last `[Pasted text #k +N lines]` token in the pane, or None."""
-    found = CURSOR_PASTE_TOKEN.findall(pane or '')
-    return int(found[-1]) if found else None
-
-
-def brief_paste_landed(pane, brief):
-    """Cursor took the pasted brief: it drew a paste token, or shows the brief's own last words."""
-    pane = pane or ''
-    if CURSOR_PASTE_TOKEN.search(pane):
-        return True
-    tail = ' '.join((brief or '').strip()[-20:].split())
-    return bool(tail) and tail in ' '.join(pane.split())
-
-
-def paste_shortfall(pane, brief):
-    """(lines cursor took, lines it should have) when the paste token is short, else None.
-
-    A short token means the REPL received only part of the brief, so the cloud agent would get a
-    brief with its middle or end missing.
-    """
-    taken = paste_token_lines(pane)
-    expected = expected_paste_lines(brief)
-    return None if taken is None or taken == expected else (taken, expected)
-
-
-def cursor_took_the_prompt(pane):
-    """Cursor committed to the brief: it is checking git, sending to cloud, or out of quota."""
-    return bool(SUBMITTED.search(pane or '')) or cursor_limit_hit(submitted_tail(pane))
-
-
 def limit_hit(text):
     """The vendor said we are out of usage, rate or quota (codex and claude wording)."""
     return bool(LIMIT.search(text or ''))
-
-
-def cursor_limit_hit(text):
-    """Cursor also says `upgrade`, which the other vendors do not."""
-    return bool(CURSOR_LIMIT.search(text or ''))
-
-
-def submitted_tail(text):
-    """The pane from the first sign that cursor started on the brief, so the brief itself is never
-    read as a vendor error. A brief about a `rate limit` bug must not report a limit."""
-    positions = [match.start() for match in SUBMITTED.finditer(text or '')]
-    return (text or '')[min(positions):] if positions else ''
-
-
-def extract_cursor_url(text):
-    """(agent_url, task_id) from the cursor CLI pane, or (None, None). The real line is
-    `  Open Cloud Agent in: https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986`."""
-    match = CURSOR_URL.search(text or '')
-    if not match:
-        return None, None
-    return match.group(0), match.group(1)
 
 
 def extract_claude_url(text):
@@ -303,17 +209,6 @@ def pr_after(pull_requests, since, prefixes):
     return min(found, key=lambda pair: pair[0])[1] if found else None
 
 
-def cursor_model_ok(model):
-    """Only Composer 2.5 and Grok models: our Cursor plan includes them, so no spend limit is asked."""
-    return bool(CURSOR_MODEL.match(model or ''))
-
-
-def model_label(model):
-    """What the cursor prompt bar shows for a model id: composer-2.5 -> Composer 2.5."""
-    head = [part for part in model.split('-') if part][:2]
-    return ' '.join(part.capitalize() if not part[0].isdigit() else part for part in head)
-
-
 def claude_error(code, output):
     """Why claude-cloud-task failed, or None. Exit 3 is its missing GitHub App refusal."""
     if code == 0:
@@ -358,8 +253,7 @@ def preflight(repo):
                 'a cloud agent clones GitHub and cannot see local files')
     why = ensure_origin_branch(path)
     if why:
-        return (f'{why}; cursor-agent refuses to start a cloud agent until the current branch '
-                'exists on GitHub')
+        return why
     return None
 
 
@@ -428,14 +322,6 @@ def run_codex(args, cwd, timeout=COMMAND_TIMEOUT):
     return proc
 
 
-def quiet(args, timeout=TMUX_TIMEOUT):
-    """A cleanup command whose failure must not hide the real result."""
-    try:
-        return run(args, timeout=timeout)
-    except OSError:
-        return None
-
-
 def list_prs(slug):
     """(pull requests, why it failed) from gh. Read only."""
     proc = run(['gh', 'pr', 'list', '-R', slug, '--state', 'all', '--limit', '100',
@@ -466,187 +352,8 @@ def wait_for_pr(slug, prefixes, since, timeout):
         time.sleep(min(PR_POLL_SECONDS, max(0.0, deadline - time.time())))
 
 
-def poll(read, ready, seconds, interval=1.0):
-    """The first text that satisfies ready, or None when seconds run out."""
-    deadline = time.monotonic() + seconds
-    while True:
-        text = read()
-        if ready(text):
-            return text
-        if time.monotonic() >= deadline:
-            return None
-        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
-
-
 def binary(name):
     return shutil.which(name, path=environ()['PATH']) or name
-
-
-def pane_text(tmux, session, log):
-    """The visible pane plus everything the session has printed, so a scrolled line still counts."""
-    text = run([tmux, 'capture-pane', '-p', '-t', session], timeout=15).stdout or ''
-    try:
-        text += '\n' + log.read_text(errors='replace')
-    except OSError:
-        pass
-    return text
-
-
-def dismiss_cursor_push_dialog(tmux, session, text):
-    """Answer y on the cursor-agent push dialog so the cloud handoff can continue."""
-    if not CURSOR_PUSH_DIALOG.search(text or ''):
-        return
-    run([tmux, 'send-keys', '-t', session, 'y'], timeout=15)
-
-
-def wait_cursor_agent_url(tmux, session, read, seconds):
-    """The pane text once a cloud agent URL appears, or None after seconds."""
-    deadline = time.monotonic() + seconds
-    while True:
-        text = read()
-        dismiss_cursor_push_dialog(tmux, session, text)
-        if extract_cursor_url(text)[0]:
-            return text
-        if cursor_limit_hit(submitted_tail(text)):
-            return text
-        if time.monotonic() >= deadline:
-            return None
-        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-
-
-def paste_cursor_brief(tmux, session, brief, holder):
-    """Hand the brief to the cursor REPL as one bracketed paste, or the failed row that stopped it.
-
-    Typing the brief with `send-keys -l` loses the tail of a long brief and the REPL collapses
-    whatever arrives to one line. A tmux buffer pasted with -p keeps every line and tells the REPL
-    where the paste starts and ends, so it shows a `[Pasted text #1 +N lines]` token rather than
-    treating each line as a prompt of its own.
-    """
-    path = Path(holder) / 'brief.txt'
-    try:
-        path.write_text(brief)
-    except OSError as exc:
-        return failed('cursor', f'could not write the brief to {path}: {exc}')
-    loaded = run([tmux, 'load-buffer', '-b', session, str(path)], timeout=TMUX_TIMEOUT)
-    if loaded.returncode != 0:
-        return failed('cursor', f'could not load the brief into a tmux buffer: {saying(loaded)}')
-    pasted = run([tmux, 'paste-buffer', '-p', '-d', '-b', session, '-t', session],
-                 timeout=TMUX_TIMEOUT)
-    if pasted.returncode != 0:
-        return failed('cursor', f'could not paste the brief into the cursor prompt: {saying(pasted)}')
-    return None
-
-
-def launch_cursor(repo, brief, model, no_wait, timeout):
-    """Drive the cursor REPL: `&` alone moves it to a cloud agent, then the brief, then Enter."""
-    tmux = binary('tmux')
-    agent = binary('cursor-agent')
-    session = f'cloud-agent-cursor-{os.getpid()}-{int(time.time() * 1000)}'
-    holder = Path(tempfile.mkdtemp(prefix='cloud-agent-cursor-'))
-    log = holder / 'pane.log'
-    checkout_branch = current_branch(repo)
-    try:
-        created = run([tmux, 'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
-                       '-c', str(repo), f'{shlex.quote(agent)} --trust --model {shlex.quote(model)}'],
-                      timeout=TMUX_TIMEOUT)
-        if created.returncode != 0:
-            return failed('cursor', f'tmux new-session failed: {saying(created)}')
-        run([tmux, 'pipe-pane', '-t', session, '-o', f'cat >> {shlex.quote(str(log))}'], timeout=15)
-
-        def read():
-            return pane_text(tmux, session, log)
-
-        label = model_label(model)
-        pane = poll(read, lambda text: label in text or cursor_limit_hit(text), CURSOR_PROMPT_SECONDS)
-        if pane is None:
-            return failed('cursor', f'the cursor prompt bar with "{label}" never appeared in '
-                                   f'{CURSOR_PROMPT_SECONDS}s: {(read() or "")[-600:]}')
-        if label not in pane and cursor_limit_hit(pane):
-            return limit('cursor')
-
-        # A lone `&` is a key press. Sending "& text" in one go runs the task LOCALLY instead.
-        pressed = run([tmux, 'send-keys', '-t', session, '&'], timeout=15)
-        if pressed.returncode != 0:
-            return failed('cursor', f'could not send & to the cursor prompt: {saying(pressed)}')
-        pane = poll(read, lambda text: 'Move to cloud agent' in text or cursor_limit_hit(text),
-                    CURSOR_CLOUD_SECONDS)
-        if pane is None:
-            return failed('cursor', 'the cursor prompt never offered "Move to cloud agent": '
-                                   f'{(read() or "")[-600:]}')
-        if 'Move to cloud agent' not in pane:
-            return limit('cursor')
-
-        given = paste_cursor_brief(tmux, session, brief, holder)
-        if given is not None:
-            return given
-        pane = poll(read, lambda text: brief_paste_landed(text, brief), CURSOR_PASTE_LAND_SECONDS)
-        if pane is None:
-            return failed('cursor', f'the brief never appeared in the cursor prompt in '
-                                   f'{CURSOR_PASTE_LAND_SECONDS}s: {(read() or "")[-600:]}')
-        shortfall = paste_shortfall(pane, brief)
-        if shortfall:
-            taken, expected = shortfall
-            return failed('cursor', f'cursor took {taken} of the {expected} lines of the '
-                                    f'{brief_line_count(brief)}-line brief into its paste token, so '
-                                    f'the cloud agent would get a brief with lines missing: '
-                                    f'{(pane or "")[-600:]}')
-        time.sleep(CURSOR_PASTE_SETTLE_SECONDS)
-
-        # The first Enter lands while the REPL is still drawing the paste token and is ignored, so
-        # press again until cursor shows it took the brief, and give up after three.
-        deadline = time.monotonic() + CURSOR_SUBMIT_SECONDS
-        pressed = 0
-        pane = None
-        while pressed < CURSOR_ENTER_MAX:
-            entered = run([tmux, 'send-keys', '-t', session, 'Enter'], timeout=15)
-            if entered.returncode != 0:
-                return failed('cursor', f'could not press Enter in the cursor prompt: {saying(entered)}')
-            pressed += 1
-            window = min(CURSOR_ENTER_CONFIRM_SECONDS, max(0.0, deadline - time.monotonic()))
-            pane = poll(read, cursor_took_the_prompt, window)
-            if pane is not None or time.monotonic() >= deadline:
-                break
-
-        # Only the pane after cursor starts working counts as a limit: the pane still shows the
-        # brief the user wrote, and a brief may say "rate limit" or "quota" in its own words.
-        if not extract_cursor_url(pane or '')[0]:
-            pane = wait_cursor_agent_url(tmux, session, read,
-                                         max(0.0, deadline - time.monotonic()))
-        agent_url, task_id = extract_cursor_url(pane or '')
-        if not agent_url:
-            tail = read() or ''
-            if pane and cursor_limit_hit(submitted_tail(pane)):
-                return limit('cursor')
-            if CURSOR_PUSH_DIALOG.search(tail):
-                return failed('cursor', 'cursor-agent is still waiting on the push prompt after '
-                                        f'{CURSOR_SUBMIT_SECONDS}s; preflight should have pushed '
-                                        f'the branch: {tail[-600:]}')
-            if not cursor_took_the_prompt(tail):
-                return failed('cursor', f'cursor never took the brief: {pressed} Enter presses sent '
-                                        f'in {CURSOR_SUBMIT_SECONDS}s and the paste token is still '
-                                        f'in the prompt: {tail[-600:]}')
-            return failed('cursor', f'no cloud agent URL in the cursor pane {CURSOR_SUBMIT_SECONDS}s '
-                                    f'after pressing Enter {pressed} times: {tail[-600:]}')
-        pr_since = time.time()
-        if no_wait:
-            return outcome('cursor', 'started', agent_url=agent_url, task_id=task_id)
-
-        slug = slug_of(repo)
-        if not slug:
-            return failed('cursor', 'cannot read owner/repo from the origin remote',
-                          agent_url=agent_url, task_id=task_id)
-        prefixes = ['cursor/']
-        if checkout_branch:
-            prefixes.append(checkout_branch)
-        pull, why = wait_for_pr(slug, prefixes, pr_since, timeout)
-        if not pull:
-            return outcome('cursor', 'timeout', agent_url=agent_url, task_id=task_id,
-                           error=f'{why} within {timeout:g}s')
-        return outcome('cursor', 'done', agent_url=agent_url, task_id=task_id,
-                       branch=pull.get('headRefName'), pr_url=pull.get('url'))
-    finally:
-        quiet([tmux, 'kill-session', '-t', session])
-        shutil.rmtree(holder, ignore_errors=True)
 
 
 def codex_env(slug, given, path=None):
@@ -777,7 +484,7 @@ def launch_codex(repo, brief, env_arg, no_wait, timeout):
 
 
 def launch_claude(repo, brief, no_wait, timeout):
-    """Claude cloud is for Claude-native jobs only; code workers go to codex or cursor
+    """Claude cloud is for Claude-native jobs only; code workers go to codex
     (rule ~/.claude/rules/pstack-models.md)."""
     script = binary('claude-cloud-task')
     started = time.time()
@@ -811,22 +518,20 @@ def main(argv=None):
     parser.add_argument('vendor', choices=VENDORS)
     parser.add_argument('--repo', required=True, help='git checkout the cloud agent works from')
     parser.add_argument('--brief', required=True, help='file holding the prompt')
-    parser.add_argument('--model', help='cursor model: composer-2.5 (default) or a Grok id')
+    parser.add_argument('--model', help='legacy cursor option (Cursor is off)')
     parser.add_argument('--env', help='codex environment label or id')
     parser.add_argument('--no-wait', action='store_true', help='report the started task and exit')
     parser.add_argument('--timeout', type=float, default=3600,
                         help='seconds to wait for the pull request (default 3600)')
     args = parser.parse_args(argv)
 
-    if args.vendor != 'cursor' and args.model:
+    if args.vendor == 'cursor':
+        return emit(failed('cursor', 'Cursor is off since 2026-11-23 (plan downgraded); use codex'))
+
+    if args.model:
         return emit(failed(args.vendor, '--model belongs to cursor only'))
     if args.vendor != 'codex' and args.env:
         return emit(failed(args.vendor, '--env belongs to codex only'))
-    if args.vendor == 'cursor':
-        model = args.model or DEFAULT_CURSOR_MODEL
-        if not cursor_model_ok(model):
-            return emit(failed('cursor', f'only Composer 2.5 and Grok models are allowed, not {model}: '
-                                         'our Cursor plan includes those, so a cloud task costs nothing extra'))
     if args.timeout <= 0:
         return emit(failed(args.vendor, f'--timeout must be greater than 0, not {args.timeout:g}'))
 
@@ -840,9 +545,7 @@ def main(argv=None):
     if why:
         return emit(failed(args.vendor, why))
 
-    if args.vendor == 'cursor':
-        row = launch_cursor(args.repo, brief, model, args.no_wait, args.timeout)
-    elif args.vendor == 'codex':
+    if args.vendor == 'codex':
         row = launch_codex(args.repo, brief, args.env, args.no_wait, args.timeout)
     else:
         row = launch_claude(args.repo, brief, args.no_wait, args.timeout)

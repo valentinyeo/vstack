@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'skills/cloud-agent/cloud-agent'
-PANE = '  Open Cloud Agent in: https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986'
 REAL_ID = 'task_e_6af0b6c226208326ad137036b93bf744'
 GITHUB = 'https://github.com/valentinyeo/example.git'
 
@@ -62,7 +61,7 @@ class ModuleTests(unittest.TestCase):
         cls.m = load_script()
 
     def test_result_has_exactly_the_documented_keys_in_order(self):
-        row = self.m.outcome('cursor', 'done', agent_url='u', task_id='bc-1', branch='cursor/x',
+        row = self.m.outcome('codex', 'done', agent_url='u', task_id='task_e_1', branch='codex/x',
                              pr_url='p')
         self.assertEqual(list(row), ['vendor', 'status', 'agent_url', 'task_id', 'branch', 'pr_url', 'error'])
         self.assertIsNone(row['error'])
@@ -87,29 +86,11 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(json.loads(lines[0])['status'], 'limit')
         self.assertIn('429 limit', err.getvalue())
 
-    def test_cursor_url_from_the_real_pane_line(self):
-        url, task_id = self.m.extract_cursor_url(PANE)
-        self.assertEqual(url, 'https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986')
-        self.assertEqual(task_id, 'bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986')
-
-    def test_cursor_url_missing_while_it_checks_git_status(self):
-        self.assertEqual(self.m.extract_cursor_url('  Checking git status'), (None, None))
-        self.assertEqual(self.m.extract_cursor_url(''), (None, None))
-
-    def test_cursor_task_id_is_the_bc_id_in_the_url(self):
-        _, task_id = self.m.extract_cursor_url(PANE)
-        self.assertTrue(task_id.startswith('bc-'))
-        self.assertEqual(task_id, self.m.extract_cursor_url(PANE)[0].rsplit('/', 1)[1])
-
     def test_limit_detection_for_every_vendor(self):
         for text in ('Usage limit reached', 'rate limit hit', 'Quota exhausted',
                      'You have hit your usage limit. Resets in 3h.'):
             self.assertTrue(self.m.limit_hit(text), text)
         self.assertFalse(self.m.limit_hit('Task applied cleanly'))
-        # Cursor also says "upgrade", the other vendors do not.
-        self.assertTrue(self.m.cursor_limit_hit('Upgrade your plan to keep going'))
-        self.assertFalse(self.m.limit_hit('Upgrade your plan to keep going'))
-        self.assertFalse(self.m.cursor_limit_hit('Move to cloud agent'))
 
     def test_codex_task_id_and_url_from_exec_output(self):
         text = f'Submitted task {REAL_ID}\nhttps://chatgpt.com/codex/tasks/{REAL_ID}\n'
@@ -133,13 +114,13 @@ class ModuleTests(unittest.TestCase):
 
     def test_pr_matching_needs_both_a_later_time_and_the_branch_prefix(self):
         launch = self.m.moment('2026-11-20T13:00:00Z').timestamp()
-        rows = [pull(1, 'cursor/old', '2026-11-20T12:59:59Z'),
+        rows = [pull(1, 'claude/old', '2026-11-20T12:59:59Z'),
                 pull(2, 'codex/other', '2026-11-20T13:01:00Z'),
-                pull(3, 'cursor/right', '2026-11-20T13:02:00Z')]
-        found = self.m.pr_after(rows, launch, ['cursor/'])
+                pull(3, 'claude/right', '2026-11-20T13:02:00Z')]
+        found = self.m.pr_after(rows, launch, ['claude/'])
         self.assertEqual(found['number'], 3)
-        self.assertIsNone(self.m.pr_after(rows[:2], launch, ['cursor/']))
-        self.assertIsNone(self.m.pr_after([pull(4, 'cursor/x', '2026-11-20T13:00:00Z')], launch, ['cursor/']),
+        self.assertIsNone(self.m.pr_after(rows[:2], launch, ['claude/']))
+        self.assertIsNone(self.m.pr_after([pull(4, 'claude/x', '2026-11-20T13:00:00Z')], launch, ['claude/']),
                           'a PR created at the launch second is not after it')
 
     def test_pr_matching_takes_the_earliest_qualifying_pull_request(self):
@@ -151,33 +132,8 @@ class ModuleTests(unittest.TestCase):
 
     def test_pr_matching_reads_a_fractional_gh_timestamp(self):
         launch = self.m.moment('2026-11-20T13:00:00Z').timestamp()
-        found = self.m.pr_after([pull(1, 'cursor/x', '2026-11-20T13:00:01.123Z')], launch, ['cursor/'])
+        found = self.m.pr_after([pull(1, 'claude/x', '2026-11-20T13:00:01.123Z')], launch, ['claude/'])
         self.assertEqual(found['number'], 1)
-
-    def test_only_composer_and_grok_cursor_models(self):
-        for model in ('composer-2.5', 'composer-2.5-fast', 'grok-4.7-high', 'grok-4.7-xhigh-fast',
-                      'cursor-grok-4.6-high'):
-            self.assertTrue(self.m.cursor_model_ok(model), model)
-        for model in ('auto', 'claude-opus-5-high', 'gpt-5.3-codex', 'sonnet-4-thinking', '',
-                      'grok-', 'composer-2.5-'):
-            self.assertFalse(self.m.cursor_model_ok(model), model)
-
-    def test_cursor_prompt_label(self):
-        self.assertEqual(self.m.model_label('composer-2.5'), 'Composer 2.5')
-        self.assertEqual(self.m.model_label('grok-4.7-high'), 'Grok 4.7')
-        self.assertEqual(self.m.model_label('grok-'), 'Grok', 'an odd id must not crash the launch')
-
-    def test_a_brief_that_mentions_a_rate_limit_is_not_a_vendor_limit(self):
-        # Verified break, 2026-11-20: the pane still shows the brief the user typed, so reading the
-        # whole pane made "fix the rate limit bug" report status limit, exit 75, and skip the lane.
-        brief = "Fix the bug where the API says 'rate limit' when caching. Avoid quota errors."
-        pane = 'Composer 2.5\n' + brief
-        self.assertFalse(self.m.cursor_limit_hit(self.m.submitted_tail(pane)))
-        real = pane + '\nChecking git status\nUsage limit reached. Resets in 3h.'
-        self.assertTrue(self.m.cursor_limit_hit(self.m.submitted_tail(real)))
-        submitted = pane + '\nChecking git status\n' + PANE
-        self.assertEqual(self.m.extract_cursor_url(self.m.submitted_tail(submitted))[0],
-                         'https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986')
 
     def test_owner_repo_from_every_remote_form(self):
         for remote in ('git@github.com:valentinyeo/vstack.git',
@@ -226,33 +182,12 @@ class ModuleTests(unittest.TestCase):
             self.m.drop_codex_log(repo)
             self.assertTrue((repo / 'error.log').exists(), 'a tracked error.log is never deleted')
 
-    def test_paste_token_counts_the_briefs_newlines_plus_one(self):
-        # The real pane, 2026-11-23: 60 lines no trailing newline showed +60, with one showed +61.
-        self.assertEqual(self.m.expected_paste_lines('a\nb\nc'), 3)
-        self.assertEqual(self.m.expected_paste_lines('a\nb\nc\n'), 4)
-        self.assertEqual(self.m.expected_paste_lines('one flat line'), 1)
-        self.assertEqual(self.m.brief_line_count('a\nb\nc\n'), 3, 'a trailing newline adds no line')
-        self.assertEqual(self.m.paste_token_lines('& [Pasted text #1 +61 lines]'), 61)
-        self.assertIsNone(self.m.paste_token_lines('& plain typed text'))
-
-    def test_a_short_token_is_a_shortfall_and_a_whole_brief_is_not(self):
-        brief = 'a\nb\nc'
-        self.assertEqual(self.m.paste_shortfall('& [Pasted text #1 +2 lines]', brief), (2, 3))
-        self.assertIsNone(self.m.paste_shortfall('& [Pasted text #1 +3 lines]', brief))
-        self.assertIsNone(self.m.paste_shortfall('& a b c', brief), 'a short brief shows inline')
-
     def test_pr_matching_also_accepts_the_checkout_branch_name(self):
         launch = self.m.moment('2026-11-20T13:00:00Z').timestamp()
-        rows = [pull(1, 'cursor/other', '2026-11-20T13:02:00Z'),
+        rows = [pull(1, 'claude/other', '2026-11-20T13:02:00Z'),
                 pull(2, 'vsta-120-cloud-launch', '2026-11-20T13:01:00Z')]
-        found = self.m.pr_after(rows, launch, ['cursor/', 'vsta-120-cloud-launch'])
+        found = self.m.pr_after(rows, launch, ['claude/', 'vsta-120-cloud-launch'])
         self.assertEqual(found['number'], 2)
-
-    def test_cursor_push_dialog_pattern_matches_real_wording(self):
-        text = ('Branch Not Pushed. Push to remote before kicking off agent? '
-                '[y] Push [n] Cancel')
-        self.assertTrue(self.m.CURSOR_PUSH_DIALOG.search(text))
-
 
 CODEX_STUB = '''
 import pathlib, sys
@@ -383,7 +318,7 @@ class PreflightTests(unittest.TestCase):
             (repo / 'scratch.txt').write_text('local notes\n')
             self.assertIsNone(self.m.preflight(repo))
 
-    def test_a_local_only_branch_is_pushed_before_cursor_can_launch(self):
+    def test_a_local_only_branch_is_pushed_before_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             remote = root / 'remote.git'
@@ -397,163 +332,29 @@ class PreflightTests(unittest.TestCase):
             git(remote, 'rev-parse', '--verify', 'vsta-120-tip')
 
 
-class CursorLaunchFailureTests(unittest.TestCase):
-    """launch_cursor must return failed rows, not crash, when the pane never reaches a step."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.m = load_script()
-
-    def test_prompt_bar_timeout_emits_one_json_line_and_exits_one(self):
-        with tempfile.TemporaryDirectory() as directory:
-            repo = make_repo(Path(directory) / 'repo')
-            ok = subprocess.CompletedProcess([], 0, '', '')
-            pane_snippet = 'cursor-agent booting\nstill no Composer label\n'
-
-            def fake_run(args, cwd=None, timeout=None):
-                if args and 'capture-pane' in args:
-                    return subprocess.CompletedProcess(args, 0, pane_snippet, '')
-                return ok
-
-            with patch.object(self.m, 'run', side_effect=fake_run), \
-                    patch.object(self.m, 'poll', return_value=None), \
-                    patch.object(self.m, 'quiet'):
-                row = self.m.launch_cursor(repo, 'Do the thing.', 'composer-2.5', True, 60)
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                code = self.m.emit(row)
-            lines = out.getvalue().strip().splitlines()
-            self.assertEqual(len(lines), 1, out.getvalue())
-            parsed = json.loads(lines[0])
-            self.assertEqual(parsed['status'], 'failed')
-            self.assertEqual(parsed['vendor'], 'cursor')
-            self.assertEqual(code, 1)
-            self.assertIn('never appeared', parsed['error'] or '')
-            self.assertIn('Composer 2.5', parsed['error'] or '')
-
-    def test_push_dialog_gets_y_while_waiting_for_the_agent_url(self):
-        with tempfile.TemporaryDirectory() as directory:
-            repo = make_repo(Path(directory) / 'repo')
-            pane_snippet = ('Checking git status\n'
-                            'Branch Not Pushed. Push to remote before kicking off agent?\n'
-                            '[y] Push [n] Cancel\n')
-
-            def fake_run(args, cwd=None, timeout=None):
-                if args and 'send-keys' in args and args[-1] == 'y':
-                    nonlocal pane_snippet
-                    pane_snippet = (pane_snippet + '  Open Cloud Agent in: '
-                                    + PANE.split(':', 1)[1].strip() + '\n')
-                    return subprocess.CompletedProcess(args, 0, '', '')
-                if args and 'capture-pane' in args:
-                    return subprocess.CompletedProcess(args, 0, pane_snippet, '')
-                return subprocess.CompletedProcess(args or [], 0, '', '')
-
-            with patch.object(self.m, 'run', side_effect=fake_run), \
-                    patch.object(self.m, 'quiet'):
-                text = self.m.wait_cursor_agent_url('tmux', 'sess', lambda: pane_snippet, 5)
-            self.assertIsNotNone(text)
-            self.assertEqual(self.m.extract_cursor_url(text)[0],
-                             'https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986')
-
-
-LONG_BRIEF = '\n'.join(
-    f'Line {number}: fix https://example.com/doc/{number} and keep `code_{number}` quoted as '
-    f'"value {number}".'
-    for number in range(1, 61))
-
-
-def cursor_pane(paste_lines, extra=''):
-    """The cursor REPL with a whole-brief paste token, the way the real pane draws one."""
-    return (f'& [Pasted text #1 +{paste_lines} lines]\n'
-            f'^ Move to cloud agent\nComposer 2.5                    Run Everything\n{extra}')
-
-
-class CursorBriefPasteTests(unittest.TestCase):
-    """A long brief must reach cursor whole and then submit, however the pane stalls on Enter.
-
-    Labelled break, 2026-11-23: a 60-line brief typed with send-keys collapsed into
-    `[Pasted text #1 +1 lines]` and the single Enter after it was ignored, so the launcher reported
-    no cloud agent URL 240s later while the brief never left the prompt.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.m = load_script()
-
-    def launch(self, pane_for, brief=LONG_BRIEF):
-        """Launch cursor against a fake tmux. Returns (row, enters, pasted brief text)."""
-        state = {'enters': 0, 'reads': 0, 'buffer': None}
-        ok = subprocess.CompletedProcess([], 0, '', '')
-
-        def fake_run(args, cwd=None, timeout=None):
-            if 'capture-pane' in args:
-                state['reads'] += 1
-                return subprocess.CompletedProcess(args, 0, pane_for(state), '')
-            if 'load-buffer' in args:
-                state['buffer'] = Path(args[-1]).read_text()
-                return ok
-            if 'send-keys' in args and args[-1] == 'Enter':
-                state['enters'] += 1
-            return ok
-
-        timers = dict(CURSOR_PROMPT_SECONDS=0, CURSOR_CLOUD_SECONDS=0, CURSOR_PASTE_LAND_SECONDS=0,
-                      CURSOR_PASTE_SETTLE_SECONDS=0, CURSOR_ENTER_CONFIRM_SECONDS=0.2,
-                      CURSOR_SUBMIT_SECONDS=1)
-        with tempfile.TemporaryDirectory() as directory:
-            repo = make_repo(Path(directory) / 'repo')
-            with contextlib.ExitStack() as stack:
-                stack.enter_context(patch.object(self.m, 'run', side_effect=fake_run))
-                stack.enter_context(patch.object(self.m, 'quiet'))
-                stack.enter_context(patch.object(self.m.time, 'sleep'))
-                for name, value in timers.items():
-                    stack.enter_context(patch.object(self.m, name, value, create=True))
-                row = self.m.launch_cursor(repo, brief, 'composer-2.5', True, 60)
-        return row, state['enters'], state['buffer']
-
-    def test_the_whole_brief_is_pasted_with_every_line_and_no_flattening(self):
-        row, enters, pasted = self.launch(lambda pane: cursor_pane(60, PANE))
-        self.assertEqual(pasted, LONG_BRIEF)
-        self.assertEqual(row['status'], 'started')
-        self.assertEqual(enters, 1)
-
-    def test_a_collapsed_paste_and_an_ignored_first_enter_still_submit(self):
-        def pane_for(pane):
-            if pane['enters'] < 2:
-                return cursor_pane(60)
-            return cursor_pane(60, 'Checking git status\n  ' + PANE.strip())
-
-        row, enters, _ = self.launch(pane_for)
-        self.assertEqual(enters, 2, 'cursor ignored the first Enter after the paste')
-        self.assertEqual(row['status'], 'started')
-        self.assertTrue((row['task_id'] or '').startswith('bc-'))
-
-    def test_checking_git_status_keeps_waiting_for_the_url(self):
-        # The live proof, 2026-11-23: `Checking git status` confirmed the Enter, the URL arrived
-        # about 30s later, and stopping at the confirmation reported a failed launch.
-        def pane_for(pane):
-            if pane['reads'] < 6:
-                return cursor_pane(60, 'Checking git status\n')
-            return cursor_pane(60, 'Checking git status\n  ' + PANE.strip())
-
-        row, enters, _ = self.launch(pane_for)
-        self.assertEqual(enters, 1)
-        self.assertEqual(row['status'], 'started')
-
-    def test_three_ignored_enters_fail_once_with_the_counts_in_the_error(self):
-        row, enters, _ = self.launch(lambda pane: cursor_pane(60))
-        self.assertEqual(enters, 3)
-        self.assertEqual(row['status'], 'failed')
-        self.assertIn('3 Enter presses', row['error'] or '')
-
-    def test_a_short_paste_token_stops_the_launch_before_any_enter(self):
-        row, enters, _ = self.launch(lambda pane: cursor_pane(2), brief=LONG_BRIEF + '\n')
-        self.assertEqual(enters, 0, 'a brief cursor only half received must never be submitted')
-        self.assertEqual(row['status'], 'failed')
-        self.assertIn('2 of the 61 lines', row['error'] or '')
-        self.assertIn('60-line brief', row['error'] or '')
-
-
 class CliTests(unittest.TestCase):
+    def test_cursor_is_refused_without_running_any_external_command(self):
+        module = load_script()
+        for options in ([], ['--model', 'claude-opus-5-high'], ['--env', 'unused'],
+                        ['--timeout', '0']):
+            with self.subTest(options=options):
+                out = io.StringIO()
+                err = io.StringIO()
+                with patch.object(module.subprocess, 'run') as command, \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = module.main(['cursor', '--repo', '/nowhere',
+                                        '--brief', '/nowhere/brief.txt', '--no-wait', *options])
+                command.assert_not_called()
+                self.assertEqual(code, 1)
+                lines = out.getvalue().splitlines()
+                self.assertEqual(len(lines), 1, out.getvalue())
+                self.assertEqual(json.loads(lines[0]), {
+                    'vendor': 'cursor', 'status': 'failed', 'agent_url': None,
+                    'task_id': None, 'branch': None, 'pr_url': None,
+                    'error': 'Cursor is off since 2026-11-23 (plan downgraded); use codex',
+                })
+                self.assertEqual(err.getvalue(), '')
+
     def cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
                               env=dict(os.environ, HOME=tempfile.gettempdir()))
@@ -562,23 +363,15 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             brief = Path(directory) / 'brief.txt'
             brief.write_text('Reply with the first heading of README.md. Make no changes.\n')
-            result = self.cli('cursor', '--repo', directory, '--brief', str(brief), '--no-wait')
+            result = self.cli('codex', '--repo', directory, '--brief', str(brief), '--no-wait')
         lines = result.stdout.strip().splitlines()
         self.assertEqual(len(lines), 1, result.stdout + result.stderr)
         row = json.loads(lines[0])
         self.assertEqual(list(row), ['vendor', 'status', 'agent_url', 'task_id', 'branch', 'pr_url', 'error'])
-        self.assertEqual(row['vendor'], 'cursor')
+        self.assertEqual(row['vendor'], 'codex')
         self.assertEqual(row['status'], 'failed')
         self.assertIn('not a git repository', row['error'])
         self.assertIsNone(row['agent_url'])
-        self.assertEqual(result.returncode, 1)
-
-    def test_a_model_outside_the_plan_is_refused_before_any_launch(self):
-        result = self.cli('cursor', '--repo', '/nowhere', '--brief', '/nowhere/brief.txt',
-                          '--model', 'claude-opus-5-high', '--no-wait')
-        row = json.loads(result.stdout.strip())
-        self.assertEqual(row['status'], 'failed')
-        self.assertIn('Composer 2.5 and Grok', row['error'])
         self.assertEqual(result.returncode, 1)
 
     def test_an_empty_brief_fails_with_a_clear_error(self):
