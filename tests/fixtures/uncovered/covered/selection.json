@@ -1,0 +1,20 @@
+{
+  "features": [
+    "appearance",
+    "sessions"
+  ],
+  "dropped": [],
+  "bugFix": false,
+  "reason": "Changed-file feature ownership",
+  "uncovered": "Unmapped files: changelog.d/SOFT-3055-session-commands.md, tools/ticket-titles/IGSH-3055.txt",
+  "doneWhen": [],
+  "newMap": "",
+  "unmapped": [
+    "changelog.d/SOFT-3055-session-commands.md",
+    "tools/ticket-titles/IGSH-3055.txt"
+  ],
+  "journeyNotes": [],
+  "ciWorkflows": [
+    "chat-delivery-formal.yml"
+  ]
+}

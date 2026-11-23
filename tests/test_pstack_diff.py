@@ -419,5 +419,61 @@ class PstackDiffTest(unittest.TestCase):
         )
 
 
+SELECTION_VERIFIER = (
+    "name: PR verifier\non:\n  pull_request:\njobs:\n"
+    "  verdict:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "      - run: node tools/pr-verifier.cjs finalize verifier-out/selection.json\n"
+    "      - run: claude -p \"judge the evidence\"\n"
+)
+
+
+def selection_repo(test: unittest.TestCase, finalize: str) -> Path:
+    holder = tempfile.TemporaryDirectory(prefix="pstack-diff-selection-")
+    test.addCleanup(holder.cleanup)
+    root = Path(holder.name)
+    write(root, ".github/workflows/pr-verifier.yml", SELECTION_VERIFIER)
+    write(root, "tools/pr-verifier.cjs", finalize)
+    write(root, ".claude/skills/verify-app/SKILL.md", "# x\n")
+    write(root, ".claude/skills/verify-app/features/README.md", "x\n")
+    return root
+
+
+class UncoveredPassGateTest(unittest.TestCase):
+    """multiprompt PR 1205 passed with its changed product files listed as unmapped."""
+
+    def test_selection_verifier_that_can_pass_uncovered_files_is_a_gap(self):
+        root = selection_repo(
+            self,
+            "if (selection.uncovered && final === 'PASS') final = 'PASS+NOTES';\n",
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        gap = next(line for line in result.stdout.splitlines() if line.startswith("GAP uncovered pass gate:"))
+        self.assertIn(".github/workflows/pr-verifier.yml", gap)
+        self.assertIn("tools/pr-verifier.cjs", gap)
+        self.assertIn("uncovered_gate", gap)
+
+    def test_selection_verifier_routed_through_the_gate_is_asked(self):
+        root = selection_repo(
+            self,
+            "const gate = require('./uncovered_gate.cjs');\n"
+            "final = gate.demote(selection, final);\n",
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED uncovered pass gate: tools/pr-verifier.cjs", result.stdout)
+        self.assertNotIn("GAP uncovered pass gate", result.stdout)
+
+    def test_verifier_without_a_changed_file_selection_says_nothing(self):
+        base = clean_files()
+        root = build_repo(self, base, {"README.md": "y\n"})
+        result = run_diff(root)
+        self.assertNotIn("uncovered pass gate", result.stdout)
+
+    def test_real_multiprompt_verifier_fixture_reports_the_gap(self):
+        result = run_diff(FIXTURES / "multiprompt-verifier-rank")
+        self.assertIn("GAP uncovered pass gate: .github/workflows/pr-verifier.yml", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

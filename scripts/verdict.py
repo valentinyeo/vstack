@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """verdict: read one PASS, PASS+NOTES or FAIL out of a verifier's own answer.
 
-  verdict PATH|-,...   print the verdict, exit 0 for a pass and 1 otherwise
+  verdict PATH|-,... [--selection PATH]   print the verdict, exit 0 for a pass and 1 otherwise
   verdict --self-test
+
+A pass cannot stand while the verifier's own selection lists changed product files that no
+journey exercised. uncovered_gate names those files and turns the pass into FAIL. The gate
+reads --selection, or the selection.json beside the answer, or verifier-out/selection.json
+beside the answer. A pass with no selection anywhere is unchanged.
 
 A verifier may answer in any of three forms, and the last one in its text wins:
   a bare line       PASS
@@ -19,10 +24,14 @@ Every vstack verifier workflow reads its verdict through this file.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import uncovered_gate
 
 VERDICTS = ('PASS+NOTES', 'PASS', 'FAIL')
 PASSING = ('PASS', 'PASS+NOTES')
@@ -102,10 +111,29 @@ def read_source(path):
     return sys.stdin.read() if path == '-' else Path(path).read_text()
 
 
+SELECTIONS = ('selection.json', 'verifier-out/selection.json')
+
+
+def find_selection(paths, named=None):
+    """The selection a verifier wrote for this answer: --selection, else the conventional spots."""
+    if named:
+        return Path(named)
+    for path in paths:
+        if path == '-':
+            continue
+        folder = Path(path).resolve().parent
+        for candidate in SELECTIONS:
+            beside = folder / candidate
+            if beside.is_file():
+                return beside
+    return None
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('paths', nargs='*', metavar='PATH|-',
                         help='File holding a verifier answer, or - for stdin')
+    parser.add_argument('--selection', metavar='PATH',
+                        help="the verifier's selection.json; default: the one beside the answer")
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     if args.self_test:
@@ -117,9 +145,15 @@ def main():
     if not verdict:
         print(f'verdict: FAIL | {why}', file=sys.stderr)
         return 1
+    selection = find_selection(args.paths, args.selection)
+    if verdict in PASSING and selection:
+        verdict, demoted = uncovered_gate.gate(uncovered_gate.load(selection), verdict)
+        if demoted:
+            print(verdict, flush=True)
+            print(demoted, file=sys.stderr)
+            return 1
     print(verdict)
     return 0 if verdict in PASSING else 1
-
 
 if __name__ == '__main__':
     sys.exit(main())
