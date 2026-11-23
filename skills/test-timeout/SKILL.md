@@ -72,7 +72,7 @@ Each chat merges this entry into its own project's Bash `PreToolUse` hooks in `.
 
 The guard reads its blocked list from `config/heavy-local.json`. Gradle, Wine and `xvfb-run`, the Windows desktop app, Zig, any package-manager `test` or `build`, `pytest`, `cargo` and `go` builds and tests, and `python3 -m unittest discover -s tests` on this host are refused with or without `timeout`, naming `gh workflow run` or a branch push. The only exceptions are the lines in `config/heavy-local-allow.txt`, each with its reason: a syntax check, `--help` or `--version`, and one named test file under `timeout 60`.
 
-Pacer workers on OpenCode and Antigravity never run these hooks. `scripts/worker-shims` writes the same refusal as a command shim into `~/.local/state/vstack/worker-shims`, and plan-pick puts that folder first on a worker's PATH. A shim sees only its own words, so a worker gets no `timeout 60` exception: it pushes and reads CI.
+Pacer workers on OpenCode and Antigravity never run these hooks. `scripts/worker-shims` writes the same refusal as a command shim into a worker-shims folder in vstack's local state, and plan-pick puts that folder first on a worker's PATH. A shim sees only its own words, so a worker gets no `timeout 60` exception: it pushes and reads CI.
 
 Light tests still pass. Prove registration with JSON payloads using [the heavy-local feature](../../.claude/skills/verify-vstack/features/heavy-local.md), never a real job. Shell `-c` is inspected; aliases and generated commands are not expanded.
 
