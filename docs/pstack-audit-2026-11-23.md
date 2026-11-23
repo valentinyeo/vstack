@@ -9,6 +9,8 @@ Fates:
 - `DELTA`: deliberate house change. Cites the commit, PR, and ticket.
 - `KEEP`: true gap pstack does not cover. Names the pstack sections checked.
 
+The live list of house changes is `skills/pstack-diff/house.txt`, checked by `tests/test_house_list.py` (VSTA-65). VSTA-65 cut four gates this audit listed as DELTA: the PR-body `pstack:` line, `hooks/pstack-reply.py`, skill word budgets and the prior-art registry, and `pr-overlap`. Keep the rows below as history, not as permission.
+
 ## Summary counts
 
 Total rows: 83 (22 skills, linked `.md` files, `CLAUDE.md` rule table, and `AGENTS.md` absence check; `skills/valentin-mode/` excluded).
