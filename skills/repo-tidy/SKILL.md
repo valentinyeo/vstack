@@ -24,7 +24,7 @@ Dry run by default. `--apply` removes.
 
 ## Set up your own check
 
-After each merge, run `"$HOME/.local/bin/repo-tidy" --apply --mine "<main checkout>" --branch "<your merged branch>"` from outside the finished worktree. Keep every gate. Retry held items on your own next loop tick. PR housekeeping retains your observed PR as `CLEANUP` until its local refs are gone, even after a worker exits. No timer cleans other chats' work.
+After each merge, run `"$HOME/.local/bin/repo-tidy" --apply --mine "<main checkout>" --branch "<your merged branch>"` from outside the finished worktree. Keep every gate. Retry held items on your own next loop tick. PR housekeeping retains your observed PR as `cleanup` until its local refs are gone, even after a worker exits. No timer cleans other chats' work.
 
 ## The gates
 

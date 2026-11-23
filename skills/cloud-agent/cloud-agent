@@ -679,6 +679,10 @@ def first_line(text, width):
 
 def codex_pull_request(repo, slug, task_id, agent_url, brief):
     """Apply a ready cloud task in a throwaway worktree, push, and open the pull request."""
+    owner = re.search(r'^Owner chat:[ \t]*(\S[^\r\n]*)$', brief, re.M)
+    if not owner:
+        return failed('codex', 'the brief needs an Owner chat: <name> line for the pull request',
+                      agent_url=agent_url, task_id=task_id)
     base_ref = upstream_ref(repo)
     base = upstream_branch(repo)
     if not base_ref or not base:
@@ -715,7 +719,8 @@ def codex_pull_request(repo, slug, task_id, agent_url, brief):
                           agent_url=agent_url, task_id=task_id, branch=branch)
         body = (f'Codex cloud task {task_id}: {agent_url}\n\n'
                 f'Brief:\n\n{brief.strip()[:1500]}\n\n'
-                'Author model: openai/codex-cloud\n')
+                'Author model: openai/codex-cloud\n'
+                f'Owner chat: {owner.group(1).strip()}\n')
         created = run(['gh', 'pr', 'create', '-R', slug, '--head', branch, '--base', base,
                        '--title', f'codex: {first_line(brief, 60)}', '--body', body],
                       timeout=GH_TIMEOUT)

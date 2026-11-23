@@ -26,7 +26,7 @@ Code workers never run on Claude, per the pstack models rule. Never ask Valentin
 
 ## Run
 
-Push the branch first. A cloud agent clones from GitHub and cannot see local files, so the brief carries everything the worker needs.
+Push the branch first. A cloud agent clones from GitHub and cannot see local files, so the brief carries everything the worker needs. Include `Owner chat: <your chat name>` in the brief and require that same line in the PR body; the Codex PR writer copies it from the full brief.
 
 ```sh
 skills/cloud-agent/cloud-agent cursor --repo <checkout> --brief brief.txt

@@ -1,5 +1,5 @@
-"""What a chat observes with responsive-mode loaded: unanswered messages trigger a non-blocking
-reminder, and a chat that says work started must have started it.
+"""What a chat observes with responsive-mode loaded: an unanswered message prompts a reminder without
+blocking tools, and a chat that says work started must have started it.
 
 The fixtures are hand-written JSONL that copies the shapes found in a real 2.1.329 transcript. No private
 text is copied here.

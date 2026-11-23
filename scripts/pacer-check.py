@@ -6,7 +6,7 @@
 
 A PR with no code file passes. A code-changing PR fails when any `Author model: <family>/<model>`
 line names the anthropic family or a claude model, and fails when the body has no
-`Pacer launch: <lane> <ISO time>` line. The code-file rule is the one the PreToolUse hook
+`Pacer launch: <lane> <ISO time>` line or no `Owner chat: <name>` line. The code-file rule is the one the PreToolUse hook
 hooks/pacer-guard.py enforces, imported by path because hooks/ is no package.
 """
 import argparse
@@ -23,6 +23,7 @@ AUTHOR = re.compile(r'^Author model:[ \t]*([^/\s]+)/(\S+)', re.M)
 LAUNCH = re.compile(
     r'^Pacer launch:[ \t]+\S+[ \t]+'
     r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?[ \t]*$', re.M)
+OWNER = re.compile(r'^Owner chat:[ \t]+\S', re.M)
 # pacer-check counts an extensionless file in the shared corpus as code, because a worker writes it.
 CORPUS = re.compile(r'(^|/)(bin|hooks|scripts)/.+$|(^|/)skills/[^/]+/.+$')
 
@@ -58,6 +59,8 @@ def verdict(body, changed):
             reasons.append(f'author model {family}/{model} is a Claude family, so this chat wrote the code itself')
     if not LAUNCH.search(body):
         reasons.append('the body has no "Pacer launch: <lane> <ISO time>" line, so no worker wrote this code')
+    if not OWNER.search(body):
+        reasons.append('the body has no "Owner chat: <name>" line')
     if not reasons:
         return None
     return f'{", and ".join(reasons)}: {", ".join(code[:3])}'
@@ -71,10 +74,13 @@ def read(path):
 
 
 def self_test():
-    body = 'Author model: deepseek/deepseek-v4.1-flash\nPacer launch: vercel 2026-11-19T22:00:00Z\n'
+    body = ('Author model: deepseek/deepseek-v4.1-flash\n'
+            'Pacer launch: vercel 2026-11-19T22:00:00Z\nOwner chat: PR Housekeeping\n')
     assert verdict(body, ['hooks/pacer-guard.py']) is None, "a worker PR passes"
     assert 'Claude family' in verdict(body.replace('deepseek', 'anthropic'), ['x.js']), "anthropic fails"
     assert 'Pacer launch' in verdict('Author model: openai/gpt-5\n', ['x.js']), "no launch line fails"
+    assert 'Owner chat' in verdict(
+        'Author model: openai/gpt-5\nPacer launch: vercel 2026-11-19T22:00:00Z\n', ['x.js']), "no owner line fails"
     assert verdict('Author model: anthropic/claude-opus-5-5\n', ['notes.md', 'brief.txt']) is None, "docs pass"
     assert 'Pacer launch' in verdict('Pacer launch: soon\n', ['x.py']), "an unparseable launch line counts as none"
     assert verdict(body, ['scripts/run-verifier']) is None, "an extensionless corpus script and a worker pass"

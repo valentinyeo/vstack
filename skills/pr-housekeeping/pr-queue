@@ -1,282 +1,59 @@
 #!/usr/bin/env python3
-"""pr-queue: every open PR in a scope, the state it is in, and the chat that owns it.
+"""pr-queue: list this chat's own open PRs and one next step each.
 
-  pr-queue --mine NAME [--owner valentinyeo] [--repo R] [--token-file PATH] [--stale-hours N] [--json PATH]
+  pr-queue --mine NAME [--repo OWNER/REPO] [--stale-hours N]
   pr-queue --self-test
 
-One row per open PR: its ticket key, its checks, the verifier verdict at its current head,
-whether the body carries the `Author model:` and `Pacer launch:` lines, whether another open
-PR carries the same ticket, the live chat that owns it, one state, and one plain next action.
+Ownership comes only from `Owner chat: <name>` in the PR body. pstack Babysit drives
+conflicts, threads and CI; this script only lists yours and flags staleness.
 
-One paginated bulk query reads every open PR, so a tick over 180 PRs costs three gh calls and
-about eight GraphQL points instead of one call per PR. Twenty chats share one hourly limit.
-
-  BOT            dependabot, renovate or github-actions wrote it: CI Boss looks after it
-  DUPLICATE      a second open PR for a ticket whose keeper is another open PR
-  NO-OWNER       no live chat claims it, whatever its checks or its verdict
-  CONFLICT       the branch conflicts with its base
-  BILLING        a failing check says recent payments failed: private repos only
-  RED            a check failed
-  VERIFIER-FAIL  the newest verdict at this head is FAIL
-  MISSING-LINES  body lacks `Author model:` or `Pacer launch:`
-  NO-VERDICT     no verdict at this head yet
-  STALE          a verified PR nobody pushed for more than --stale-hours
-  READY          green checks and a PASS or PASS+NOTES at this head
-  OK             nothing to do this tick
-
-`--mine NAME` is required: each chat checks only its own pull requests. `--repo` narrows the search
-but never widens ownership.
-
-Ownership comes from the PR body (`Owner chat:` line), branch initials among live chats, then the
-live roster: the checkout's branch, the chat name in the branch slug, the ticket's assignee on the
-board, then the only checkout of the repo. The board read runs only with a token, from --token-file
-or HT_TOKEN, and it only reads the ticket.
-
-Read only on services and git. Records this chat's observed PRs in local state until merged
-branches are cleaned; a CLEANUP row survives the open-PR search and returns exit 1.
-
-Exit: 1 for NO-OWNER, STALE or CLEANUP; 2 on usage or read failure; otherwise 0.
+Exit 0 when none are stale; 1 when one is stale past --stale-hours (default 72);
+2 on gh error or when --mine is missing. Merged PRs stay as cleanup until local copies go;
+cleanup also returns 1. Records stay in each chat's own local state; no deletion runs here.
 """
 import argparse
-from concurrent.futures import ThreadPoolExecutor
-from collections import Counter
 import datetime
 import fcntl
 import hashlib
-import importlib.machinery
-import importlib.util
-import json
 import os
-from pathlib import Path
+import json
 import re
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-ROSTER = Path.home() / '.local/share/house-rules/fleet/roster-live'
-# Every field a row reads, in the one search that lists the PRs: 60 a page, then the next page by
-# cursor. The page stays small on purpose: a page near GitHub's query timeout answers HTTP 504 and
-# costs a whole tick, and 60 PRs of mergeable plus checks answers in about five seconds.
-# `comments(last: 30)` is every comment the newest verdict at this head can sit in; `commits(last: 1)`
-# is the head commit, whose date is the last push. `contexts(first: 100)` is every check a normal PR
-# carries; a factory PR with more carries the rollup `state` too, which answers for the rest.
+DEFAULT_USER = 'valentinyeo'
+GH_TIMEOUT = 90
+GIT_TIMEOUT = 20
+OWNER_CHAT = re.compile(r'^Owner chat:\s*(.+?)\s*$', re.M | re.I)
+RED = frozenset({'FAILURE', 'ERROR', 'TIMED_OUT', 'ACTION_REQUIRED'})
+PENDING = frozenset({'PENDING', 'EXPECTED', 'REQUESTED', 'IN_PROGRESS'})
+
 SEARCH_QUERY = '''query($q: String!, $after: String) {
-  rateLimit { cost remaining }
-  search(query: $q, type: ISSUE, first: 60, after: $after) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number url title headRefName headRefOid createdAt updatedAt mergeable body
-        author { login __typename }
+        number url title body updatedAt headRefName headRefOid
         repository { nameWithOwner }
-        comments(last: 30) { nodes { body createdAt } }
         commits(last: 1) { nodes { commit { committedDate } } }
-        statusCheckRollup {
-          state
-          contexts(first: 100) {
-            totalCount
-            nodes {
-              __typename
-              ... on CheckRun { name status conclusion title summary }
-              ... on StatusContext { context state }
-            }
-          }
-        }
+        statusCheckRollup { state }
       }
     }
   }
 }'''
-MAX_PAGES = 10
-POOL = 8
-GH_TIMEOUT = 90
-GIT_TIMEOUT = 20
-ROSTER_TIMEOUT = 30
-BOARD_TIMEOUT = 60
-
-KEY = re.compile(r'\b([A-Z][A-Z0-9]{1,9}-\d+)\b')
-# The key prefixes that are not tickets: carried from ~/.local/share/house-rules/skills/
-# hypertask-triage/scripts/pr-queue, which owns this rule. Not imported, so the two scripts
-# stay independent; one list to change in both places if it ever grows.
-NOT_KEYS = {'DEV', 'RUNNER', 'AGENT', 'CURSOR', 'CODEX', 'WORKER', 'INFRA-RUNNER'}
-BOTS = ('dependabot', 'renovate', 'github-actions')
-GENERIC_NAMES = {'claude', 'poteto', 'shell', 'live', 'term', 'session', 'unknown'}
-RED_STATES = {'FAILURE', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'ERROR'}
-# PullRequestStatusCheckRollupState: GitHub's own answer over every check of a head.
-AGGREGATE_STATE = {'SUCCESS': 'green', 'FAILURE': 'red', 'ERROR': 'red',
-                   'PENDING': 'pending', 'EXPECTED': 'pending'}
-PENDING_STATES = {'QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED', 'PENDING'}
-PASSING = ('PASS', 'PASS+NOTES')
-BILLING = re.compile(r'payments have failed', re.I)
-ROSTER_LINE = re.compile(r'^(?P<name>.+?) \((?P<tmux>[^,()]+), (?P<harness>[^,()]+)'
-                         r'(?:, (?P<cwd>[^()]*))?\)\s*$')
-REMOTE = re.compile(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$')
-OWNER_CHAT = re.compile(r'^Owner chat:\s*(.+?)\s*$', re.M | re.I)
-
-STATES = ('BOT', 'DUPLICATE', 'NO-OWNER', 'CONFLICT', 'BILLING', 'RED', 'VERIFIER-FAIL',
-          'MISSING-LINES', 'NO-VERDICT', 'STALE', 'READY', 'CLEANUP', 'OK')
-NEXT_ACTION = {
-    'BOT': 'A bot wrote this one, so CI Boss looks after it and no chat has to act.',
-    'CONFLICT': 'Rebase your own branch on its base, push it with force with lease, and let the checks run again.',
-    'BILLING': 'Billing blocks private repos only, so scan the repo history for secrets and client data, '
-               'then make the repo public and ask Valentin only when the scan finds something.',
-    'RED': 'Run Babysit in check mode, fix the failing check on your own branch, and push.',
-    'VERIFIER-FAIL': 'Fix the finding the verifier named, push it, and get a fresh verdict at the new head.',
-    'MISSING-LINES': 'Add the Author model and Pacer launch lines to the pull request body.',
-    'NO-OWNER': 'Add an Owner chat line to the pull request body, or use a branch name only your chat '
-                'can claim, so the next tick can read it as yours.',
-    'STALE': 'Finish this pull request or close it with a reason and note that on the ticket.',
-    'NO-VERDICT': 'Ask for a verdict at the current head and read it before merging.',
-    'READY': 'Merge it per pstack Shipping once the one verifier\'s PASS or PASS+NOTES covers this head.',
-    'OK': 'Wait for CI and look again on the next tick.',
-}
 
 
-def load(name, path):
-    """Import a module by path: hooks/ and scripts/ are no package."""
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+class GhError(Exception):
+    pass
 
 
-find_verdict = load('pr_queue_verdict', ROOT / 'scripts/verdict.py').find_verdict
-_pacer = []
-
-
-def pacer():
-    """scripts/pacer-check.py owns the `Author model:` and `Pacer launch:` patterns."""
-    if not _pacer:
-        _pacer.append(load('pr_queue_pacer', ROOT / 'scripts/pacer-check.py'))
-    return _pacer[0]
-
-
-def ticket_key(title, branch):
-    """SOFT-2943 from the title, else from the upper cased branch, else None."""
-    for text in (title or '', (branch or '').upper()):
-        for key in KEY.findall(text):
-            if key.rsplit('-', 1)[0] not in NOT_KEYS:
-                return key
-    return None
-
-
-def checks_state(rollup, total=None, aggregate=None):
-    """green | red | pending | none for a statusCheckRollup.
-
-    CANCELLED, SKIPPED, NEUTRAL and stale runs count as passing: this fleet cancels the runs it
-    supersedes on purpose. Red beats pending. When the read carried fewer checks than the PR holds,
-    GitHub's own rollup state answers instead, so a factory PR with more than a page of checks
-    cannot hide a failure from the tick."""
-    if total is not None and aggregate and total > len(rollup or ()):
-        return AGGREGATE_STATE.get(aggregate.upper(), 'green')
-    if not rollup:
-        return 'none'
-    red = pending = False
-    for run in rollup:
-        status = (run.get('status') or '').upper()
-        conclusion = (run.get('conclusion') or '').upper()
-        if run.get('__typename') == 'StatusContext' or (not status and run.get('state') is not None):
-            state = (run.get('state') or '').upper()
-            red = red or state in RED_STATES
-            pending = pending or state in PENDING_STATES
-            continue
-        red = red or conclusion in RED_STATES
-        pending = pending or status in PENDING_STATES or (not conclusion and status != 'COMPLETED')
-    if red:
-        return 'red'
-    if pending:
-        return 'pending'
-    return 'green'
-
-
-def verdict_at(comments, head_sha):
-    """The newest verdict whose comment names this exact head, or 'none'."""
-    if not head_sha:
-        return 'none'
-    found = []
-    for comment in comments or ():
-        body = comment.get('body') or ''
-        if head_sha not in body:
-            continue
-        verdict, _ = find_verdict(body)
-        if verdict:
-            found.append((comment.get('createdAt') or '', verdict))
-    if not found:
-        return 'none'
-    return max(found)[1]
-
-
-def slug(name):
-    return re.sub(r'[^a-z0-9]+', '-', (name or '').lower()).strip('-')
-
-
-def chat_initials(name):
-    """First letter of each word, lowercased, at least two characters for matching."""
-    letters = [word[0].lower() for word in re.findall(r'[A-Za-z0-9]+', name or '') if word]
-    initials = ''.join(letters)
-    return initials if len(initials) >= 2 else ''
-
-
-def unique_initials(chats):
-    """Map each unambiguous chat-initials prefix to one live chat name."""
-    live = [chat for chat in chats or () if slug(chat.get('name')) not in GENERIC_NAMES]
-    groups = {}
-    for chat in live:
-        prefix = chat_initials(chat.get('name'))
-        if prefix:
-            groups.setdefault(prefix, []).append(chat)
-    return {prefix: group[0]['name'] for prefix, group in groups.items() if len(group) == 1}
-
-
-def owner_from_body(body, chats):
-    """The Owner chat line when it names exactly one live chat."""
+def owner_chat(body):
+    """The Owner chat line, stripped, or None."""
     match = OWNER_CHAT.search(body or '')
-    if not match:
-        return None
-    wanted = match.group(1).strip().lower()
-    hits = [chat for chat in chats or () if (chat.get('name') or '').lower() == wanted]
-    return hits[0]['name'] if len(hits) == 1 else None
-
-
-def owner_from_initials(branch, chats):
-    """A branch whose prefix matches one live chat's unique initials."""
-    branch_lower = (branch or '').lower()
-    if not branch_lower:
-        return None
-    for prefix, name in unique_initials(chats).items():
-        if branch_lower == prefix or branch_lower.startswith(prefix + '-'):
-            return name
-    return None
-
-
-def owner_chat(branch, repo, chats, board_names=(), body=None):
-    """The one live chat that owns this PR: Owner chat line, branch initials, then the checkout's
-    branch, its name in the branch slug, the ticket's assignee on the board, then the only checkout
-    of the repo. An ambiguous level owns nobody."""
-    from_body = owner_from_body(body, chats)
-    if from_body:
-        return from_body
-    from_initials = owner_from_initials(branch, chats)
-    if from_initials:
-        return from_initials
-    live = [chat for chat in chats or () if slug(chat.get('name')) not in GENERIC_NAMES]
-    on_branch = [chat for chat in live if branch and chat.get('branch') == branch]
-    if on_branch:
-        return on_branch[0]['name'] if len(on_branch) == 1 else None
-    branch_slug = slug(branch)
-    named = [chat for chat in live if len(slug(chat.get('name'))) >= 5
-             and slug(chat.get('name')) in branch_slug]
-    if named:
-        return named[0]['name'] if len(named) == 1 else None
-    wanted = {slug(name) for name in board_names or () if slug(name)}
-    from_board = [chat for chat in live if slug(chat.get('name')) in wanted]
-    if from_board:
-        return from_board[0]['name'] if len(from_board) == 1 else None
-    checkouts = [chat for chat in live if repo and chat.get('repo') == repo]
-    if checkouts:
-        return checkouts[0]['name'] if len(checkouts) == 1 else None
-    return None
+    return match.group(1).strip() if match else None
 
 
 def parse_time(value):
@@ -296,383 +73,124 @@ def hours_since(value, now):
     stamp = parse_time(value)
     if not stamp:
         return 0.0
-    return round((now - stamp).total_seconds() / 3600, 2)
+    return (now - stamp).total_seconds() / 3600
 
 
-def newest_push(view, now):
-    stamps = [(commit.get('committedDate') or '') for commit in view.get('commits') or ()]
-    stamps = [stamp for stamp in stamps if stamp]
-    return hours_since(max(stamps), now) if stamps else hours_since(view.get('updatedAt'), now)
+def newest_push_hours(view, now):
+    commits = view.get('commits') or ()
+    stamps = [c.get('committedDate') for c in commits if c.get('committedDate')]
+    if stamps:
+        return hours_since(max(stamps), now)
+    return hours_since(view.get('updatedAt'), now)
 
 
-def is_bot(login):
-    return any(bot in (login or '').lower() for bot in BOTS)
+def ci_state(aggregate):
+    state = (aggregate or '').upper()
+    if state in RED:
+        return 'red'
+    if state in PENDING:
+        return 'pending'
+    if state == 'SUCCESS':
+        return 'green'
+    return 'none'
 
 
-def billing_blocked(runs):
-    """A failing check that says payments failed: billing blocks private repos only."""
-    for run in runs or ():
-        output = run.get('output') or {}
-        text = ' '.join(str(output.get(field) or '') for field in ('title', 'summary', 'text'))
-        if BILLING.search(text):
-            return True
-    return False
+def next_action(ci, hours, stale_hours):
+    if hours >= stale_hours:
+        return 'stale: close with a reason or finish and push'
+    if ci == 'green':
+        return 'merge-ready: Babysit drive mode or merge per Shipping'
+    if ci == 'red':
+        return 'fix CI on your branch, then push'
+    if ci == 'pending':
+        return 'wait for CI, or fix CI on your branch'
+    return 'fix CI on your branch, then push'
 
 
-def keeper(group):
-    """The PR to keep for one ticket: the newest one with a passing verdict at its head, else the
-    newest green one, else the oldest PR, the lowest number on a same second tie.
-
-    A newer PR that a verifier passed is the work that is furthest along, so it outranks an older
-    stalled one. With no verdict anywhere, a green newer PR beats a red or pending older one."""
-    def newest(row):
-        return row['created_at'], row['number']
-
-    verified = [row for row in group if row['verdict'] in PASSING]
-    if verified:
-        return max(verified, key=newest)
-    green = [row for row in group if row['checks'] == 'green']
-    if green:
-        return max(green, key=newest)
-    return min(group, key=newest)
-
-
-def mark_duplicates(rows):
-    """One keeper per repo and ticket; every other row of that ticket is the duplicate."""
-    groups = {}
-    for row in rows:
-        if row['bot'] or not row['ticket_key']:
-            continue
-        groups.setdefault((row['repo'], row['ticket_key']), []).append(row)
-    for group in groups.values():
-        kept = keeper(group)
-        for row in group:
-            if row is not kept:
-                row['duplicate_of'] = kept['number']
+def row_from_node(node, now, stale_hours):
+    body = node.get('body') or ''
+    hours = newest_push_hours(
+        {'commits': [n.get('commit') or {} for n in (node.get('commits') or {}).get('nodes') or ()],
+         'updatedAt': node.get('updatedAt')},
+        now,
+    )
+    ci = ci_state((node.get('statusCheckRollup') or {}).get('state'))
+    action = next_action(ci, hours, stale_hours)
+    repo = (node.get('repository') or {}).get('nameWithOwner') or ''
+    return {
+        'repo': repo,
+        'number': node['number'],
+        'url': node.get('url') or '',
+        'title': node.get('title') or '',
+        'branch': node.get('headRefName') or '',
+        'head_sha': node.get('headRefOid') or '',
+        'owner_chat': owner_chat(body),
+        'hours_since_push': round(hours, 2),
+        'ci': ci,
+        'stale': hours >= stale_hours,
+        'next_action': action,
+    }
 
 
-def duplicate_action(kept):
-    """The duplicate's next action names the keeper, so nobody has to work out which one lives."""
-    return (f'Message the owner chat of #{kept}, then close this pull request for the same ticket '
-            'with a one line reason and the ticket link. Never open a second PR beside a stalled one.')
-
-
-def classify(row, stale_hours):
-    """The first state that fits, in this order. No owner fails the tick whatever its verdict."""
-    if row['bot']:
-        return 'BOT'
-    if row['duplicate_of'] is not None:
-        return 'DUPLICATE'
-    if not row['owner_chat']:
-        return 'NO-OWNER'
-    if row['conflict']:
-        return 'CONFLICT'
-    if row['billing_blocked']:
-        return 'BILLING'
-    if row['checks'] == 'red':
-        return 'RED'
-    if row['verdict'] == 'FAIL':
-        return 'VERIFIER-FAIL'
-    if not (row['has_author_model'] and row['has_pacer_line']):
-        return 'MISSING-LINES'
-    if row['verdict'] == 'none':
-        return 'NO-VERDICT'
-    if row['hours_since_push'] > stale_hours:
-        return 'STALE'
-    if row['checks'] == 'green' and row['verdict'] in PASSING:
-        return 'READY'
-    return 'OK'
-
-
-def build_rows(views, chats, stale_hours=72, billing_probe=None, board_lookup=None):
-    """One row per view, with every field the table, the JSON dump and the counts need.
-
-    board_lookup reads the assignee names of one ticket key, and is only supplied when a board
-    token is available."""
-    now = datetime.datetime.now(datetime.timezone.utc)
-    pattern = pacer()
+def build_rows(nodes, mine, now, stale_hours):
+    want = mine.lower()
     rows = []
-    for view in views or ():
-        repo = view.get('repository') or ''
-        author = (view.get('author') or {}).get('login') or ''
-        body = view.get('body') or ''
-        branch = view.get('headRefName') or ''
-        head = view.get('headRefOid') or ''
-        checks = view_checks(view)
-        billed = bool(checks == 'red' and billing_probe and billing_blocked(billing_probe(repo, head)))
-        mergeable = (view.get('mergeable') or '').upper()
-        key = ticket_key(view.get('title'), branch)
-        board_names = board_lookup(key) if (board_lookup and key) else ()
-        rows.append({
-            'repo': repo,
-            'number': view.get('number'),
-            'url': view.get('url') or '',
-            'title': view.get('title') or '',
-            'branch': branch,
-            'head_sha': head,
-            'author': author,
-            'age_hours': hours_since(view.get('createdAt'), now),
-            'hours_since_push': newest_push(view, now),
-            'ticket_key': key,
-            'owner_chat': owner_chat(branch, repo, chats, board_names, body),
-            'checks': checks,
-            'billing_blocked': billed,
-            'conflict': mergeable in ('CONFLICTING', 'CONFLICT'),
-            'verdict': verdict_at(view.get('comments'), head),
-            'has_author_model': bool(pattern.AUTHOR.search(body)),
-            'has_pacer_line': bool(pattern.LAUNCH.search(body)),
-            'duplicate_of': None,
-            'state': None,
-            'next_action': None,
-            'bot': is_bot(author),
-            'created_at': view.get('createdAt') or '',
-        })
-    mark_duplicates(rows)
-    for row in rows:
-        row['state'] = classify(row, stale_hours)
-        row['next_action'] = (duplicate_action(row['duplicate_of']) if row['state'] == 'DUPLICATE'
-                              else NEXT_ACTION[row['state']])
-        row.pop('bot')
-        row.pop('created_at')
+    for node in nodes:
+        row = row_from_node(node, now, stale_hours)
+        owner = (row['owner_chat'] or '').lower()
+        if owner != want:
+            continue
+        rows.append(row)
+    rows.sort(key=lambda r: (r['repo'], r['number']))
     return rows
 
 
-def counts(rows):
-    """How many rows sit in each state that has at least one."""
-    return dict(Counter(row['state'] for row in rows))
+def search_scope(repo):
+    if repo:
+        return f'repo:{repo} is:pr is:open'
+    return f'user:{DEFAULT_USER} is:pr is:open'
 
 
-class GhError(Exception):
-    """A gh call that failed or answered something this script cannot read."""
+def gh_graphql(query, fields):
+    args = ['api', 'graphql', '-f', f'query={query}']
+    for key, value in fields.items():
+        args.extend(['-f', f'{key}={value}'])
+    return gh_json(args)
 
 
 def gh_json(args):
     try:
-        result = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
-    except FileNotFoundError:
-        raise GhError('gh is not installed')
-    except subprocess.TimeoutExpired:
-        raise GhError(f'gh timed out after {GH_TIMEOUT}s: gh {" ".join(args[:3])}')
-    if result.returncode != 0:
-        lines = (result.stderr or result.stdout or '').strip().splitlines()
-        raise GhError(lines[0] if lines else f'gh exited {result.returncode}: gh {" ".join(args[:3])}')
+        proc = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as err:
+        raise GhError(str(err)) from err
+    if proc.returncode != 0:
+        raise GhError(proc.stderr.strip() or proc.stdout.strip() or 'gh failed')
     try:
-        return json.loads(result.stdout or 'null')
-    except ValueError:
-        raise GhError(f'unparseable gh output: gh {" ".join(args[:3])}')
-
-
-def graphql(query, **variables):
-    """One GraphQL answer; its cost and remaining points come from the same response.
-
-    A rate-limit or other GraphQL error arrives either as a nonzero exit or inside a 200, and both
-    become one GhError, so a broken tick never reads as a clean one."""
-    args = ['api', 'graphql', '-f', f'query={query}']
-    for name, value in variables.items():
-        if value is not None:
-            args += ['-F', f'{name}={value}']
-    answer = gh_json(args)
-    if isinstance(answer, dict) and answer.get('errors'):
-        first = (answer['errors'] or [{}])[0]
-        message = first.get('message') if isinstance(first, dict) else None
-        raise GhError(f'gh api graphql said {message or "an error this script cannot read"}')
-    data = answer.get('data') if isinstance(answer, dict) else None
-    if not isinstance(data, dict):
-        raise GhError('gh api graphql answered no data')
-    return data
-
-
-def search_scope(owner, repo=None):
-    """The search that scopes one run: one repo, else every repo the owner has."""
-    target = f'repo:{repo}' if repo else f'owner:{owner}'
-    return f'{target} is:pr is:open'
-
-
-def context(run):
-    """One check as `gh pr view --json statusCheckRollup` shaped it, so the row reads it the same.
-
-    A billing message lives in a check run's title or summary."""
-    if run.get('__typename') == 'StatusContext':
-        return {'__typename': 'StatusContext', 'context': run.get('context') or '',
-                'state': run.get('state') or ''}
-    return {'__typename': 'CheckRun', 'name': run.get('name') or '',
-            'status': run.get('status') or '', 'conclusion': run.get('conclusion') or '',
-            'output': {field: run.get(field) for field in ('title', 'summary', 'text')}}
-
-
-def login_of(author):
-    """The login `gh pr view` printed: an app actor reads `app/<slug>`, as the REST export does."""
-    author = author or {}
-    login = author.get('login') or ''
-    return f'app/{login}' if (login and author.get('__typename') == 'Bot') else login
-
-
-def view_from_node(node):
-    """One search node as the view `gh pr view --json` answered before, field for field."""
-    def nodes(field):
-        return ((node.get(field) or {}).get('nodes')) or ()
-
-    rollup = node.get('statusCheckRollup') or {}
-    contexts = (rollup.get('contexts') or {})
-    return {
-        'repository': (node.get('repository') or {}).get('nameWithOwner') or '',
-        'number': node.get('number'),
-        'url': node.get('url') or '',
-        'title': node.get('title') or '',
-        'headRefName': node.get('headRefName') or '',
-        'headRefOid': node.get('headRefOid') or '',
-        'author': {'login': login_of(node.get('author'))},
-        'createdAt': node.get('createdAt') or '',
-        'updatedAt': node.get('updatedAt') or '',
-        'body': node.get('body') or '',
-        'mergeable': node.get('mergeable') or '',
-        'statusCheckRollup': [context(run) for run in contexts.get('nodes') or ()],
-        'checks_total': contexts.get('totalCount'),
-        'checks_rollup': rollup.get('state'),
-        'comments': [{'body': comment.get('body') or '', 'createdAt': comment.get('createdAt') or ''}
-                     for comment in nodes('comments')],
-        'commits': [{'oid': '', 'committedDate': (entry.get('commit') or {}).get('committedDate') or ''}
-                    for entry in nodes('commits')],
-    }
-
-
-def view_checks(view):
-    """The checks of one view: by context, with the rollup state answering when they were cut short."""
-    return checks_state(view.get('statusCheckRollup') or (),
-                        view.get('checks_total'), view.get('checks_rollup'))
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as err:
+        raise GhError('gh returned invalid JSON') from err
 
 
 def bulk_prs(scope):
-    """Every open PR in the scope, in one search paged by cursor.
-
-    Three calls cover 180 open PRs. The run prints what it spent, so the next tick can too."""
-    views, calls, points, after, limit = [], 0, 0, None, {}
-    while True:
-        data = graphql(SEARCH_QUERY, q=scope, after=after)
-        calls += 1
-        limit = data.get('rateLimit') or {}
-        points += int(limit.get('cost') or 0)
-        search = data.get('search') or {}
-        for node in search.get('nodes') or ():
-            if not isinstance(node, dict) or not node.get('number'):
-                raise GhError('the bulk search answered an item without a number')
-            views.append(view_from_node(node))
-        page = search.get('pageInfo') or {}
+    nodes = []
+    after = None
+    for _ in range(20):
+        fields = {'q': scope}
+        if after:
+            fields['after'] = after
+        payload = gh_graphql(SEARCH_QUERY, fields)
+        if payload.get('errors'):
+            raise GhError('; '.join(e.get('message', '') for e in payload['errors']))
+        data = (payload.get('data') or {}).get('search') or {}
+        batch = data.get('nodes') or []
+        nodes.extend(batch)
+        page = data.get('pageInfo') or {}
+        if not page.get('hasNextPage'):
+            break
         after = page.get('endCursor')
-        if not page.get('hasNextPage') or not after:
+        if not after:
             break
-        if calls >= MAX_PAGES:
-            print(f'pr-queue: stopped after {MAX_PAGES} pages and {len(views)} PRs; the scope holds more',
-                  file=sys.stderr)
-            break
-    print(f'pr-queue: {calls} gh calls, {points} GraphQL points spent, '
-          f'{limit.get("remaining")} points left in this hour', file=sys.stderr)
-    return views
-
-
-def pooled(work, items):
-    """Run one bounded pool of ticket reads: a slow board never stalls the whole queue."""
-    if not items:
-        return []
-    with ThreadPoolExecutor(max_workers=POOL) as pool:
-        futures = [pool.submit(work, *item) for item in items]
-        return [future.result() for future in futures]
-
-
-def repo_from_remote(url):
-    match = REMOTE.search((url or '').strip())
-    return match[1] if match else None
-
-
-def checkout(cwd):
-    """(repo, branch) for a working tree, or (None, None) when git cannot answer."""
-    def git(*args):
-        try:
-            result = subprocess.run(['git', '-C', cwd, *args], capture_output=True, text=True,
-                                    timeout=GIT_TIMEOUT)
-        except (OSError, subprocess.TimeoutExpired):
-            return ''
-        return (result.stdout or '').strip() if result.returncode == 0 else ''
-
-    repo = repo_from_remote(git('config', '--get', 'remote.origin.url'))
-    return repo, (git('rev-parse', '--abbrev-ref', 'HEAD') or None)
-
-
-def ticket_owner_names(payload, key):
-    """The assignee display names on one ticket, read out of `hypertask --json task get`.
-
-    An unreadable answer names nobody: ownership then comes from the roster and the branches."""
-    try:
-        answer = json.loads(payload or '')
-    except ValueError:
-        return []
-    tasks = (answer or {}).get('tasks') if isinstance(answer, dict) else None
-    names = []
-    for task in tasks or ():
-        if not isinstance(task, dict) or task.get('ticketNumber') not in (None, key):
-            continue
-        for assignee in task.get('assignees') or ():
-            name = ((assignee or {}).get('displayName') or '').strip()
-            if name and name not in names:
-                names.append(name)
-    return names
-
-
-_board_warned = []
-
-
-def read_ticket(key, token):
-    """One ticket's assignee names, read only through the board login. Never writes.
-
-    A login that cannot read one ticket names nobody, and says so once per run, so a broken token
-    leaves the roster reading that worked before."""
-    try:
-        result = subprocess.run(['hypertask', '--json', '--token', token, 'task', 'get', key],
-                                capture_output=True, text=True, timeout=BOARD_TIMEOUT)
-        answer = result.stdout if result.returncode == 0 else ''
-    except (OSError, subprocess.TimeoutExpired):
-        answer = ''
-    if not answer.strip() and not _board_warned:
-        _board_warned.append(key)
-        print(f'pr-queue: could not read ticket {key}; ownership came from the roster only',
-              file=sys.stderr)
-    return ticket_owner_names(answer, key)
-
-
-def board_token(path=None):
-    """The board login from --token-file, else HT_TOKEN. Empty means read no ticket at all."""
-    if path:
-        try:
-            return Path(path).read_text().strip()
-        except OSError:
-            print(f'pr-queue: cannot read --token-file {path}; running without the board', file=sys.stderr)
-            return ''
-    return (os.environ.get('HT_TOKEN') or '').strip()
-
-
-def read_roster():
-    """Live chats as {name, cwd, repo, branch}: a missing roster or a failing git read owns nothing."""
-    try:
-        result = subprocess.run([str(ROSTER)], capture_output=True, text=True, timeout=ROSTER_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    home = str(Path.home())
-    chats, trees = [], {}
-    for line in (result.stdout or '').splitlines():
-        match = ROSTER_LINE.match(line.strip())
-        if not match:
-            continue
-        cwd = (match.group('cwd') or '').strip()
-        cwd = home + cwd[1:] if cwd == '~' or cwd.startswith('~/') else cwd
-        chats.append({'name': match.group('name').strip(), 'cwd': cwd, 'repo': None, 'branch': None})
-    for chat in chats:
-        cwd = chat['cwd']
-        if not cwd or not Path(cwd).is_dir():
-            continue
-        if cwd not in trees:
-            trees[cwd] = checkout(cwd)
-        chat['repo'], chat['branch'] = trees[cwd]
-    return chats
+    return nodes
 
 
 def worktree_branches(checkout):
@@ -690,7 +208,7 @@ def worktree_branches(checkout):
     return trees
 
 
-def cleanup_rows(rows, chats, mine, owner, repo=None):
+def cleanup_rows(rows, mine, repo=None):
     """Keep this chat's observed PRs after merge until its local copies are gone."""
     directory = Path.home() / '.local/state/pr-housekeeping'
     directory.mkdir(parents=True, exist_ok=True)
@@ -704,13 +222,20 @@ def cleanup_rows(rows, chats, mine, owner, repo=None):
             if (row.get('owner_chat') or '').casefold() != mine.casefold():
                 continue
             current.add(f'{row["repo"]}#{row["number"]}')
-            candidates = [chat['cwd'] for chat in chats
-                          if chat['name'].casefold() == mine.casefold() and chat.get('repo') == row['repo']]
+            if not row.get('branch'):
+                continue
             name = row['repo'].split('/')[-1]
-            for candidate in (Path.home() / 'projects' / name, Path.home() / '.local/share' / name):
-                if candidate.is_dir() and checkout(str(candidate))[0] == row['repo']:
-                    candidates.append(str(candidate))
+            candidates = (Path.cwd(), Path.home() / 'projects' / name,
+                          Path.home() / '.local/share' / name)
             for candidate in dict.fromkeys(candidates):
+                if not candidate.is_dir():
+                    continue
+                remote = subprocess.run(['git', '-C', str(candidate), 'config', '--get',
+                                         'remote.origin.url'], capture_output=True, text=True,
+                                        timeout=GIT_TIMEOUT)
+                match = re.search(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$', remote.stdout.strip())
+                if remote.returncode != 0 or not match or match[1] != row['repo']:
+                    continue
                 result = subprocess.run(['git', '-C', candidate, 'rev-parse',
                                          '--path-format=absolute', '--git-common-dir'],
                                         capture_output=True, text=True, timeout=GIT_TIMEOUT)
@@ -735,14 +260,12 @@ def cleanup_rows(rows, chats, mine, owner, repo=None):
             row = record['row']
             if f'{row["repo"]}#{row["number"]}' in current or (repo and row['repo'] != repo):
                 continue
-            if not repo and row['repo'].split('/')[0] != owner:
-                continue
             if not record['merged']:
                 pr = gh_json(['api', f'repos/{row["repo"]}/pulls/{row["number"]}'])
                 if not isinstance(pr, dict):
                     raise GhError(f'cannot read cleanup PR {identity}')
-                claimed = OWNER_CHAT.search(pr.get('body') or '')
-                if claimed and claimed[1].casefold() != mine.casefold():
+                claimed = owner_chat(pr.get('body'))
+                if claimed and claimed.casefold() != mine.casefold():
                     del saved[identity]
                     continue
                 if pr.get('merged_at'):
@@ -773,56 +296,40 @@ def cleanup_rows(rows, chats, mine, owner, repo=None):
                 command = shlex.join([str(Path.home() / '.local/bin/repo-tidy'), '--apply',
                                       '--mine', record['checkout'], '--branch', branch])
                 action = f'Run {command}. Keep every gate; retry holds next tick.'
-            pending.append(dict(row, state='CLEANUP', next_action=action))
+            pending.append(dict(row, cleanup=True, next_action='cleanup: ' + action))
         tmp = path.with_suffix(f'.{os.getpid()}.tmp')
         tmp.write_text(json.dumps(saved, indent=2) + '\n')
         tmp.replace(path)
         return pending
 
 
-def table(rows):
-    """A plain table: one line per PR, then the counts, then one summary line."""
-    header = ('STATE', 'OWNER', 'PR', 'TICKET', 'CHECKS', 'VERDICT', 'AGE H', 'PUSH H', 'TITLE')
-    body = [[row['state'], row['owner_chat'] or '-', f'{row["repo"]}#{row["number"]}',
-             row['ticket_key'] or '-', row['checks'], row['verdict'],
-             f'{row["age_hours"]:.1f}', f'{row["hours_since_push"]:.1f}', row['title']]
-            for row in rows]
-    widths = [max([len(header[i])] + [len(line[i]) for line in body]) for i in range(len(header))]
-    lines = ['  '.join(header[i].ljust(widths[i]) for i in range(len(header))).rstrip()]
-    for line in body:
-        lines.append('  '.join(line[i].ljust(widths[i]) for i in range(len(header))).rstrip())
-    return lines
-
-
-def render(rows, scoped_by, stale_hours):
-    """The whole report as lines of text."""
-    tally = counts(rows)
-    waiting = [row for row in rows if row['state'] in ('NO-OWNER', 'STALE')]
-    lines = table(rows)
+def render(rows, mine, stale_hours):
+    lines = []
     for row in rows:
-        if row['state'] == 'CLEANUP':
-            lines.append(f'{row["url"]}: {row["next_action"]}')
+        tag = f"{row['repo']}#{row['number']}"
+        lines.append(f"{tag}  {row['title']}")
+        lines.append(f"  {row['url']}")
+        lines.append(f"  {row['next_action']}")
     lines.append('')
-    lines.append('counts: ' + (', '.join(f'{state} {tally[state]}' for state in STATES if state in tally) or 'none'))
-    opened = sum(row['state'] != 'CLEANUP' for row in rows)
-    lines.append(f'pr-queue: {opened} open PR{"" if opened == 1 else "s"} {scoped_by}, '
-                 f'{len(waiting)} waiting on an owner or a push, stale after {stale_hours}h')
+    stale_n = sum(1 for r in rows if r['stale'])
+    cleanup_n = sum(bool(r.get('cleanup')) for r in rows)
+    open_n = len(rows) - cleanup_n
+    lines.append(
+        f"pr-queue: {open_n} open PR{'s' if open_n != 1 else ''} for Owner chat {mine!r}, "
+        f"stale after {stale_hours}h ({stale_n} stale, {cleanup_n} cleanup)"
+    )
     return lines
 
 
 def self_test():
-    """The committed spec: fixtures only, no network."""
     return subprocess.call([sys.executable, '-m', 'unittest', 'tests.test_pr_queue'], cwd=str(ROOT))
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description='every open PR, its state and its owning chat')
-    parser.add_argument('--owner', default='valentinyeo')
+    parser = argparse.ArgumentParser(description="list this chat's own open PRs")
+    parser.add_argument('--mine', help='only PRs whose body names this Owner chat (required)')
     parser.add_argument('--repo', help='only this owner/name')
-    parser.add_argument('--mine', help='only PRs owned by this live chat name (required)')
-    parser.add_argument('--token-file', help='read only board login, so a ticket assignee can own a PR')
     parser.add_argument('--stale-hours', type=int, default=72)
-    parser.add_argument('--json', dest='json_path', help='write {"owner", "mine", "rows", "counts"} here')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args(argv)
     if args.self_test:
@@ -831,48 +338,21 @@ def main(argv):
         print('pr-queue: pass --mine NAME; each chat checks only its own pull requests', file=sys.stderr)
         return 2
     try:
-        views = bulk_prs(search_scope(args.owner, args.repo))
-        # The billing probe reads the checks the bulk query already carried, so a red PR costs
-        # no extra call. Only a red head is ever probed.
-        probes = {(view['repository'], view['headRefOid']): view['statusCheckRollup'] for view in views
-                  if view.get('headRefOid') and view_checks(view) == 'red'}
+        nodes = bulk_prs(search_scope(args.repo))
     except GhError as error:
         print(f'pr-queue: {error}', file=sys.stderr)
         print('pr-queue: gh failed, so this tick read nothing; check `gh auth status` and rerun',
               file=sys.stderr)
         return 2
-    chats = read_roster()
-    if not any(chat['name'].lower() == args.mine.lower() for chat in chats):
-        print(f'pr-queue: --mine {args.mine!r} names no live chat; '
-              f'run {ROSTER} for the live names', file=sys.stderr)
-        return 2
-    token = board_token(args.token_file)
-    keys = sorted({ticket_key(view.get('title'), view.get('headRefName')) for view in views
-                   if not is_bot((view.get('author') or {}).get('login') or '')} - {None})
-    tickets = dict(zip(keys, pooled(read_ticket, [(key, token) for key in keys]))) if token else {}
-    rows = build_rows(views, chats, args.stale_hours,
-                      billing_probe=lambda repo, sha: probes.get((repo, sha), []),
-                      board_lookup=tickets.get if token else None)
-    rows = [row for row in rows if (row['owner_chat'] or '').lower() == args.mine.lower()]
+    now = datetime.datetime.now(datetime.timezone.utc)
+    rows = build_rows(nodes, args.mine, now, args.stale_hours)
     try:
-        rows += cleanup_rows(rows, chats, args.mine, args.owner, args.repo)
+        rows += cleanup_rows(rows, args.mine, args.repo)
     except (GhError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(f'pr-queue: cleanup tracking failed: {error}', file=sys.stderr)
         return 2
-    if not rows:
-        named = [chat for chat in chats if chat['name'].lower() == args.mine.lower()]
-        if named and not named[0].get('repo'):
-            print(f'pr-queue: {args.mine} is live but git cannot read a checkout for it, so only a '
-                  'branch name can make a PR its own; 0 rows proves nothing', file=sys.stderr)
-    if args.repo:
-        scoped_by = f'in {args.repo} owned by {args.mine}'
-    else:
-        scoped_by = f'owned by {args.mine} across {args.owner}'
-    print('\n'.join(render(rows, scoped_by, args.stale_hours)))
-    if args.json_path:
-        Path(args.json_path).write_text(json.dumps({'owner': args.owner, 'mine': args.mine,
-                                                    'rows': rows, 'counts': counts(rows)}, indent=2) + '\n')
-    return 1 if [row for row in rows if row['state'] in ('NO-OWNER', 'STALE', 'CLEANUP')] else 0
+    print('\n'.join(render(rows, args.mine, args.stale_hours)))
+    return 1 if any(row['stale'] or row.get('cleanup') for row in rows) else 0
 
 
 if __name__ == '__main__':
