@@ -7,7 +7,7 @@ trap 'rm -rf "$TEST_HOME"' EXIT
 
 dests=(.claude/skills .codex/skills .cursor/skills .pi/agent/skills .agents/skills \
   .gemini/antigravity-cli/skills .gemini/config/skills)
-retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop)
+retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py pstack-reply.py reconcile-auto.py repo-tidy-stop)
 mkdir -p "$TEST_HOME/.claude/hooks" "$TEST_HOME/.local/bin"
 for hook in "${retired_hooks[@]}"; do
   ln -s "$ROOT/hooks/$hook" "$TEST_HOME/.claude/hooks/$hook"

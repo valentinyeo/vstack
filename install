@@ -183,7 +183,7 @@ link_one worker-shims "$ROOT/scripts/worker-shims" "$HOME/.local/bin"
 
 # Remove retired registrations before their links, including the old bare Python
 # command that would otherwise block every prompt when its file disappears.
-retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop)
+retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py pstack-reply.py reconcile-auto.py repo-tidy-stop)
 python3 - "$HOME/.claude/settings.json" "$ROOT/.claude/settings.local.json" -- "${retired_hooks[@]}" <<'PY'
 import json
 import os

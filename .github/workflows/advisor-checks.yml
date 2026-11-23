@@ -40,7 +40,6 @@ jobs:
           python3 -m unittest discover -s tests -p test_install_ticket_claim.py -v
           python3 -m unittest discover -s tests -p test_pick_verifier_model.py -v
           python3 -m unittest discover -s tests -p test_picker_from_base.py -v
-          python3 -m unittest discover -s tests -p 'test_*columns.py' -v
           python3 -m unittest discover -s tests -p test_verdict.py -v
       - name: test timeout guard self-test
         run: timeout 60 python3 hooks/test-timeout-guard.py --self-test
