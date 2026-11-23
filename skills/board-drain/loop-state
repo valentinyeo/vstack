@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Record, read and clear the state of a chat's own board drain loop."""
+"""Record, read and clear the state of a chat's own board drain loop.
+
+One record per chat holds the armed loop, the last sync, and the watcher's pulse. Every
+reader of "is anything going to wake this chat" goes through here, so drain-check, the
+chat's own hook and the fleet report cannot disagree (VSTA-151).
+
+    loop-state status --name <chat>    # 0 armed, 3 expires soon, 2 not armed or watcher dead
+    loop-state watcher --name <chat>   # one line: watcher ok / watcher dead since <time>
+"""
 import argparse
 import fcntl
 from datetime import datetime, timezone
@@ -28,6 +36,9 @@ WEEK = 7 * 86400
 SOON = 86400
 SYNC_STALE = 45 * 60
 PACER_FLOOR = 7200
+# The watcher pulses every poll, so a pulse older than a few polls is a dead watcher.
+DEFAULT_EVERY = 180
+BEAT_FLOOR = 300
 PLAN_PICK = Path.home() / '.local/bin' / 'plan-pick'
 ERRORS = (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError)
 
@@ -138,10 +149,66 @@ def store(name, state):
         os.close(directory)
 
 
-def record_watch(name, pid, now=None):
-    """Record the watcher this chat leaves running; a dead pid is a dead loop."""
+def record_watch(name, pid, now=None, every=None):
+    """Record the watcher this chat leaves running, and its first pulse.
+
+    The pulse is the marker the watcher leaves behind: whatever kills it, the chat's own
+    hook reads the last pulse and knows when it died (VSTA-151).
+    """
     moment = time.time() if now is None else now
-    return store(name, {'watch_pid': int(pid), 'watch_started': iso(moment)})
+    patch = {'watch_pid': int(pid), 'watch_started': iso(moment), 'watch_beat': iso(moment)}
+    if every is not None:
+        patch['watch_every'] = int(every)
+    return store(name, patch)
+
+
+def beat(name, now=None):
+    """The watcher's pulse, refreshed on every poll so a silence has a time on it."""
+    moment = time.time() if now is None else now
+    if not stored(name):
+        return {}
+    return store(name, {'watch_beat': iso(moment)})
+
+
+def beat_limit(state):
+    """How long a watcher may go quiet before it is dead: three polls, never under five minutes."""
+    try:
+        every = int(state.get('watch_every') or DEFAULT_EVERY)
+    except (TypeError, ValueError):
+        every = DEFAULT_EVERY
+    return max(BEAT_FLOOR, 3 * max(1, every))
+
+
+def watch_health(name, now=None):
+    """('ok' | 'dead' | 'none', line) for this chat's watcher, judged by its last pulse.
+
+    A watcher that exited, was killed with the chat process, or hung past its poll rhythm
+    is dead, and the line names when it was last seen alive. A live recorded pid without a
+    watch_beat yet (an older watcher running during an upgrade) counts as alive so upgrades
+    never raise a fleet-wide false alarm. A loop that never recorded a watcher reads 'none':
+    a chat whose recurring job is the loop (Codex) has no watcher.
+    """
+    moment = time.time() if now is None else now
+    state = stored(name)
+    pid = state.get('watch_pid')
+    beat_at = None
+    try:
+        beat_at = reconcile.stamp(state['watch_beat'])
+    except ERRORS:
+        pass
+    started_at = None
+    try:
+        started_at = reconcile.stamp(state['watch_started'])
+    except ERRORS:
+        pass
+    seen = beat_at if beat_at is not None else started_at
+    if pid is None and seen is None:
+        return 'none', 'no watcher recorded'
+    if pid is not None and reconcile.pid_alive(pid) and (
+            beat_at is None or moment - beat_at <= beat_limit(state)):
+        return 'ok', 'watcher ok'
+    since = iso(seen) if seen is not None else 'before this loop was armed'
+    return 'dead', f'watcher dead since {since}'
 
 
 def clear_watch(name, pid=None):
@@ -294,10 +361,11 @@ def status(name, now=None):
             return 2, 'not armed'
     except ERRORS:
         return 2, 'not armed'
-    # A cleared watch_pid means the watcher exited on purpose; a recorded dead one
-    # means the chat has nothing to wake it. No watcher ever recorded is today's rule.
-    if state.get('watch_pid') is not None and not reconcile.pid_alive(state['watch_pid']):
-        return 2, 'watcher dead'
+    # A cleared pulse is a watcher that exited without the chat re-arming; that silence
+    # is the failure VSTA-151 was about, so it fails here instead of reading armed.
+    kind, line = watch_health(name, moment)
+    if kind == 'dead':
+        return 2, line
     remaining = int(expires - moment)
     if remaining <= 0:
         return 2, 'not armed'
@@ -327,14 +395,18 @@ def clear(name):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for command in ('arm', 'status', 'clear', 'watch', 'timer'):
+    for command in ('arm', 'status', 'clear', 'watch', 'watcher', 'timer'):
         sub = commands.add_parser(command)
-        sub.add_argument('--name', required=True)
+        if command == 'watcher':
+            sub.add_argument('--name', required=True, help="This chat's Multibot name")
+        else:
+            sub.add_argument('--name', required=True)
         if command == 'timer':
             sub.add_argument('--board', type=int, required=True)
             sub.add_argument('--label', required=True)
         if command == 'watch':
             sub.add_argument('--pid', type=int, required=True, help='The watcher process id')
+            sub.add_argument('--every', type=int, help='Seconds between the watcher\'s polls')
         if command == 'arm':
             sub.add_argument('--every', default='2h')
             sub.add_argument('--expires', help='ISO expiry; default is 7 days (recurring cron limit)')
@@ -358,9 +430,13 @@ def main(argv=None):
             print('cleared')
             return 0
         if args.command == 'watch':
-            state = record_watch(args.name, args.pid)
+            state = record_watch(args.name, args.pid, every=args.every)
             print(f'watching, started {state["watch_started"]}')
             return 0
+        if args.command == 'watcher':
+            kind, line = watch_health(args.name)
+            print(line)
+            return 0 if kind == 'ok' else 1
         code, text = status(args.name)
         print(text)
         return code
