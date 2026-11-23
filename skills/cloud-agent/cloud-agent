@@ -22,8 +22,9 @@ One JSON line on stdout, always the last thing printed:
 next lane.
 
 Preflight, every vendor: --repo is a git repo on github.com, its branch has an upstream, every
-local commit is pushed, and no tracked file is modified. A cloud agent clones GitHub, so local
-work it cannot see would be silently missing.
+local commit is pushed, the current branch exists on origin (pushed when missing), and no tracked
+file is modified. A cloud agent clones GitHub, so local work it cannot see would be silently
+missing.
 
   cursor  There is no API key and none is needed: the CLI login works. `cursor-agent -p` ignores
           the `&` prefix and runs locally, and --cloud/--background are gone, so this drives the
@@ -90,6 +91,7 @@ PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
 GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
 CURSOR_MODEL = re.compile(r'^(?:composer-2\.5(?:-[a-z]+)*|(?:cursor-)?grok-\d+(?:\.\d+)?(?:-[a-z]+)*)$')
 SUBMITTED = ('Checking git status', 'Open Cloud Agent in:')
+CURSOR_PUSH_DIALOG = re.compile(r'Branch Not Pushed|Push to remote before kicking off', re.I)
 UPSTREAM = re.compile(r'^[^/]+/(.+)$')
 
 
@@ -134,7 +136,7 @@ def exit_code(status):
 
 def emit(row):
     """Print the one JSON line and return the process exit code."""
-    print(json.dumps({key: row.get(key) for key in KEYS}))
+    print(json.dumps({key: row.get(key) for key in KEYS}), flush=True)
     if row['status'] == 'limit':
         print('429 limit', file=sys.stderr)
     return exit_code(row['status'])
@@ -230,15 +232,25 @@ def moment(text):
         return None
 
 
-def pr_after(pull_requests, since, prefix):
-    """The first pull request created after launch on a branch with this prefix, or None."""
+def pr_after(pull_requests, since, prefixes):
+    """The first pull request created after launch on a matching branch, or None.
+
+    Each entry in prefixes is either a branch prefix (ends with /) or an exact branch name.
+    """
     started = datetime.datetime.fromtimestamp(since, datetime.timezone.utc)
     found = []
     for pull in pull_requests or ():
         created = moment(pull.get('createdAt'))
         branch = pull.get('headRefName') or ''
-        if created and created > started and branch.startswith(prefix):
-            found.append((created, pull))
+        if not (created and created > started):
+            continue
+        for prefix in prefixes:
+            if prefix.endswith('/') and branch.startswith(prefix):
+                found.append((created, pull))
+                break
+            if not prefix.endswith('/') and branch == prefix:
+                found.append((created, pull))
+                break
     return min(found, key=lambda pair: pair[0])[1] if found else None
 
 
@@ -295,6 +307,10 @@ def preflight(repo):
         first = dirty.stdout.strip().splitlines()[0].strip()
         return (f'{repo} has uncommitted tracked changes ({first}): commit or stash them first, '
                 'a cloud agent clones GitHub and cannot see local files')
+    why = ensure_origin_branch(path)
+    if why:
+        return (f'{why}; cursor-agent refuses to start a cloud agent until the current branch '
+                'exists on GitHub')
     return None
 
 
@@ -302,6 +318,36 @@ def upstream_ref(repo):
     """origin/main for the current branch, or ''."""
     proc = git(repo, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}')
     return proc.stdout.strip() if proc.returncode == 0 else ''
+
+
+def current_branch(repo):
+    """The checked-out branch name, or ''."""
+    proc = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD')
+    return proc.stdout.strip() if proc.returncode == 0 else ''
+
+
+def branch_on_origin(repo, branch):
+    """True when origin has a branch with this name."""
+    if not branch or branch == 'HEAD':
+        return False
+    local = git(repo, 'show-ref', '--verify', f'refs/remotes/origin/{branch}')
+    if local.returncode == 0:
+        return True
+    proc = git(repo, 'ls-remote', '--heads', 'origin', branch, timeout=GH_TIMEOUT)
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def ensure_origin_branch(repo):
+    """Push the current branch when it is missing on origin, or why that failed."""
+    branch = current_branch(repo)
+    if not branch:
+        return 'cannot read the current branch name'
+    if branch_on_origin(repo, branch):
+        return None
+    pushed = git(repo, 'push', '-u', 'origin', branch, timeout=300)
+    if pushed.returncode != 0:
+        return f'git push -u origin {branch} failed: {saying(pushed)}'
+    return None
 
 
 def slug_of(repo):
@@ -353,17 +399,19 @@ def list_prs(slug):
         return None, f'gh pr list returned no JSON: {exc}'
 
 
-def wait_for_pr(slug, prefix, since, timeout):
-    """(pull request, why not) for the first PR on a prefix branch created after launch."""
+def wait_for_pr(slug, prefixes, since, timeout):
+    """(pull request, why not) for the first PR on a matching branch created after launch."""
     deadline = time.time() + timeout
     why = 'no gh answer yet'
+    label = ' or '.join(prefixes)
     while True:
         pull_requests, why = list_prs(slug)
         if pull_requests is not None:
-            found = pr_after(pull_requests, since, prefix)
+            found = pr_after(pull_requests, since, prefixes)
             if found:
                 return found, None
-            why = f'no pull request on a {prefix} branch after {time.strftime("%H:%M:%S", time.gmtime(since))} UTC'
+            why = (f'no pull request on a branch matching {label} after '
+                   f'{time.strftime("%H:%M:%S", time.gmtime(since))} UTC')
         if time.time() >= deadline:
             return None, why
         time.sleep(min(PR_POLL_SECONDS, max(0.0, deadline - time.time())))
@@ -395,6 +443,28 @@ def pane_text(tmux, session, log):
     return text
 
 
+def dismiss_cursor_push_dialog(tmux, session, text):
+    """Answer y on the cursor-agent push dialog so the cloud handoff can continue."""
+    if not CURSOR_PUSH_DIALOG.search(text or ''):
+        return
+    run([tmux, 'send-keys', '-t', session, 'y'], timeout=15)
+
+
+def wait_cursor_agent_url(tmux, session, read, seconds):
+    """The pane text once a cloud agent URL appears, or None after seconds."""
+    deadline = time.monotonic() + seconds
+    while True:
+        text = read()
+        dismiss_cursor_push_dialog(tmux, session, text)
+        if extract_cursor_url(text)[0]:
+            return text
+        if cursor_limit_hit(submitted_tail(text)):
+            return text
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+
 def launch_cursor(repo, brief, model, no_wait, timeout):
     """Drive the cursor REPL: `&` alone moves it to a cloud agent, then the brief, then Enter."""
     tmux = binary('tmux')
@@ -402,7 +472,7 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
     session = f'cloud-agent-cursor-{os.getpid()}-{int(time.time() * 1000)}'
     holder = Path(tempfile.mkdtemp(prefix='cloud-agent-cursor-'))
     log = holder / 'pane.log'
-    started = time.time()
+    checkout_branch = current_branch(repo)
     try:
         created = run([tmux, 'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
                        '-c', str(repo), f'{shlex.quote(agent)} --trust --model {shlex.quote(model)}'],
@@ -443,14 +513,19 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
 
         # Only the pane after cursor starts working counts as a limit: the pane still shows the
         # brief the user wrote, and a brief may say "rate limit" or "quota" in its own words.
-        pane = poll(read, lambda text: bool(extract_cursor_url(text)[0])
-                    or cursor_limit_hit(submitted_tail(text)), CURSOR_SUBMIT_SECONDS)
+        pane = wait_cursor_agent_url(tmux, session, read, CURSOR_SUBMIT_SECONDS)
         agent_url, task_id = extract_cursor_url(pane or '')
         if not agent_url:
+            tail = read() or ''
             if pane and cursor_limit_hit(submitted_tail(pane)):
                 return limit('cursor')
+            if CURSOR_PUSH_DIALOG.search(tail):
+                return failed('cursor', 'cursor-agent is still waiting on the push prompt after '
+                                        f'{CURSOR_SUBMIT_SECONDS}s; preflight should have pushed '
+                                        f'the branch: {tail[-600:]}')
             return failed('cursor', f'no cloud agent URL in the cursor pane {CURSOR_SUBMIT_SECONDS}s '
-                                    f'after pressing Enter: {(read() or "")[-600:]}')
+                                    f'after pressing Enter: {tail[-600:]}')
+        pr_since = time.time()
         if no_wait:
             return outcome('cursor', 'started', agent_url=agent_url, task_id=task_id)
 
@@ -458,7 +533,10 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
         if not slug:
             return failed('cursor', 'cannot read owner/repo from the origin remote',
                           agent_url=agent_url, task_id=task_id)
-        pull, why = wait_for_pr(slug, 'cursor/', started, timeout)
+        prefixes = ['cursor/']
+        if checkout_branch:
+            prefixes.append(checkout_branch)
+        pull, why = wait_for_pr(slug, prefixes, pr_since, timeout)
         if not pull:
             return outcome('cursor', 'timeout', agent_url=agent_url, task_id=task_id,
                            error=f'{why} within {timeout:g}s')
@@ -611,7 +689,7 @@ def launch_claude(repo, brief, no_wait, timeout):
     slug = slug_of(repo)
     if not slug:
         return failed('claude', 'cannot read owner/repo from the origin remote', agent_url=agent_url)
-    pull, why = wait_for_pr(slug, 'claude/', started, timeout)
+    pull, why = wait_for_pr(slug, ['claude/'], started, timeout)
     if not pull:
         return outcome('claude', 'timeout', agent_url=agent_url,
                        error=f'{why} within {timeout:g}s')

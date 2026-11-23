@@ -136,22 +136,22 @@ class ModuleTests(unittest.TestCase):
         rows = [pull(1, 'cursor/old', '2026-11-20T12:59:59Z'),
                 pull(2, 'codex/other', '2026-11-20T13:01:00Z'),
                 pull(3, 'cursor/right', '2026-11-20T13:02:00Z')]
-        found = self.m.pr_after(rows, launch, 'cursor/')
+        found = self.m.pr_after(rows, launch, ['cursor/'])
         self.assertEqual(found['number'], 3)
-        self.assertIsNone(self.m.pr_after(rows[:2], launch, 'cursor/'))
-        self.assertIsNone(self.m.pr_after([pull(4, 'cursor/x', '2026-11-20T13:00:00Z')], launch, 'cursor/'),
+        self.assertIsNone(self.m.pr_after(rows[:2], launch, ['cursor/']))
+        self.assertIsNone(self.m.pr_after([pull(4, 'cursor/x', '2026-11-20T13:00:00Z')], launch, ['cursor/']),
                           'a PR created at the launch second is not after it')
 
     def test_pr_matching_takes_the_earliest_qualifying_pull_request(self):
         launch = time.time()
         later = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(launch + 120))
         sooner = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(launch + 60))
-        found = self.m.pr_after([pull(9, 'claude/a', later), pull(8, 'claude/b', sooner)], launch, 'claude/')
+        found = self.m.pr_after([pull(9, 'claude/a', later), pull(8, 'claude/b', sooner)], launch, ['claude/'])
         self.assertEqual(found['number'], 8)
 
     def test_pr_matching_reads_a_fractional_gh_timestamp(self):
         launch = self.m.moment('2026-11-20T13:00:00Z').timestamp()
-        found = self.m.pr_after([pull(1, 'cursor/x', '2026-11-20T13:00:01.123Z')], launch, 'cursor/')
+        found = self.m.pr_after([pull(1, 'cursor/x', '2026-11-20T13:00:01.123Z')], launch, ['cursor/'])
         self.assertEqual(found['number'], 1)
 
     def test_only_composer_and_grok_cursor_models(self):
@@ -228,6 +228,18 @@ class ModuleTests(unittest.TestCase):
 
     def test_flatten_collapses_newlines_for_the_cursor_repl(self):
         self.assertEqual(self.m.flatten('Reply with the first heading.\n\nNo PR.\n'), 'Reply with the first heading. No PR.')
+
+    def test_pr_matching_also_accepts_the_checkout_branch_name(self):
+        launch = self.m.moment('2026-11-20T13:00:00Z').timestamp()
+        rows = [pull(1, 'cursor/other', '2026-11-20T13:02:00Z'),
+                pull(2, 'vsta-120-cloud-launch', '2026-11-20T13:01:00Z')]
+        found = self.m.pr_after(rows, launch, ['cursor/', 'vsta-120-cloud-launch'])
+        self.assertEqual(found['number'], 2)
+
+    def test_cursor_push_dialog_pattern_matches_real_wording(self):
+        text = ('Branch Not Pushed. Push to remote before kicking off agent? '
+                '[y] Push [n] Cancel')
+        self.assertTrue(self.m.CURSOR_PUSH_DIALOG.search(text))
 
 
 CODEX_STUB = '''
@@ -346,6 +358,19 @@ class PreflightTests(unittest.TestCase):
             (repo / 'scratch.txt').write_text('local notes\n')
             self.assertIsNone(self.m.preflight(repo))
 
+    def test_a_local_only_branch_is_pushed_before_cursor_can_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            remote = root / 'remote.git'
+            subprocess.run(['git', 'init', '-q', '--bare', str(remote)], check=True)
+            repo = make_repo(root / 'repo', remote=GITHUB)
+            git(repo, 'config', f'url.{remote.as_uri()}.insteadOf', GITHUB)
+            git(repo, 'push', '-q', 'origin', 'main')
+            git(repo, 'checkout', '-q', '-b', 'vsta-120-tip')
+            git(repo, 'branch', '--set-upstream-to=origin/main', 'vsta-120-tip')
+            self.assertIsNone(self.m.preflight(repo))
+            git(remote, 'rev-parse', '--verify', 'vsta-120-tip')
+
 
 class CursorLaunchFailureTests(unittest.TestCase):
     """launch_cursor must return failed rows, not crash, when the pane never reaches a step."""
@@ -380,6 +405,30 @@ class CursorLaunchFailureTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn('never appeared', parsed['error'] or '')
             self.assertIn('Composer 2.5', parsed['error'] or '')
+
+    def test_push_dialog_gets_y_while_waiting_for_the_agent_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory) / 'repo')
+            pane_snippet = ('Checking git status\n'
+                            'Branch Not Pushed. Push to remote before kicking off agent?\n'
+                            '[y] Push [n] Cancel\n')
+
+            def fake_run(args, cwd=None, timeout=None):
+                if args and 'send-keys' in args and args[-1] == 'y':
+                    nonlocal pane_snippet
+                    pane_snippet = (pane_snippet + '  Open Cloud Agent in: '
+                                    + PANE.split(':', 1)[1].strip() + '\n')
+                    return subprocess.CompletedProcess(args, 0, '', '')
+                if args and 'capture-pane' in args:
+                    return subprocess.CompletedProcess(args, 0, pane_snippet, '')
+                return subprocess.CompletedProcess(args or [], 0, '', '')
+
+            with patch.object(self.m, 'run', side_effect=fake_run), \
+                    patch.object(self.m, 'quiet'):
+                text = self.m.wait_cursor_agent_url('tmux', 'sess', lambda: pane_snippet, 5)
+            self.assertIsNotNone(text)
+            self.assertEqual(self.m.extract_cursor_url(text)[0],
+                             'https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986')
 
 
 class CliTests(unittest.TestCase):

@@ -40,5 +40,6 @@ The result is a claim. Check the PR diff and its checks before calling the work 
 ## Traps
 
 - Cursor: `cursor-agent -p "& ..."` runs locally. Only the interactive CLI hands off, after `&` is typed alone. The script does this.
-- Codex: each repo needs a cloud environment, created once at https://chatgpt.com/codex. Map it in the codex-envs file under the cloud-agent config folder; the launcher names the path when it is missing.
+- Codex: each repo needs a cloud environment, created once at https://chatgpt.com/codex. Run `codex cloud list --json` and copy each repo's `environment_label` into the codex-envs map under the cloud-agent config folder (`{"owner/repo": "<label>"}`). The launcher names that path when the map is missing.
+- Cursor: the checkout's branch must exist on GitHub. Preflight runs `git push -u origin` when it does not; cursor-agent still sometimes shows a push dialog, which the launcher answers `y` on.
 - Claude: the repo needs the Claude GitHub App, or the session cannot push.
