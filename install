@@ -148,10 +148,14 @@ else
   echo "vstack install: linked skills from $ROOT; plain copies in $DUPES"
 fi
 
-python3 "$ROOT/scripts/merge-antigravity-hooks.py" || {
-  echo "vstack install: merge-antigravity-hooks failed" >&2
-  exit 1
-}
+if [ -f "$ROOT/scripts/merge-antigravity-hooks.py" ]; then
+  python3 "$ROOT/scripts/merge-antigravity-hooks.py" || {
+    echo "vstack install: merge-antigravity-hooks failed" >&2
+    exit 1
+  }
+else
+  echo "vstack install: skip antigravity hooks (no $ROOT/scripts/merge-antigravity-hooks.py)" >&2
+fi
 
 # Record the commit this install came from. A chat links to this checkout, so a
 # chat that reports a broken hook can be tied to the tree it is actually
