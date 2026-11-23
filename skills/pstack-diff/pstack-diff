@@ -127,22 +127,91 @@ def latest_pstack(root: Path) -> Path:
     return max(versions, key=lambda p: tuple(int(n) for n in p.name.split(".") if n.isdigit()))
 
 
+VERIFY_SKILL_ROOTS = (".claude/skills", ".cursor/skills")
+FORMAL_SKILL = "formal"
+HOUSE_SKILL_KEY = "verify-skill"
+NO_VERIFY_SKILL = "GAP verify-skill: no .claude/skills/verify-<app>/SKILL.md with features/"
+
+
+def frontmatter(text: str) -> dict[str, str]:
+    """Plain `key: value` pairs of a skill's YAML frontmatter; empty when absent."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    meta: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        match = re.match(r"^([A-Za-z][\w-]*):\s*(\S.*)$", line)
+        if match:
+            meta[match.group(1).lower()] = match.group(2).strip().strip("'\"")
+    return meta
+
+
+def verify_skill_dirs(root: Path) -> list[Path]:
+    """Every verify-* skill folder under the harnesses' skill directories."""
+    dirs: list[Path] = []
+    for rel in VERIFY_SKILL_ROOTS:
+        base = root / rel
+        if not base.is_dir():
+            continue
+        dirs.extend(
+            sorted(path for path in base.iterdir() if path.is_dir() and path.name.startswith("verify-"))
+        )
+    return dirs
+
+
+def is_formal_skill(name: str) -> bool:
+    """A `create-formal-verification-skill` output sits beside the app's one verify skill."""
+    return name.endswith("-formal") or FORMAL_SKILL in name
+
+
 def verify_skills(root: Path) -> list[str]:
+    """One findable `verify-<app>` slash command, plus why each broken one is broken."""
+    house = _house_entries(root)
+    dirs = verify_skill_dirs(root)
+    if not dirs:
+        return [NO_VERIFY_SKILL]
+    gaps: list[str] = []
+    usable: list[str] = []
+    for path in dirs:
+        name = path.name
+        skill = path / "SKILL.md"
+        rel = skill.relative_to(root).as_posix()
+        if not skill.is_file():
+            gaps.append(f"GAP verify-skill: {path.relative_to(root).as_posix()}/ has no SKILL.md")
+            continue
+        meta = frontmatter(skill.read_text(encoding="utf-8", errors="replace"))
+        declared = meta.get("name")
+        if not meta:
+            gaps.append(f"GAP verify-skill: {rel} has no frontmatter (not in the slash list)")
+            continue
+        if declared != name:
+            said = f"name: {declared}" if declared else "no name: line"
+            gaps.append(
+                f"GAP verify-skill: {rel} says {said}, folder is {name} (not in the slash list)"
+            )
+            continue
+        if not is_formal_skill(name) and not (path / "features/README.md").is_file():
+            gaps.append(f"GAP verify-skill: {rel} has no features/README.md")
+            continue
+        usable.append(name)
+    informal = [name for name in usable if not is_formal_skill(name)]
     lines: list[str] = []
-    skills_root = root / ".claude/skills"
-    found: list[str] = []
-    if skills_root.is_dir():
-        for child in sorted(skills_root.iterdir()):
-            if not child.name.startswith("verify-") or not child.is_dir():
-                continue
-            skill = child / "SKILL.md"
-            features = child / "features"
-            if skill.is_file() and features.is_dir():
-                found.append(child.name)
-    if not found:
-        lines.append("GAP verify-skill: no .claude/skills/verify-<app>/SKILL.md with features/")
-    else:
-        lines.append(f"ASKED verify-skill: {', '.join(found)}")
+    if not informal:
+        lines.extend(gaps or [NO_VERIFY_SKILL])
+        return lines
+    in_house = [name for name in informal if (HOUSE_SKILL_KEY, name) in house]
+    asked = [name for name in informal if name not in in_house] or informal
+    lines.append(f"ASKED verify-skill: /{asked[0]}")
+    if len(asked) > 1:
+        lines.append(
+            f"EXTRA verify-skill: {', '.join(asked[1:])} "
+            f"(pstack asks for one verify-<app>; merge them into /{asked[0]})"
+        )
+    for name in in_house:
+        lines.append(f"HOUSE {HOUSE_SKILL_KEY}: {name}: {house[(HOUSE_SKILL_KEY, name)]}")
+    lines.extend(gaps)
     return lines
 
 

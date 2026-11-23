@@ -1,5 +1,5 @@
 ---
-name: verify-app
+name: verify-other
 description: test fixture verify skill
 ---
 
