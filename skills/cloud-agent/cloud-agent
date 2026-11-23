@@ -31,8 +31,12 @@ missing.
           interactive keys in tmux: `&` alone, then the brief, then Enter. The pane prints
           `Open Cloud Agent in: https://cursor.com/agents/bc-...` once the task is submitted.
           Only Composer and Grok models are allowed: our Cursor plan includes them, so a cloud
-          task costs nothing extra. Newlines in the brief collapse to spaces because the terminal
-          REPL would submit the first line as the prompt.
+          task costs nothing extra. The brief goes in as one tmux bracketed paste, because typing
+          its bytes drops the tail of a long brief and the terminal REPL would collapse it to one
+          line. The REPL then shows `[Pasted text #1 +N lines]`, where N counts the brief's
+          newlines plus one; the launcher compares N with the brief and refuses to submit a brief
+          the REPL only half received. Enter is pressed again when Cursor does not react, because
+          the first one lands while the paste is still being drawn and is ignored.
 
   codex   `codex cloud exec --env ENV "<brief>"`. Experiment 2026-11-20: --env accepts the
           environment LABEL shown by `codex cloud list --json` (environment_label, e.g.
@@ -78,6 +82,10 @@ CODEX_POLL_SECONDS = 30
 CURSOR_PROMPT_SECONDS = 60
 CURSOR_CLOUD_SECONDS = 60
 CURSOR_SUBMIT_SECONDS = 240
+CURSOR_PASTE_LAND_SECONDS = 15
+CURSOR_PASTE_SETTLE_SECONDS = 1
+CURSOR_ENTER_CONFIRM_SECONDS = 15
+CURSOR_ENTER_MAX = 3
 DEFAULT_CURSOR_MODEL = 'composer-2.5'
 CODEX_ENVS = HOME / '.config/cloud-agent/codex-envs.json'
 
@@ -90,7 +98,8 @@ CODEX_TASK_URL = re.compile(r'https://chatgpt\.com/codex/tasks/(task_e_[0-9a-z]+
 PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
 GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
 CURSOR_MODEL = re.compile(r'^(?:composer-2\.5(?:-[a-z]+)*|(?:cursor-)?grok-\d+(?:\.\d+)?(?:-[a-z]+)*)$')
-SUBMITTED = ('Checking git status', 'Open Cloud Agent in:')
+SUBMITTED = re.compile(r'Checking git status|Sending to cloud|Open Cloud Agent in:')
+CURSOR_PASTE_TOKEN = re.compile(r'\[Pasted text #\d+ \+(\d+) lines?\]')
 CURSOR_PUSH_DIALOG = re.compile(r'Branch Not Pushed|Push to remote before kicking off', re.I)
 UPSTREAM = re.compile(r'^[^/]+/(.+)$')
 
@@ -158,9 +167,50 @@ def read_brief(path):
         return None
 
 
-def flatten(text):
-    """One line for the cursor REPL, which submits the first line as the prompt."""
-    return re.sub(r'\s*\n+\s*', ' ', text).strip()
+def expected_paste_lines(text):
+    """The +N a whole brief shows in cursor's `[Pasted text #1 +N lines]`: newlines plus one.
+
+    Labelled on the real CLI, 2026-11-23: 60 lines with a trailing newline showed +61, the same
+    brief without one showed +60, and a flattened 4.8k-character brief showed +1.
+    """
+    return (text or '').count('\n') + 1
+
+
+def brief_line_count(text):
+    """How many lines the brief has, counting a last line with no newline after it."""
+    body = (text or '').rstrip('\n')
+    return body.count('\n') + 1 if body else 0
+
+
+def paste_token_lines(pane):
+    """The +N of the last `[Pasted text #k +N lines]` token in the pane, or None."""
+    found = CURSOR_PASTE_TOKEN.findall(pane or '')
+    return int(found[-1]) if found else None
+
+
+def brief_paste_landed(pane, brief):
+    """Cursor took the pasted brief: it drew a paste token, or shows the brief's own last words."""
+    pane = pane or ''
+    if CURSOR_PASTE_TOKEN.search(pane):
+        return True
+    tail = ' '.join((brief or '').strip()[-20:].split())
+    return bool(tail) and tail in ' '.join(pane.split())
+
+
+def paste_shortfall(pane, brief):
+    """(lines cursor took, lines it should have) when the paste token is short, else None.
+
+    A short token means the REPL received only part of the brief, so the cloud agent would get a
+    brief with its middle or end missing.
+    """
+    taken = paste_token_lines(pane)
+    expected = expected_paste_lines(brief)
+    return None if taken is None or taken == expected else (taken, expected)
+
+
+def cursor_took_the_prompt(pane):
+    """Cursor committed to the brief: it is checking git, sending to cloud, or out of quota."""
+    return bool(SUBMITTED.search(pane or '')) or cursor_limit_hit(submitted_tail(pane))
 
 
 def limit_hit(text):
@@ -176,9 +226,8 @@ def cursor_limit_hit(text):
 def submitted_tail(text):
     """The pane from the first sign that cursor started on the brief, so the brief itself is never
     read as a vendor error. A brief about a `rate limit` bug must not report a limit."""
-    cuts = [text.rfind(marker) for marker in SUBMITTED]
-    cuts = [cut for cut in cuts if cut >= 0]
-    return text[min(cuts):] if cuts else ''
+    positions = [match.start() for match in SUBMITTED.finditer(text or '')]
+    return (text or '')[min(positions):] if positions else ''
 
 
 def extract_cursor_url(text):
@@ -465,6 +514,29 @@ def wait_cursor_agent_url(tmux, session, read, seconds):
         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
+def paste_cursor_brief(tmux, session, brief, holder):
+    """Hand the brief to the cursor REPL as one bracketed paste, or the failed row that stopped it.
+
+    Typing the brief with `send-keys -l` loses the tail of a long brief and the REPL collapses
+    whatever arrives to one line. A tmux buffer pasted with -p keeps every line and tells the REPL
+    where the paste starts and ends, so it shows a `[Pasted text #1 +N lines]` token rather than
+    treating each line as a prompt of its own.
+    """
+    path = Path(holder) / 'brief.txt'
+    try:
+        path.write_text(brief)
+    except OSError as exc:
+        return failed('cursor', f'could not write the brief to {path}: {exc}')
+    loaded = run([tmux, 'load-buffer', '-b', session, str(path)], timeout=TMUX_TIMEOUT)
+    if loaded.returncode != 0:
+        return failed('cursor', f'could not load the brief into a tmux buffer: {saying(loaded)}')
+    pasted = run([tmux, 'paste-buffer', '-p', '-d', '-b', session, '-t', session],
+                 timeout=TMUX_TIMEOUT)
+    if pasted.returncode != 0:
+        return failed('cursor', f'could not paste the brief into the cursor prompt: {saying(pasted)}')
+    return None
+
+
 def launch_cursor(repo, brief, model, no_wait, timeout):
     """Drive the cursor REPL: `&` alone moves it to a cloud agent, then the brief, then Enter."""
     tmux = binary('tmux')
@@ -504,16 +576,42 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
         if 'Move to cloud agent' not in pane:
             return limit('cursor')
 
-        sent = run([tmux, 'send-keys', '-t', session, '-l', flatten(brief)], timeout=TMUX_TIMEOUT)
-        if sent.returncode != 0:
-            return failed('cursor', f'could not type the brief into the cursor prompt: {saying(sent)}')
-        entered = run([tmux, 'send-keys', '-t', session, 'Enter'], timeout=15)
-        if entered.returncode != 0:
-            return failed('cursor', f'could not press Enter in the cursor prompt: {saying(entered)}')
+        given = paste_cursor_brief(tmux, session, brief, holder)
+        if given is not None:
+            return given
+        pane = poll(read, lambda text: brief_paste_landed(text, brief), CURSOR_PASTE_LAND_SECONDS)
+        if pane is None:
+            return failed('cursor', f'the brief never appeared in the cursor prompt in '
+                                   f'{CURSOR_PASTE_LAND_SECONDS}s: {(read() or "")[-600:]}')
+        shortfall = paste_shortfall(pane, brief)
+        if shortfall:
+            taken, expected = shortfall
+            return failed('cursor', f'cursor took {taken} of the {expected} lines of the '
+                                    f'{brief_line_count(brief)}-line brief into its paste token, so '
+                                    f'the cloud agent would get a brief with lines missing: '
+                                    f'{(pane or "")[-600:]}')
+        time.sleep(CURSOR_PASTE_SETTLE_SECONDS)
+
+        # The first Enter lands while the REPL is still drawing the paste token and is ignored, so
+        # press again until cursor shows it took the brief, and give up after three.
+        deadline = time.monotonic() + CURSOR_SUBMIT_SECONDS
+        pressed = 0
+        pane = None
+        while pressed < CURSOR_ENTER_MAX:
+            entered = run([tmux, 'send-keys', '-t', session, 'Enter'], timeout=15)
+            if entered.returncode != 0:
+                return failed('cursor', f'could not press Enter in the cursor prompt: {saying(entered)}')
+            pressed += 1
+            window = min(CURSOR_ENTER_CONFIRM_SECONDS, max(0.0, deadline - time.monotonic()))
+            pane = poll(read, cursor_took_the_prompt, window)
+            if pane is not None or time.monotonic() >= deadline:
+                break
 
         # Only the pane after cursor starts working counts as a limit: the pane still shows the
         # brief the user wrote, and a brief may say "rate limit" or "quota" in its own words.
-        pane = wait_cursor_agent_url(tmux, session, read, CURSOR_SUBMIT_SECONDS)
+        if not extract_cursor_url(pane or '')[0]:
+            pane = wait_cursor_agent_url(tmux, session, read,
+                                         max(0.0, deadline - time.monotonic()))
         agent_url, task_id = extract_cursor_url(pane or '')
         if not agent_url:
             tail = read() or ''
@@ -523,8 +621,12 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
                 return failed('cursor', 'cursor-agent is still waiting on the push prompt after '
                                         f'{CURSOR_SUBMIT_SECONDS}s; preflight should have pushed '
                                         f'the branch: {tail[-600:]}')
+            if not cursor_took_the_prompt(tail):
+                return failed('cursor', f'cursor never took the brief: {pressed} Enter presses sent '
+                                        f'in {CURSOR_SUBMIT_SECONDS}s and the paste token is still '
+                                        f'in the prompt: {tail[-600:]}')
             return failed('cursor', f'no cloud agent URL in the cursor pane {CURSOR_SUBMIT_SECONDS}s '
-                                    f'after pressing Enter: {tail[-600:]}')
+                                    f'after pressing Enter {pressed} times: {tail[-600:]}')
         pr_since = time.time()
         if no_wait:
             return outcome('cursor', 'started', agent_url=agent_url, task_id=task_id)

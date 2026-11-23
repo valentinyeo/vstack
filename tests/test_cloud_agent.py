@@ -171,7 +171,7 @@ class ModuleTests(unittest.TestCase):
         # Verified break, 2026-11-20: the pane still shows the brief the user typed, so reading the
         # whole pane made "fix the rate limit bug" report status limit, exit 75, and skip the lane.
         brief = "Fix the bug where the API says 'rate limit' when caching. Avoid quota errors."
-        pane = 'Composer 2.5\n' + self.m.flatten(brief)
+        pane = 'Composer 2.5\n' + brief
         self.assertFalse(self.m.cursor_limit_hit(self.m.submitted_tail(pane)))
         real = pane + '\nChecking git status\nUsage limit reached. Resets in 3h.'
         self.assertTrue(self.m.cursor_limit_hit(self.m.submitted_tail(real)))
@@ -226,8 +226,20 @@ class ModuleTests(unittest.TestCase):
             self.m.drop_codex_log(repo)
             self.assertTrue((repo / 'error.log').exists(), 'a tracked error.log is never deleted')
 
-    def test_flatten_collapses_newlines_for_the_cursor_repl(self):
-        self.assertEqual(self.m.flatten('Reply with the first heading.\n\nNo PR.\n'), 'Reply with the first heading. No PR.')
+    def test_paste_token_counts_the_briefs_newlines_plus_one(self):
+        # The real pane, 2026-11-23: 60 lines no trailing newline showed +60, with one showed +61.
+        self.assertEqual(self.m.expected_paste_lines('a\nb\nc'), 3)
+        self.assertEqual(self.m.expected_paste_lines('a\nb\nc\n'), 4)
+        self.assertEqual(self.m.expected_paste_lines('one flat line'), 1)
+        self.assertEqual(self.m.brief_line_count('a\nb\nc\n'), 3, 'a trailing newline adds no line')
+        self.assertEqual(self.m.paste_token_lines('& [Pasted text #1 +61 lines]'), 61)
+        self.assertIsNone(self.m.paste_token_lines('& plain typed text'))
+
+    def test_a_short_token_is_a_shortfall_and_a_whole_brief_is_not(self):
+        brief = 'a\nb\nc'
+        self.assertEqual(self.m.paste_shortfall('& [Pasted text #1 +2 lines]', brief), (2, 3))
+        self.assertIsNone(self.m.paste_shortfall('& [Pasted text #1 +3 lines]', brief))
+        self.assertIsNone(self.m.paste_shortfall('& a b c', brief), 'a short brief shows inline')
 
     def test_pr_matching_also_accepts_the_checkout_branch_name(self):
         launch = self.m.moment('2026-11-20T13:00:00Z').timestamp()
@@ -429,6 +441,103 @@ class CursorLaunchFailureTests(unittest.TestCase):
             self.assertIsNotNone(text)
             self.assertEqual(self.m.extract_cursor_url(text)[0],
                              'https://cursor.com/agents/bc-970b7d10-2ec0-4b74-ab61-deb21d0cb986')
+
+
+LONG_BRIEF = '\n'.join(
+    f'Line {number}: fix https://example.com/doc/{number} and keep `code_{number}` quoted as '
+    f'"value {number}".'
+    for number in range(1, 61))
+
+
+def cursor_pane(paste_lines, extra=''):
+    """The cursor REPL with a whole-brief paste token, the way the real pane draws one."""
+    return (f'& [Pasted text #1 +{paste_lines} lines]\n'
+            f'^ Move to cloud agent\nComposer 2.5                    Run Everything\n{extra}')
+
+
+class CursorBriefPasteTests(unittest.TestCase):
+    """A long brief must reach cursor whole and then submit, however the pane stalls on Enter.
+
+    Labelled break, 2026-11-23: a 60-line brief typed with send-keys collapsed into
+    `[Pasted text #1 +1 lines]` and the single Enter after it was ignored, so the launcher reported
+    no cloud agent URL 240s later while the brief never left the prompt.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load_script()
+
+    def launch(self, pane_for, brief=LONG_BRIEF):
+        """Launch cursor against a fake tmux. Returns (row, enters, pasted brief text)."""
+        state = {'enters': 0, 'reads': 0, 'buffer': None}
+        ok = subprocess.CompletedProcess([], 0, '', '')
+
+        def fake_run(args, cwd=None, timeout=None):
+            if 'capture-pane' in args:
+                state['reads'] += 1
+                return subprocess.CompletedProcess(args, 0, pane_for(state), '')
+            if 'load-buffer' in args:
+                state['buffer'] = Path(args[-1]).read_text()
+                return ok
+            if 'send-keys' in args and args[-1] == 'Enter':
+                state['enters'] += 1
+            return ok
+
+        timers = dict(CURSOR_PROMPT_SECONDS=0, CURSOR_CLOUD_SECONDS=0, CURSOR_PASTE_LAND_SECONDS=0,
+                      CURSOR_PASTE_SETTLE_SECONDS=0, CURSOR_ENTER_CONFIRM_SECONDS=0.2,
+                      CURSOR_SUBMIT_SECONDS=1)
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_repo(Path(directory) / 'repo')
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(self.m, 'run', side_effect=fake_run))
+                stack.enter_context(patch.object(self.m, 'quiet'))
+                stack.enter_context(patch.object(self.m.time, 'sleep'))
+                for name, value in timers.items():
+                    stack.enter_context(patch.object(self.m, name, value, create=True))
+                row = self.m.launch_cursor(repo, brief, 'composer-2.5', True, 60)
+        return row, state['enters'], state['buffer']
+
+    def test_the_whole_brief_is_pasted_with_every_line_and_no_flattening(self):
+        row, enters, pasted = self.launch(lambda pane: cursor_pane(60, PANE))
+        self.assertEqual(pasted, LONG_BRIEF)
+        self.assertEqual(row['status'], 'started')
+        self.assertEqual(enters, 1)
+
+    def test_a_collapsed_paste_and_an_ignored_first_enter_still_submit(self):
+        def pane_for(pane):
+            if pane['enters'] < 2:
+                return cursor_pane(60)
+            return cursor_pane(60, 'Checking git status\n  ' + PANE.strip())
+
+        row, enters, _ = self.launch(pane_for)
+        self.assertEqual(enters, 2, 'cursor ignored the first Enter after the paste')
+        self.assertEqual(row['status'], 'started')
+        self.assertTrue((row['task_id'] or '').startswith('bc-'))
+
+    def test_checking_git_status_keeps_waiting_for_the_url(self):
+        # The live proof, 2026-11-23: `Checking git status` confirmed the Enter, the URL arrived
+        # about 30s later, and stopping at the confirmation reported a failed launch.
+        def pane_for(pane):
+            if pane['reads'] < 6:
+                return cursor_pane(60, 'Checking git status\n')
+            return cursor_pane(60, 'Checking git status\n  ' + PANE.strip())
+
+        row, enters, _ = self.launch(pane_for)
+        self.assertEqual(enters, 1)
+        self.assertEqual(row['status'], 'started')
+
+    def test_three_ignored_enters_fail_once_with_the_counts_in_the_error(self):
+        row, enters, _ = self.launch(lambda pane: cursor_pane(60))
+        self.assertEqual(enters, 3)
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('3 Enter presses', row['error'] or '')
+
+    def test_a_short_paste_token_stops_the_launch_before_any_enter(self):
+        row, enters, _ = self.launch(lambda pane: cursor_pane(2), brief=LONG_BRIEF + '\n')
+        self.assertEqual(enters, 0, 'a brief cursor only half received must never be submitted')
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('2 of the 61 lines', row['error'] or '')
+        self.assertIn('60-line brief', row['error'] or '')
 
 
 class CliTests(unittest.TestCase):
