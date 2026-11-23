@@ -26,6 +26,7 @@ scripts/pick-verifier-model | pstack: create-verification-skill | why: https://a
 scripts/pr-overlap | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/61
 scripts/reply-verbosity.py | pstack: principle-build-the-lever | why: https://app.hypertask.ai/detail/project-13556/125
 scripts/run-verifier | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2836
+scripts/merge-antigravity-hooks.py | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/132
 scripts/skill-check.py | pstack: principle-guard-the-context-window | why: https://app.hypertask.ai/detail/project-13556/36
 scripts/verdict.py | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2802
 skills/board-drain/drain-check | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/4
