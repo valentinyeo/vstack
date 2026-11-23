@@ -127,6 +127,7 @@ def sync_card(key, phase, env=None):
         env['HT_TOKEN'] = Path(token).read_text().strip()
         env['SHIP_SESSION_NAME'] = name
         env['RECONCILE_CARD_PHASE'] = phase
+        env.setdefault('GH_CALLER', 'lease:' + key)
         if phase == 'start':
             take_card(key, name, token, env)
         command = [sys.executable, str(script), '--ticket', key, '--apply', '--limit', '1']
