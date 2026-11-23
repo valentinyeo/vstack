@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -27,6 +28,13 @@ SOFT_CAP = 300_000
 HARD_CAP = 400_000
 MAX_BLOCKS = 3
 NOHOST_TTL = 30 * 60
+# A failed fresh start is filed by the chat that failed it, once per failure. A failure from
+# another week is history, not a fault to hand the board.
+REPORT_WINDOW = 7 * 24 * 60 * 60
+REPORT_TIMEOUT = 60
+REPORT_TOOL = Path(__file__).resolve().parents[1] / 'skills/long-chat/failed-handover'
+# A failure is reported in the turn after it happens, so the log tail only needs recent lines.
+FRESH_TAIL = 500
 SKILL = '~/.claude/skills/long-chat/SKILL.md'
 READ_CHUNK = 1 << 20
 MAX_TAIL_LINES = 4000
@@ -250,6 +258,101 @@ def agent_host_live(home, env):
     return pid_alive(pid)
 
 
+def host_base_for_tab(home, tab):
+    """The host session key whose state file names this tmux tab, or None."""
+    root = agent_host_dir(home)
+    if not tab or not root.is_dir():
+        return None
+    needles = _tmux_needles(tab)
+    for path in root.glob('*.state.json'):
+        try:
+            head = path.read_bytes()[:8192]
+        except OSError:
+            continue
+        if not any(n in head for n in needles):
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get('tmux') == tab:
+            return path.name[: -len('.state.json')]
+    return None
+
+
+def fresh_failure(home, tab):
+    """The newest failed fresh start the Multiprompt host logged for this tab."""
+    base = host_base_for_tab(home, tab)
+    if not base:
+        return None
+    log = agent_host_dir(home) / f'{base}.events.log'
+    for count, raw in enumerate(iter_lines_from_end(str(log))):
+        if count >= FRESH_TAIL:
+            break
+        try:
+            row = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(row, dict) or row.get('event') != 'fresh_start_failed':
+            continue
+        detail = row.get('detail')
+        reason = detail.get('reason') if isinstance(detail, dict) else ''
+        at = row.get('at')
+        return {
+            'base': base,
+            'at': float(at) if isinstance(at, (int, float)) else 0.0,
+            'reason': reason if isinstance(reason, str) else '',
+        }
+    return None
+
+
+def reported_event(home, base):
+    try:
+        return float((state_dir(home) / f'{base}.reported').read_text().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+
+
+def mark_reported(home, base, at):
+    path = state_dir(home) / f'{base}.reported'
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(at))
+    except OSError:
+        pass
+
+
+def report_failure(home, env, now=None):
+    """File this chat's failed fresh start on the board, once per failure.
+
+    The chat files it under its own login through skills/long-chat/failed-handover. The
+    handover text is never passed: only the runtime's reason for the failure.
+    """
+    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
+    if not tab:
+        return {}
+    found = fresh_failure(home, tab)
+    if not found or not found['at']:
+        return {}
+    if (now if now is not None else time.time()) - found['at'] > REPORT_WINDOW:
+        return {}
+    if found['at'] <= reported_event(home, found['base']):
+        return {}
+    tool = str(env.get('LONG_CHAT_REPORTER') or REPORT_TOOL)
+    command = [tool, '--error', found['reason'] or 'The fresh start failed.']
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=REPORT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode:
+        return {}
+    mark_reported(home, found['base'], found['at'])
+    url = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ''
+    if not url.startswith('https://'):
+        return {}
+    return {'systemMessage': f'This chat reported its failed fresh start: {url}'}
+
+
 def nohost_warn(home, session_id, now=None):
     path = state_dir(home) / f'{session_id}.nohost'
     try:
@@ -417,10 +520,17 @@ def stop_or_precompact(payload, env, event_name):
 def hook(payload, env):
     event = payload.get('hook_event_name') or ''
     if event == 'UserPromptSubmit':
-        return user_prompt(payload, env)
-    if event in ('Stop', 'PreCompact'):
-        return stop_or_precompact(payload, env, event)
-    return {}
+        answer = user_prompt(payload, env)
+    elif event in ('Stop', 'PreCompact'):
+        answer = stop_or_precompact(payload, env, event)
+    else:
+        return {}
+    if event in ('UserPromptSubmit', 'Stop'):
+        try:
+            answer = {**answer, **report_failure(home_dir(env), env)}
+        except Exception:
+            pass
+    return answer
 
 
 def self_test():
@@ -534,6 +644,46 @@ def self_test():
         for _ in range(MAX_BLOCKS):
             hook(stop_hard, env_host)
         assert hook(stop_hard, env_host) == {}, '4th block -> no block'
+
+        # A failed fresh start is filed once, by this chat, under its own login.
+        reports = Path(temp) / 'reports.txt'
+        fake = Path(temp) / 'fake-failed-handover'
+        fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + str(reports)
+                        + '\nprintf "https://app.hypertask.ai/detail/project-13556/101\\n"\n')
+        fake.chmod(0o755)
+        rep_env = {**env_host, 'MULTIPROMPT_TAB': 'live-fresh',
+                   'LONG_CHAT_REPORTER': str(fake)}
+        (host_dir / 'live-fresh.state.json').write_text(json.dumps({
+            'tmux': 'live-fresh', 'pid': os.getpid()}))
+        events = host_dir / 'live-fresh.events.log'
+        fresh_payload = {'hook_event_name': 'Stop', 'session_id': 'sess-fresh'}
+        assert hook(fresh_payload, rep_env) == {}, 'no failure logged -> nothing filed'
+        logged = time.time() - 60
+        events.write_text(json.dumps({
+            'at': logged, 'event': 'fresh_start_failed',
+            'detail': {'reason': 'Could not save the handover.'}}) + '\n')
+        reported = hook(fresh_payload, rep_env)
+        assert 'project-13556/101' in reported.get('systemMessage', ''), 'failure -> same chat files it'
+        lines = reports.read_text().splitlines()
+        assert len(lines) == 1, f'one ticket for one failure, got {lines}'
+        assert 'Could not save the handover.' in lines[0], 'the reason travels, the handover text does not'
+        assert hook(fresh_payload, rep_env) == {}, 'the same failure never files twice'
+        assert len(reports.read_text().splitlines()) == 1, 'still one report'
+        with events.open('a') as handle:
+            handle.write(json.dumps({
+                'at': logged + 1, 'event': 'fresh_start_failed',
+                'detail': {'reason': 'Could not read the saved handover.'}}) + '\n')
+        assert 'project-13556/101' in hook(fresh_payload, rep_env).get('systemMessage', ''), (
+            'a new failure files again')
+        assert len(reports.read_text().splitlines()) == 2, 'two failures, two reports'
+        (host_dir / 'live-old.state.json').write_text(json.dumps({
+            'tmux': 'live-old', 'pid': os.getpid()}))
+        (host_dir / 'live-old.events.log').write_text(json.dumps({
+            'at': time.time() - REPORT_WINDOW - 60, 'event': 'fresh_start_failed',
+            'detail': {'reason': 'Could not save the handover.'}}) + '\n')
+        old_env = {**rep_env, 'MULTIPROMPT_TAB': 'live-old'}
+        assert hook({'hook_event_name': 'Stop', 'session_id': 'sess-old'}, old_env) == {}, (
+            'a failure from last week is history')
 
         pre_manual = {'hook_event_name': 'PreCompact', 'trigger': 'manual',
                       'session_id': sid, 'transcript_path': hard_line}

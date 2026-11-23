@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
-"""File feedback about vstack on board 13556 under this chat's agent identity.
+"""File feedback about vstack on this board, under this chat's agent identity.
 
-Usage: vstack-feedback "<want>" --why "<what it blocks>"
+Usage:
+  vstack-feedback "<want>" --why "<what it blocks>"
+  vstack-feedback "<want>" --why "<why>" --label "Long Chat Handover" --label brain-medium \
+      --fact "Chat: Demo Chat" --count
+
+A repeat of the same title updates that open ticket with a count instead of filing a second
+one, when `--count` is given. `--board` picks the board (default 13556).
 """
 import argparse
 import html
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
 BOARD = '13556'
 LABEL = 'Vstack'
+SEEN = re.compile(r'Seen (\d+) times')
+DONE_WHEN = 'The request works in vstack.'
 
 
 def load_session():
@@ -30,16 +40,42 @@ def normalized(text):
     return ' '.join(unicodedata.normalize('NFKC', text).split()).casefold()
 
 
-def ticket_url(number):
+def ticket_url(number, board=BOARD):
     suffix = number.split('-', 1)[1] if '-' in number else number
-    return f'https://app.hypertask.ai/detail/project-{BOARD}/{suffix}'
+    return f'https://app.hypertask.ai/detail/project-{board}/{suffix}'
+
+
+def now_iso():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def description(title, why, facts, done, seen=None, now=None):
+    """Ticket body in the parts the writing guard asks for: Problem, Fix, Done when, Risk, Decision."""
+    parts = [
+        '<p><strong>Problem</strong></p>',
+        '<p>' + html.escape(why or 'No reason given.') + '</p>',
+    ]
+    if facts:
+        parts.append('<ul>' + ''.join(
+            '<li>' + html.escape(fact) + '</li>' for fact in facts) + '</ul>')
+    if seen:
+        parts.append('<p>Seen ' + str(seen) + ' times. Last at '
+                     + html.escape(now or now_iso()) + '.</p>')
+    parts.extend([
+        '<p><strong>Fix</strong></p><p>' + html.escape(title) + '</p>',
+        '<p><strong>Done when</strong></p><p>' + html.escape(done or DONE_WHEN) + '</p>',
+        '<p><strong>Risk</strong></p><p>Worst case: duplicate or noisy tickets. Undo: archive.</p>',
+        '<p><strong>Decision</strong></p><p>none</p>',
+    ])
+    return ''.join(parts)
 
 
 class Client:
-    def __init__(self, token):
+    def __init__(self, token, board=BOARD):
         self.token = token.strip()
         if not self.token:
             raise ValueError('agent token is empty')
+        self.board = str(board)
         self.binary = shutil.which('hypertask')
         if not self.binary:
             raise ValueError('install hypertask before using vstack-feedback')
@@ -57,8 +93,9 @@ class Client:
             raise ValueError(f'hypertask failed: {detail or "unknown"}')
         return data
 
-    def open_titles(self):
-        data = self.call('task', 'list', '--project', BOARD, '--labels', LABEL, '--status', 'Normal')
+    def open_titles(self, label):
+        data = self.call(
+            'task', 'list', '--project', self.board, '--labels', label, '--status', 'Normal')
         rows = data.get('tasks') or []
         by_title = {}
         for row in rows:
@@ -70,16 +107,28 @@ class Client:
                 by_title[normalized(title)] = ref
         return by_title
 
-    def create(self, title, why):
-        description = (
-            '<p><strong>Problem</strong></p><p>' + html.escape(why or 'No reason given.') + '</p>'
-            '<p><strong>Fix</strong></p><p>' + html.escape(title) + '</p>'
-            '<p><strong>Done when</strong></p><p>The request works in vstack.</p>'
-            '<p><strong>Risk</strong></p><p>Worst case: duplicate or noisy tickets. Undo: archive.</p>'
-            '<p><strong>Decision</strong></p><p>none</p>')
+    def current(self, ref):
+        """The open ticket's description, so a repeat can raise its own count."""
+        data = self.call('task', 'get', ref)
+        rows = data.get('tasks') or []
+        row = rows[0] if rows and isinstance(rows[0], dict) else {}
+        return row.get('description') if isinstance(row.get('description'), str) else ''
+
+    def create(self, title, body, labels):
         return self.call(
-            'task', 'create', '--project', BOARD, '--title', title,
-            '--description', description, '--labels', LABEL)
+            'task', 'create', '--project', self.board, '--title', title,
+            '--description', body, '--labels', ','.join(labels))
+
+    def update_description(self, ref, body):
+        return self.call('task', 'update', ref, '--description', body)
+
+
+def seen_count(text):
+    found = SEEN.search(text or '')
+    try:
+        return int(found.group(1)) if found else 1
+    except ValueError:
+        return 1
 
 
 def resolve_login(env):
@@ -96,12 +145,24 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('want')
     parser.add_argument('--why', default='')
+    parser.add_argument('--done', default='')
+    parser.add_argument('--label', action='append', default=[],
+                        help='ticket label; repeat for more than one')
+    parser.add_argument('--board', default=BOARD, help='board id (default 13556)')
+    parser.add_argument('--fact', action='append', default=[],
+                        help='one fact line for the Problem list, like "Chat: Demo Chat"')
+    parser.add_argument('--count', action='store_true',
+                        help='a repeat of this title raises a count on the open ticket')
+    parser.add_argument('--now', default='', help='the time a repeat shows, ISO 8601')
     args = parser.parse_args(argv)
     title = ' '.join(args.want.split())
     if not title:
         print('vstack-feedback: say what you want from vstack', file=sys.stderr)
         return 2
     why = ' '.join(args.why.split())
+    facts = [' '.join(fact.split()) for fact in args.fact if fact.strip()]
+    labels = [label.strip() for label in args.label if label.strip()] or [LABEL]
+    board = str(args.board).strip() or BOARD
     try:
         token = resolve_login(os.environ)
     except ValueError as exc:
@@ -111,17 +172,25 @@ def main(argv=None):
         print('vstack-feedback: this chat has no agent token; never use a person token', file=sys.stderr)
         return 2
     try:
-        client = Client(token)
-        existing = client.open_titles().get(normalized(title))
+        client = Client(token, board)
+        existing = client.open_titles(labels[0]).get(normalized(title))
         if existing:
-            url = ticket_url(existing)
-            print(f'duplicate: open ticket already titled like this: {url}')
+            url = ticket_url(existing, board)
+            if not args.count:
+                print(f'duplicate: open ticket already titled like this: {url}')
+                return 0
+            seen = seen_count(client.current(existing)) + 1
+            client.update_description(existing, description(
+                title, why, facts, args.done, seen=seen, now=args.now))
+            print(f'bumped: {url} (seen {seen} times)')
             return 0
-        task = client.create(title, why).get('task') or {}
+        body = description(title, why, facts, args.done,
+                           seen=1 if args.count else None, now=args.now)
+        task = client.create(title, body, labels).get('task') or {}
         ref = task.get('ticketNumber')
         if not isinstance(ref, str) or not ref:
             raise ValueError('ticket creation returned no number')
-        print(ticket_url(ref))
+        print(ticket_url(ref, board))
         return 0
     except ValueError as exc:
         print(f'vstack-feedback: {exc}', file=sys.stderr)

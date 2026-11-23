@@ -39,6 +39,7 @@ skills/hypertask-work/board-lint | pstack: poteto-mode | why: https://app.hypert
 skills/hypertask-work/lease | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/8
 skills/hypertask-work/reconcile | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/85
 skills/hypertask/scripts/ticket-lint | pstack: correct | why: enforces correct (reject repeated design-pick, secret-paste and unanswerable asks at the ticket-writing boundary)
+skills/long-chat/failed-handover | pstack: principle-fix-root-causes | why: https://app.hypertask.ai/detail/project-13556/140
 skills/pr-housekeeping/pr-queue | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/52
 skills/pstack-diff/pstack-diff | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-13556/65
 skills/repo-tidy/repo-tidy | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/3

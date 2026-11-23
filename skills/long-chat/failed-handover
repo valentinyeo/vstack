@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""File this chat's failed handover or fresh start as one ticket on board 13556.
+
+The chat that failed files it, under its own agent login, labelled "Long Chat Handover" and
+brain-medium. The handover text never reaches the ticket: the only text this tool sends is
+the failed step and the error line it is given.
+
+  failed-handover --step save --error "Could not save the handover."
+  failed-handover --reason handover_write_failed
+  failed-handover --error "The handover is saved, but reading it failed."
+
+A repeat of the same chat and step raises a count on the open ticket instead of filing a
+second one. `--now` pins the time a test prints.
+"""
+import argparse
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+FEEDBACK = ROOT / 'skills/vstack-feedback/vstack-feedback'
+SESSION = ROOT / 'skills/hypertask-work/session_login.py'
+BOARD = '13556'
+LABELS = ('Long Chat Handover', 'brain-medium')
+STEPS = ('capture', 'save', 'read', 'resume')
+DONE = 'A fresh start in this chat completes and files no ticket.'
+MAX_ERROR = 300
+
+# The runtime's sentences and mp-fresh's reason slugs, mapped to the step that failed.
+REASONS = (
+    ('handover_unreadable', 'read', 'handover_unreadable'),
+    ('handover_write_failed', 'save', 'handover_write_failed'),
+    ('stdin_write_failed', 'capture', 'stdin_write_failed'),
+    ('Could not request the handover.', 'capture', 'Could not request the handover.'),
+    ('Could not save the handover.', 'save', 'Could not save the handover.'),
+    ('The handover did not finish.', 'capture', 'The handover did not finish.'),
+    ('The handover timed out.', 'capture', 'The handover timed out.'),
+    ('The handover was interrupted.', 'capture', 'The handover was interrupted.'),
+    ('Could not read the saved handover.', 'read', 'Could not read the saved handover.'),
+    ('Could not reopen the handover.', 'read', 'Could not reopen the handover.'),
+    ('The handover is saved, but reading it failed.', 'read',
+     'The handover is saved, but reading it failed.'),
+    ('Could not deliver the saved handover.', 'resume', 'Could not deliver the saved handover.'),
+)
+# A busy host is a retry, not a broken handover. Nothing is filed for it.
+QUIET = ('busy', 'agent_starting', 'fresh_start_pending')
+
+
+def load_session():
+    spec = importlib.util.spec_from_file_location('session_login', SESSION)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def home_dir(env):
+    return Path(env.get('HOME') or str(Path.home()))
+
+
+def now_iso():
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def generation(home):
+    """The Multiprompt runtime that failed, named in the ticket. Never a guess."""
+    try:
+        data = json.loads((home / '.multiprompt-runtime/active.json').read_text())
+    except (OSError, ValueError):
+        return 'unknown'
+    value = data.get('generation') if isinstance(data, dict) else None
+    text = str(value).strip() if isinstance(value, (int, str)) else ''
+    return text or 'unknown'
+
+
+def clean(text):
+    return ' '.join(str(text or '').split())[:MAX_ERROR]
+
+
+def step_for(reason):
+    for needle, step, _ in REASONS:
+        if needle and needle.casefold() in reason.casefold():
+            return step
+    return ''
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--step', default='', help='capture, save, read or resume')
+    parser.add_argument('--error', default='', help='the error text the chat saw')
+    parser.add_argument('--reason', default='', help="mp-fresh's reason, like handover_write_failed")
+    parser.add_argument('--chat', default='', help='chat name; defaults to this chat login')
+    parser.add_argument('--now', default='', help='the failure time, ISO 8601')
+    args = parser.parse_args(argv)
+    env = os.environ
+    error = clean(args.error or args.reason)
+    step = (args.step or step_for(args.reason or args.error)).strip().casefold()
+    if not error and not step:
+        print('failed-handover: pass --step or --error so the ticket can name the failure',
+              file=sys.stderr)
+        return 2
+    if not args.step and any(word == (args.reason or '').strip() for word in QUIET):
+        print(f'failed-handover: {args.reason} is a retry, not a failure; nothing filed')
+        return 0
+    if step and step not in STEPS:
+        print(f'failed-handover: step {step!r} is not one of {", ".join(STEPS)}', file=sys.stderr)
+        return 2
+    step = step or 'capture'
+    chat = ' '.join(args.chat.split())
+    if not chat:
+        try:
+            login = load_session().login_for_session(env)
+        except (OSError, ValueError):
+            login = None
+        if not login:
+            print('failed-handover: this chat has no agent token; never use a person token',
+                  file=sys.stderr)
+            return 2
+        chat = login[0]
+    title = f'A handover failed at {step} in {chat}'
+    why = f'This chat could not finish a fresh start. It failed at the {step} step.'
+    facts = [
+        f'Chat: {chat}',
+        f'Failed step: {step}',
+        f'Error: {error or "no error text"}',
+        f'Runtime generation: {generation(home_dir(env))}',
+    ]
+    command = [sys.executable, str(FEEDBACK), title, '--why', why, '--done', DONE,
+               '--board', BOARD, '--count', '--now', args.now or now_iso()]
+    for label in LABELS:
+        command += ['--label', label]
+    for fact in facts:
+        command += ['--fact', fact]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        print('failed-handover: ' + (result.stderr or result.stdout).strip(),
+              file=sys.stderr)
+        return result.returncode
+    print(result.stdout.strip())
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
