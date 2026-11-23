@@ -205,7 +205,7 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
     finally:
         # The chat is awake anyway; a recorded dead pid would read as a dead watcher.
         try:
-            loop_state.clear_watch(args.name)
+            loop_state.clear_watch(args.name, pid=os.getpid())
         except loop_state.ERRORS as error:
             print(f'watch: could not clear the watcher: {error}', file=sys.stderr)
 
