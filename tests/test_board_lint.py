@@ -283,6 +283,44 @@ class BoardLintTests(unittest.TestCase):
         self.assertIn('not the chat agent', result.stdout)
         self.assert_rule(result.stdout, 'view-filter', present=False)
 
+    def test_view_owner_accepts_human_owner_when_title_matches_label(self):
+        result = self.run_lint(
+            'view-owner-human-match.json',
+            board=13734,
+            roster_text='Seamless Session Transitioning (live-s, claude, /tmp)\n',
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'view-owner', present=False)
+        self.assert_rule(result.stdout, 'view-filter', present=False)
+
+    def test_view_owner_flags_other_owner_even_when_title_matches(self):
+        data = json.loads((FIXTURES / 'view-ok.json').read_text())
+        data['views'][0]['owner'] = {
+            'id': 'a-other',
+            'type': 'agent',
+            'displayName': 'Board Drain Loop',
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Path(temp) / 'view-other-owner.json'
+            fixture.write_text(json.dumps(data))
+            result = self.run_view_lint(fixture)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'view-owner')
+
+    def test_view_owner_flags_fallback_agent_even_when_title_matches(self):
+        data = json.loads((FIXTURES / 'view-ok.json').read_text())
+        data['views'][0]['owner'] = {
+            'id': 'a-cli',
+            'type': 'agent',
+            'displayName': 'Valentins Claude Code CLI',
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Path(temp) / 'view-fallback-owner.json'
+            fixture.write_text(json.dumps(data))
+            result = self.run_view_lint(fixture)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_rule(result.stdout, 'view-owner')
+
     def test_human_board_write_on_board_15(self):
         fixture = {
             'now': 1763800800,

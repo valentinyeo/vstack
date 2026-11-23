@@ -1,0 +1,67 @@
+{
+  "now": 1763800800,
+  "roster": "Seamless Session Transitioning (live-s, claude, /tmp)\n",
+  "chats": [
+    "Seamless Session Transitioning"
+  ],
+  "agents": [
+    "a-seamless"
+  ],
+  "labels": [
+    {
+      "id": "L-seamless",
+      "name": "Seamless Session Transitioning"
+    }
+  ],
+  "views": [
+    {
+      "id": "v-seamless",
+      "title": "Seamless Session Transitioning",
+      "slug": "seamless-session-transitioning",
+      "owner": {
+        "id": 6,
+        "displayName": "Valentin Yeo"
+      },
+      "board_filters": {
+        "addedFilters": [
+          {
+            "type": "Labels",
+            "searchPayload": [
+              {
+                "id": "L-seamless"
+              }
+            ]
+          }
+        ],
+        "matchFilters": "ALL"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "ticketNumber": "MUBO-101",
+      "projectId": 13734,
+      "section": "Todo",
+      "title": "Card in the agent-created view",
+      "updatedAt": "2025-11-22T02:00:00.000Z",
+      "staleness": {
+        "sectionChangedAt": "2025-11-22T01:00:00.000Z"
+      },
+      "labels": [
+        {
+          "name": "Seamless Session Transitioning"
+        },
+        {
+          "name": "brain-medium"
+        }
+      ],
+      "assignees": [
+        {
+          "type": "agent",
+          "displayName": "Seamless Session Transitioning",
+          "agentId": "a-seamless"
+        }
+      ]
+    }
+  ]
+}

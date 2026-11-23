@@ -24,6 +24,8 @@ Preconditions: the run seeds an expired state file with the pid of a dead proces
 
 ## Gotchas
 
+- The watcher pulses into `loop-state` on every poll, so a restart or a kill leaves the time it died there. `loop-state status` reads that silence as `watcher dead since <time>`, and the chat's own `board-drain-guard` hook says so in its next turn (VSTA-151). A scratch chat that is not a Multibot chat has no tab, so the hook stays silent in a `run` and only the skill's own instructions drive the re-arm.
+
 - `CronCreate` is deferred behind `ToolSearch` on this Claude Code version. The chat often searches for the tool first; that is normal and does not fail anything.
 - The tool result text is `Scheduled recurring job <id> (Every 6 hours)...` for safety crons. The grade reads the id from there.
 - `--break no-board-drain` runs the same prompt without the command and with `--disable-slash-commands`. Expect `loaded` to fail and the expired loop to stay untouched.
