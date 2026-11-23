@@ -118,7 +118,8 @@ class ReconcileTest(unittest.TestCase):
                 self.assertFalse(r.names_ticket(pr, 'SOFT-1'))
 
     def test_body_url_only_counts_on_the_ticket_line(self):
-        board = r.BoardConfig(13556, 'VSTA', frozenset(), frozenset(), (), 'valentinyeo/vstack')
+        board = r.BoardConfig(13556, 'VSTA', frozenset(), frozenset(), (),
+                              (('valentinyeo/vstack', 'main'),))
         pull = json.loads((ROOT / 'tests/fixtures/reconcile' / 'vstack-200.json').read_text())
         with self.subTest('a prose url in the real PR is not evidence'):
             self.assertFalse(r.names_ticket(pull, 'VSTA-53', board=board))
@@ -456,7 +457,7 @@ class ReconcileTest(unittest.TestCase):
     def merged_pr(self, number, merged='2026-11-17T10:00:00Z'):
         return {'url': f'https://github.com/valentinyeo/another-repo/pull/{number}', 'state': 'MERGED',
                 'headRefName': f'soft-{number}-work', 'number': number, 'mergedAt': merged,
-                'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+                'baseRefName': 'main', 'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
 
     def scan(self, merged=(), today=date(2026, 11, 18), since=date(2026, 11, 16), opened=()):
         queries = []
@@ -508,6 +509,18 @@ class ReconcileTest(unittest.TestCase):
         _, queries = self.scan(since=date(2026, 11, 1))
         self.assertEqual(len(queries), 2)
         self.assertIn('merged:2026-11-01..2026-11-18', [q for q in queries if 'is:merged' in q][0].replace('\\', ''))
+
+    def test_a_cached_pull_written_before_the_merged_base_rule_costs_no_rescan(self):
+        self.scan(merged=[self.merged_pr(5)])
+        stale = json.loads(TEST_CACHE.read_text())
+        for pull in stale['merged-2060.json']['pulls']:
+            pull.pop('baseRefName')
+        TEST_CACHE.write_text(json.dumps(stale))
+        found, queries = self.scan()
+        self.assertEqual([p['url'] for p in found], ['https://github.com/valentinyeo/another-repo/pull/5'])
+        merged = [q for q in queries if 'is:merged' in q]
+        self.assertEqual(len(merged), 1)
+        self.assertIn('merged:2026-11-17..2026-11-18', merged[0].replace('\\', ''))
 
     def test_failed_search_keeps_the_cache(self):
         self.scan(merged=[self.merged_pr(5)])
@@ -1079,10 +1092,14 @@ else:
                 self.assertEqual(self.target('Backlog', pulls=(pull(checks=checks),)), 'AI Review')
 
     def test_backlog_stays_and_ai_review_never_demotes(self):
-        for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
+        for pulls in ((), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
                 self.assertEqual(self.target('Backlog', pulls=pulls), 'Backlog')
                 self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
+        # A shipped PR is real evidence, so the card goes to review, never back.
+        self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),)), board=r.BOARDS[15]),
+                         ('AI Review', 'merged PR; live proof pending'))
+        self.assertEqual(self.target('AI Review', pulls=(pull('MERGED'),)), 'AI Review')
 
     def test_stale_in_progress_cards_move_to_backlog(self):
         now = r.stamp(self.CREATED) + 3 * 3600
@@ -1171,6 +1188,56 @@ else:
         with patch.object(r, 'run', return_value=json.dumps(data)) as run, patch.object(r, 'branch_pulls', return_value=[]), patch.object(r, 'head_pulls', return_value=[]):
             self.assertEqual(r.discover(['HTPR-1'], board=r.BOARDS[15]), {'HTPR-1': [pr]})
             self.assertIn('repo:hypertask-ai/hypertask', run.call_args.args[-1])
+
+    def test_shipped_in_vstack_plans_review_not_backlog(self):
+        """HTPR-9521 shipped in valentinyeo/vstack#161, merged into main.
+
+        Board 15 used to search only hypertask-ai/hypertask, saw no PR, and
+        planned the card back to Backlog as idle. #161's own title and branch
+        carry no key, so the fixture is a vstack PR that names the ticket the
+        way reconcile attributes one.
+        """
+        pr = {'title': 'fix(reconcile): board 15 catches cards (HTPR-9521)', 'body': '',
+              'headRefName': 'boss/9521-reconcile-board15', 'state': 'MERGED', 'baseRefName': 'main',
+              'number': 161, 'url': 'https://github.com/valentinyeo/vstack/pull/161',
+              'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
+        data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [pr]}}}
+        created = datetime.now(timezone.utc).isoformat()
+        with patch.object(r, 'run', return_value=json.dumps(data)) as run, \
+                patch.object(r, 'branch_pulls', return_value=[]), \
+                patch.object(r, 'head_pulls', return_value=[]):
+            found = r.discover(['HTPR-9521'], created={'HTPR-9521': created}, board=r.BOARDS[15])
+            query = run.call_args.args[-1]
+        self.assertEqual(found, {'HTPR-9521': [pr]})
+        # One search covers every repo the board ships from.
+        self.assertIn('repo:hypertask-ai/hypertask', query)
+        self.assertIn('repo:valentinyeo/vstack', query)
+        self.assertEqual(query.count('search('), 1)
+        card = self.card('HTPR-9521', 'In Progress', r.stamp(created) - 60, found['HTPR-9521'])
+        facts = self.facts(card, r.stamp(created) + 3 * 3600)
+        self.assertEqual(r.target(facts, board=r.BOARDS[15]),
+                         ('AI Review', 'merged PR; live proof pending'))
+
+    def test_merged_into_a_feature_branch_is_not_shipped(self):
+        """HTPR-9387: stacked #3646 merged into #3594's branch, not into production."""
+        stacked = {'title': 'HTPR-9387 grace', 'body': '', 'headRefName': 'htpr-9387-grace',
+                   'state': 'MERGED', 'baseRefName': 'htpr-3594-rules', 'number': 3646,
+                   'url': 'https://github.com/hypertask-ai/hypertask/pull/3646',
+                   'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+        board = r.BOARDS[15]
+        self.assertFalse(r.shipped(stacked, board))
+        self.assertTrue(r.shipped({**stacked, 'baseRefName': 'production'}, board))
+        self.assertFalse(r.shipped({**stacked, 'baseRefName': 'main'}, board))
+        self.assertTrue(r.shipped({**stacked, 'baseRefName': 'main',
+                                   'repository': {'nameWithOwner': 'valentinyeo/vstack'}}, board))
+        data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [stacked]}}}
+        with patch.object(r, 'run', return_value=json.dumps(data)), \
+                patch.object(r, 'branch_pulls', return_value=[]), \
+                patch.object(r, 'head_pulls', return_value=[]):
+            self.assertEqual(r.discover(['HTPR-9387'], created={'HTPR-9387': None}, board=board),
+                             {'HTPR-9387': []})
+        card = self.card('HTPR-9387', 'In Progress', NOW - 8000)
+        self.assertEqual(r.target(self.facts(card, NOW + 8000), board=board)[0], 'Backlog')
 
     def test_closed_pr_during_preflight_never_moves(self):
         t = {'ticketNumber': 'HTPR-1', 'section': 'In Progress', 'projectId': 15,
@@ -2074,7 +2141,8 @@ class CallBudgetTest(unittest.TestCase):
     def test_saved_repos_scope_keeps_repo_qualifiers(self):
         self.assertEqual(r.probe_scope(r.DEFAULT, ['valentinyeo/another-repo']),
                          'repo:valentinyeo/another-repo')
-        self.assertEqual(r.probe_scope(r.BOARDS[15], ()), 'repo:hypertask-ai/hypertask')
+        self.assertEqual(r.probe_scope(r.BOARDS[15], ()),
+                         'repo:hypertask-ai/hypertask repo:valentinyeo/vstack')
 
     def test_probe_refused_with_422_reads_every_fact_and_keeps_the_full_plan(self):
         t1 = {**task('Doing'), 'ticketNumber': 'SOFT-1', 'updatedAt': NOW - 8000}
@@ -2331,6 +2399,185 @@ class CallBudgetTest(unittest.TestCase):
         text = out.getvalue()
         self.assertIn('kept saved facts, planned nothing new', text)
         self.assertNotIn('UNKNOWN', text)
+
+
+class WholeSyncTest(unittest.TestCase):
+    """The whole sync path: board config, quiet probe, plan. A fake gh and a fake board.
+
+    Nothing here patches a scope helper, so a repository named in one place and read
+    in another fails this test the way it failed every sync in production.
+    """
+
+    VSTA_PROJECT = {'project': {'id': 13556, 'uniqueIdentifier': 'VSTA', 'sections': [
+        {'id': n, 'section_title': title}
+        for n, title in enumerate(('Backlog', 'Todo', 'Doing', 'AI Review'))]}}
+
+    def setUp(self):
+        clear_cache()
+        r.board_config.cache_clear()
+        r.PULLS.clear()
+        r.FAILED.clear()
+        r.FAILED_REPOS.clear()
+        self.addCleanup(r.board_config.cache_clear)
+        self.addCleanup(clear_cache)
+
+    def sync(self, argv, tasks, respond):
+        """One full reconcile run, with its own home and its own gh answers."""
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', *argv]), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[dict(t) for t in tasks]), \
+                patch.object(r, 'product_workers', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r.subprocess, 'run', side_effect=respond), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(r.main(), 0)
+        return out.getvalue()
+
+    def test_a_two_repo_board_probes_both_repos_in_one_search(self):
+        """Board 15 ships from hypertask-ai/hypertask and valentinyeo/vstack.
+
+        The repos tuple landed while the quiet probe still read one repository off
+        the board config, so every sync after both shipped died with AttributeError.
+        """
+        calls = []
+
+        def respond(args, **kwargs):
+            call = ' '.join(args)
+            calls.append(call)
+            if 'search/issues' in call:
+                return subprocess.CompletedProcess([], 0, json.dumps({'items': []}), '')
+            if 'is:open' in call or 'is:merged' in call:
+                page = {'issueCount': 0, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'search': page}}), '')
+            if 'search(query' in call:
+                page = {'pageInfo': {'hasNextPage': False}, 'nodes': []}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'q0': page}}), '')
+            raise AssertionError(f'unexpected gh call: {call}')
+
+        ticket = {'ticketNumber': 'HTPR-9521', 'section': 'In Progress', 'projectId': 15,
+                  'updatedAt': NOW - 8000, 'createdAt': '2026-11-16T10:00:00Z'}
+        cold = self.sync(['--board', '15'], [ticket], respond)
+        self.assertIn('DRY RUN board=15 tickets=1 unknown=0', cold)
+        calls.clear()
+        quiet = self.sync(['--board', '15'], [ticket], respond)
+
+        self.assertIn('DRY RUN board=15 tickets=1 unknown=0', quiet)
+        # The quiet sync pays for one search, and that search names every repo.
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn('search/issues', calls[0])
+        self.assertIn('repo:hypertask-ai/hypertask', calls[0])
+        self.assertIn('repo:valentinyeo/vstack', calls[0])
+
+    def test_a_board_with_no_named_repos_probes_the_fleet_without_parentheses(self):
+        """GitHub's issue search answers a parenthesized OR with 422 Validation Failed.
+
+        Board 2060 names no repos, so its probe fell back to that form and every
+        quiet sync died before the plan.
+        """
+        self.assertEqual(r.probe_scope(r.DEFAULT), 'user:valentinyeo user:hypertask-ai')
+        for repos in ((), ('valentinyeo/another-repo',), ('valentinyeo/vstack', 'hypertask-ai/hypertask')):
+            with self.subTest(repos=repos):
+                scope = r.probe_scope(r.DEFAULT, repos)
+                self.assertNotIn('(', scope)
+                self.assertNotIn(')', scope)
+                self.assertTrue(scope.startswith('user:') or scope.startswith('repo:'), scope)
+        self.assertEqual(r.probe_scope(r.DEFAULT, ('b/two', 'a/one', 'b/two')),
+                         'repo:b/two repo:a/one')
+
+    def test_a_merged_revert_keeps_the_card_out_of_review_on_every_sync(self):
+        """#223 shipped, #282 reverted it, and the card flapped Todo / AI Review.
+
+        The reverted merge and the revert itself are not a ship, so the card leaves
+        In Progress exactly once and lands on the same column on the next run.
+        """
+        key = 'VSTA-1'
+        shipped_pull = {'title': 'VSTA-1: a board syncs every repo it ships from (#223)', 'body': '',
+                        'headRefName': 'vsta-1-repos', 'state': 'MERGED', 'baseRefName': 'main',
+                        'number': 223, 'mergedAt': '2026-11-23T11:51:02Z', 'mergeCommit': {'oid': 'a' * 40},
+                        'url': 'https://github.com/valentinyeo/vstack/pull/223',
+                        'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
+        revert = {'title': 'Revert "VSTA-1: a board syncs every repo it ships from (#223)" (#282)',
+                  'body': 'Reverts #223', 'headRefName': 'revert-223', 'state': 'MERGED',
+                  'baseRefName': 'main', 'number': 282, 'mergedAt': '2026-11-25T09:00:00Z',
+                  'mergeCommit': {'oid': 'b' * 40},
+                  'url': 'https://github.com/valentinyeo/vstack/pull/282',
+                  'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
+        state = {'merged': [shipped_pull], 'probe': []}
+
+        def respond(args, **kwargs):
+            call = ' '.join(args)
+            if 'project show' in call:
+                return subprocess.CompletedProcess([], 0, json.dumps(self.VSTA_PROJECT), '')
+            if 'search/issues' in call:
+                return subprocess.CompletedProcess([], 0, json.dumps({'items': state['probe']}), '')
+            if 'is:open' in call or 'is:merged' in call:
+                nodes = state['merged'] if 'is:merged' in call else []
+                page = {'issueCount': len(nodes), 'nodes': nodes,
+                        'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'search': page}}), '')
+            if 'head:' in call:
+                page = {'pageInfo': {'hasNextPage': False}, 'nodes': []}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'q0': page}}), '')
+            if 'repository(owner:' in call:
+                keys = list(dict.fromkeys(re.findall(r'p(\d+):repository', call)))
+                body = {'data': {f'p{n}': {'pullRequest': {
+                    'url': shipped_pull['url'], 'state': 'MERGED', 'headRefOid': HEAD,
+                    'baseRefOid': 'c' * 40, 'author': {'login': 'writer'},
+                    'statusCheckRollup': {'contexts': {'pageInfo': {'hasNextPage': False}, 'nodes': [
+                        {'__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}},
+                    'comments': {'totalCount': 0, 'nodes': []}}} for n in keys}}
+                return subprocess.CompletedProcess([], 0, json.dumps(body), '')
+            if '/contents/.verify/policy.json' in call:
+                return subprocess.CompletedProcess(
+                    [], 0, json.dumps({'content': base64.b64encode(b'{}').decode()}), '')
+            if 'search(query' in call:
+                body = {'data': {'q0': {'pageInfo': {'hasNextPage': False},
+                                        'nodes': [shipped_pull]}}}
+                return subprocess.CompletedProcess([], 0, json.dumps(body), '')
+            raise AssertionError(f'unexpected call: {call}')
+
+        task = {'ticketNumber': key, 'section': 'Doing', 'projectId': 13556,
+                'updatedAt': NOW - 8000, 'createdAt': '2026-11-16T10:00:00Z'}
+        shipped = self.sync(['--board', '13556'], [task], respond)
+        self.assertIn(f'PLAN {key} Doing -> AI Review | merged PR', shipped)
+
+        # The revert merges: the probe carries it, saved facts still carry #223.
+        state['merged'] = [shipped_pull, revert]
+        state['probe'] = [{'html_url': revert['url'], 'number': revert['number'], 'state': 'closed',
+                           'title': revert['title'], 'body': revert['body'],
+                           'pull_request': {'merged_at': revert['mergedAt']}}]
+        after_revert = self.sync(['--board', '13556'], [task], respond)
+        self.assertIn(f'PLAN {key} Doing -> Todo | no live worker and no PR', after_revert)
+
+        # Nothing changed since: the next run plans the same column, not review.
+        state['probe'] = []
+        again = self.sync(['--board', '13556'], [task], respond)
+        self.assertIn(f'PLAN {key} Doing -> Todo | no live worker and no PR', again)
+
+    def test_every_revert_marker_undoes_the_merge_it_names(self):
+        repo = {'nameWithOwner': 'valentinyeo/vstack'}
+        pull = {'url': 'https://github.com/valentinyeo/vstack/pull/223', 'state': 'MERGED',
+                'number': 223, 'title': 'VSTA-51: repos (#223)', 'mergeCommit': {'oid': 'a' * 40},
+                'repository': repo}
+        cases = [
+            {'title': 'Revert "VSTA-51: repos (#223)"', 'body': ''},
+            {'title': 'Revert "VSTA-51: repos (#223)" (#282)', 'body': ''},
+            {'title': 'undo', 'body': 'Reverts #223'},
+            {'title': 'undo', 'body': 'Reverts valentinyeo/vstack#223'},
+            {'title': 'undo', 'body': 'This reverts commit ' + 'a' * 40 + '.'},
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                revert = {'url': 'https://github.com/valentinyeo/vstack/pull/282', 'state': 'MERGED',
+                          'number': 282, 'repository': repo, **case}
+                self.assertEqual(r.undone_urls([pull, revert]), {pull['url'], revert['url']})
+        with self.subTest('prose that only mentions a ticket undoes nothing'):
+            self.assertEqual(r.undone_urls([pull]), set())
+            self.assertEqual(r.undone_urls([pull, {**pull, 'state': 'OPEN', 'body': 'Reverts #223'}]),
+                             set())
 
 
 class LabelLockTest(unittest.TestCase):

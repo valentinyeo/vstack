@@ -64,7 +64,9 @@ The lease's start sync runs `agent take` for the ticket as the chat's own login 
 
 A run spends GitHub calls, and the account shares one hourly budget. The first response that reports a spent budget stops the run at once: 403 and 429 errors that name a rate limit or a secondary rate limit, and GraphQL's `RATE_LIMITED`. The run prints one line with the reset time from `gh api rate_limit`, applies no move, and exits 0. Only error text counts, so a PR or comment that talks about a rate limit is not one. Every run prints its call count to stderr: `reconcile: github calls=N (graphql=a, rest=b)`. A PR's state comes from the search the run already paid for, so no PR costs a call of its own.
 
-When nothing changed on the board or on GitHub since the last dry run, reconcile keeps one REST probe and reuses saved PR facts from `~/.cache/vstack/reconcile/board-facts-<board>.json`. Facts older than one hour or a new ticket still force a full read. A refused `gh` budget (exit 75) keeps the saved facts, plans nothing new, and writes no update.
+When nothing changed on the board or on GitHub since the last dry run, reconcile keeps one REST probe and reuses saved PR facts from `~/.cache/vstack/reconcile/board-facts-<board>.json`. That probe covers every repository the board ships from, plus any repository it has already seen, as `repo:` terms in the one query: a board with two repos still costs one call. Facts older than one hour or a new ticket still force a full read. A refused `gh` budget (exit 75) keeps the saved facts, plans nothing new, and writes no update.
+
+A merged PR that a later merged PR reverts is not a ship. Reconcile reads the three forms GitHub writes: a title `Revert "<title>"`, a body line `Reverts #<n>` or `Reverts <owner>/<repo>#<n>`, and `This reverts commit <sha>`. The reverted merge and the revert itself leave the ticket's facts, so a card whose only PR was reverted plans the same column on the next run instead of flapping between review and Todo.
 
 ## A miss
 
@@ -80,10 +82,11 @@ Never patch the card and say nothing: the next run undoes it or repeats it. The 
 
 `skills/hypertask-work/reconcile --board 15` previews Hypertask product moves. Dedicated rules:
 
-- Ticket keys start with `HTPR-`. PRs come from `hypertask-ai/hypertask`.
-- Live workers move tickets to In Progress. Open PRs move them to AI Review. An open PR outranks a live worker.
+- Ticket keys start with `HTPR-`. PRs come from every repo the board ships from: `hypertask-ai/hypertask` (release branch `production`) and `valentinyeo/vstack` (release branch `main`). One search covers them all.
+- Live workers move tickets to In Progress. Open and merged PRs move them to AI Review. An open PR outranks a live worker.
+- A merged PR counts only when its base is that repo's release branch. A stacked PR merged into a feature branch is not a ship.
 - An open PR or a live worker moves a ticket even inside the two-hour grace. The grace only protects an idle ticket.
-- An In Progress ticket with no live worker and no open PR moves to Backlog after two hours. Tickets in Backlog stay.
+- An In Progress ticket with no live worker and no shipped PR moves to Backlog after two hours. Tickets in Backlog stay unless a shipped PR now names them.
 - UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, QA and every Flag column stay. No Flag and unknown columns also stay.
 - Each run permits at most five moves, even with a higher `--limit`.
 - Worker facts come from the installed Hypertask workers. An active service alone proves no ticket work: its local PID must exist and its queue must name that board's ticket. Claiming, launching and running count as active. Progress expires after 15 minutes. A live lease or a process that names the ticket also counts. Unreadable worker facts refuse all moves.
