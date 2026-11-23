@@ -39,6 +39,7 @@ Each feature file starts with an H1 title and one paragraph. It then uses exactl
 | [reconcile.md](reconcile.md) | verify-reconcile | Board sync reads a real board and plans the right moves |
 | [repo-tidy.md](repo-tidy.md) | verify-repo-tidy | Worktree and branch cleanup keeps exactly the right ones |
 | [responsive-mode.md](responsive-mode.md) | verify-responsive-mode | A chat answers fast and still finishes the job |
+| [heavy-local.md](heavy-local.md) | heavy-local hook journey | Each chat blocks heavy jobs locally and points to GitHub |
 | [test-timeout.md](test-timeout.md) | verify-test-timeout | The test guard refuses a hung command and passes a wrapped one |
 | [valentin-mode.md](valentin-mode.md) | verify-valentin-mode | A fresh chat uses valentin mode's three tools |
 | [valentin-subskills.md](valentin-subskills.md) | verify-valentin-subskills | A fresh chat follows valentin mode's sub-rules |
