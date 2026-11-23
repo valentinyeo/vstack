@@ -38,6 +38,7 @@ Nobody pushes to main.
 | A PR never collides with an older open PR on a guarded file or ticket | `scripts/pr-overlap`, `.github/workflows/pr-overlap.yml`, `tests/test_pr_overlap.py` |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Worker tasks can run on vendor cloud agents | `skills/cloud-agent/cloud-agent`, `tests/test_cloud_agent.py` |
+| Direct cloud worker launches check lane eligibility before any vendor runs | `skills/cloud-agent/cloud-agent` calls `plan-pick --lane-ok`, `tests/test_cloud_agent.py` |
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
 | Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
 | Reconcile keeps boards 15 and 2060 truthful | `skills/hypertask-work/reconcile`, `tests/test_hypertask_work.py` |

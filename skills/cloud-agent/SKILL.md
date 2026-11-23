@@ -33,7 +33,9 @@ skills/cloud-agent/cloud-agent cursor --repo <checkout> --brief brief.txt
 skills/cloud-agent/cloud-agent codex  --repo <checkout> --brief brief.txt --env <codex env>
 ```
 
-Run it as a tracked background job. It prints one JSON line: `status`, `agent_url`, `pr_url`, `branch`. Exit 75 means a usage limit, so try the next vendor. `--no-wait` returns once the agent has started.
+Run it as a tracked background job. It prints one JSON line: `status`, `agent_url`, `pr_url`, `branch`. Exit 75 means a usage limit or a refused lane, so try the next vendor. `--no-wait` returns once the agent has started.
+
+Before preflight or any vendor runs, the launcher calls `~/.local/bin/plan-pick --lane-ok <vendor> --cloud` in the checkout. Exit 3 refuses with the reason, exit 75 and a suggestion to use `plan-pick --run`. A missing `plan-pick` warns and allows the launch. An installed but old or broken picker refuses; install token-ladder's `--lane-ok` support first.
 
 The result is a claim. Check the PR diff and its checks before calling the work done, as pstack's Prove It Works says.
 
