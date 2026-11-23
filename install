@@ -146,6 +146,28 @@ else
   echo "vstack install: linked skills from $ROOT; plain copies in $DUPES"
 fi
 
+# Record the commit this install came from. A chat links to this checkout, so a
+# chat that reports a broken hook can be tied to the tree it is actually
+# running, rather than the one someone thought was installed (VSTA-137).
+python3 - "$ROOT" "$HOME/.local/state/vstack/install.json" <<'PY'
+import datetime
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+root, destination = sys.argv[1], Path(sys.argv[2])
+commit = subprocess.run(['git', '-C', root, 'rev-parse', 'HEAD'],
+                        capture_output=True, text=True).stdout.strip() or 'unknown'
+destination.parent.mkdir(parents=True, exist_ok=True)
+entry = {'root': root, 'commit': commit,
+         'at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+temporary = destination.with_name(destination.name + '.tmp')
+temporary.write_text(json.dumps(entry, indent=2) + '\n')
+os.replace(temporary, destination)
+PY
+
 # repo-tidy runs explicitly after this chat merges work.
 link_one repo-tidy "$ROOT/skills/repo-tidy/repo-tidy" "$HOME/.local/bin"
 link_one vstack-feedback "$ROOT/skills/vstack-feedback/vstack-feedback" "$HOME/.local/bin"

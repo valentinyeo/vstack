@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Verify a vstack change keeps chats working. Installs the checkout into a scratch HOME,
+# runs Doctor there, then one fresh headless chat when this host can run one, and grades.
+# Usage: run [--checkout DIR] [--base REF] [--wiring FILE] [--no-drive] [--keep]
+# Exit: 0 PASS, 1 FAIL, 2 usage, 3 Doctor did not run (nothing was proved).
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT=$(cd "$HERE/../../.." && pwd)
+
+CHECKOUT=$ROOT
+BASE=origin/main
+WIRING=""
+DRIVE=1
+KEEP=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --checkout) [ "$#" -ge 2 ] || { echo "run: --checkout needs a value" >&2; exit 2; }; CHECKOUT=$2; shift 2 ;;
+    --base) [ "$#" -ge 2 ] || { echo "run: --base needs a value" >&2; exit 2; }; BASE=$2; shift 2 ;;
+    --wiring) [ "$#" -ge 2 ] || { echo "run: --wiring needs a value" >&2; exit 2; }; WIRING=$2; shift 2 ;;
+    --no-drive) DRIVE=0; shift ;;
+    --keep) KEEP=1; shift ;;
+    -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "run: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -x "$CHECKOUT/install" ] || { echo "run: no install in $CHECKOUT" >&2; exit 2; }
+
+E="$HOME/.local/state/verify-vstack/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$E"
+S=$(mktemp -d /tmp/vstack-verify-home.XXXXXX)
+cleanup() {
+  # Kill only the tree this run made, and never the evidence.
+  if [ "$KEEP" -eq 0 ] && [ -n "${S:-}" ] && [ -d "$S" ]; then
+    find "$S" -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$S" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+printf '%s\n' "$S" > "$E/scratch-home"
+
+run_step() {
+  local name=$1; shift
+  set +e
+  "$@"
+  local code=$?
+  set -e
+  printf '%s\n' "$code" > "$E/$name.exit"
+  return 0
+}
+
+run_step launch python3 "$HERE/launch.py" --checkout "$CHECKOUT" --scratch "$S" \
+  --base "$BASE" ${WIRING:+--wiring "$WIRING"} --evidence "$E"
+run_step doctor python3 "$HERE/doctor.py" --checkout "$CHECKOUT" --scratch "$S" --evidence "$E"
+if [ "$DRIVE" -eq 1 ]; then
+  run_step drive python3 "$HERE/drive.py" --checkout "$CHECKOUT" --scratch "$S" --evidence "$E"
+else
+  printf 'DRIVE SKIP drive was turned off for this run\n' > "$E/drive.txt"
+fi
+run_step grade python3 "$HERE/grade.py" "$E" || true
+
+echo "Evidence: $E"
+if [ -f "$E/verdict.txt" ]; then
+  tail -1 "$E/verdict.txt"
+fi
+exit "$(cat "$E/grade.exit" 2>/dev/null || echo 1)"
