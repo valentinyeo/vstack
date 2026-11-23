@@ -3,8 +3,8 @@ name: valentin-mode
 description: >-
   Work in Valentin's style on top of pstack, on his projects (Hypertask, Multi Bot, Software Factory, Pecunia, vstack, his personal apps). Starts only when invoked with /valentin-mode, never on its own.
 disable-model-invocation: true
-skill-word-budget: 1050
-skill-word-budget-reason: The index names hidden skills; the hooks block points at responsive-mode without duplicating it.
+skill-word-budget: 1100
+skill-word-budget-reason: The index names hidden skills; the hooks block points at responsive-mode without duplicating it; Working routes heavy jobs to each chat's guard.
 hooks:
   PreToolUse:
     - matcher: "*"
@@ -60,6 +60,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 
 ## Working
 
+- **Heavy work:** Gradle/Android, Zig build/test, Wine and other full app builds run on GitHub free runners; light unit tests may run locally under the time limit. Register the heavy-local guard in your own chat's settings per [test-timeout](../test-timeout/SKILL.md#heavy-work-stays-on-github).
 - **Gaps in Hypertask, Multi Bot, vstack:** `hypertask feedback`, `multibot-feedback`, or `vstack-feedback` now; send him the link.
 - **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
