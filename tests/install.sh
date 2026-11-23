@@ -6,7 +6,7 @@ TEST_HOME=$(mktemp -d "$ROOT/.install-test.XXXXXX")
 trap 'rm -rf "$TEST_HOME"' EXIT
 
 dests=(.claude/skills .codex/skills .cursor/skills .pi/agent/skills .agents/skills)
-retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop skill-update.py)
+retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop)
 mkdir -p "$TEST_HOME/.claude/hooks" "$TEST_HOME/.local/bin"
 for hook in "${retired_hooks[@]}"; do
   ln -s "$ROOT/hooks/$hook" "$TEST_HOME/.claude/hooks/$hook"
@@ -39,7 +39,7 @@ done
 [ "$(cat "$TEST_HOME/.claude/hooks/user-hook.py")" = 'user hook' ]
 printf 'PASS retired links removed and unrelated hooks preserved\n'
 
-for name in test-timeout-guard.py pstack-new-gates.py; do
+for name in test-timeout-guard.py pstack-new-gates.py skill-update.py; do
   hook="$TEST_HOME/.claude/hooks/$name"
   [ -L "$hook" ]
   [ "$(readlink -f "$hook")" = "$ROOT/hooks/$name" ]

@@ -113,6 +113,11 @@ link_one pstack-new-gates.py "$ROOT/hooks/pstack-new-gates.py" "$HOME/.claude/ho
 link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
 link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
 
+# skill-update keeps the shared checkout current and tells a chat to re-read a
+# changed valentin-mode (VSTA-56). Register it once, globally, as a
+# UserPromptSubmit hook: it does the update at most once per ten minutes for the
+# whole server, so every chat's skills follow origin/main without anyone asking.
+link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
 link_one long-chat.py "$ROOT/hooks/long-chat.py" "$HOME/.claude/hooks"
 
 # long-chat acts only when valentin-mode is loaded, so it is safe to register
@@ -135,7 +140,7 @@ link_one vstack-feedback "$ROOT/skills/vstack-feedback/vstack-feedback" "$HOME/.
 
 # Remove retired registrations before their links, including the old bare Python
 # command that would otherwise block every prompt when its file disappears.
-retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop skill-update.py)
+retired_hooks=(claude-helper-gate.py gh-watch-guard.py launch-gate.py plan-pick-only.py reconcile-auto.py repo-tidy-stop)
 python3 - "$HOME/.claude/settings.json" "$ROOT/.claude/settings.local.json" -- "${retired_hooks[@]}" <<'PY'
 import json
 import os
