@@ -13,11 +13,23 @@ moved=0
 
 # One checkout links every chat onto itself. A git worktree that runs this would
 # hand every chat an unmerged branch, so only the shared checkout may run it
-# (VSTA-47). Tests and throwaway HOMEs set VSTACK_INSTALL_ANYWHERE=1.
+# (VSTA-47). Tests set VSTACK_INSTALL_ANYWHERE=1 and a throwaway HOME (VSTA-135).
 SHARE_REAL=$(cd "$SHARE" 2>/dev/null && pwd -P) || SHARE_REAL=$SHARE
-if [ "$ROOT" != "$SHARE_REAL" ] && [ "${VSTACK_INSTALL_ANYWHERE:-0}" != 1 ]; then
-  echo "vstack install: refusing to link from $ROOT; run ~/.local/share/vstack/install, or set VSTACK_INSTALL_ANYWHERE=1 for a test checkout" >&2
-  exit 2
+if [ "$ROOT" != "$SHARE_REAL" ]; then
+  if [ "${VSTACK_INSTALL_ANYWHERE:-0}" != 1 ]; then
+    echo "vstack install: refusing to link from $ROOT; run ~/.local/share/vstack/install, or set VSTACK_INSTALL_ANYWHERE=1 with a throwaway HOME for a test checkout" >&2
+    exit 2
+  fi
+  LOGIN_HOME=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
+  if [ -z "$LOGIN_HOME" ]; then
+    LOGIN_HOME=$(eval echo ~"$(id -un)")
+  fi
+  HOME_REAL=$(cd "$HOME" 2>/dev/null && pwd -P) || HOME_REAL=$HOME
+  LOGIN_HOME_REAL=$(cd "$LOGIN_HOME" 2>/dev/null && pwd -P) || LOGIN_HOME_REAL=$LOGIN_HOME
+  if [ "$HOME_REAL" = "$LOGIN_HOME_REAL" ]; then
+    echo "vstack install: VSTACK_INSTALL_ANYWHERE=1 must use a throwaway HOME; refusing to link into $HOME" >&2
+    exit 2
+  fi
 fi
 
 if [ ! -d "$SRC" ]; then

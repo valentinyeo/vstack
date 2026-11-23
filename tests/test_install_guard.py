@@ -4,8 +4,12 @@
 A git worktree that ran install relinked every chat onto an unmerged branch
 (VSTA-47). The guard compares the script's own resolved directory with
 $HOME/.local/share/vstack and refuses anywhere else.
+
+VSTA-135: VSTACK_INSTALL_ANYWHERE=1 must use a throwaway HOME so a worker test
+install never rewires every chat's skills and bin links.
 """
 import os
+import pwd
 from pathlib import Path
 import shutil
 import subprocess
@@ -43,7 +47,7 @@ class InstallGuard(unittest.TestCase):
         lines = result.stderr.strip().splitlines()
         self.assertEqual(len(lines), 1, result.stderr)
         self.assertIn('~/.local/share/vstack', lines[0])
-        self.assertIn('VSTACK_INSTALL_ANYWHERE=1', lines[0])
+        self.assertIn('throwaway HOME', lines[0])
         self.assertFalse((self.home / '.claude').exists())
         self.assertFalse((self.home / '.local' / 'share' / 'vstack').exists())
 
@@ -60,6 +64,23 @@ class InstallGuard(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         link = self.home / '.claude' / 'skills' / 'valentin-mode'
         self.assertEqual(link.resolve(), (ROOT / 'skills' / 'valentin-mode').resolve())
+
+    def test_escape_refuses_the_real_home(self):
+        """A worker ran install with VSTACK_INSTALL_ANYWHERE=1 and rewired every chat."""
+        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        # The canonical share still points at the main checkout, not this worktree.
+        share = self.home / '.local' / 'share' / 'vstack'
+        share.mkdir(parents=True)
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('VSTACK_DIR', 'VSTACK_INSTALL_ANYWHERE', 'HOME')}
+        env['HOME'] = str(real_home)
+        env['VSTACK_DIR'] = str(share)
+        env['VSTACK_INSTALL_ANYWHERE'] = '1'
+        result = subprocess.run(
+            ['bash', str(ROOT / 'install')], env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('throwaway HOME', result.stderr)
 
 
 if __name__ == '__main__':
