@@ -98,9 +98,8 @@ CODEX_TASK_URL = re.compile(r'https://chatgpt\.com/codex/tasks/(task_e_[0-9a-z]+
 PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
 GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
 CURSOR_MODEL = re.compile(r'^(?:composer-2\.5(?:-[a-z]+)*|(?:cursor-)?grok-\d+(?:\.\d+)?(?:-[a-z]+)*)$')
-SUBMITTED = ('Checking git status', 'Sending to cloud', 'Open Cloud Agent in:')
+SUBMITTED = re.compile(r'Checking git status|Sending to cloud|Open Cloud Agent in:')
 CURSOR_PASTE_TOKEN = re.compile(r'\[Pasted text #\d+ \+(\d+) lines?\]')
-CURSOR_WORKING = re.compile(r'Checking git status|Sending to cloud|Open Cloud Agent in:')
 CURSOR_PUSH_DIALOG = re.compile(r'Branch Not Pushed|Push to remote before kicking off', re.I)
 UPSTREAM = re.compile(r'^[^/]+/(.+)$')
 
@@ -211,7 +210,7 @@ def paste_shortfall(pane, brief):
 
 def cursor_took_the_prompt(pane):
     """Cursor committed to the brief: it is checking git, sending to cloud, or out of quota."""
-    return bool(CURSOR_WORKING.search(pane or '')) or cursor_limit_hit(submitted_tail(pane))
+    return bool(SUBMITTED.search(pane or '')) or cursor_limit_hit(submitted_tail(pane))
 
 
 def limit_hit(text):
@@ -227,9 +226,8 @@ def cursor_limit_hit(text):
 def submitted_tail(text):
     """The pane from the first sign that cursor started on the brief, so the brief itself is never
     read as a vendor error. A brief about a `rate limit` bug must not report a limit."""
-    cuts = [text.rfind(marker) for marker in SUBMITTED]
-    cuts = [cut for cut in cuts if cut >= 0]
-    return text[min(cuts):] if cuts else ''
+    positions = [match.start() for match in SUBMITTED.finditer(text or '')]
+    return (text or '')[min(positions):] if positions else ''
 
 
 def extract_cursor_url(text):
@@ -529,11 +527,10 @@ def paste_cursor_brief(tmux, session, brief, holder):
         path.write_text(brief)
     except OSError as exc:
         return failed('cursor', f'could not write the brief to {path}: {exc}')
-    buffer = session
-    loaded = run([tmux, 'load-buffer', '-b', buffer, str(path)], timeout=TMUX_TIMEOUT)
+    loaded = run([tmux, 'load-buffer', '-b', session, str(path)], timeout=TMUX_TIMEOUT)
     if loaded.returncode != 0:
         return failed('cursor', f'could not load the brief into a tmux buffer: {saying(loaded)}')
-    pasted = run([tmux, 'paste-buffer', '-p', '-d', '-b', buffer, '-t', session],
+    pasted = run([tmux, 'paste-buffer', '-p', '-d', '-b', session, '-t', session],
                  timeout=TMUX_TIMEOUT)
     if pasted.returncode != 0:
         return failed('cursor', f'could not paste the brief into the cursor prompt: {saying(pasted)}')
