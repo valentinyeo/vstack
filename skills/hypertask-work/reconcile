@@ -678,8 +678,9 @@ def search_item_to_pull(item, saved_index=()):
         state = 'MERGED' if pull.get('merged_at') else 'CLOSED'
     saved = saved_index.get(url) if isinstance(saved_index, dict) else {}
     head = item.get('headRefName') or (saved or {}).get('headRefName') or ''
+    base = item.get('baseRefName') or (saved or {}).get('baseRefName') or ''
     return {'url': url, 'title': item.get('title') or '', 'body': item.get('body') or '',
-            'headRefName': head, 'state': state, 'number': number,
+            'headRefName': head, 'baseRefName': base, 'state': state, 'number': number,
             'repository': {'nameWithOwner': repo or (saved or {}).get('repository', {}).get('nameWithOwner', '')}}
 
 
@@ -723,7 +724,7 @@ def tickets_from_probe(items, keys, board, saved=None):
                 url_keys.setdefault(url, set()).add(key)
     for item in items:
         pull = search_item_to_pull(item, saved_index)
-        if not pull['url'] or not allowed_repository(pull, board):
+        if not pull['url'] or not allowed_repository(pull, board) or not shipped(pull, board):
             continue
         touched |= probe_ticket_keys(pull, keys, board, url_keys)
     return touched
@@ -739,7 +740,7 @@ def merge_probe_pulls(found, items, keys, board, saved=None):
                 url_keys.setdefault(url, set()).add(key)
     for item in items:
         pull = search_item_to_pull(item, saved_index)
-        if not pull['url'] or not allowed_repository(pull, board):
+        if not pull['url'] or not allowed_repository(pull, board) or not shipped(pull, board):
             continue
         matched = probe_ticket_keys(pull, keys, board, url_keys)
         if not matched:
@@ -804,7 +805,7 @@ def github_search_batch(keys, board=DEFAULT):
             scope = search_scope(board)
             query = f'is:pr {scope} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
             fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
-                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number repository{nameWithOwner}}}}')
+                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number baseRefName repository{nameWithOwner}}}}')
         result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
         if result.get('errors'):
             raise ValueError('GitHub search errors')
@@ -813,7 +814,7 @@ def github_search_batch(keys, board=DEFAULT):
             if page['pageInfo']['hasNextPage']:
                 raise ValueError(f'{key}: GitHub search truncated')
             found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board)
-                          and names_ticket(p, key, board) and p['state'] != 'CLOSED']
+                          and shipped(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
     with phase('search'):
         for offset in range(0, len(valid), 12):
             search(valid[offset:offset + 12])
@@ -931,11 +932,12 @@ def shipped(pull, board=DEFAULT):
     if pull.get('state') != 'MERGED':
         return True
     release = release_branch(pull['repository']['nameWithOwner'], board)
-    # A repo this board names no release branch for keeps the old reading, and so
-    # does a cached pull read before this rule existed: re-reading the whole window
-    # to refill one field would blow the run's GitHub budget, and every pull read
-    # from now on carries its base.
-    return release is None or pull.get('baseRefName') in (None, release)
+    base = pull.get('baseRefName')
+    if release is None:
+        return True
+    if not base:
+        return False
+    return base == release
 
 
 def scan_window(board, kind, field, start, end):

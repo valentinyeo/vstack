@@ -2208,6 +2208,22 @@ class CallBudgetTest(unittest.TestCase):
         discover.assert_called_once()
         probe.assert_not_called()
 
+    def test_probe_drops_stacked_merge_without_release_base(self):
+        key = 'HTPR-9387'
+        board = r.BOARDS[15]
+        stacked = {'url': 'https://github.com/hypertask-ai/hypertask/pull/3646', 'title': 'HTPR-9387 grace',
+                   'body': '', 'headRefName': 'htpr-9387-grace', 'state': 'MERGED', 'number': 3646,
+                   'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+        item = {'html_url': stacked['url'], 'title': stacked['title'], 'body': '', 'number': 3646,
+                'state': 'closed', 'pull_request': {'merged_at': '2026-01-02T00:00:00Z'}}
+        found = {key: []}
+        r.merge_probe_pulls(found, [item], [key], board, {})
+        self.assertEqual(found[key], [])
+        with patch.object(r, 'run', return_value=json.dumps({'data': {'q0': {'pageInfo': {'hasNextPage': False},
+                                                                              'nodes': [{**stacked, 'baseRefName': 'htpr-3594-rules'}]}}})):
+            searched = r.github_search_batch([key], board)
+        self.assertEqual(searched[key], [])
+
     def test_probe_matches_branch_only_prs_by_saved_url(self):
         key = 'SOFT-1'
         repo_pull = {'url': 'https://github.com/valentinyeo/another-repo/pull/8', 'title': 'work',
