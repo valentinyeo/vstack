@@ -169,7 +169,7 @@ path.write_text(json.dumps(sorted(enabled)))
         clock = Clock()
         with patch.object(watch.sync, 'main', return_value=0), contextlib.redirect_stdout(io.StringIO()):
             code = watch.main(['--board', '42', '--label', 'Own View', '--name', 'Timer Test',
-                               '--fixture', str(fixture), '--heartbeat', '1'],
+                               '--fixture', str(fixture), '--heartbeat', '1', '--cycles', '1'],
                               clock=clock.time, sleep=clock.sleep)
         self.assertEqual(code, 0)
         self.assertIsNone(loop.stored('Timer Test')['watch_pid'])
