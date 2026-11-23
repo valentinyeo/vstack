@@ -1,6 +1,7 @@
 # Board lint rules
 
 Read-only checker: `skills/hypertask-work/board-lint --board <id>`. No board writes. One line per break: ticket, rule id, owning chat, fix.
+Each chat also runs it inside its own drain check, on its own label, where each break prints as a warning line.
 
 | Rule | What it checks | Enforced by |
 |---|---|---|

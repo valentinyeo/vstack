@@ -35,6 +35,13 @@ DOING = frozenset({'Doing', 'Building'})
 WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
 FRESH = 1800
 STALE = 7200
+# Board-rule breaks warn until a rule is promoted here: list a rule id and its
+# breaks fail this check. Promoting a rule is this one line, nothing else.
+FAIL_RULES = frozenset()
+# Rules that judge a view or a label name the chat that owns it: a chat reports
+# only its own label's breaks, never another chat's.
+OWN_LABEL_RULES = frozenset({'view-owner', 'view-filter', 'label-assignee'})
+LINT = HERE.parent / 'hypertask-work' / 'board-lint'
 ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
 # The load probe: only these findings are about work the server is too busy to take.
 VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
@@ -173,17 +180,25 @@ def sync_findings(name, now):
 
 
 def read_fixture(path):
-    """A JSON list of {"task": {...}, "comments": [...]}: the API answers, without the API."""
+    """Rows of {"task", "comments", "relations"}: the API answers, without the API.
+
+    A JSON list is rows alone; an object carries the same rows under "rows" plus the
+    facts the board rules read (chats, agents, views, pulls, roster, workers).
+    """
     data = json.loads(Path(path).read_text())
+    extra = {}
+    if isinstance(data, dict):
+        extra = data
+        data = data.get('rows')
     if not isinstance(data, list):
-        raise ValueError('fixture must be a JSON list')
+        raise ValueError('fixture must be a JSON list, or an object with "rows"')
     rows = []
     for item in data:
         if not isinstance(item, dict) or not isinstance(item.get('task'), dict):
             raise ValueError('each fixture row needs a task')
         rows.append({'task': item['task'], 'comments': item.get('comments') or [],
                      'relations': item.get('relations') or []})
-    return rows
+    return rows, extra
 
 
 def fixture_board(board_id, rows):
@@ -222,8 +237,9 @@ def rows_for(args):
 
     Also the whole loaded board by key, label or not, so a blocker's column is known.
     """
+    extra = {}
     if args.fixture:
-        rows = read_fixture(args.fixture)
+        rows, extra = read_fixture(args.fixture)
         board = fixture_board(args.board, rows)
     else:
         board = reconcile.board_config(args.board)
@@ -241,12 +257,12 @@ def rows_for(args):
             row = {'task': task, 'comments': ticket_comments(key),
                    'relations': [] if waiting(task) else ticket_relations(key)}
         kept.append(row)
-    return board, kept, loaded
+    return board, kept, loaded, extra
 
 
 def read_view(args, now):
     """One read of the view: the board, every row, the notes, the findings, the workable rows."""
-    board, rows, loaded = rows_for(args)
+    board, rows, loaded, data = rows_for(args)
     todos = [row for row in rows if row['task'].get('section') == TODO]
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
@@ -292,8 +308,49 @@ def read_view(args, now):
         if code:
             findings.append(('loop state', f'loop state: {text}'))
         findings += [('sync', line) for line in sync_findings(state_name, now)]
-    return {'board': board, 'rows': rows, 'workable': workable,
+    return {'board': board, 'rows': rows, 'workable': workable, 'data': data,
             'notes': waiting_lines + blocked_lines, 'findings': findings}
+
+
+def lint_module():
+    """board-lint in this process, so one tick reads the board once and shares the cache."""
+    name = 'board_lint'
+    module = sys.modules.get(name)
+    if module is not None and getattr(module, '__file__', None) == str(LINT):
+        return module
+    loader = importlib.machinery.SourceFileLoader(name, str(LINT))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+def rule_breaks(view, args, now):
+    """This chat's own board-rule breaks, from the board read this tick already made.
+
+    Only its own label's view and label breaks come back: another chat's view is
+    that chat's finding, and no chat reads the board twice to say so.
+    """
+    lint = lint_module()
+    rows, data = view['rows'], view.get('data') or {}
+    fixture = bool(args.fixture)
+    shared = {'board': view['board'], 'tasks': [row['task'] for row in rows],
+              'data': data, 'now': now, 'probe_only': True,
+              'fixture_pulls': (data.get('pulls') or {}) if fixture else None,
+              'pull_rules': ('pulls' in data) if fixture else True,
+              'reconcile': reconcile, 'loop_state': loop_state,
+              'drain_check': sys.modules[__name__]}
+    lint_args = argparse.Namespace(board=args.board, label=args.label, fixture=fixture,
+                                   roster=None, skip_comments=False, json=False)
+    mine = args.label.strip().casefold()
+    breaks = lint.lint(lint_args, shared=shared)
+    return [item for item in breaks
+            if item.rule not in OWN_LABEL_RULES or slug(item.owner) == mine]
+
+
+def slug(name):
+    return (name or '').strip().casefold()
 
 
 def check(args, now):
@@ -313,6 +370,16 @@ def check(args, now):
         failing += 1
     for line in shown:
         print(line)
+    try:
+        breaks = rule_breaks(view, args, now)
+    except ERRORS + (AttributeError,) as error:
+        # A lint that cannot read is reported and never turns a pass into a fail.
+        print(f'board-lint: read failed: {error}', file=sys.stderr)
+        breaks = []
+    for item in breaks:
+        print(f'rule-break: {item.ticket} {item.rule}: {item.fix}')
+        if item.rule in FAIL_RULES:
+            failing += 1
     print('drain-check: PASS' if not failing else f'drain-check: FAIL ({failing} findings)')
     return 0 if not failing else 1
 
@@ -336,7 +403,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--board', type=int, required=True)
     parser.add_argument('--label', required=True)
-    parser.add_argument('--fixture', help='Read a JSON list of {"task", "comments"} instead of the API')
+    parser.add_argument('--fixture', help='Read a JSON list of {"task", "comments"}, or an object '
+                        'with those rows under "rows", instead of the API')
     parser.add_argument('--now', help='Judge ages against this ISO time instead of the clock')
     parser.add_argument('--state-name', help='Also require this chat\'s loop to be armed')
     parser.add_argument('--no-load', action='store_true',
@@ -346,7 +414,9 @@ def main(argv=None):
         parser.error('--board must be a positive board id')
     try:
         now = reconcile.stamp(args.now) if args.now else time.time()
-        return check(args, now)
+        code = check(args, now)
+        print(reconcile.github_summary(), file=sys.stderr, flush=True)
+        return code
     except ERRORS as error:
         print(f'drain-check: {error}', file=sys.stderr)
         return 2

@@ -59,6 +59,8 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 
 A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:` line; `--no-load` skips the probe.
 
+A board-rule break prints as `rule-break: <ticket> <rule>: <fix>` and passes; add its rule id to `FAIL_RULES` in drain-check to make it fail.
+
 A fail that returns is a gap: file it on board 13556, label Board Drain Loop, with the output.
 
 ## Rules
