@@ -1,5 +1,5 @@
-"""What a chat observes with responsive-mode loaded: each tool step reminds the chat to reply until
-Valentin's newest message has a reply, and a chat that says work started must have started it.
+"""What a chat observes with responsive-mode loaded: an unanswered message prompts a reminder without
+blocking tools, and a chat that says work started must have started it.
 
 The fixtures are hand-written JSONL that copies the shapes found in a real 2.1.329 transcript. No private
 text is copied here.
@@ -116,10 +116,10 @@ class ReplyCheck(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), '', 'a passing call prints nothing: ' + result.stdout)
 
-    def test_an_unanswered_message_reminds_without_denying_the_tool_step(self):
+    def test_an_unanswered_message_reminds_without_blocking(self):
         self.assert_reminded(self.hook([human('push it once the tests pass'), tool_call()]))
 
-    def test_a_message_sent_mid_turn_reminds_without_denying_the_tool_step(self):
+    def test_a_message_sent_mid_turn_reminds_without_blocking(self):
         entries = [human('do the ticket'), tool_call(), tool_result(), queued('is it reliable?'), tool_call()]
         self.assert_reminded(self.hook(entries))
 
