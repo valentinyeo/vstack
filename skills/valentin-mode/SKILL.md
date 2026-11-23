@@ -44,7 +44,7 @@ Prior art: pstack `poteto-mode` covers the work loop; only his rules and their h
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt; reviews add `--not-vendor <author vendor>`. Wire hooks per [setup.md](setup.md). The chat he talks to runs on Claude, never a code worker; it only writes briefs, reads one result line and answers him: code, tests, rebases, log reading and PR babysitting go to workers. The pstack models rule holds the lanes; every brief starts with pstack `worker.md`'s kickoff line and includes house-rules docs/worker-brief.md. Pace decides only who runs the work: a Claude subagent only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Never ask him to pay more; bring the free option.
+Start code workers and reviewers through `~/.local/bin/plan-pick --run`, brief in brief.txt; reviews add `--not-vendor <author vendor>`. Hooks per [setup.md](setup.md). His Claude chat only writes briefs, reads one result line and answers him; code, tests, rebases, log reading and PR babysitting go to workers. pstack's models rule holds; every brief starts with pstack `worker.md`'s kickoff line and includes house-rules docs/worker-brief.md. Use Claude subagents only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Bring the free option; never ask him to pay.
 
 ### Board work
 

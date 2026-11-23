@@ -28,7 +28,7 @@ missing.
 
 pstack worker.md's kickoff line is `Read <path>/worker.md before anything else.`. A cloud agent
 cannot open files on this server, so when the brief carries that line and the file is here, the
-line becomes the file's text, headed. Any other brief goes unchanged.
+line stays, followed by the file's text, headed. Any other brief goes unchanged.
 
   cursor  Refused: Cursor is off since 2026-11-23 (plan downgraded); use codex.
 
@@ -147,11 +147,11 @@ def read_brief(path):
 
 
 def inline_worker_brief(brief):
-    """A kickoff line pointing at this machine becomes the worker.md text it names.
+    """Keep the kickoff line and paste the worker.md text it names right after it.
 
     pstack worker.md's own first rule is `Read <path>/worker.md before anything else.`, and the file
-    lives on this VPS. A cloud agent clones GitHub and cannot open it, so that line would point at
-    nothing. The text goes in instead, headed, and any other brief is sent unchanged.
+    lives on this VPS. A cloud agent clones GitHub and cannot open it, so keep the required line
+    and paste the text after it, headed. Any other brief is sent unchanged.
     """
     for match in WORKER_KICKOFF.finditer(brief or ''):
         try:
@@ -159,7 +159,7 @@ def inline_worker_brief(brief):
         except OSError:
             continue
         pasted = 'pstack worker.md (pasted; you cannot open the file):\n\n' + text.strip()
-        return brief[:match.start()] + pasted + brief[match.end():]
+        return brief[:match.end()] + '\n' + pasted + brief[match.end():]
     return brief
 
 
