@@ -791,22 +791,30 @@ def cache_write(key, value):
     """Best effort: a broken or racing cache costs calls, never correctness."""
     path = cache_file()
     with CACHE_LOCK:
-        try:
-            data = json.loads(path.read_text())
-            if not isinstance(data, dict):
-                data = {}
-        except (OSError, TypeError, ValueError):
-            data = {}
-        data[key] = value
-        if len(data) > 5000:
-            data = dict(list(data.items())[-2000:])
+        temporary = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_name(f'{path.name}.{os.getpid()}.tmp')
-            temporary.write_text(json.dumps(data))
-            os.replace(temporary, path)
+            with path.with_name(f'{path.name}.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    data = json.loads(path.read_text())
+                    if not isinstance(data, dict):
+                        data = {}
+                except (OSError, TypeError, ValueError):
+                    data = {}
+                data[key] = value
+                if len(data) > 5000:
+                    data = dict(list(data.items())[-2000:])
+                temporary = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
+                temporary.write_text(json.dumps(data))
+                os.replace(temporary, path)
+                temporary = None
         except OSError:
-            pass
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 def board_facts_key(board_id):
@@ -2048,13 +2056,17 @@ def ticket_lock_path(board, ticket):
     return own_lock_path(board, 'ticket', ticket)
 
 
-def acquire_locks(board=DEFAULT, label=None, ticket=None):
-    """Open handles, or None when another run holds this board, label or ticket.
+LOCK_WAIT_SECONDS = 180
+LOCK_POLL_SECONDS = 0.1
 
-    A whole-board run excludes everything on the board. A label run or a ticket
-    run shares the board lock and holds its own exclusive one, so two labels or
-    two tickets sync at once while a whole-board run still excludes them all.
-    """
+
+def _lock_scope(board, label=None, ticket=None):
+    own = f' ticket={ticket}' if ticket else (f' label={label}' if label else '')
+    return f'board={board.id}{own}'
+
+
+def _try_acquire_locks(board=DEFAULT, label=None, ticket=None):
+    """One non-blocking try for the board lock and, when scoped, its own lock."""
     own = ticket or label
     path = lock_path(board)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2071,6 +2083,38 @@ def acquire_locks(board=DEFAULT, label=None, ticket=None):
         for handle in handles:
             handle.close()
         return None
+
+
+def acquire_locks(board=DEFAULT, label=None, ticket=None, wait=0.0, poll=None):
+    """Open handles, or None when another apply run still holds this board, label or ticket.
+
+    A whole-board apply excludes every apply on the board. A label apply or a ticket
+    apply shares the board lock and holds its own exclusive one, so two labels or
+    two tickets apply at once while a whole-board apply still excludes them all.
+    When `wait` is positive, poll until the lock frees or the deadline expires,
+    printing one stderr line with the seconds waited.
+    """
+    handles = _try_acquire_locks(board, label, ticket)
+    if handles is not None or wait <= 0:
+        return handles
+    step = LOCK_POLL_SECONDS if poll is None else poll
+    began = time.monotonic()
+    deadline = began + wait
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(step, remaining))
+        handles = _try_acquire_locks(board, label, ticket)
+        if handles is not None:
+            waited = time.monotonic() - began
+            print(f'reconcile: waited {waited:.1f}s for {_lock_scope(board, label, ticket)} lock',
+                  file=sys.stderr, flush=True)
+            return handles
+    waited = time.monotonic() - began
+    print(f'reconcile: waited {waited:.1f}s for {_lock_scope(board, label, ticket)} lock; still held',
+          file=sys.stderr, flush=True)
+    return None
 
 
 def probe_budget():
@@ -2219,14 +2263,16 @@ def board_run():
         require_board15_agent()
     if args.apply and not product_board(board) and (not os.environ.get('SHIP_SESSION_NAME') or session.is_person(os.environ['SHIP_SESSION_NAME'])):
         parser.error('--apply requires SHIP_SESSION_NAME for an agent login')
-    # Prevent two timer/manual runs from racing the same board. Two different
-    # labels or tickets may sync at once; the same one, or any whole-board run, may not.
+    # Dry runs write nothing to the board and take no board or label lock.
+    # Apply runs serialize on the board/label/ticket lock, waiting up to the
+    # deadline before skipping so overlapping chats finish instead of going stale.
     CARD.update(board=board.id, ticket=args.ticket)
-    handles = acquire_locks(board, args.label, args.ticket)
-    if handles is None:
-        own = f' ticket={args.ticket}' if args.ticket else (f' label={args.label}' if args.label else '')
-        print(f'SKIP board={board.id}{own} | reconciliation already running', flush=True)
-        return 0
+    handles = []
+    if args.apply:
+        handles = acquire_locks(board, args.label, args.ticket, wait=LOCK_WAIT_SECONDS)
+        if handles is None:
+            print(f'SKIP {_lock_scope(board, args.label, args.ticket)} | reconciliation already running', flush=True)
+            return 0
     with contextlib.ExitStack() as stack:
         for handle in handles:
             stack.enter_context(handle)
