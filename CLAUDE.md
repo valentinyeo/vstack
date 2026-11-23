@@ -46,6 +46,7 @@ Nobody pushes to main.
 | Skills pass pstack authoring validation (pstack `skills/poteto-mode/playbooks/authoring-a-skill.md`: "Validate the skill: frontmatter has `name` and `description`, referenced files exist, cross-skill links resolve.") | `scripts/skill-validate.py`, `.github/workflows/skill-lint.yml`, `tests/test_skill_validate.py` |
 | Loaded skills stay lean: no dead links, duplicate names, retired terms or oversized descriptions (pstack `skills/principle-guard-the-context-window/SKILL.md`: "Context overflow degrades reasoning quality, creates compression artifacts, and halts progress.") | `scripts/skill-check.py`, `tests/test_skill_check.py` |
 | A PR adds no verification gate pstack does not ask for (pstack `skills/poteto-mode/worker.md`: "The bar in your kickoff is the whole bar. Add no check, gate, sign-off or review round above it.") | `hooks/pstack-new-gates.py`, `checks` workflow step |
+| A house change to pstack is listed once, quoting pstack (pstack `skills/correct/SKILL.md`: "Replace hand-synced lists with one source of truth.") | `skills/pstack-diff/house.txt`, `tests/test_house_list.py` |
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.
