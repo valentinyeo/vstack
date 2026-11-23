@@ -128,6 +128,7 @@ PRODUCT_MANAGED = frozenset({'Backlog', 'In Progress', 'AI Review'})
 PRODUCT_RULES = (
     (lambda f: f.column in PRODUCT_PROTECTED or f.column.startswith('Flag:'), None, 'protected column'),
     (lambda f: f.column not in PRODUCT_MANAGED, None, 'unknown column; kept'),
+    (lambda f: f.waiting or f.blocked, None, 'waiting or blocked; kept'),
     (lambda f: any(p.state == 'OPEN' for p in f.pulls), 'AI Review', 'open PR'),
     (lambda f: any(p.state == 'MERGED' for p in f.pulls), 'AI Review', 'merged PR; live proof pending'),
     (lambda f: f.alive, 'In Progress', 'live worker'),
@@ -724,7 +725,7 @@ def tickets_from_probe(items, keys, board, saved=None):
                 url_keys.setdefault(url, set()).add(key)
     for item in items:
         pull = search_item_to_pull(item, saved_index)
-        if not pull['url'] or not allowed_repository(pull, board) or not shipped(pull, board):
+        if not pull['url'] or not allowed_repository(pull, board):
             continue
         touched |= probe_ticket_keys(pull, keys, board, url_keys)
     return touched
@@ -740,7 +741,9 @@ def merge_probe_pulls(found, items, keys, board, saved=None):
                 url_keys.setdefault(url, set()).add(key)
     for item in items:
         pull = search_item_to_pull(item, saved_index)
-        if not pull['url'] or not allowed_repository(pull, board) or not shipped(pull, board):
+        if not pull['url'] or not allowed_repository(pull, board):
+            continue
+        if pull['state'] == 'MERGED' and pull.get('baseRefName') and not shipped(pull, board):
             continue
         matched = probe_ticket_keys(pull, keys, board, url_keys)
         if not matched:
@@ -748,6 +751,8 @@ def merge_probe_pulls(found, items, keys, board, saved=None):
         if pull['state'] == 'CLOSED':
             for key in matched:
                 found[key] = [p for p in found[key] if p['url'] != pull['url']]
+            continue
+        if pull['state'] == 'MERGED' and not pull.get('baseRefName'):
             continue
         for key in matched:
             urls = {p['url'] for p in found[key]}

@@ -1099,6 +1099,11 @@ else:
         # A shipped PR is real evidence, so the card goes to review, never back.
         self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),)), board=r.BOARDS[15]),
                          ('AI Review', 'merged PR; live proof pending'))
+        for flag in (True, False):
+            blocked = r.Facts('Backlog', 8000, pulls=(pull('MERGED'),), waiting=flag,
+                              blocked=not flag)
+            self.assertEqual(r.target(blocked, board=r.BOARDS[15]),
+                             ('Backlog', 'waiting or blocked; kept'))
         self.assertEqual(self.target('AI Review', pulls=(pull('MERGED'),)), 'AI Review')
 
     def test_stale_in_progress_cards_move_to_backlog(self):
@@ -2207,6 +2212,17 @@ class CallBudgetTest(unittest.TestCase):
             r.main()
         discover.assert_called_once()
         probe.assert_not_called()
+
+    def test_probe_marks_ticket_when_production_merge_lacks_base(self):
+        key = 'HTPR-9521'
+        board = r.BOARDS[15]
+        item = {'html_url': 'https://github.com/hypertask-ai/hypertask/pull/99', 'title': key,
+                'body': f'Ticket: {key}', 'number': 99, 'state': 'closed',
+                'pull_request': {'merged_at': '2026-01-02T00:00:00Z'}}
+        self.assertEqual(r.tickets_from_probe([item], [key], board, {}), {key})
+        found = {key: []}
+        r.merge_probe_pulls(found, [item], [key], board, {})
+        self.assertEqual(found[key], [])
 
     def test_probe_drops_stacked_merge_without_release_base(self):
         key = 'HTPR-9387'
