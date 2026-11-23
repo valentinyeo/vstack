@@ -30,6 +30,7 @@ PSTACK_ASKED = re.compile(r"^ASKED ")
 PSTACK_STDERR_BROKEN = re.compile(r"^GAP pstack:", re.I)
 PSTACK_WARN_BEHIND = re.compile(r"^WARN checkout is (\d+) commits behind")
 HYPERTASK_BOARD = re.compile(r"Hypertask board:", re.I)
+WATCHER_LINE = re.compile(r"^watcher (dead since .+|ok)$")
 
 
 def home() -> Path:
@@ -293,11 +294,15 @@ def fetch_latest_version() -> tuple[str, int | None]:
     return line, None
 
 
-def board_loop_status(name: str) -> tuple[int | None, str]:
-    loop_state = tool_path(
+def loop_state_tool() -> Path:
+    return tool_path(
         "FLEET_REPORT_LOOP_STATE",
         vstack_root() / "skills/board-drain/loop-state",
     )
+
+
+def board_loop_status(name: str) -> tuple[int | None, str]:
+    loop_state = loop_state_tool()
     if not loop_state.is_file():
         return None, "missing loop-state"
     try:
@@ -313,6 +318,30 @@ def board_loop_status(name: str) -> tuple[int | None, str]:
     text = (done.stdout or done.stderr or "").strip().splitlines()
     summary = text[-1] if text else ""
     return done.returncode, summary
+
+
+def watch_status(name: str) -> str:
+    """This chat's watcher, read from the pulse it left in its own loop state (VSTA-151).
+
+    Read-only: one line per chat, so Valentin sees a dead watcher and its time in the
+    report instead of waiting for the chat to notice. Never messages the chat.
+    """
+    loop_state = loop_state_tool()
+    if not loop_state.is_file():
+        return "-"
+    try:
+        done = subprocess.run(
+            [sys.executable, str(loop_state), "watcher", "--name", name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "-"
+    lines = (done.stdout or "").strip().splitlines()
+    match = WATCHER_LINE.match(lines[-1].strip()) if lines else None
+    return match.group(1) if match else "-"
 
 
 def has_origin_remote(repo: Path) -> bool:
@@ -644,6 +673,7 @@ def verdict(
     behind: int | None,
     checker_unreliable: bool = False,
     checker_reason: str = "",
+    watcher: str = "",
 ) -> tuple[str, str, str]:
     tags: list[str] = []
     notes: list[str] = []
@@ -671,6 +701,10 @@ def verdict(
     if has_board and board_exit not in (0, None):
         tags.append("LOOP OFF")
         actions.append("re-arm /board-drain")
+
+    if watcher.startswith("dead since"):
+        tags.append("WATCHER DEAD")
+        actions.append("re-arm the watcher in this chat (/board-drain)")
 
     if upstream_ok and behind is not None and behind > 0 and not stale:
         effective_extras = extra_count
@@ -727,6 +761,7 @@ def build_rows() -> list[dict]:
         loaded_label, loaded_num, transcript_latest = last_valentin_version(path, session.get("harness", ""))
         effective_latest = latest_num if latest_num is not None else transcript_latest
         board_exit, board_text = board_loop_status(session["name"])
+        watcher = watch_status(session["name"])
         pstack = run_pstack_diff(session.get("cwd", ""))
         has_board = repo_has_hypertask_board(session.get("cwd", ""))
         status, reason, action = verdict(
@@ -746,6 +781,7 @@ def build_rows() -> list[dict]:
             pstack["behind"],
             pstack["checker_unreliable"],
             pstack["checker_reason"],
+            watcher,
         )
         if hook_status != "OK":
             status = "; ".join(tag for tag in (status, "HOOKS " + hook_status) if tag != "OK")
@@ -762,6 +798,7 @@ def build_rows() -> list[dict]:
                 latest_num=effective_latest,
                 board=f"{board_exit if board_exit is not None else '?'} {board_text}".strip(),
                 board_exit=board_exit,
+                watcher=watcher,
                 self_check=pstack["self_check"],
                 pstack_exit=pstack["pstack_exit"],
                 extra_count=pstack["extra_count"],
@@ -793,6 +830,7 @@ def format_table(rows: list[dict]) -> str:
         ("LOADED", "loaded"),
         ("LATEST", "latest"),
         ("BOARD", "board"),
+        ("WATCHER", "watcher"),
         ("SELF-CHECK", "self_check"),
         ("HOOKS", "hook_paths"),
         ("VERDICT", "verdict"),
@@ -824,6 +862,7 @@ def write_html(path: Path, rows: list[dict]) -> None:
         "Loaded",
         "Latest",
         "Board loop",
+        "Watcher",
         "Self-check",
         "Hooks",
         "Verdict",
@@ -841,6 +880,7 @@ def write_html(path: Path, rows: list[dict]) -> None:
                 row["loaded"],
                 row["latest"],
                 row["board"],
+                row["watcher"],
                 row["self_check"],
                 row.get("hook_paths", "?") + (" " + row["hook_details"] if row.get("hook_details") else ""),
                 verdict,
@@ -851,7 +891,7 @@ def write_html(path: Path, rows: list[dict]) -> None:
     for cells in body_rows:
         tds = "".join(f"<td>{html.escape(str(cell))}</td>" for cell in cells)
         cls = ""
-        verdict_cell = cells[7]
+        verdict_cell = cells[8]
         if verdict_cell != "OK" and not verdict_cell.startswith("BEHIND"):
             cls = ' class="fail"'
         elif verdict_cell.startswith("BEHIND") or verdict_cell.endswith("BEHIND"):

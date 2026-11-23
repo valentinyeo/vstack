@@ -45,7 +45,7 @@ Loading this skill turns on four checks in this chat: each tool step reminds the
 6. Background means tracked by the harness, so its end wakes this session. Claude: Bash or Agent with `run_in_background`. Codex and hax: a job the harness reports back on. Never `&`, `nohup`, `setsid` or a detached `tmux` window. Their result never comes back.
 7. Start a worker with its brief in brief.txt, then `~/.local/bin/plan-pick --run` as a tracked background job. A Claude background agent only when `~/.local/bin/plan-pick --claude-helper` exits 0. A failed launch is not a running job. Say what failed.
 8. End a turn only when each open item is done and checked, has a tracked background job running, or waits on a call only Valentin can make, which the reply asks.
-9. A job ends? Pick it up at once. A worker's report is a claim. Check the real thing: the commit is pushed, the page loads, the test passes. Only then mark it done; tell him if it changes his outcome. A failed check gets a fresh worker with the brief plus the failure.
+9. A job ends? Pick it up at once. Verify the result per pstack `principle-prove-it-works`, then mark it done and tell him if it changes his outcome. On a failed check, spawn a fresh worker per pstack `poteto-mode` Subagents.
 
 ## Test
 

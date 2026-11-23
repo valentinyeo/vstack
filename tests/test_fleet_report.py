@@ -5,9 +5,11 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -284,6 +286,44 @@ sys.exit({code})
         )
         row = rows[0]
         self.assertEqual(row["verdict"], "OK", row)
+
+    def test_a_dead_watcher_shows_its_time(self):
+        """VSTA-151: the report lists a chat whose board watcher died, without messaging it."""
+        self.fake_version_script("valentin-mode v5 (latest)")
+        self.fake_pstack_diff(0, 0)
+        repo = self.home / "watched"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "CLAUDE.md").write_text("Hypertask board: 13734, label: Looper\n", encoding="utf-8")
+        self.write_transcript(
+            str(repo),
+            "sid-watch",
+            '{"message":{"content":"valentin-mode v5 (latest)"}}\n',
+        )
+        state = self.home / "board-drain-state"
+        state.mkdir()
+        seen = time.time() - 3 * 3600
+        stamp = lambda moment: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(moment))
+        (state / "looper.json").write_text(json.dumps({
+            "name": "Looper", "every": "6h", "armed_at": stamp(time.time() - 86400),
+            "expires_at": stamp(time.time() + 6 * 86400), "job": "efcdac5d",
+            "owner_pid": os.getpid(), "host": socket.gethostname(),
+            "board": 13734, "label": "Looper", "watch_pid": None,
+            "watch_started": stamp(seen), "watch_beat": stamp(seen), "watch_every": 180,
+        }))
+        rows = self.run_report(
+            [dict(name="Looper", harness="claude", cwd=str(repo), sid="sid-watch",
+                  tmux="live-looper")],
+            extra_env={"BOARD_DRAIN_STATE_DIR": str(state)},
+        )
+        row = rows[0]
+        self.assertEqual(row["watcher"], f"dead since {stamp(seen)}", row)
+        self.assertIn(f"dead since {stamp(seen)}", row["board"])
+        self.assertIn("WATCHER DEAD", row["verdict"])
+        self.assertIn("/board-drain", row["action"])
+        table = load_module().format_table(rows)
+        self.assertIn("WATCHER", table)
+        self.assertIn(f"dead since {stamp(seen)}", table)
 
     def test_parse_pstack_stdout_behind(self):
         mod = load_module()

@@ -277,7 +277,9 @@ class ReconcileTest(unittest.TestCase):
     def test_overlap_is_a_clean_skip(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
-                patch.object(sys, 'argv', ['reconcile']), \
+                patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto'}), \
+                patch.object(sys, 'argv', ['reconcile', '--apply']), \
+                patch.object(r, 'LOCK_WAIT_SECONDS', 0), \
                 patch.object(r.fcntl, 'flock', side_effect=BlockingIOError()), \
                 patch.object(r, 'tickets') as tickets, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
@@ -3103,13 +3105,235 @@ class LabelLockTest(unittest.TestCase):
         self.assertTrue((fleet / 'reconcile.lock').exists())
 
     def test_a_skipped_labelled_run_names_its_label(self):
-        with patch.object(sys, 'argv', ['reconcile', '--label', 'Soft-2807']), \
+        with patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto'}), \
+                patch.object(sys, 'argv', ['reconcile', '--apply', '--label', 'Soft-2807']), \
+                patch.object(r, 'LOCK_WAIT_SECONDS', 0), \
                 patch.object(r.fcntl, 'flock', side_effect=BlockingIOError()), \
                 patch.object(r, 'tickets') as tickets, \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
         self.assertIn('SKIP board=2060 label=Soft-2807 | reconciliation already running', out.getvalue())
         tickets.assert_not_called()
+
+    def test_dry_run_proceeds_while_whole_board_apply_holds_lock(self):
+        self.assertIsNotNone(self.hold())
+        for argv in (['reconcile'], ['reconcile', '--label', 'Alpha']):
+            with self.subTest(argv=argv):
+                with patch.object(sys, 'argv', argv), \
+                        patch.object(r, 'tickets', return_value=[]) as tickets, \
+                        patch.object(r, 'read_sections', return_value=set()), \
+                        contextlib.redirect_stdout(io.StringIO()) as out, \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(r.main(), 0)
+                self.assertIn('DRY RUN board=2060 tickets=0 unknown=0', out.getvalue())
+                self.assertNotIn('SKIP', out.getvalue())
+                self.assertNotIn('waited ', err.getvalue())
+                tickets.assert_called_once()
+        # A dry run itself holds no lock while running.
+        self.release()
+        lock_acquired_during_dry = []
+
+        def check_unlocked(*_args, **_kwargs):
+            handles = r.acquire_locks(r.DEFAULT)
+            lock_acquired_during_dry.append(handles is not None)
+            if handles:
+                for handle in handles:
+                    handle.close()
+            return []
+
+        with patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r, 'tickets', side_effect=check_unlocked), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(r.main(), 0)
+        self.assertEqual(lock_acquired_during_dry, [True])
+
+    def test_label_apply_waits_for_short_held_lock_and_then_runs(self):
+        for held_label in (None, 'Alpha'):
+            with self.subTest(held_label=held_label):
+                holder = r.acquire_locks(r.DEFAULT, held_label)
+                self.assertIsNotNone(holder)
+
+                def release_soon(handles):
+                    time.sleep(0.2)
+                    for handle in handles:
+                        handle.close()
+
+                releaser = threading.Thread(target=release_soon, args=(holder,))
+                releaser.start()
+                try:
+                    with patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto'}), \
+                            patch.object(sys, 'argv', ['reconcile', '--apply', '--label', 'Alpha']), \
+                            patch.object(r, 'LOCK_WAIT_SECONDS', 5), \
+                            patch.object(r, 'LOCK_POLL_SECONDS', 0.05), \
+                            patch.object(r, 'probe_budget'), \
+                            patch.object(r, 'tickets', return_value=[]) as tickets, \
+                            patch.object(r, 'read_sections', return_value=set()), \
+                            contextlib.redirect_stdout(io.StringIO()) as out, \
+                            contextlib.redirect_stderr(io.StringIO()) as err:
+                        self.assertEqual(r.main(), 0)
+                finally:
+                    releaser.join(timeout=5)
+                self.assertIn('PREVIEW board=2060 tickets=0 unknown=0', out.getvalue())
+                self.assertNotIn('SKIP', out.getvalue())
+                waited_lines = [line for line in err.getvalue().splitlines() if 'waited ' in line]
+                self.assertEqual(len(waited_lines), 1, err.getvalue())
+                self.assertRegex(waited_lines[0], r'^reconcile: waited \d+\.\ds for board=2060 label=Alpha lock$')
+                tickets.assert_called_once()
+
+    def test_label_apply_skips_after_deadline(self):
+        self.assertIsNotNone(self.hold())
+        began = time.monotonic()
+        with patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto'}), \
+                patch.object(sys, 'argv', ['reconcile', '--apply', '--label', 'Alpha']), \
+                patch.object(r, 'LOCK_WAIT_SECONDS', 0.25), \
+                patch.object(r, 'LOCK_POLL_SECONDS', 0.05), \
+                patch.object(r, 'tickets') as tickets, \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(r.main(), 0)
+        elapsed = time.monotonic() - began
+        self.assertGreaterEqual(elapsed, 0.2)
+        self.assertIn('SKIP board=2060 label=Alpha | reconciliation already running', out.getvalue())
+        waited_lines = [line for line in err.getvalue().splitlines() if 'waited ' in line]
+        self.assertEqual(len(waited_lines), 1, err.getvalue())
+        self.assertRegex(waited_lines[0],
+                         r'^reconcile: waited \d+\.\ds for board=2060 label=Alpha lock; still held$')
+        tickets.assert_not_called()
+
+    def _setup_fake_cli_home(self, hypertask_body):
+        home = Path(self.home.name)
+        bin_dir = home / '.local/bin'
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        gh = bin_dir / 'gh'
+        gh.write_text('#!/usr/bin/env python3\nimport json\n'
+                      'print(json.dumps({"resources": {"core": {"remaining": 100, "reset": 2000000000}}}))\n')
+        gh.chmod(0o755)
+        ht = bin_dir / 'hypertask'
+        ht.write_text(hypertask_body)
+        ht.chmod(0o755)
+        return home
+
+    def test_two_different_labels_apply_at_once(self):
+        barrier_dir = Path(self.home.name) / 'barrier'
+        barrier_dir.mkdir()
+        ht_script = (
+            '#!/usr/bin/env python3\n'
+            'import json, os, sys, time\n'
+            'from pathlib import Path\n'
+            'args = sys.argv[1:]\n'
+            'if "list" in args:\n'
+            '    d = Path(os.environ["TEST_BARRIER_DIR"])\n'
+            '    (d / os.environ["TEST_SELF"]).write_text("in")\n'
+            '    peer = d / os.environ["TEST_PEER"]\n'
+            '    deadline = time.monotonic() + 5.0\n'
+            '    while not peer.exists() and time.monotonic() < deadline:\n'
+            '        time.sleep(0.02)\n'
+            '    if not peer.exists():\n'
+            '        sys.exit("peer never entered concurrently")\n'
+            '    print(json.dumps({"tasks": []}))\n'
+            'else:\n'
+            '    print(json.dumps({"sections": []}))\n'
+        )
+        home = self._setup_fake_cli_home(ht_script)
+        script = str(ROOT / 'skills/hypertask-work/reconcile')
+        base_env = {**os.environ, 'HOME': str(home),
+                    'RECONCILE_CACHE': str(home / 'cache.json'),
+                    'SHIP_SESSION_NAME': 'Poteto',
+                    'TEST_BARRIER_DIR': str(barrier_dir)}
+        p1 = subprocess.Popen(
+            [sys.executable, script, '--apply', '--label', 'Alpha'],
+            env={**base_env, 'TEST_SELF': 'alpha', 'TEST_PEER': 'beta'},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p2 = subprocess.Popen(
+            [sys.executable, script, '--apply', '--label', 'Beta'],
+            env={**base_env, 'TEST_SELF': 'beta', 'TEST_PEER': 'alpha'},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out1, err1 = p1.communicate(timeout=15)
+        out2, err2 = p2.communicate(timeout=15)
+        self.assertEqual(p1.returncode, 0, f'out={out1}\nerr={err1}')
+        self.assertEqual(p2.returncode, 0, f'out={out2}\nerr={err2}')
+        self.assertIn('PREVIEW board=2060 tickets=0 unknown=0', out1)
+        self.assertIn('PREVIEW board=2060 tickets=0 unknown=0', out2)
+        self.assertNotIn('SKIP', out1)
+        self.assertNotIn('SKIP', out2)
+        self.assertNotIn('waited ', err1)
+        self.assertNotIn('waited ', err2)
+
+    def test_same_label_applies_serialize_and_never_overlap(self):
+        trace = Path(self.home.name) / 'trace.log'
+        ht_script = (
+            '#!/usr/bin/env python3\n'
+            'import json, os, sys, time\n'
+            'args = sys.argv[1:]\n'
+            'if "list" in args:\n'
+            '    who = os.environ["TEST_WHO"]\n'
+            '    with open(os.environ["TEST_TRACE"], "a") as fh:\n'
+            '        fh.write(f"enter {who}\\n")\n'
+            '    time.sleep(0.35)\n'
+            '    with open(os.environ["TEST_TRACE"], "a") as fh:\n'
+            '        fh.write(f"exit {who}\\n")\n'
+            '    print(json.dumps({"tasks": []}))\n'
+            'else:\n'
+            '    print(json.dumps({"sections": []}))\n'
+        )
+        home = self._setup_fake_cli_home(ht_script)
+        script = str(ROOT / 'skills/hypertask-work/reconcile')
+        base_env = {**os.environ, 'HOME': str(home),
+                    'RECONCILE_CACHE': str(home / 'cache.json'),
+                    'SHIP_SESSION_NAME': 'Poteto',
+                    'TEST_TRACE': str(trace)}
+        p1 = subprocess.Popen(
+            [sys.executable, script, '--apply', '--label', 'Alpha'],
+            env={**base_env, 'TEST_WHO': 'first'},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.1)
+        p2 = subprocess.Popen(
+            [sys.executable, script, '--apply', '--label', 'Alpha'],
+            env={**base_env, 'TEST_WHO': 'second'},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out1, err1 = p1.communicate(timeout=15)
+        out2, err2 = p2.communicate(timeout=15)
+        self.assertEqual(p1.returncode, 0, f'out={out1}\nerr={err1}')
+        self.assertEqual(p2.returncode, 0, f'out={out2}\nerr={err2}')
+        self.assertIn('PREVIEW board=2060 tickets=0 unknown=0', out1)
+        self.assertIn('PREVIEW board=2060 tickets=0 unknown=0', out2)
+        events = trace.read_text().splitlines()
+        self.assertEqual(len(events), 4, events)
+        self.assertEqual(events[0].split()[0], 'enter')
+        self.assertEqual(events[1], 'exit ' + events[0].split()[1],
+                         f'same-label applies overlapped: {events}')
+        self.assertEqual(events[2].split()[0], 'enter')
+        self.assertEqual(events[3], 'exit ' + events[2].split()[1])
+        self.assertRegex(err1 + err2, r'reconcile: waited \d+\.\ds for board=2060 label=Alpha lock')
+
+    def test_cache_write_is_safe_across_processes(self):
+        cache_path = Path(self.home.name) / 'shared-cache.json'
+        script = str(ROOT / 'skills/hypertask-work/reconcile')
+        worker_code = (
+            'import importlib.machinery, importlib.util, os, sys\n'
+            'loader = importlib.machinery.SourceFileLoader("fleet_reconcile", sys.argv[1])\n'
+            'spec = importlib.util.spec_from_loader(loader.name, loader)\n'
+            'mod = importlib.util.module_from_spec(spec)\n'
+            'sys.modules[loader.name] = mod\n'
+            'loader.exec_module(mod)\n'
+            'wid = sys.argv[2]\n'
+            'for i in range(25):\n'
+            '    mod.cache_write(f"w{wid}-k{i}", {"w": wid, "i": i})\n'
+        )
+        env = {**os.environ, 'RECONCILE_CACHE': str(cache_path)}
+        procs = [subprocess.Popen([sys.executable, '-c', worker_code, script, str(w)],
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                 for w in range(4)]
+        for p in procs:
+            out, err = p.communicate(timeout=20)
+            self.assertEqual(p.returncode, 0, f'out={out}\nerr={err}')
+        data = json.loads(cache_path.read_text())
+        self.assertEqual(len(data), 100)
+        for w in range(4):
+            for i in range(25):
+                self.assertEqual(data[f'w{w}-k{i}'], {'w': str(w), 'i': i})
 
 
 if __name__ == '__main__':

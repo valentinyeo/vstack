@@ -482,12 +482,31 @@ def check_view_filter(board, label, view, label_ids, breaks):
                         f'"{label}" {CHAT_LOGIN}'))
 
 
+def human_owner_view(label, view, owner_row, owner):
+    """Temporary workaround (expires 2026-12-31) for the Hypertask view-owner bug.
+
+    Hypertask attributes a view created by an agent to the agent's human owner
+    instead of the agent (Hypertask feedback filed). Until Hypertask fixes it,
+    accept a view owned by the agent's human owner when the view's title equals
+    the chat's label.
+    """
+    if (owner_row.get('type') or '').strip().lower() == 'agent':
+        return False
+    if not session_login.is_person(owner) or slug_agent(owner) in FALLBACK_AGENT:
+        return False
+    title = (view.get('title') or '').strip()
+    return bool(title) and slug_agent(title) == slug_agent(label)
+
+
 def check_view_owner(label, view, breaks):
     """A chat's view belongs to the chat's agent, never to a person."""
     if not view:
         return
-    owner = ((view.get('owner') or {}).get('displayName') or '').strip()
+    owner_row = view.get('owner') if isinstance(view.get('owner'), dict) else {}
+    owner = (owner_row.get('displayName') or '').strip()
     if not owner:
+        return
+    if human_owner_view(label, view, owner_row, owner):
         return
     if session_login.is_person(owner) or slug_agent(owner) != slug_agent(label):
         breaks.append(Break('(view)', 'view-owner', label,

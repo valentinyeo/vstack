@@ -34,7 +34,7 @@ skills/cloud-agent/cloud-agent codex --repo <checkout> --brief brief.txt --env <
 
 Run it as a tracked background job. It prints one JSON line: `status`, `agent_url`, `pr_url`, `branch`. Exit 75 means a usage limit. `--no-wait` returns once the agent has started.
 
-The result is a claim. Check the PR diff and its checks before calling the work done, as pstack's Prove It Works says.
+Verify the PR diff and checks per pstack `principle-prove-it-works`.
 
 ## Traps
 
