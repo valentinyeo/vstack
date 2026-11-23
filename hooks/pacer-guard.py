@@ -2,9 +2,11 @@
 """PreToolUse guard: a chat Valentin talks to never writes code, and stays off heavy Bash.
 
 MULTIPROMPT_TAB set means this is a Valentin-facing Multibot chat, so code-write blocking applies.
-Unset means a headless fleet run, so workers stay untouched. In a valentin-mode chat, Bash that runs tests,
-builds, linters, installs, git merges, or long loops is blocked; reads, hypertask, plan-pick, vps-state and
-board-drain scripts always pass. PACER_GUARD_INLINE=off disables heavy-Bash blocking.
+Unset means a headless fleet run, so workers stay untouched. A subagent the chat starts (Agent tool) may edit
+code only when `plan-pick --claude-helper` exits 0; the chat itself never edits code.
+In a valentin-mode chat, Bash that runs tests, builds, linters, installs, git merges, or long loops is blocked;
+reads, hypertask, plan-pick, vps-state and board-drain scripts always pass. PACER_GUARD_INLINE=off disables
+heavy-Bash blocking.
 
 pacer-guard.py --self-test"""
 import importlib.util
@@ -13,6 +15,8 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -28,6 +32,7 @@ TEXT_EXT = frozenset(".md .txt .json .toml .ini .env .html".split())
 WORKFLOW = re.compile(r"(^|/)\.github/workflows/")
 FILE_TOOLS = frozenset(('Edit', 'Write', 'MultiEdit', 'NotebookEdit'))
 STOP = frozenset((';', ';;', '|', '||', '&', '&&', '(', ')', '\n'))
+PICKER_TIMEOUT = 3
 SCRIPT_FLAGS = frozenset(('-e', '--expression', '-f', '--file'))
 PUNCTUATION = ';&|()<>'
 NESTED = frozenset({"lease"})
@@ -356,16 +361,37 @@ def verdict_worker_bash(tool_name, tool_input):
     return pace_bash_verdict(command if isinstance(command, str) else "")
 
 
+def picker():
+    for candidate in (shutil.which("plan-pick"), Path.home() / ".local" / "bin" / "plan-pick"):
+        if candidate and Path(candidate).is_file():
+            return str(candidate)
+    return None
+
+
+def helper_allowed():
+    """plan-pick decides whether a chat may use a Claude helper. Missing, slow or failing means no."""
+    found = picker()
+    if not found:
+        return False
+    try:
+        answered = subprocess.run([found, "--claude-helper"], capture_output=True, text=True,
+                                  timeout=PICKER_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return answered.returncode == 0
+
+
 def gate(payload):
     if not isinstance(payload, dict):
         return None
     tool_name = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    from_subagent = subagent.from_hook(payload)
     if os.environ.get("MULTIPROMPT_TAB"):
         why = verdict_code(tool_name, tool_input)
-        if why:
+        if why and not (from_subagent and helper_allowed()):
             return why
-    if subagent.from_hook(payload):
+    if from_subagent:
         return None
     if os.environ.get("PACER_GUARD_INLINE", "").lower() == "off":
         return None
@@ -458,17 +484,37 @@ def self_test():
                     "tool_input": {"command": "git clone https://github.com/x/y /tmp/y && gh pr checkout 13"}}
             assert gate(body) and "hands work to workers" in gate(body), "main chat still blocks clones"
             os.environ["MULTIPROMPT_TAB"] = "self-test"
+            keep_path, keep_home = os.environ.get("PATH", ""), os.environ.get("HOME")
             sub_write = {"tool_name": "Write", "transcript_path": str(loaded),
                          "tool_input": {"file_path": "x.py", "content": "print(1)\n"},
                          "agent_id": "def456", "agent_type": "general-purpose"}
-            assert gate(sub_write) == MESSAGE, "subagent code Write stays blocked"
             sub_edit = {"tool_name": "Edit", "transcript_path": str(loaded),
                         "tool_input": {"file_path": "hooks/x.py", "old_string": "a", "new_string": "b"},
                         "agent_id": "def456", "agent_type": "general-purpose"}
-            assert gate(sub_edit) == MESSAGE, "subagent code Edit stays blocked"
             main_write = {"tool_name": "Write", "transcript_path": str(loaded),
                           "tool_input": {"file_path": "x.py", "content": "print(1)\n"}}
-            assert gate(main_write) == MESSAGE, "main chat code Write stays blocked"
+            try:
+                with tempfile.TemporaryDirectory() as pickers:
+                    way = Path(pickers, "bin")
+                    way.mkdir()
+                    os.environ["PATH"] = str(way)
+                    os.environ["HOME"] = pickers
+                    assert gate(sub_write) == MESSAGE, "no picker means a subagent stays blocked"
+                    assert gate(main_write) == MESSAGE, "no picker means the main chat stays blocked"
+                    approve = way / "plan-pick"
+                    approve.write_text("#!/bin/sh\nexit 0\n")
+                    approve.chmod(0o755)
+                    assert gate(sub_write) is None, "an approved helper may Write code"
+                    assert gate(sub_edit) is None, "an approved helper may Edit code"
+                    assert gate(main_write) == MESSAGE, "the main chat never writes code, helper or not"
+                    approve.write_text("#!/bin/sh\nexit 1\n")
+                    assert gate(sub_write) == MESSAGE, "a refused helper stays blocked"
+            finally:
+                os.environ["PATH"] = keep_path
+                if keep_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = keep_home
         finally:
             os.environ.pop("PACER_GUARD_INLINE", None)
             os.environ.pop("MULTIPROMPT_TAB", None)
