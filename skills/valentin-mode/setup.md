@@ -10,6 +10,7 @@ Write registered commands to fail open when their file is missing. A bare `pytho
 
 | Hook | Event | What it does | Where to wire it |
 |---|---|---|---|
+| `skill-update.py` | UserPromptSubmit | Moves `~/.local/share/vstack` to `origin/main` and runs its `./install`, at most once per ten minutes for the whole server, and tells a chat when valentin-mode changed so it re-reads it. | global, once |
 | `long-chat.py` | UserPromptSubmit, Stop, PreCompact (`auto`) | Hands a valentin-mode chat over before autocompact. Soft at 300k / hard at 400k on 1M chats (110k / 140k on 200k). Warn-only without a Multibot host. | global, once |
 
 Keep existing hook entries. Remove per-project copies of the global hook so it runs once.
@@ -18,4 +19,4 @@ Worker selection belongs to `~/.local/bin/plan-pick --run`; Claude helpers use i
 
 Wait for this PR's checks with `~/.local/share/vstack/tools/gh-wrapper/wait-checks <repo> <pr>` as a tracked background command, never `&` or nohup. The GitHub wrapper owns caching and rate limits at the API boundary.
 
-Update the shared checkout explicitly from `~/.local/share/vstack`, then run its `./install`. Never run an install from a worktree to repoint other chats at an unmerged branch.
+`skill-update.py` keeps the shared checkout current on its own, so a merged rule reaches this chat within ten minutes of a prompt. Run the update by hand from `~/.local/share/vstack` when you need it now: `git fetch && git checkout --detach origin/main && ./install`. Never run an install from a worktree to repoint other chats at an unmerged branch.
