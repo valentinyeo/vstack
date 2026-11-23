@@ -319,7 +319,6 @@ class CodexPullRequestTests(unittest.TestCase):
             trees = [line for line in git(repo, 'worktree', 'list').stdout.splitlines() if line.strip()]
             self.assertEqual(len(trees), 1, 'the temporary worktree is removed')
 
-
     def test_missing_owner_fails_before_git_changes(self):
         for brief in ('Add the thing.\n', 'Owner chat:   \n'):
             with self.subTest(brief=brief), patch.object(self.m, 'git') as git_call:
