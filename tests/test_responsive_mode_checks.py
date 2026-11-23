@@ -22,6 +22,10 @@ REMINDER = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                   "additionalContext": ("Valentin's newest message has no reply yet. Answer it "
                                                         "directly, then continue the work. "
                                                         "No separate acknowledgment.")}}
+MERGE_REMINDER_TEXT = ("This reply asks Valentin to merge, ship, approve or review a pull request. "
+                       "The fix: merge it yourself per pstack shipping; ask him only a product question. "
+                       "Carry it through babysit until it is green and mergeable, merge it, prove it live "
+                       "on the real case, then report that. Ask him only a product question.")
 
 
 def human(text):
@@ -197,6 +201,45 @@ class ReplyCheck(unittest.TestCase):
         garbage.write_text('{oops\n\n[1,2]\n"a string"\n')
         self.assert_allowed(self.hook(transcript=str(garbage)))
 
+    def test_a_final_reply_that_hands_him_the_pr_gets_a_reminder(self):
+        entries = [human('do the ticket'),
+                   say('Finished and green. Ready for your review: '
+                       'https://github.com/valentinyeo/multiprompt-android/pull/524')]
+        result = self.hook(entries, payload=json.dumps({'hook_event_name': 'Stop',
+                                                       'transcript_path': self.transcript(entries)}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output, {'hookSpecificOutput': {'hookEventName': 'Stop',
+                                                        'additionalContext': MERGE_REMINDER_TEXT}})
+        self.assertNotIn('permissionDecision', output['hookSpecificOutput'])
+        self.assertNotIn('decision', output)
+
+    def test_a_final_reply_asking_for_his_ship_gets_a_reminder(self):
+        entries = [human('do the ticket'),
+                   say("The change is finished and green. Say ship and I'll merge it.")]
+        result = self.hook(entries, payload=json.dumps({'hook_event_name': 'Stop',
+                                                       'transcript_path': self.transcript(entries)}))
+        self.assertIn('merge it yourself per pstack shipping', json.loads(result.stdout)
+                      ['hookSpecificOutput']['additionalContext'])
+
+    def test_a_product_question_at_stop_passes(self):
+        entries = [human('do the ticket'), say('Should the button be blue or green?')]
+        result = self.hook(entries, payload=json.dumps({'hook_event_name': 'Stop',
+                                                       'transcript_path': self.transcript(entries)}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '')
+
+    def test_a_finished_merge_report_at_stop_passes(self):
+        entries = [human('do the ticket'), say('Merged PR #524 and proved it live on the phone.')]
+        result = self.hook(entries, payload=json.dumps({'hook_event_name': 'Stop',
+                                                       'transcript_path': self.transcript(entries)}))
+        self.assertEqual(result.stdout.strip(), '')
+
+    def transcript(self, entries):
+        path = tempdir(self) / 'transcript.jsonl'
+        path.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+        return str(path)
+
     def test_self_test_passes(self):
         result = subprocess.run([sys.executable, str(CHECK), '--self-test'], text=True,
                                 capture_output=True, check=False)
@@ -256,7 +299,7 @@ class SkillWiring(unittest.TestCase):
         self.assertEqual(link.resolve().parent, ROOT / 'hooks')
 
     def test_the_body_names_the_checks(self):
-        self.assertIn('Loading this skill turns on three checks in this chat', self.text)
+        self.assertIn('Loading this skill turns on four checks in this chat', self.text)
 
 
 if __name__ == '__main__':

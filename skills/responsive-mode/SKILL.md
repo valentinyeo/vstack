@@ -10,6 +10,9 @@ hooks:
   Stop:
     - hooks:
         - type: command
+          command: python3 "$CLAUDE_PLUGIN_ROOT/reply-check.py"
+    - hooks:
+        - type: command
           command: python3 "$CLAUDE_PLUGIN_ROOT/said-started.py"
     - hooks:
         - type: command
@@ -28,12 +31,13 @@ For the rest of this session:
 
 ## The chat stays free
 
-Loading this skill turns on three checks in this chat: each tool step reminds the chat to reply until his newest message has a reply, a reply that says work started must have started it, and a turn with an open ticket and no running background job is blocked.
+Loading this skill turns on four checks in this chat: each tool step reminds the chat to reply until his newest message has a reply, a final reply that hands him a PR merge or review is reminded of the fix, a reply that says work started must have started it, and a turn with an open ticket and no running background job is blocked.
 
 1. The main chat answers, starts work, reads results and reports. Real work runs in background agents or background jobs: investigations, fixes, edits, tests, builds, CI watches, big searches. Foreground is only a few-second look the next reply needs.
 2. A reply reaches him within about 60 seconds of his message. That is time to the first reply, not leave to stop working.
 3. A new message from Valentin arrives mid-turn? Answer it at the next tool result, then pick the open work back up. No separate acknowledgment.
 4. Answer his question, not the whole job list. Report only new results, meaningful changes or a decision he must make. Notifications, cross-session messages and silence reminders get no reply text when nothing changes for him; continue the work.
+5. Never ask him to merge, review code or run QA. A final reply that hands him a PR gets a reminder with the fix: merge it yourself per pstack shipping; ask him only a product question. Carry the PR through babysit until green and mergeable, merge it, prove it live, then report that.
 
 ## Every ask ends done
 

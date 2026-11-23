@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""One owner: does this text ask Valentin to merge, ship, approve or review a pull request?
+
+Valentin, 2026-11-23 (VSTA-158): a chat held a finished, green change in
+valentinyeo/multiprompt-android PR #524 waiting for his "ship" yes. Whoever opens a PR
+carries it to merge and live proof, per pstack poteto-mode playbooks shipping.md and
+babysit.md. His answer is a product question only. The board drain and the Stop reply
+check read this one matcher and this one fix line, so a wording change reaches both.
+
+A real product question still passes: "should the button be blue or green?" asks for a
+colour, not for a merge.
+
+merge-ask --self-test
+"""
+import re
+
+FIX = 'merge it yourself per pstack shipping; ask him only a product question'
+MERGE_VERB = re.compile(r"\b(merge|merging|ship|shipping|land|landing)\b", re.I)
+REVIEW_VERB = re.compile(r"\b(review|reviewing|approve|approving|approval|sign[- ]?off)\b", re.I)
+PR = re.compile(r"\b(?:PR|pull request)\b|/pull/\d+", re.I)
+TO_HIM = re.compile(r"\b(you|your|yours|you're|youre|please|let me know)\b", re.I)
+WAITING_ON_HIM = re.compile(
+    r"\b(waiting (?:on|for)|ready for|over to you|your call|your go|say (?:ship|merge|the word))\b", re.I)
+PERMISSION = re.compile(r"\b(should|shall|may|can|could|would) (?:i|we)\b", re.I)
+DIRECT = re.compile(r"\b(merge|ship|land) (?:it|this|that|them)\b", re.I)
+SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def asks(text):
+    """True when the text waits on Valentin to merge, ship, approve or review a PR."""
+    text = text or ''
+    has_pr = bool(PR.search(text))
+    for sentence in SENTENCE.split(text):
+        merge = MERGE_VERB.search(sentence)
+        review = REVIEW_VERB.search(sentence)
+        his = TO_HIM.search(sentence)
+        asker = his or PERMISSION.search(sentence)
+        if WAITING_ON_HIM.search(sentence) and merge:
+            return True
+        if merge and asker:
+            return True
+        if has_pr and review and asker:
+            return True
+        if DIRECT.search(sentence) and '?' in sentence:
+            return True
+    return False
+
+
+def self_test():
+    asks_him = [
+        "Say ship and I'll merge https://github.com/valentinyeo/multiprompt-android/pull/524.",
+        "Ready for your review: https://github.com/valentinyeo/multiprompt-android/pull/524",
+        "Can you merge PR #524?",
+        "Waiting on your go to merge.",
+        "Should I ship it?",
+        "Ship it?",
+        "Your approval is needed to merge.",
+        "Please review PR #524.",
+    ]
+    passes = [
+        "Should the button be blue or green?",
+        "Which colour should the ship button be?",
+        "PR #524 is open and green.",
+        "I merged PR #524 and proved it live.",
+        "Merged. Live proof is in the ticket.",
+        "Please review the button colour on the phone.",
+        "Can you review the new settings page?",
+        "The PR is red; babysitting it now.",
+    ]
+    for text in asks_him:
+        assert asks(text), f'a merge ask must be caught: {text}'
+    for text in passes:
+        assert not asks(text), f'this must still pass: {text}'
+    print('merge-ask self-test ok')
+
+
+if __name__ == '__main__':
+    import sys
+    if sys.argv[1:] == ['--self-test']:
+        self_test()
+    else:
+        sys.exit('usage: merge-ask --self-test')

@@ -101,6 +101,25 @@ def human_comment(age):
             'creator': {'id': 6, 'displayName': 'Valentin Yeo'}, 'text': 'yes, go'}
 
 
+# multiprompt-android PR #524 on 23 Nov: open, mergeable, verifier PASS at that head.
+PR_524 = {'url': 'https://github.com/valentinyeo/multiprompt-android/pull/524',
+          'state': 'OPEN', 'checks': 'green', 'mergeable': True, 'passed': False,
+          'mergedAt': None, 'repository': {'nameWithOwner': 'valentinyeo/multiprompt-android'}}
+
+
+def mubo63(**changes):
+    """MUBO-63 as `hypertask --json task get` sent it, the ticket behind PR #524.
+
+    The waiting state is the mistake this rule catches: the chat parked a finished,
+    green change in his column or marked it waiting on him.
+    """
+    row = snapshot('MUBO-63')
+    row['task'].update({'projectId': 13734, 'updatedAt': iso(NOW - 600),
+                        'labels': [{'name': 'Multiprompt Android'}]})
+    row['task'].update(changes)
+    return row
+
+
 def dead_pid():
     """The pid of a process that has already exited."""
     process = subprocess.Popen([sys.executable, '-c', 'pass'])
@@ -193,6 +212,63 @@ class CheckTest(unittest.TestCase):
         self.assertIn('waiting: SOFT-2901 (marked)', out)
         self.assertIn('waiting: SOFT-2902 (marked)', out)
         self.assertIn('drain-check: PASS', out)
+
+    def test_real_case_a_green_pr_parked_in_his_column_fails(self):
+        # multiprompt-android PR #524: finished, open, MERGEABLE and green, held for his yes.
+        row = mubo63(section='Valentin Review', waitingOnUserId=6)
+        payload = {'rows': [row], 'pulls': {'MUBO-63': [PR_524]}}
+        code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+        self.assertEqual(code, 1, out)
+        self.assertIn('wait on merge: MUBO-63 waits on Valentin with open green PR '
+                      'https://github.com/valentinyeo/multiprompt-android/pull/524; '
+                      'merge it yourself per pstack shipping; ask him only a product question', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_ticket_marked_waiting_on_him_with_a_green_pr_fails(self):
+        row = mubo63(section='Checks', waitingOnUserId=6)
+        payload = {'rows': [row], 'pulls': {'MUBO-63': [PR_524]}}
+        code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+        self.assertEqual(code, 1, out)
+        self.assertIn('wait on merge: MUBO-63', out)
+
+    def test_the_newest_chat_comment_asking_him_to_merge_fails(self):
+        row = mubo63(section='Checks', waitingOnUserId=6)
+        row['comments'] = [{'createdAt': iso(NOW - 600),
+                            'agent_display_name': 'Multiprompt Android Dev',
+                            'text': 'Finished and green. Say ship and I will merge '
+                                    'https://github.com/valentinyeo/multiprompt-android/pull/524.'}]
+        payload = {'rows': [row], 'pulls': {'MUBO-63': [PR_524 | {'checks': 'red'}]}}
+        code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+        self.assertEqual(code, 1, out)
+        self.assertIn('its newest chat comment asks him to merge', out)
+
+    def test_a_real_product_question_still_passes(self):
+        row = mubo63(section='Checks', waitingOnUserId=6)
+        row['comments'] = [{'createdAt': iso(NOW - 600),
+                            'agent_display_name': 'Multiprompt Android Dev',
+                            'text': 'Should the button be blue or green?'}]
+        payload = {'rows': [row], 'pulls': {'MUBO-63': [PR_524 | {'checks': 'red'}]}}
+        code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+        self.assertEqual(code, 0, out)
+        self.assertIn('drain-check: PASS', out)
+        self.assertNotIn('wait on merge', out)
+
+    def test_a_red_or_conflicting_pr_is_not_finished_work(self):
+        for pull in (PR_524 | {'checks': 'red'}, PR_524 | {'mergeable': False},
+                     PR_524 | {'state': 'MERGED'}):
+            with self.subTest(pull=pull):
+                row = mubo63(section='Valentin Review', waitingOnUserId=6)
+                payload = {'rows': [row], 'pulls': {'MUBO-63': [pull]}}
+                code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+                self.assertEqual(code, 0, out)
+                self.assertNotIn('wait on merge', out)
+
+    def test_a_green_pr_on_a_ticket_that_does_not_wait_on_him_passes(self):
+        row = mubo63(section='Checks', waitingOnUserId=None)
+        payload = {'rows': [row], 'pulls': {'MUBO-63': [PR_524]}}
+        code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('wait on merge', out)
 
     def test_a_human_answer_after_the_agent_fails(self):
         comments = [agent_comment(3600), human_comment(600)]

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""PreToolUse reminder: answer Valentin's newest message without denying tool calls.
+"""PreToolUse and Stop reminder: answer Valentin's newest message, and never hand him a merge.
 
 Valentin, 2026-11-20: "the chat ignores his new messages while it keeps working". A chat that loaded
 responsive-mode answers him first, then carries on. This hook reminds the chat at each tool call when his
 newest message has no assistant text after it.
+
+Valentin, 2026-11-23 (VSTA-158): a chat held a finished, green multiprompt-android PR #524 waiting for his
+"ship" yes. At Stop the same hook reads the final reply with the same transcript reader, and when the reply
+asks him to merge, ship, approve or review a PR it adds the fix as context. It never denies a tool call and
+never blocks the turn (VSTA-155). The matcher and the fix line live in one owner, hypertask-work/merge-ask.
 
 Read from a real transcript (2.1.329), two shapes:
   - He types while the chat is idle: a user entry whose message.content holds the typed text.
@@ -17,14 +22,39 @@ Fails open: a missing or unreadable transcript, or any shape this file does not 
 reply-check.py --self-test
 """
 import json
+import importlib.machinery
+import importlib.util
 import os
 import re
 import sys
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+MERGE_ASK = ROOT / 'skills' / 'hypertask-work' / 'merge-ask'
+
+
+def merge_ask_module():
+    """The one owner of the merge-ask matcher, shared with the board drain."""
+    name = 'merge_ask'
+    module = sys.modules.get(name)
+    if module is not None and getattr(module, '__file__', None) == str(MERGE_ASK):
+        return module
+    loader = importlib.machinery.SourceFileLoader(name, str(MERGE_ASK))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+merge_ask = merge_ask_module()
+
 MESSAGE = ("Valentin's newest message has no reply yet. Answer it directly, then continue the work. "
            "No separate acknowledgment.")
+MERGE_MESSAGE = ("This reply asks Valentin to merge, ship, approve or review a pull request. The fix: "
+                 + merge_ask.FIX + ". Carry it through babysit until it is green and mergeable, merge it, "
+                 "prove it live on the real case, then report that. Ask him only a product question.")
 SKIP = ("<task-notification", "<system-reminder", "<teammate-message", "<cross-session",
         "[SYSTEM NOTIFICATION", "[Message from", "[Cross-session", "[from ",
         "Cross-session message", "Message from session", "Message from chat", "Base directory for this skill")
@@ -220,6 +250,27 @@ def self_test():
     for entries, want, why in replies:
         if last_reply(write(entries)) != want:
             bad.append(why)
+    stop_cases = [
+        ([human("do it"), say("Ready for your review: "
+                               "https://github.com/valentinyeo/multiprompt-android/pull/524")], True,
+         "a final reply that hands him the PR reminds"),
+        ([human("do it"), say("Say ship and I'll merge the green change.")], True,
+         "a final reply that asks for his ship reminds"),
+        ([human("do it"), say("Should the button be blue or green?")], False,
+         "a product question passes"),
+        ([human("do it"), say("Merged PR #524 and proved it live.")], False,
+         "a finished merge report passes"),
+    ]
+    for entries, want, why in stop_cases:
+        transcript = write(entries)
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
+                                input=json.dumps({"hook_event_name": "Stop",
+                                                  "transcript_path": transcript}),
+                                text=True, capture_output=True, timeout=10)
+        expected = {"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": MERGE_MESSAGE}}
+        output = json.loads(result.stdout) if result.stdout.strip() else None
+        if result.returncode or result.stderr or output != (expected if want else None):
+            bad.append("stop output: " + why)
     if unanswered("/nonexistent/transcript.jsonl"):
         bad.append("a missing transcript allows")
     if last_reply("/nonexistent/transcript.jsonl"):
@@ -237,8 +288,20 @@ def main():
         return 0
     if not isinstance(data, dict):
         return 0
+    if data.get("stop_hook_active"):
+        return 0
+    transcript = data.get("transcript_path") or ""
+    event = str(data.get("hook_event_name") or data.get("hook_name") or "")
+    if event.strip().casefold() == "stop":
+        try:
+            if merge_ask.asks(last_reply(transcript)):
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop",
+                                                         "additionalContext": MERGE_MESSAGE}}))
+        except Exception:
+            return 0
+        return 0
     try:
-        if unanswered_after_retries(data.get("transcript_path") or ""):
+        if unanswered_after_retries(transcript):
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                                     "additionalContext": MESSAGE}}))
     except Exception:

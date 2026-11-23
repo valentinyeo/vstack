@@ -185,7 +185,8 @@ def seed_fixture_pulls(pulls):
             number = int(row.get('number') or re.search(r'/pull/(\d+)', row.get('url') or '').group(1))
             reconcile.PULLS[(repo, number)] = reconcile.Pull(
                 row.get('url') or '', (row.get('state') or 'OPEN').upper(),
-                row.get('checks') or '', bool(row.get('passed')), reconcile.moment(row.get('mergedAt')))
+                row.get('checks') or '', bool(row.get('passed')), reconcile.moment(row.get('mergedAt')),
+                row.get('mergeable'))
 
 
 def rows_for(args):
@@ -716,7 +717,10 @@ def lint(args, shared=None):
     probe_only = bool(shared.get('probe_only'))
     fixture_pulls = shared.get('fixture_pulls')
     now = float(shared.get('now') or data.get('now') or time.time())
-    pulls = load_pulls(board, tasks, fixture_pulls, probe_only=probe_only)
+    # A caller that read the PR facts already (drain-check's tick) shares them here, so
+    # one tick still pays one GitHub call however many rules read the same pull.
+    pulls = shared['pulls'] if 'pulls' in shared else load_pulls(
+        board, tasks, fixture_pulls, probe_only=probe_only)
     # Unknown PR facts are quiet, never "no PR": a tick that cannot read them
     # would otherwise read a merged card as abandoned and flag its own chat.
     # A fixture that carries no pulls models none, and its caller may say so too.

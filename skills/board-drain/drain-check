@@ -25,14 +25,25 @@ loop_state = importlib.util.module_from_spec(state_spec)
 sys.modules[state_loader.name] = loop_state
 state_loader.exec_module(loop_state)
 
+merge_loader = importlib.machinery.SourceFileLoader('merge_ask', str(HERE.parent / 'hypertask-work' / 'merge-ask'))
+merge_spec = importlib.util.spec_from_loader(merge_loader.name, merge_loader)
+merge_ask = importlib.util.module_from_spec(merge_spec)
+sys.modules[merge_loader.name] = merge_ask
+merge_loader.exec_module(merge_ask)
+
 # Before any board read: a worker `hypertask` shim earlier on PATH exits 3.
 loop_state.ensure_cli_path()
 
 TODO = 'Todo'
 DONE = 'Done'
+NOT_NOW = 'Not now'
 DOING = frozenset({'Doing', 'Building'})
 # A ticket in one of these columns has an owner, so an agent must be on it.
 WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
+# Hypertask user 6 is Valentin (valentin.yeo@gmail.com); every board's waitingOnUserId
+# uses it, and the boards spell his column "Valentin Review".
+VALENTIN_USER_ID = 6
+WAITING_COLUMNS = frozenset({'waiting', 'waiting on valentin', 'human review'})
 FRESH = 1800
 STALE = 7200
 # Board-rule breaks warn until a rule is promoted here: list a rule id and its
@@ -136,6 +147,72 @@ def answered(comments):
     humans = [moment for moment, human in pairs if human]
     agents = [moment for moment, human in pairs if not human]
     return bool(humans) and (not agents or max(humans) > max(agents))
+
+
+def valentin_column(section):
+    """A column that means his call, not an agent's: Valentin Review and its aliases."""
+    name = (section or '').strip().casefold()
+    return ('valentin' in name and 'review' in name) or name in WAITING_COLUMNS
+
+
+def waits_on_valentin(task):
+    """Marked waiting on him, or parked in a column only he moves out of."""
+    return (task.get('waitingOnUserId') == VALENTIN_USER_ID
+            or valentin_column(task.get('section')))
+
+
+def needs_comments(task):
+    """Todo, or a ticket that waits on him: the rows whose newest comment decides."""
+    if task.get('section') in (DONE, NOT_NOW):
+        return False
+    return task.get('section') == TODO or waits_on_valentin(task)
+
+
+def pull_field(pull, name, default=None):
+    """One fact from a PR row, whether it is a dict (fixture, saved) or a Pull."""
+    if isinstance(pull, dict):
+        return pull.get(name, default)
+    return getattr(pull, name, default)
+
+
+def ready_to_merge(pull):
+    """Open, green, and not known to conflict. Unknown merge state is not a no."""
+    return ((pull_field(pull, 'state') or '').upper() == 'OPEN'
+            and pull_field(pull, 'checks') == 'green'
+            and pull_field(pull, 'mergeable') is not False)
+
+
+def newest_comment(comments):
+    rows = [comment for comment in comments or () if isinstance(comment, dict)]
+    return max(rows, key=lambda comment: said(comment) or 0) if rows else None
+
+
+def comment_text(comment):
+    return (comment.get('text') or comment.get('commentText') or '').strip()
+
+
+def merge_findings(rows, pulls):
+    """A finished PR waiting on Valentin is this chat's work, not his."""
+    out = []
+    for row in rows:
+        task = row['task']
+        if task.get('section') in (DONE, NOT_NOW) or not waits_on_valentin(task):
+            continue
+        key = task['ticketNumber']
+        ticket_pulls = (pulls or {}).get(key) or ()
+        ready = [pull for pull in ticket_pulls if ready_to_merge(pull)]
+        newest = newest_comment(row.get('comments'))
+        asked = bool(newest and not is_human(newest) and merge_ask.asks(comment_text(newest)))
+        reasons = []
+        if ready:
+            reasons.append(f'open green PR {pull_field(ready[0], "url") or ""}'.strip())
+        if asked:
+            reasons.append('its newest chat comment asks him to merge')
+        if not reasons:
+            continue
+        out.append(('wait on merge', f'wait on merge: {key} waits on Valentin with '
+                                     f'{" and ".join(reasons)}; {merge_ask.FIX}'))
+    return out
 
 
 def alive(task, now, board):
@@ -252,7 +329,7 @@ def rows_for(args):
             raise ValueError(f'ticket outside board {args.board}')
         if not reconcile.carries_label(task, args.label):
             continue
-        if not args.fixture and task.get('section') == TODO:
+        if not args.fixture and needs_comments(task):
             key = task['ticketNumber']
             row = {'task': task, 'comments': ticket_comments(key),
                    'relations': [] if waiting(task) else ticket_relations(key)}
@@ -260,9 +337,22 @@ def rows_for(args):
     return board, kept, loaded, extra
 
 
+def pull_facts(args, board, rows, data):
+    """This view's PR facts, read once here and shared with the board rules."""
+    lint = lint_module()
+    fixture_pulls = lint.pull_map_from_fixture(data) if args.fixture else None
+    try:
+        return lint.load_pulls(board, [row['task'] for row in rows], fixture_pulls,
+                               probe_only=not args.fixture)
+    except ERRORS + (AttributeError,):
+        # A tick that cannot read PR facts stays quiet rather than read as "no PR".
+        return None
+
+
 def read_view(args, now):
     """One read of the view: the board, every row, the notes, the findings, the workable rows."""
     board, rows, loaded, data = rows_for(args)
+    pulls = pull_facts(args, board, rows, data)
     todos = [row for row in rows if row['task'].get('section') == TODO]
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
@@ -301,6 +391,7 @@ def read_view(args, now):
         if spent is not None and spent > STALE:
             findings.append(('stale', f'stale: {row["task"]["ticketNumber"]} workable in Todo '
                                       f'for {int(spent // 3600)}h.'))
+    findings += merge_findings(rows, pulls)
     # The watcher records its own name and reads the view without a loop state to judge.
     state_name = getattr(args, 'state_name', None)
     if state_name:
@@ -311,7 +402,7 @@ def read_view(args, now):
             findings.append(('sync timer', 'sync timer off: re-arm this chat with ./loop-state timer.'))
         findings += [('sync', line) for line in sync_findings(state_name, now)]
     return {'board': board, 'rows': rows, 'workable': workable, 'data': data,
-            'notes': waiting_lines + blocked_lines, 'findings': findings}
+            'pulls': pulls, 'notes': waiting_lines + blocked_lines, 'findings': findings}
 
 
 def lint_module():
@@ -339,6 +430,7 @@ def rule_breaks(view, args, now):
     fixture = bool(args.fixture)
     shared = {'board': view['board'], 'tasks': [row['task'] for row in rows],
               'data': data, 'now': now, 'probe_only': True,
+              'pulls': view.get('pulls'),
               'fixture_pulls': (data.get('pulls') or {}) if fixture else None,
               'pull_rules': ('pulls' in data) if fixture else True,
               'reconcile': reconcile, 'loop_state': loop_state,
