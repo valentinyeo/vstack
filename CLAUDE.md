@@ -37,7 +37,6 @@ Nobody pushes to main.
 | vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `scripts/pacer-check.py` (`Owner chat:`), `tests/test_pr_queue.py`, `tests/test_pacer_enforce.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
 | A chat retains its merged PR until its own local copies are gone | `skills/pr-housekeeping/pr-queue`, `tests/test_pr_queue.py`; branch-only cleanup in `skills/repo-tidy/repo-tidy`, `tests/test_repo_tidy.py` |
 | A vstack tool acts only on the chat that runs it; the building chat is never its operator | `tests/test_own_chat_only.py` |
-| A PR never collides with an older open PR on a guarded file or ticket | `scripts/pr-overlap`, `.github/workflows/pr-overlap.yml`, `tests/test_pr_overlap.py` |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |
 | Worker tasks can run on vendor cloud agents | `skills/cloud-agent/cloud-agent`, `tests/test_cloud_agent.py` |
 | Direct cloud worker launches check lane eligibility before any vendor runs | `skills/cloud-agent/cloud-agent` calls `plan-pick --lane-ok`, `tests/test_cloud_agent.py` |
