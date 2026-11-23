@@ -79,13 +79,21 @@ class PacerCheck(unittest.TestCase):
         self.assertIn('anthropic/claude-opus-5-5', out)
 
     def test_a_code_change_with_no_pacer_launch_fails(self):
-        code, out = self.check('Author model: deepseek/deepseek-v4.1-flash\n', ['x.py'])
+        code, out = self.check('Author model: deepseek/deepseek-v4.1-flash\n'
+                               'Owner chat: PR Housekeeping\n', ['x.py'])
         self.assertEqual(code, 1)
         self.assertIn('Pacer launch', out)
 
-    def test_a_worker_code_change_passes(self):
+    def test_a_code_change_with_no_owner_chat_fails(self):
         code, out = self.check('Author model: deepseek/deepseek-v4.1-flash\n'
                                'Pacer launch: vercel 2026-11-19T22:00:00Z\n', ['x.py'])
+        self.assertEqual(code, 1)
+        self.assertIn('Owner chat', out)
+
+    def test_a_worker_code_change_passes(self):
+        code, out = self.check('Author model: deepseek/deepseek-v4.1-flash\n'
+                               'Pacer launch: vercel 2026-11-19T22:00:00Z\n'
+                               'Owner chat: PR Housekeeping\n', ['x.py'])
         self.assertEqual((code, out), (0, 'pacer-check: PASS'))
 
     def test_a_docs_only_change_from_a_claude_author_passes(self):
