@@ -555,6 +555,58 @@ class RuleBreakTest(CheckTest):
         self.assertNotIn('Multi Bot Bugs', out)
         self.assertNotIn('rule-break:', out)
 
+    def test_human_owner_view_with_matching_title_is_not_a_view_owner_break(self):
+        label = 'Seamless Session Transitioning'
+        row = {'task': {'ticketNumber': 'MUBO-101', 'projectId': 13734, 'section': 'Todo',
+                        'labels': [{'name': label}], 'updatedAt': iso(NOW - 300),
+                        'waitingOnUserId': 6},
+               'comments': []}
+        payload = {
+            'rows': [row],
+            'roster': f'{label} (live-s, claude, /tmp)\n',
+            'chats': [label],
+            'labels': [{'id': 'L-seamless', 'name': label}],
+            'views': [{
+                'id': 'v-seamless',
+                'title': label,
+                'slug': 'seamless-session-transitioning',
+                'owner': {'id': 6, 'displayName': 'Valentin Yeo'},
+                'board_filters': {'addedFilters': [{'type': 'Labels',
+                                                    'searchPayload': [{'id': 'L-seamless'}]}]},
+            }],
+        }
+        code, out = self.run_payload(payload, board=13734, label=label,
+                                     fail_rules=frozenset({'view-owner'}))
+        self.assertEqual(code, 0, out)
+        self.assertIn('drain-check: PASS', out)
+        self.assertNotIn('rule-break:', out)
+
+    def test_human_owner_view_with_mismatched_title_still_flags_view_owner(self):
+        label = 'Seamless Session Transitioning'
+        row = {'task': {'ticketNumber': 'MUBO-102', 'projectId': 13734, 'section': 'Todo',
+                        'labels': [{'name': label}], 'updatedAt': iso(NOW - 300),
+                        'waitingOnUserId': 6},
+               'comments': []}
+        payload = {
+            'rows': [row],
+            'roster': f'{label} (live-s, claude, /tmp)\n',
+            'chats': [label],
+            'labels': [{'id': 'L-seamless', 'name': label}],
+            'views': [{
+                'id': 'v-personal',
+                'title': "Valentin's Seamless View",
+                'slug': 'seamless-session-transitioning',
+                'owner': {'id': 6, 'displayName': 'Valentin Yeo'},
+                'board_filters': {'addedFilters': [{'type': 'Labels',
+                                                    'searchPayload': [{'id': 'L-seamless'}]}]},
+            }],
+        }
+        code, out = self.run_payload(payload, board=13734, label=label,
+                                     fail_rules=frozenset({'view-owner'}))
+        self.assertEqual(code, 1, out)
+        self.assertIn('rule-break: (view) view-owner:', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
     def test_a_revoked_agent_still_prints_and_names_who_can_fix_it(self):
         row = self.worker_card(assignees=[agent_assignee() | {'agentId': 'gone-agent'}])
         payload = self.payload([row], workers={'SOFT-2931': True}, agents=[])
