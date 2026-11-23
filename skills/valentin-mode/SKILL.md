@@ -48,11 +48,11 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, bri
 
 ### Board work
 
-Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
+Before board work, read `/hypertask` (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself at session start, on restart or handover, and on skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, restart, handover and skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
 
 ### PR owner
 
@@ -71,7 +71,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan for secrets and client data, then make it public. A repo that must stay private: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
 - **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
-- **Own chat only:** a chat runs vstack tools on itself and never operates other chats; `tests/test_own_chat_only.py` enforces it, with `config/cross-chat-allowlist.txt` for the few allowed tools.
+- **Own chat only:** run vstack tools only on your own chat; `tests/test_own_chat_only.py` enforces it, allowlist `config/cross-chat-allowlist.txt`.
 
 ## Designing
 
