@@ -2294,6 +2294,52 @@ class CallBudgetTest(unittest.TestCase):
         self.assertEqual(written['probe_since'], r.format_reset(probe_at))
         self.assertEqual(written['at'], saved['at'])
 
+    def test_quiet_sync_probe_uses_board_repos_tuple(self):
+        """VSTA-138: #223 moved BoardConfig.repository to repos; probe_scope missed it.
+
+        Board-15 and discover() tests covered search_scope, but quiet sync calls
+        probe_changed_prs first, which still read the deleted field.
+        """
+        vstack = r.BoardConfig(13556, 'VSTA', frozenset({'Todo', 'Doing', 'AI Review'}),
+                               frozenset(), r.board_rules(frozenset({'Todo', 'Doing', 'AI Review'}), frozenset()),
+                               (('valentinyeo/vstack', 'main'),))
+        key = 'VSTA-1'
+        t = {'ticketNumber': key, 'section': 'Doing', 'projectId': 13556, 'updatedAt': NOW - 8000,
+             'labels': [{'name': 'Vstack'}]}
+        saved = {'at': NOW - 60, 'probe_since': '2026-01-01T00:00:00Z', 'repos': ['valentinyeo/vstack'],
+                 'tickets': {key: {'updated_at': t['updatedAt'], 'pulls': [], 'facts': {}}}}
+        gh_calls = []
+
+        def track_run(*args, **kwargs):
+            if args[:2] == ('gh', 'api') and 'search/issues' in args:
+                gh_calls.append(args)
+                return json.dumps({'items': []})
+            return json.dumps({'data': {}})
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r, 'board_config', return_value=vstack), \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--board', '13556', '--label', 'Vstack']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=saved), \
+                patch.object(r, 'discover_quiet', return_value={key: []}), \
+                patch.object(r, 'run', side_effect=track_run), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                contextlib.redirect_stdout(io.StringIO()):
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        self.assertEqual(len(gh_calls), 1)
+        args = gh_calls[0]
+        q_index = args.index('-f') + 1
+        while q_index < len(args) and not str(args[q_index]).startswith('q='):
+            q_index += 2
+        query = args[q_index].split('=', 1)[-1]
+        self.assertIn('repo:valentinyeo/vstack', query)
+
     def test_probe_search_uses_explicit_get(self):
         with patch.object(r, 'run', return_value=json.dumps({'items': []})) as run:
             r.probe_changed_prs(r.DEFAULT, '2026-01-01T00:00:00Z')

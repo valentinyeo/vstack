@@ -646,8 +646,8 @@ def saved_facts_fresh(saved, now):
 
 
 def probe_scope(board, repos=()):
-    if board.repository:
-        return f'repo:{board.repository}'
+    if board.repos:
+        return search_scope(board)
     repos = tuple(sorted(set(repos)))
     if repos:
         return ' '.join(f'repo:{repo}' for repo in repos)
@@ -801,7 +801,7 @@ def github_search_batch(keys, board=DEFAULT):
     def search(batch):
         fields = []
         for n, key in enumerate(batch):
-            scope = f'repo:{board.repository}' if board.repository else 'user:valentinyeo user:hypertask-ai'
+            scope = search_scope(board)
             query = f'is:pr {scope} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
             fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
                           '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number repository{nameWithOwner}}}}')
