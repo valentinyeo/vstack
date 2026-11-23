@@ -206,6 +206,222 @@ class GuardTest(unittest.TestCase):
                          for group in groups for hook in group.get('hooks', []))]
         self.assertEqual(sorted(events), ['Stop', 'UserPromptSubmit'])
 
+    def _start_ntfy_server(self, status=200):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+
+        received = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get('Content-Length') or 0)
+                body = self.rfile.read(length).decode('utf-8', errors='replace')
+                received.append({
+                    'path': self.path,
+                    'headers': {k.lower(): v for k, v in self.headers.items()},
+                    'body': body,
+                })
+                self.send_response(status)
+                self.end_headers()
+                self.wfile.write(b'ok' if status < 300 else b'err')
+
+            def log_message(self, format, *args):
+                pass
+
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        port = server.server_address[1]
+        return f'http://127.0.0.1:{port}/test-topic', received
+
+    def test_kill_watcher_process_holds_stop_and_names_rearm_command(self):
+        """VSTA-151 round 2: kill a real watch subprocess; own hook names re-arm and holds Stop."""
+        fixture = self.home / 'view.json'
+        task = {'ticketNumber': 'MUBO-1', 'projectId': 13734, 'section': 'Doing',
+                'labels': [{'name': 'Multi Bot Bugs'}], 'status': 'Normal',
+                'waitingOnUserId': None, 'blockerCommentId': None,
+                'updatedAt': iso(time.time() - 60), 'assignees': []}
+        fixture.write_text(json.dumps([{'task': task, 'comments': []}]))
+        loop = self.hook.loop_state()
+        loop.arm('Multi Bot Bugs', every='6h', job='cron-1', board=13734, label='Multi Bot Bugs')
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT / 'skills/board-drain/watch'), '--board', '13734',
+             '--label', 'Multi Bot Bugs', '--name', 'Multi Bot Bugs',
+             '--fixture', str(fixture), '--no-sync', '--every', '1', '--heartbeat', '60'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, **self.env},
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                state = loop.stored('Multi Bot Bugs')
+                if state.get('watch_pid') == proc.pid:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(loop.stored('Multi Bot Bugs').get('watch_pid'), proc.pid)
+            # Survives a view change while alive and keeps hook silent.
+            task2 = dict(task, ticketNumber='MUBO-2', section='Todo')
+            fixture.write_text(json.dumps([{'task': task, 'comments': []},
+                                           {'task': task2, 'comments': []}]))
+            self.assertIn('changed: MUBO-2 new in Todo', proc.stdout.readline())
+            time.sleep(0.2)
+            self.assertIsNone(proc.poll(), 'watcher must keep polling after a view change')
+            self.assertEqual(self.hook.answer({'hook_event_name': 'Stop', 'session_id': 'sid-live'},
+                                              self.env, self.home), {})
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
+        blocked = self.hook.answer({'hook_event_name': 'Stop', 'session_id': 'sid-killed'},
+                                   self.env, self.home)
+        self.assertEqual(blocked.get('decision'), 'block', blocked)
+        self.assertIn('watcher is dead since', blocked.get('reason', ''))
+        self.assertIn('watch --board 13734 --label "Multi Bot Bugs" --name "Multi Bot Bugs"',
+                      blocked.get('reason', ''))
+
+    def test_hypertask_reconciler_kill_test_uses_same_loop_state_and_guard(self):
+        """VSTA-151 round 2: Hypertask Reconciler (live-2a735a3c) shares loop-state and guard."""
+        announce = self.home / '.local/state/roster/announce'
+        (announce / 'live-2a735a3c.json').write_text(json.dumps({
+            'tmux': 'live-2a735a3c', 'multibot': 'Hypertask Reconciler',
+            'name': 'Claude', 'cwd': '/home/valentin/projects/vstack', 'sid': 'sid-rec',
+        }))
+        url, received = self._start_ntfy_server()
+        rec_env = {**self.env, 'MULTIBOT_SESSION': 'live-2a735a3c',
+                   'ZSB_SESSION': 'live-2a735a3c', 'MULTIPROMPT_TAB': 'live-2a735a3c',
+                   'BOARD_DRAIN_NOTIFY_URL': url}
+        fixture = self.home / 'rec-view.json'
+        task = {'ticketNumber': 'VSTA-151', 'projectId': 13556, 'section': 'Doing',
+                'labels': [{'name': 'Hypertask Reconciler'}], 'status': 'Normal',
+                'waitingOnUserId': None, 'blockerCommentId': None,
+                'updatedAt': iso(time.time() - 60), 'assignees': []}
+        fixture.write_text(json.dumps([{'task': task, 'comments': []}]))
+        loop = self.hook.loop_state()
+        loop.arm('Hypertask Reconciler', every='6h', job='583adbe8',
+                 board=13556, label='Hypertask Reconciler')
+        proc = subprocess.Popen(
+            [sys.executable, str(ROOT / 'skills/board-drain/watch'), '--board', '13556',
+             '--label', 'Hypertask Reconciler', '--name', 'Hypertask Reconciler',
+             '--fixture', str(fixture), '--no-sync', '--every', '1', '--heartbeat', '60'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, **rec_env},
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if loop.stored('Hypertask Reconciler').get('watch_pid') == proc.pid:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(loop.stored('Hypertask Reconciler').get('watch_pid'), proc.pid)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
+        now_dead = time.time() + 700  # > 10 minutes after last beat
+        blocked = self.hook.answer({'hook_event_name': 'Stop', 'session_id': 'sid-rec-1'},
+                                   rec_env, self.home, now=now_dead)
+        self.assertEqual(blocked.get('decision'), 'block', blocked)
+        self.assertIn(
+            'watch --board 13556 --label "Hypertask Reconciler" --name "Hypertask Reconciler"',
+            blocked.get('reason', ''))
+        self.assertEqual(len(received), 1, received)
+        self.assertIn('Hypertask Reconciler', received[0]['body'])
+        self.assertIn('dead since', received[0]['body'])
+
+    def test_dead_over_10_minutes_pushes_valentin_once_per_dead_spell(self):
+        """VSTA-151 round 2: push once after >10m dead, never twice in one spell, fresh after recovery."""
+        url, received = self._start_ntfy_server()
+        env = {**self.env, 'BOARD_DRAIN_NOTIFY_URL': url}
+        loop = self.hook.loop_state()
+
+        # Dead 9 minutes -> no push yet.
+        self.write_state(beat_hours_ago=0, watch_pid=dead_pid(), now=NOW)
+        self.hook.answer({'hook_event_name': 'UserPromptSubmit', 'session_id': 'sid-1'},
+                         env, self.home, NOW + 540)
+        self.assertEqual(received, [], 'must not push under 10 minutes')
+        # Dead exactly 10 minutes -> still not over 10 minutes.
+        self.hook.answer({'hook_event_name': 'UserPromptSubmit', 'session_id': 'sid-1'},
+                         env, self.home, NOW + 600)
+        self.assertEqual(received, [], 'must not push at exactly 10 minutes')
+
+        # Dead 11 minutes -> pushes ONCE and records in loop-state.
+        self.hook.answer({'hook_event_name': 'UserPromptSubmit', 'session_id': 'sid-1'},
+                         env, self.home, NOW + 660)
+        self.assertEqual(len(received), 1)
+        self.assertIn('Multi Bot Bugs', received[0]['body'])
+        self.assertIn(iso(NOW), received[0]['body'])
+        notice = loop.stored('Multi Bot Bugs').get('dead_notice')
+        self.assertEqual(notice, {'at': iso(NOW + 660), 'since': iso(NOW), 'via': 'ntfy'})
+
+        # Next prompt and Stop during same dead spell -> NO second push.
+        self.hook.answer({'hook_event_name': 'UserPromptSubmit', 'session_id': 'sid-1'},
+                         env, self.home, NOW + 900)
+        self.hook.answer({'hook_event_name': 'Stop', 'session_id': 'sid-1'},
+                         env, self.home, NOW + 960)
+        self.assertEqual(len(received), 1, 'at most one push per dead spell')
+
+        # Recover, then die again in a new spell -> pushes once for the new spell.
+        loop.record_watch('Multi Bot Bugs', os.getpid(), now=NOW + 1000, every=180)
+        self.assertNotIn('dead_notice', loop.stored('Multi Bot Bugs'))
+        loop.record_watch('Multi Bot Bugs', dead_pid(), now=NOW + 1200, every=180)
+        self.hook.answer({'hook_event_name': 'Stop', 'session_id': 'sid-2'},
+                         env, self.home, NOW + 1900)
+        self.assertEqual(len(received), 2, 'new dead spell after recovery gets one new push')
+        self.assertIn(iso(NOW + 1200), received[1]['body'])
+
+    def test_ntfy_topic_discovered_from_existing_notify_hook_without_leaking_secret(self):
+        hooks_dir = self.home / '.claude/hooks'
+        hooks_dir.mkdir(parents=True)
+        secret_topic = 'secret-topic-xyz123456'
+        (hooks_dir / 'notify-on-stop.sh').write_text(
+            f'#!/bin/bash\nexport NTFY_TOPIC="${{NTFY_TOPIC:-{secret_topic}}}"\n'
+        )
+        url = self.hook.ntfy_url(self.home, {'HOME': str(self.home)})
+        self.assertEqual(url, f'https://ntfy.sh/{secret_topic}')
+        # Verify dead_notice and hook output never leak the topic.
+        local_url, received = self._start_ntfy_server()
+        self.write_state(beat_hours_ago=1, watch_pid=dead_pid(), now=NOW)
+        with patch.object(self.hook, 'ntfy_url', return_value=local_url):
+            out = self.hook.answer({'hook_event_name': 'UserPromptSubmit', 'session_id': 'sid-1'},
+                                   self.env, self.home, NOW)
+        self.assertNotIn(secret_topic, json.dumps(out))
+        self.assertNotIn(secret_topic, (self.state / 'multi-bot-bugs.json').read_text())
+        self.assertEqual(len(received), 1)
+
+    def test_session_say_fallback_when_ntfy_unconfigured(self):
+        bin_dir = self.home / '.local/bin'
+        bin_dir.mkdir(parents=True)
+        log = self.home / 'session-say.log'
+        script = bin_dir / 'session-say'
+        script.write_text(
+            f'#!{sys.executable}\nimport pathlib, sys\n'
+            f'pathlib.Path({str(log)!r}).write_text(" ".join(sys.argv[1:]))\n'
+        )
+        script.chmod(0o755)
+        self.write_state(beat_hours_ago=1, watch_pid=dead_pid(), now=NOW)
+        env = {**self.env, 'NTFY_TOPIC': '', 'NTFY_URL': '', 'BOARD_DRAIN_NOTIFY_URL': ''}
+        self.hook.answer({'hook_event_name': 'Stop', 'session_id': 'sid-1'}, env, self.home, NOW)
+        self.assertTrue(log.exists(), 'expected session-say fallback')
+        logged = log.read_text()
+        self.assertIn('poteto', logged)
+        self.assertIn('Multi Bot Bugs', logged)
+        self.assertEqual(self.hook.loop_state().stored('Multi Bot Bugs')['dead_notice']['via'],
+                         'session-mail')
+
+    def test_failed_push_delivery_fails_open_and_does_not_mark_sent(self):
+        url, received = self._start_ntfy_server(status=500)
+        self.write_state(beat_hours_ago=1, watch_pid=dead_pid(), now=NOW)
+        env = {**self.env, 'BOARD_DRAIN_NOTIFY_URL': url}
+        blocked = self.hook.answer({'hook_event_name': 'Stop', 'session_id': 'sid-1'},
+                                   env, self.home, NOW)
+        self.assertEqual(len(received), 1, 'must attempt delivery before failing open')
+        self.assertEqual(blocked.get('decision'), 'block')
+        self.assertNotIn('dead_notice', self.hook.loop_state().stored('Multi Bot Bugs'))
+
 
 if __name__ == '__main__':
     unittest.main()

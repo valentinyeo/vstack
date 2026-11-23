@@ -1412,6 +1412,46 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(missing.returncode, 2, missing.stderr)
         self.assertEqual(missing.stdout.strip(), 'not armed')
 
+    def test_dead_notice_records_once_per_dead_spell_and_clears_on_recovery(self):
+        """VSTA-151 round 2: loop-state tracks dead_since, dead_notice, notice and beat CLI."""
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory))
+        command = [sys.executable, str(SKILL / 'loop-state')]
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW, board=13556, label='HT Test')
+        loop.record_watch('HT Test', os.getpid(), now=NOW, every=180)
+        self.assertEqual(loop.dead_since('HT Test', now=NOW), (None, ''))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW), ('none', 'no notice'))
+
+        # `loop-state beat` refreshes watch_beat in the same record without a second mechanism.
+        beat_run = subprocess.run(command + ['beat', '--name', 'HT Test'],
+                                  capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(beat_run.returncode, 0, beat_run.stderr)
+        self.assertIn('beat ', beat_run.stdout)
+
+        # Watcher dies at NOW; 11 minutes later it is dead and notice is pending.
+        loop.record_watch('HT Test', dead_pid(), now=NOW, every=180)
+        self.assertEqual(loop.dead_since('HT Test', now=NOW + 660), (NOW, iso(NOW)))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW + 660), ('pending', 'notice not sent'))
+        pending = subprocess.run(command + ['notice', '--name', 'HT Test'],
+                                 capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(pending.returncode, 1, pending.stderr)
+        self.assertEqual(pending.stdout.strip(), 'notice not sent')
+
+        # Recording the notice marks this dead spell sent.
+        loop.record_dead_notice('HT Test', iso(NOW), 'ntfy', now=NOW + 660)
+        self.assertTrue(loop.notice_sent_for(loop.stored('HT Test'), iso(NOW)))
+        self.assertFalse(loop.notice_sent_for(loop.stored('HT Test'), iso(NOW + 120)))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW + 700),
+                         ('sent', f'notice sent {iso(NOW + 660)} (ntfy)'))
+        sent = subprocess.run(command + ['notice', '--name', 'HT Test'],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertEqual(sent.stdout.strip(), f'notice sent {iso(NOW + 660)} (ntfy)')
+
+        # Starting a fresh watcher clears dead_notice for the next dead spell.
+        loop.record_watch('HT Test', os.getpid(), now=NOW + 800, every=180)
+        self.assertNotIn('dead_notice', loop.stored('HT Test'))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW + 800), ('none', 'no notice'))
+
 
 class WatchTest(unittest.TestCase):
     """The watcher blocks on the chat's own view and exits the moment it changes."""
@@ -1593,6 +1633,75 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         state = json.loads((self.directory / 'state/watch-test.json').read_text())
         self.assertEqual(state['watch_pid'], os.getpid())
+
+    def test_watch_survives_view_changes_and_heartbeats_by_default(self):
+        """VSTA-151 round 2: watch keeps polling after changes and heartbeats instead of exiting."""
+        self.rows([vsta('VSTA-1', section='Doing', age=300)])
+        clock = Clock()
+        seen_pids = []
+
+        class StopTest(BaseException):
+            pass
+
+        def on_sleep(tick):
+            state = json.loads((self.directory / 'state/watch-test.json').read_text())
+            seen_pids.append((tick, state.get('watch_pid'), state.get('watch_beat')))
+            if tick == 1:
+                self.rows([vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-80')])
+            elif tick == 2:
+                self.rows([vsta('VSTA-1', section='Done'), vsta('VSTA-80')])
+            elif tick == 5:
+                raise StopTest()
+
+        clock.on_sleep = on_sleep
+        argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
+                '--fixture', str(self.fixture), '--no-sync', '--every', '180', '--heartbeat', '360']
+        out = io.StringIO()
+        with patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(StopTest):
+                watch.main(argv, clock=clock.time, sleep=clock.sleep)
+        output = out.getvalue()
+        self.assertIn('changed: VSTA-80 new in Todo', output)
+        self.assertIn('changed: VSTA-1 Doing -> Done', output)
+        self.assertIn('heartbeat: no change in 6m', output)
+        self.assertEqual(len(seen_pids), 5)
+        self.assertTrue(all(pid == os.getpid() for _, pid, _ in seen_pids), seen_pids)
+
+    def test_killed_real_watcher_subprocess_survives_change_then_reads_dead(self):
+        """VSTA-151 round 2: a real watch process survives a view change and only dies when killed."""
+        import time as real_time
+
+        state_dir = self.directory / 'state'
+        self.rows([vsta('VSTA-1', section='Doing', age=300)])
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(state_dir))
+        proc = subprocess.Popen(
+            [sys.executable, str(SKILL / 'watch'), '--board', '13556',
+             '--label', 'Board Drain Loop', '--name', 'Watch Test',
+             '--fixture', str(self.fixture), '--no-sync', '--every', '1', '--heartbeat', '60'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        try:
+            state_file = state_dir / 'watch-test.json'
+            deadline = real_time.monotonic() + 10
+            while real_time.monotonic() < deadline and not state_file.exists():
+                real_time.sleep(0.1)
+            self.assertTrue(state_file.exists(), 'watcher did not record state')
+            # Trigger a view change and confirm the watcher reports it AND stays alive.
+            self.rows([vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-80')])
+            line = proc.stdout.readline()
+            self.assertIn('changed: VSTA-80 new in Todo', line)
+            real_time.sleep(0.3)
+            self.assertIsNone(proc.poll(), 'watcher exited on view change instead of self-restarting')
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state['watch_pid'], proc.pid)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
+        self.assertEqual(loop.watch_health('Watch Test')[0], 'dead')
+        self.assertIn('watcher dead since ', loop.watch_health('Watch Test')[1])
 
     def _mark_waiting(self, rows, comments):
         rows[0]['comments'] = comments
