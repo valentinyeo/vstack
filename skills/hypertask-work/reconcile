@@ -849,6 +849,18 @@ def saved_ticket_at(saved, key):
     return 0.0
 
 
+def alias_changed(saved, keys, board):
+    """Cards whose old keys differ from the ones their saved facts were read with.
+
+    Facts read before a card had an alias cannot contain the PR that alias finds, so
+    that card is re-read on the next run instead of keeping a column it earned under
+    another key.
+    """
+    known = saved.get('tickets') or {}
+    return {key for key in keys if key in known and
+            sorted(aliases_of(key, board)) != sorted(known[key].get('aliases') or ())}
+
+
 def rolling_refresh(saved, keys, changed, now):
     """The tickets this run reads GitHub for, when saved facts already exist.
 
@@ -1020,7 +1032,8 @@ def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved=None
         if plist is None:
             continue
         facts_at = now if key in refreshed or not kept else saved_ticket_at(kept, key)
-        entry = {'at': facts_at, 'updated_at': task.get('updatedAt'), 'pulls': plist, 'facts': {}}
+        entry = {'at': facts_at, 'updated_at': task.get('updatedAt'), 'pulls': plist, 'facts': {},
+                 'aliases': list(aliases_of(key, board))}
         if not product_board(board):
             for pull in plist:
                 repo = pull['repository']['nameWithOwner']
@@ -1068,49 +1081,70 @@ def search_data(queries):
 
 
 def search_pages(pairs, size=SEARCH_BATCH):
-    """One page per (key, query) pair, a batch of them per GitHub call."""
+    """One page per (id, query) pair, a batch of them per GitHub call."""
     pages = {}
     for offset in range(0, len(pairs), size):
         batch = pairs[offset:offset + size]
         data = search_data({f'q{n}': query for n, (_, query) in enumerate(batch)})
-        for n, (key, _) in enumerate(batch):
-            pages[key] = data.get(f'q{n}')
+        for n, (ident, _) in enumerate(batch):
+            pages[ident] = data.get(f'q{n}')
     return pages
 
 
-def text_pulls(keys, board=DEFAULT):
+def ticket_query(key, board=DEFAULT):
+    """The one search query a card's PRs answer to: its key, and the keys it moved from.
+
+    A move keeps the task's internal id and rewrites its key, and the PRs already open
+    against the card keep the key they were written with. The old key joins the same
+    query, so an alias costs a term in a call the run already pays for, not a call.
+    """
+    terms = [f'"{key}"', f'"project-{board.id}/{ticket_index(key, board)}"']
+    terms += [f'"{old}"' for old in aliases_of(key, board)]
+    return f'is:pr {search_scope(board)} ' + ' OR '.join(terms)
+
+
+def text_pulls(keys, board=DEFAULT, seen=None):
     """Every PR whose title or body names its ticket, one aliased search per ticket."""
-    pairs = [(key, f'is:pr {search_scope(board)} "{key}" OR '
-                   f'"project-{board.id}/{ticket_index(key, board)}"')
-             for key in keys]
+    pairs = [(key, ticket_query(key, board)) for key in keys]
     with phase('search'):
         pages = search_pages(pairs)
-    found = {}
+    found = {key: [] for key in keys}
     for key, page in pages.items():
         if page['pageInfo']['hasNextPage']:
             raise ValueError(f'{key}: GitHub search truncated')
-        found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board)
-                      and shipped(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
+        for pull in page['nodes']:
+            if seen is not None and pull and pull.get('url'):
+                seen.append(pull)
+            if (pull and picks_up(pull, key, board)
+                    and all(p['url'] != pull['url'] for p in found[key])):
+                found[key].append(pull)
     return found
 
 
-def branch_pulls(keys, board=DEFAULT):
+def branch_pulls(keys, board=DEFAULT, seen=None):
     """PRs whose head branch starts with a ticket key, one aliased search per key.
 
     GitHub search does not index branch substrings and head: matches only a branch's
     start. This replaces the fleet-wide merged sweep, which read thousands of other
-    tickets' PRs to match a handful, and finds a merge from any date.
+    tickets' PRs to match a handful, and finds a merge from any date. A card that
+    moved also looks for branches written with its old key.
     """
     if not keys:
         return []
-    pairs = [(key, f'is:pr {search_scope(board)} head:{key}') for key in keys]
+    pairs = [((key, term), f'is:pr {search_scope(board)} head:{term}')
+             for key in keys for term in (key,) + aliases_of(key, board)]
     pages = search_pages(pairs, BRANCH_BATCH)
     pulls = []
-    for key, page in pages.items():
+    for (key, term), page in pages.items():
         if page['pageInfo']['hasNextPage']:
             raise ValueError(f'{key}: GitHub branch search truncated')
-        pulls += [p for p in page['nodes'] if p and p.get('url') and p['state'] != 'CLOSED'
-                  and allowed_repository(p, board) and shipped(p, board)]
+        for pull in page['nodes']:
+            if seen is not None and pull and pull.get('url'):
+                seen.append(pull)
+            if (pull and pull.get('url') and pull['state'] != 'CLOSED'
+                    and allowed_repository(pull, board) and shipped(pull, board)
+                    and all(p['url'] != pull['url'] for p in pulls)):
+                pulls.append(pull)
     return pulls
 
 
@@ -1131,17 +1165,19 @@ def ticket_pulls(keys, board=DEFAULT, sweep=None):
     if not keys:
         return {}
     sweep = len(keys) >= SWEEP_MIN_TICKETS if sweep is None else sweep
-    found = text_pulls(keys, board)
+    seen = []
+    found = text_pulls(keys, board, seen)
     silent = [key for key in keys if not found[key]]
     with phase('branches'):
-        scanned = (open_pulls(board) if sweep else []) + branch_pulls(silent, board)
+        scanned = (open_pulls(board) if sweep else []) + branch_pulls(silent, board, seen)
     by_key = {key.upper(): key for key in keys}
+    by_key.update({old.upper(): key for key in keys for old in aliases_of(key, board)})
     for pull in scanned:
-        for match in re.finditer(r'(?<![a-z0-9])' + re.escape(board.prefix) + r'-[1-9]\d*(?![a-z0-9])',
-                                 pull.get('headRefName') or '', re.I):
+        for match in BRANCH_TOKEN.finditer(pull.get('headRefName') or ''):
             key = by_key.get(match[0].upper())
             if key and all(p['url'] != pull['url'] for p in found[key]):
                 found[key].append(pull)
+    attribute(found, seen + scanned, keys, board)
     return undone(found, scanned)
 
 
@@ -1149,6 +1185,10 @@ def discover_quiet(keys, board=DEFAULT, saved=None, probe_items=(), refresh=()):
     """Reuse saved PR links; read GitHub only for tickets this run refreshes."""
     saved = saved or {}
     found = {key: list((saved.get('tickets') or {}).get(key, {}).get('pulls', [])) for key in keys}
+    probed = [search_item_to_pull(item, saved_pull_index(saved)) for item in probe_items]
+    # A PR that changed since the last sync may carry the old key of a card that moved
+    # to this board; resolving it here costs no search, only one read per unseen key.
+    attribute(found, probed, keys, board)
     merge_probe_pulls(found, probe_items, keys, board, saved)
     missing = [key for key in keys if key not in (saved.get('tickets') or {})]
     read = [key for key in refresh if key not in missing]
@@ -1166,7 +1206,6 @@ def discover_quiet(keys, board=DEFAULT, saved=None, probe_items=(), refresh=()):
     # keep counting a merge another merge took back.
     saved_pulls = [pull for key in keys for pull in
                    ((saved.get('tickets') or {}).get(key, {}).get('pulls') or [])]
-    probed = [search_item_to_pull(item, saved_pull_index(saved)) for item in probe_items]
     return undone(found, [p for p in saved_pulls + probed + searched if p.get('url')])
 
 
@@ -1215,20 +1254,187 @@ def ticket_index(key, board=DEFAULT):
     return match[1]
 
 
+ALIAS_CACHE = {}
+# One noisy sweep must not turn into a thousand Hypertask reads on the run that first
+# meets it. Anything over the cap is learned by a later run; nothing is ever re-asked.
+ALIAS_RESOLVE_MAX = 10
+SEED_DIR = Path(__file__).resolve().parent / 'aliases'
+KEY_TOKEN = re.compile(r'(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]*-[1-9]\d*)(?![A-Za-z0-9_-])', re.I)
+# A branch runs the key into the rest of its name, so only letters and digits end it.
+BRANCH_TOKEN = re.compile(r'(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*-[1-9]\d*)(?![A-Za-z0-9])', re.I)
+# The lines a PR writes a ticket key on, never the prose that mentions one.
+STRUCT_LINE = re.compile(r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:Ticket:|(?:close|closes|closed|fix|'
+                         r'fixes|fixed|resolve|resolves|resolved)[ \t])', re.I)
+
+
+def named_keys(pull):
+    """The keys a pull structurally names: title, branch, ticket line, closing line."""
+    keys = KEY_TOKEN.findall(pull.get('title') or '')
+    keys += KEY_TOKEN.findall(pull.get('headRefName') or '')
+    for line in (pull.get('body') or '').splitlines():
+        if STRUCT_LINE.match(line):
+            keys += KEY_TOKEN.findall(line)
+    return keys
+
+
+def seed_aliases(board):
+    """The committed old-key map for one board: keys only, no ticket content."""
+    try:
+        data = json.loads((SEED_DIR / f'{board.id}.json').read_text())
+    except (OSError, TypeError, ValueError):
+        return {}
+    seeded = {}
+    for old, row in (data or {}).items():
+        new = row.get('newKey') if isinstance(row, dict) else row
+        if isinstance(new, str) and new:
+            seeded[str(old).upper()] = new.upper()
+    return seeded
+
+
+def learned_aliases(board):
+    """Old keys this host already resolved: a board key, or None for another board."""
+    value = cache_read(f'aliases-{board.id}.json')
+    if not isinstance(value, dict):
+        return {}
+    return {key: (new if isinstance(new, str) else None) for key, new in value.items()
+            if isinstance(key, str)}
+
+
+def alias_map(board):
+    """(board key -> old keys, every old key already resolved) for one board, once a run."""
+    if board.id in ALIAS_CACHE:
+        return ALIAS_CACHE[board.id]
+    learned = learned_aliases(board)
+    seeded = seed_aliases(board)
+    by_new = {}
+    for old, new in {**seeded, **{k: v for k, v in learned.items() if v}}.items():
+        if old == new:
+            continue
+        try:
+            ticket_index(new, board)
+        except ValueError:
+            continue
+        by_new.setdefault(new, []).append(old)
+    resolved = set(learned) | set(seeded)
+    ALIAS_CACHE[board.id] = ({key: list(olds) for key, olds in by_new.items()}, resolved)
+    return ALIAS_CACHE[board.id]
+
+
+def aliases_of(key, board=DEFAULT):
+    """The keys one card answered to before it moved."""
+    return tuple(alias_map(board)[0].get(key, ()))
+
+
+def reset_aliases():
+    """Forget what this process learned; the disk cache still holds it."""
+    ALIAS_CACHE.clear()
+
+
+def learn_aliases(pulls, keys, board=DEFAULT):
+    """Record the old key each unseen pull names, once, as an alias of its own card.
+
+    A move keeps the task's internal id and rewrites its key, so PRs already open
+    against the card still name the key it left. Hypertask still resolves that key
+    without a project: one read per unseen key turns it into an alias for good. A key
+    that resolves to another board is remembered as not this board's, so no run asks
+    about it again. Keys this board already knows cost nothing.
+    """
+    by_new, resolved = alias_map(board)
+    board_keys = {key.upper() for key in keys}
+    own_prefix = re.compile(re.escape(board.prefix) + r'-[1-9]\d*$', re.I)
+    unknown = []
+    for pull in pulls:
+        for key in named_keys(pull or {}):
+            key = key.upper()
+            # A board's prefix belongs to that one project, so a key carrying it is
+            # this board's own ticket (or nobody's): it can never be a moved-in key.
+            if key in resolved or key in board_keys or own_prefix.match(key):
+                continue
+            unknown.append(key)
+    unknown = list(dict.fromkeys(unknown))
+    if not unknown:
+        return set()
+    learned = learned_aliases(board)
+    before = dict(learned)
+    fresh = set()
+    for key in unknown[:ALIAS_RESOLVE_MAX]:
+        try:
+            rows = api('task', 'get', key).get('tasks') or []
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError,
+                subprocess.SubprocessError):
+            continue
+        new = None
+        if rows and str(rows[0].get('projectId')) == str(board.id):
+            new = str(rows[0].get('ticketNumber') or '').upper() or None
+            try:
+                if new:
+                    ticket_index(new, board)
+            except ValueError:
+                new = None
+        learned[key] = new
+        resolved.add(key)
+        if new and new != key:
+            by_new.setdefault(new, []).append(key)
+            fresh.add(new)
+    if len(unknown) > ALIAS_RESOLVE_MAX:
+        print(f'reconcile: board {board.id} learned {ALIAS_RESOLVE_MAX} old keys; '
+              f'{len(unknown) - ALIAS_RESOLVE_MAX} wait for a later run',
+              file=sys.stderr, flush=True)
+    if learned != before:
+        cache_write(f'aliases-{board.id}.json', learned)
+        print(f'reconcile: board {board.id} learned {len(learned) - len(before)} old key(s), '
+              f'{len(fresh)} of them on this board', file=sys.stderr, flush=True)
+    if fresh:
+        # The map this run started with is stale now: rebuild it from what was learned.
+        ALIAS_CACHE.pop(board.id, None)
+        alias_map(board)
+    return fresh
+
+
+def attribute(found, pulls, keys, board=DEFAULT):
+    """Give a card the pulls that name an old key this run just learned."""
+    if not learn_aliases(pulls, keys, board):
+        return
+    for pull in pulls:
+        if not pull or not pull.get('url'):
+            continue
+        for key in found:
+            if (all(p['url'] != pull['url'] for p in found[key])
+                    and picks_up(pull, key, board)):
+                found[key].append(pull)
+
+
+def picks_up(pull, key, board=DEFAULT):
+    """Is this pull evidence for this card: it names it, and it may count as a ship."""
+    return (bool(pull.get('url')) and pull.get('state') != 'CLOSED'
+            and allowed_repository(pull, board) and shipped(pull, board)
+            and names_ticket(pull, key, board))
+
+
 def names_ticket(pull, key, board=DEFAULT):
     try:
         index = ticket_index(key, board)
     except ValueError:
         return False
+    if names_key(pull, key, str(board.id), index):
+        return True
+    # A moved card keeps the key its PRs, branches and ticket lines were written with.
+    return any(names_key(pull, old) for old in aliases_of(key, board))
+
+
+def names_key(pull, key, board_id=None, index=None):
+    """Does the pull carry this key in a title, branch, ticket line or closing line?"""
     exact = r'(?<![\w-])' + re.escape(key) + r'(?![\w-])'
     branch = r'(?<![a-z0-9])' + re.escape(key) + r'(?![a-z0-9])'
     body = pull.get('body') or ''
-    url = r'https://app\.hypertask\.ai/detail/project-' + str(board.id) + '/' + index + r'(?=$|[\s?#)\]>,.])'
-    field = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Ticket:(?:\*\*)?[ \t]*\[?(?:' +
-             exact + '|' + url + ')')
+    named = exact
+    if index is not None:
+        url = (r'https://app\.hypertask\.ai/detail/project-' + re.escape(board_id) + '/' +
+               re.escape(index) + r'(?=$|[\s?#)\]>,.])')
+        named = exact + '|' + url
+    field = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Ticket:(?:\*\*)?[ \t]*\[?(?:' + named + ')')
     close = r'close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved'
-    close_line = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:' + close + r')(?:\*\*)?[ \t].*?(?:' +
-                exact + '|' + url + ')')
+    close_line = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:' + close + r')(?:\*\*)?[ \t].*?(?:' + named + ')')
     return bool(re.search(exact, pull.get('title') or '', re.I) or
                 re.search(branch, pull.get('headRefName') or '', re.I) or
                 re.search(field, body, re.I | re.M) or
@@ -2072,7 +2278,8 @@ def board_run():
             else:
                 board_changed = board_task_changes(saved, candidates, keys)
                 probed = tickets_from_probe(items, keys, board, saved)
-                refreshed = rolling_refresh(saved, keys, board_changed | probed, time.time())
+                refreshed = rolling_refresh(saved, keys, board_changed | probed |
+                                            alias_changed(saved, keys, board), time.time())
                 pulls = discover_quiet(keys, saved=saved, probe_items=items,
                                        refresh=refreshed, **options)
                 reading = {key: pulls[key] for key in refreshed if pulls.get(key)}
