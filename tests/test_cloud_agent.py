@@ -367,14 +367,15 @@ class PlanGateTests(unittest.TestCase):
                              'printf "%s\\n" "' + reason + '"\nexit ' + str(code) + '\n')
         self.gate.chmod(0o755)
 
-    def invoke(self, vendor):
+    def invoke(self, vendor, repo=None):
         out, err = io.StringIO(), io.StringIO()
         with patch.object(self.m, 'read_brief', return_value='Do the task.'), \
                 patch.object(self.m, 'preflight', return_value=None) as preflight, \
                 patch.object(self.m, 'launch_codex', return_value=self.m.outcome('codex', 'started')) as codex, \
                 patch.object(self.m, 'launch_claude', return_value=self.m.outcome('claude', 'started')) as claude, \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = self.m.main([vendor, '--repo', str(self.home), '--brief', 'brief.txt', '--no-wait'])
+            code = self.m.main([vendor, '--repo', str(repo or self.home),
+                                '--brief', 'brief.txt', '--no-wait'])
         row = json.loads(out.getvalue())
         return code, row, err.getvalue(), preflight, (codex, claude)
 
@@ -405,6 +406,21 @@ class PlanGateTests(unittest.TestCase):
                 preflight.assert_called_once()
                 self.assertEqual([launch.call_count for launch in launches],
                                  [int(i == index) for i in range(len(self.ACTIVE_VENDORS))])
+
+    def test_missing_repo_reports_the_repo_not_the_lane_check(self):
+        self.gate_script(0)
+        for vendor in self.ACTIVE_VENDORS:
+            with self.subTest(vendor=vendor):
+                code, row, err, preflight, launches = self.invoke(
+                    vendor, repo=self.home / 'gone')
+                self.assertEqual(code, 1)
+                self.assertEqual(row['status'], 'failed')
+                self.assertIn('is not a directory', row['error'])
+                self.assertNotIn('plan-pick', row['error'])
+                self.assertFalse((self.home / 'args').exists())
+                preflight.assert_not_called()
+                for launch in launches:
+                    launch.assert_not_called()
 
     def test_missing_plan_pick_warns_and_fails_open(self):
         code, row, err, preflight, launches = self.invoke('codex')

@@ -564,6 +564,9 @@ def main(argv=None):
         return emit(failed(args.vendor, f'--brief {args.brief} is empty'))
     brief = inline_worker_brief(brief)
 
+    if not Path(args.repo).expanduser().is_dir():
+        return emit(failed(args.vendor, f'--repo {args.repo} is not a directory'))
+
     plan_pick = HOME / '.local/bin/plan-pick'
     if not plan_pick.is_file():
         print('cloud-agent: warning: ~/.local/bin/plan-pick is missing; launching without a lane check',
