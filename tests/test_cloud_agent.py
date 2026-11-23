@@ -182,6 +182,22 @@ class ModuleTests(unittest.TestCase):
             self.m.drop_codex_log(repo)
             self.assertTrue((repo / 'error.log').exists(), 'a tracked error.log is never deleted')
 
+    def test_a_kickoff_line_becomes_the_worker_md_text_a_cloud_agent_could_not_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'worker.md').write_text('You are working for the operator.\n')
+            brief = f'Read {directory}/worker.md before anything else.\nDo the thing.\n'
+            sent = self.m.inline_worker_brief(brief)
+            self.assertNotIn('before anything else', sent)
+            self.assertIn('pstack worker.md (pasted; you cannot open the file):', sent)
+            self.assertIn('You are working for the operator.', sent)
+            self.assertIn('Do the thing.', sent)
+
+    def test_a_brief_without_a_kickoff_line_or_a_missing_file_is_sent_unchanged(self):
+        plain = 'Do the thing.\n'
+        self.assertEqual(self.m.inline_worker_brief(plain), plain)
+        missing = 'Read /nowhere/at/all/worker.md before anything else.\nDo the thing.\n'
+        self.assertEqual(self.m.inline_worker_brief(missing), missing)
+
     def test_pr_matching_also_accepts_the_checkout_branch_name(self):
         launch = self.m.moment('2026-11-20T13:00:00Z').timestamp()
         rows = [pull(1, 'claude/other', '2026-11-20T13:02:00Z'),

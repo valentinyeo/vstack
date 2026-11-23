@@ -26,6 +26,10 @@ local commit is pushed, the current branch exists on origin (pushed when missing
 file is modified. A cloud agent clones GitHub, so local work it cannot see would be silently
 missing.
 
+pstack worker.md's kickoff line is `Read <path>/worker.md before anything else.`. A cloud agent
+cannot open files on this server, so when the brief carries that line and the file is here, the
+line becomes the file's text, headed. Any other brief goes unchanged.
+
   cursor  Refused: Cursor is off since 2026-11-23 (plan downgraded); use codex.
 
   codex   `codex cloud exec --env ENV "<brief>"`. Experiment 2026-11-20: --env accepts the
@@ -75,6 +79,8 @@ CODEX_TASK_URL = re.compile(r'https://chatgpt\.com/codex/tasks/(task_e_[0-9a-z]+
 PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
 GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
 UPSTREAM = re.compile(r'^[^/]+/(.+)$')
+
+WORKER_KICKOFF = re.compile(r'(?m)^Read (\S+)/worker\.md before anything else\.$')
 
 
 def environ():
@@ -138,6 +144,23 @@ def read_brief(path):
         return Path(path).expanduser().read_text()
     except OSError:
         return None
+
+
+def inline_worker_brief(brief):
+    """A kickoff line pointing at this machine becomes the worker.md text it names.
+
+    pstack worker.md's own first rule is `Read <path>/worker.md before anything else.`, and the file
+    lives on this VPS. A cloud agent clones GitHub and cannot open it, so that line would point at
+    nothing. The text goes in instead, headed, and any other brief is sent unchanged.
+    """
+    for match in WORKER_KICKOFF.finditer(brief or ''):
+        try:
+            text = (Path(match.group(1)) / 'worker.md').expanduser().read_text()
+        except OSError:
+            continue
+        pasted = 'pstack worker.md (pasted; you cannot open the file):\n\n' + text.strip()
+        return brief[:match.start()] + pasted + brief[match.end():]
+    return brief
 
 
 def limit_hit(text):
@@ -540,6 +563,8 @@ def main(argv=None):
         return emit(failed(args.vendor, f'cannot read --brief {args.brief}'))
     if not brief.strip():
         return emit(failed(args.vendor, f'--brief {args.brief} is empty'))
+
+    brief = inline_worker_brief(brief)
 
     why = preflight(args.repo)
     if why:
