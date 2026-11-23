@@ -817,6 +817,38 @@ class CleanupLifecycleTests(unittest.TestCase):
         self.tick([self.row])
         self.assertEqual(self.tick()[0][0]['state'], 'CLEANUP')
 
+    def test_two_local_clones_keep_two_cleanup_records(self):
+        other = self.root / 'projects/r'
+        other.parent.mkdir()
+        subprocess.run(['git', 'clone', '-q', str(self.repo), str(other)], check=True)
+        subprocess.run(['git', '-C', str(other), 'remote', 'set-url', 'origin',
+                        'https://github.com/o/r.git'], check=True)
+        subprocess.run(['git', '-C', str(other), 'branch', 'my-branch', 'HEAD'], check=True)
+        self.tick([self.row])
+        self.assertEqual(len(self.tick()[0]), 2)
+        self.git('branch', '-D', 'my-branch')
+        rows, _ = self.tick()
+        self.assertEqual(len(rows), 1)
+        self.assertIn(str(other), rows[0]['next_action'])
+        subprocess.run(['git', '-C', str(other), 'branch', '-D', 'my-branch'],
+                       check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(other), 'branch', '-dr', 'origin/my-branch'],
+                       check=True, capture_output=True)
+        self.assertEqual(self.tick()[0], [])
+
+    def test_chat_clone_without_the_worker_branch_cannot_hide_it(self):
+        other = self.root / 'projects/r'
+        other.parent.mkdir()
+        subprocess.run(['git', 'clone', '-q', str(self.repo), str(other)], check=True)
+        subprocess.run(['git', '-C', str(other), 'remote', 'set-url', 'origin',
+                        'https://github.com/o/r.git'], check=True)
+        subprocess.run(['git', '-C', str(other), 'branch', 'my-branch', 'HEAD'], check=True)
+        self.git('branch', '-D', 'my-branch')
+        self.tick([self.row])
+        rows, _ = self.tick()
+        self.assertEqual(len(rows), 1)
+        self.assertIn(str(other), rows[0]['next_action'])
+
     def test_detached_worktree_is_not_mistaken_for_cleaned(self):
         tree = self.root / 'worker-tree'
         self.git('worktree', 'add', '-q', str(tree), 'my-branch')

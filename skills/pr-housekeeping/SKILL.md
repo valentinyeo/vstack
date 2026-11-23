@@ -40,6 +40,8 @@ A nonzero exit is the enforcement: one of your own PRs has gone quiet or needs a
 - CLEANUP: your recorded PR merged, but local copies remain. Run the printed branch-scoped repo-tidy command from outside its worktree. Never bypass a hold. Retry next tick until the refs are gone. A changed tip needs an ownership check, not deletion.
 - OK: nothing to do this tick.
 
+The record includes each matching local clone in your chat's checkout and the standard projects/shared paths. An empty chat checkout cannot hide its worker's copy.
+
 A worker merging for your chat does not end this duty. Run this queue before handing it the merge, then keep your own loop alive for held cleanup. Already merged PRs never observed by this queue need an explicit repo-tidy audit.
 
 ## Who owns a PR

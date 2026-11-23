@@ -703,11 +703,7 @@ def cleanup_rows(rows, chats, mine, owner, repo=None):
         for row in rows:
             if (row.get('owner_chat') or '').casefold() != mine.casefold():
                 continue
-            identity = f'{row["repo"]}#{row["number"]}'
-            current.add(identity)
-            if identity in saved:
-                saved[identity]['row'] = row
-                continue
+            current.add(f'{row["repo"]}#{row["number"]}')
             candidates = [chat['cwd'] for chat in chats
                           if chat['name'].casefold() == mine.casefold() and chat.get('repo') == row['repo']]
             name = row['repo'].split('/')[-1]
@@ -718,16 +714,26 @@ def cleanup_rows(rows, chats, mine, owner, repo=None):
                 result = subprocess.run(['git', '-C', candidate, 'rev-parse',
                                          '--path-format=absolute', '--git-common-dir'],
                                         capture_output=True, text=True, timeout=GIT_TIMEOUT)
-                common = Path(result.stdout.strip())
+                common = Path(result.stdout.strip()).resolve()
                 if result.returncode == 0 and common.name == '.git':
+                    local = subprocess.run(['git', '-C', str(common.parent), 'show-ref', '--verify',
+                                            '--quiet', f'refs/heads/{row["branch"]}'],
+                                           capture_output=True, text=True, timeout=GIT_TIMEOUT)
+                    if local.returncode == 1:
+                        continue
+                    if local.returncode != 0:
+                        raise GhError(f'cannot inspect cleanup branch: {local.stderr.strip()}')
                     trees = worktree_branches(str(common.parent))
+                    identity = f'{row["repo"]}#{row["number"]}:{common}'
+                    previous = saved.get(identity) or {}
+                    copies = set(previous.get('worktrees') or ())
+                    copies.update(p for p, b in trees.items() if b == row['branch'])
                     saved[identity] = {'row': row, 'checkout': str(common.parent), 'merged': False,
-                                       'worktrees': [p for p, b in trees.items() if b == row['branch']]}
-                    break
+                                       'worktrees': sorted(copies)}
         pending = []
         for identity, record in list(saved.items()):
             row = record['row']
-            if identity in current or (repo and row['repo'] != repo):
+            if f'{row["repo"]}#{row["number"]}' in current or (repo and row['repo'] != repo):
                 continue
             if not repo and row['repo'].split('/')[0] != owner:
                 continue

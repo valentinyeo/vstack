@@ -20,7 +20,7 @@
 
 ## Driving it with verify-vstack
 
-Read `.claude/skills/verify-repo-tidy/SKILL.md` and run its `run` for the deletion gates. For branch scope, run `tests/test_repo_tidy.py`'s `TestMine`. For follow-up, run `tests/test_pr_queue.py`'s `CleanupLifecycleTests`. That journey observes an open PR, simulates its merge, checks the queue's nonzero exit and cleanup command, removes only its own branch, then checks exit 0. It also tests holds, another chat, a detached worktree, a reused branch, a worker's later push and a failed GitHub read. All repos and state live in temporary directories.
+Read `.claude/skills/verify-repo-tidy/SKILL.md` and run its `run` for the deletion gates. For branch scope, run `tests/test_repo_tidy.py`'s `TestMine`. For follow-up, run `tests/test_pr_queue.py`'s `CleanupLifecycleTests`. That journey observes an open PR, simulates its merge, checks the queue's nonzero exit and cleanup command, removes only its own branch, then checks exit 0. It also tests holds, another chat, a detached worktree, a reused branch, a worker's later push, separate chat and worker clones, and a failed GitHub read. All repos and state live in temporary directories.
 
 Preconditions:
 
