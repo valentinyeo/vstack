@@ -63,7 +63,8 @@ class InstallGuard(unittest.TestCase):
         result = self.run_install(ROOT / 'install', VSTACK_INSTALL_ANYWHERE='1')
         self.assertEqual(result.returncode, 0, result.stderr)
         link = self.home / '.claude' / 'skills' / 'valentin-mode'
-        self.assertEqual(link.resolve(), (ROOT / 'skills' / 'valentin-mode').resolve())
+        self.assertEqual(link.resolve(), self.home / '.local/state/vstack/skills/valentin-mode')
+        self.assertTrue((link / 'context.py').samefile(ROOT / 'skills/valentin-mode/context.py'))
 
     def test_escape_refuses_the_real_home(self):
         """A worker ran install with VSTACK_INSTALL_ANYWHERE=1 and rewired every chat."""

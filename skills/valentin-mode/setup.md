@@ -1,11 +1,11 @@
 # Project setup
 
-Each hook lives in vstack's `hooks/` folder; `./install` links it into `~/.claude/hooks/`. Register long-chat once, globally. The long-chat and pacing hooks use `hooks/valentin_mode_loaded.py` to recognize an explicit skill load; chats that never loaded it remain untouched.
+`./install` ships `hooks/run-hook`, every hook and its helpers together into `~/.claude/hooks/`. It migrates vstack registrations in global settings and this project's settings, leaving unrelated hooks alone. Skills with hook frontmatter get an installed view whose commands use the same launcher; their scripts stay linked to this checkout. Register long-chat once, globally. The long-chat and pacing hooks use `hooks/valentin_mode_loaded.py` to recognize an explicit skill load; chats that never loaded it remain untouched.
 
-Write registered commands to fail open when their file is missing. A bare `python3` call exits 2 on a missing link, which Claude Code reads as a block. Use this shape:
+Use the launcher for every hook command. A missing or non-executable script produces one stderr warning, appends it to `~/.local/state/vstack/hook-missing.log`, and exits 0. An existing script keeps its own output and exit status, including an intentional block at 2.
 
 ```json
-{ "command": "sh -c 'f=\"$HOME/.claude/hooks/long-chat.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'" }
+{ "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/long-chat.py\"" }
 ```
 
 | Hook | Event | What it does | Where to wire it |
@@ -14,6 +14,8 @@ Write registered commands to fail open when their file is missing. A bare `pytho
 | `long-chat.py` | UserPromptSubmit, Stop, PreCompact (`auto`) | Hands a valentin-mode chat over before autocompact. Soft at 300k / hard at 400k on 1M chats (110k / 140k on 200k). Warn-only without a Multibot host. | global, once |
 
 Keep existing hook entries. Remove per-project copies of the global hook so it runs once.
+
+Run `scripts/check-hook-paths --root <projects-root>` to check your home settings and project settings without changing them. Missing files name their registration and the fix. CI runs `scripts/check-hook-paths --repo .` against shipped settings, merge snippets, skill frontmatter, examples and installer references. Fleet-report shows these failures; it never repairs another chat.
 
 Worker selection belongs to `~/.local/bin/plan-pick --run`; Claude helpers use its `--claude-helper` decision. Capacity belongs to the launcher's `vps-state --can-launch worker` check. Neither needs another shell-command parser in a chat hook.
 

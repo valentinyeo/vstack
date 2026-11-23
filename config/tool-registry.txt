@@ -57,3 +57,6 @@ skills/vstack-feedback/vstack-feedback | pstack: principle-encode-lessons-in-str
 tools/gh-wrapper/gh | pstack: principle-boundary-discipline | why: https://app.hypertask.ai/detail/project-13556/54
 tools/gh-wrapper/replay.py | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/90
 tools/gh-wrapper/wait-checks | pstack: poteto-mode | why: enforces poteto-mode autonomous-run step 2 (wait on this PR's checks outside the model, with a bounded heartbeat)
+hooks/run-hook | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/156
+scripts/check-hook-paths | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/156
+scripts/install-hook-config.py | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/156
