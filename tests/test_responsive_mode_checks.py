@@ -1,5 +1,5 @@
-"""What a chat observes with responsive-mode loaded: a tool step waits until Valentin's newest message
-has a reply, and a chat that says work started must have started it.
+"""What a chat observes with responsive-mode loaded: an unanswered message prompts a reminder without
+blocking tools, and a chat that says work started must have started it.
 
 The fixtures are hand-written JSONL that copies the shapes found in a real 2.1.329 transcript. No private
 text is copied here.
@@ -18,10 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/responsive-mode'
 CHECK = SKILL / 'reply-check.py'
-DENIED = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                "permissionDecisionReason": ("Valentin's newest message has no reply yet. Answer it "
-                                                             "directly, then continue the work. "
-                                                             "No separate acknowledgment.")}}
+REMINDER = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                  "additionalContext": ("Valentin's newest message has no reply yet. Answer it "
+                                                        "directly, then continue the work. "
+                                                        "No separate acknowledgment.")}}
 
 
 def human(text):
@@ -107,24 +107,32 @@ class ReplyCheck(unittest.TestCase):
         return subprocess.run([sys.executable, str(CHECK)], input=payload, text=True,
                               capture_output=True, check=False, env=run_env)
 
-    def assert_denied(self, result):
+    def assert_reminded(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), DENIED)
+        self.assertEqual(json.loads(result.stdout), REMINDER)
         self.assertEqual(result.stderr, '')
 
     def assert_allowed(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), '', 'a passing call prints nothing: ' + result.stdout)
 
-    def test_an_unanswered_message_holds_the_tool_step(self):
-        self.assert_denied(self.hook([human('push it once the tests pass'), tool_call()]))
+    def test_an_unanswered_message_reminds_without_blocking(self):
+        self.assert_reminded(self.hook([human('push it once the tests pass'), tool_call()]))
 
-    def test_a_message_sent_mid_turn_holds_the_tool_step(self):
+    def test_a_message_sent_mid_turn_reminds_without_blocking(self):
         entries = [human('do the ticket'), tool_call(), tool_result(), queued('is it reliable?'), tool_call()]
-        self.assert_denied(self.hook(entries))
+        self.assert_reminded(self.hook(entries))
+
+    def test_each_step_reminds_until_a_reply_exists(self):
+        entries = [human('status?'), tool_call()]
+        for _ in range(3):
+            self.assert_reminded(self.hook(entries))
+            entries.extend([tool_result(), tool_call()])
+        entries.append(say('Two of four done.'))
+        self.assert_allowed(self.hook(entries))
 
     def test_a_plain_string_message_counts(self):
-        self.assert_denied(self.hook([human_string('doyou want me to paste these promptps?'), tool_call()]))
+        self.assert_reminded(self.hook([human_string('doyou want me to paste these promptps?'), tool_call()]))
 
     def test_a_reply_before_the_tool_step_passes(self):
         entries = [human('push it'), say('Pushed. Watching CI.'), tool_call()]
@@ -153,7 +161,7 @@ class ReplyCheck(unittest.TestCase):
             with self.subTest(text=text):
                 self.assert_allowed(self.hook([human('ship it'), say('On it.'), human(text), tool_call()]))
                 self.assert_allowed(self.hook([say('On it.'), queued(text), tool_call()]))
-                self.assert_denied(self.hook([human('status?'), human(text), tool_call()]))
+                self.assert_reminded(self.hook([human('status?'), human(text), tool_call()]))
 
     def test_a_tool_result_is_not_him_talking(self):
         entries = [human('ship it'), say('On it.'), tool_call(), tool_result(), tool_call()]
@@ -166,10 +174,10 @@ class ReplyCheck(unittest.TestCase):
 
     def test_a_system_reminder_does_not_answer_him(self):
         entries = [human('ship it'), tool_call(), tool_result(), system_reminder(), tool_call()]
-        self.assert_denied(self.hook(entries))
+        self.assert_reminded(self.hook(entries))
 
     def test_a_slash_command_with_args_counts(self):
-        self.assert_denied(self.hook([slash('responsive-mode', 'no thats what the skill should ask for'),
+        self.assert_reminded(self.hook([slash('responsive-mode', 'no thats what the skill should ask for'),
                                       tool_call()]))
 
     def test_a_slash_command_without_args_does_not_count(self):
@@ -210,10 +218,10 @@ class ReplyCheck(unittest.TestCase):
         fast = {'REPLY_CHECK_RETRIES': '12', 'REPLY_CHECK_DELAY_MS': '100'}
         self.assert_allowed(self.hook(transcript=str(transcript), env=fast))
 
-    def test_still_unanswered_denies_after_retries(self):
+    def test_still_unanswered_reminds_after_retries(self):
         fast = {'REPLY_CHECK_RETRIES': '3', 'REPLY_CHECK_DELAY_MS': '10'}
         started = time.monotonic()
-        self.assert_denied(self.hook([human('no answer coming'), tool_call()], env=fast))
+        self.assert_reminded(self.hook([human('no answer coming'), tool_call()], env=fast))
         self.assertGreaterEqual(time.monotonic() - started, 0.02)
 
     def test_existing_reply_allows_without_waiting(self):

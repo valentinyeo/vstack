@@ -20,6 +20,10 @@ never from the chat's own claim.
   by an unset `$CLAUDE_PLUGIN_ROOT`, a hook named only in chat text, and a chat
   that never loaded the skill all count as no run.
 
+## Reply reminder contract
+
+`reply-check.py` returns the reminder as `hookSpecificOutput.additionalContext` on each tool call until Valentin's newest message has a reply. It never sets `permissionDecision` or denies the call. Once a reply exists, it prints nothing. `tests/test_responsive_mode_checks.py` and the hook's `--self-test` check that output. The live grader checks reply timing and hook loading, not permission denials.
+
 ## Driving conventions
 
 - Only `run` starts a chat.

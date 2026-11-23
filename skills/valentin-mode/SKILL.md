@@ -44,7 +44,7 @@ Prior art: pstack `poteto-mode` covers the work loop; only his rules and their h
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt; reviews add `--not-vendor <author vendor>`. Wire hooks per [setup.md](setup.md). The chat he talks to runs on Claude, never a code worker; it only writes briefs, reads one result line and answers him: code, tests, rebases, log reading and PR babysitting go to workers. The pstack models rule holds the lanes; every brief includes docs/worker-brief.md. Pace decides only who runs the work: a Claude subagent only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Never ask him to pay more; bring the free option.
+Start code workers and reviewers through `~/.local/bin/plan-pick --run`, brief in brief.txt; reviews add `--not-vendor <author vendor>`. Hooks per [setup.md](setup.md). His Claude chat only writes briefs, reads one result line and answers him; code, tests, rebases, log reading and PR babysitting go to workers. pstack's models rule holds; every brief starts with pstack `worker.md`'s kickoff line and includes house-rules docs/worker-brief.md. Use Claude subagents only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Bring the free option; never ask him to pay.
 
 ### Board work
 
@@ -52,7 +52,7 @@ Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`). It o
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself at session start, on restart or handover, and on skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, restart, handover and skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
 
 ### PR owner
 
@@ -62,15 +62,17 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 
 - **Gaps in Hypertask, Multi Bot, vstack:** `hypertask feedback`, `multibot-feedback`, or `vstack-feedback` now; send him the link.
 - **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs. Add a row to its rule table.
-- **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
+- **Checks:** follow the pstack hillclimb playbook.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
-- **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. House change: one free GitHub runner, or a cloud agent when a runner cannot. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls).
+- **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. House change: one free GitHub runner, or a cloud agent when a runner cannot. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls). Every verdict and done note names the verify skill used, as a slash command (`/verify-<app>`).
+- **Shipping is pstack's:** `poteto-mode/playbooks/shipping.md` and `poteto-mode/playbooks/babysit.md` as written, every step.
 - **Self-audit on load:** run `~/.claude/skills/pstack-diff/pstack-diff .`; clear every EXTRA in one PR until it exits 0. A new CI gate needs a house-file line naming its pstack sentence.
 - **Server load:** before a worker, build or long test, run `~/.local/bin/vps-state --can-launch worker`; on HOLD start nothing and say so. Time-limit long commands.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan for secrets and client data, then make it public. A repo that must stay private: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
 - **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
+- **Own chat only:** run vstack tools only on your own chat; `tests/test_own_chat_only.py` enforces it, allowlist `config/cross-chat-allowlist.txt`.
 
 ## Designing
 

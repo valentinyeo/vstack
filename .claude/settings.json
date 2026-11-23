@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$HOME/.claude/hooks/skill-update.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"'"
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/skill-update.py\""
           }
         ]
       }
@@ -16,11 +16,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR\"/hooks/ticket-way.py"
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/heavy-local-guard.py\"",
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR\"/hooks/pstack-new-gates.py"
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$CLAUDE_PROJECT_DIR\"/hooks/ticket-way.py"
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$CLAUDE_PROJECT_DIR\"/hooks/pstack-new-gates.py"
           }
         ]
       }

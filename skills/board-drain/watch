@@ -179,7 +179,7 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
     parser.add_argument('--sync-every', type=int, default=900,
                         help='Seconds between board syncs; default 900')
     parser.add_argument('--no-sync', action='store_true',
-                        help='Never run the board sync, for tests')
+                        help='Never run or schedule the board sync, for tests')
     parser.add_argument('--fixture',
                         help='Read a JSON list of {"task", "comments"} instead of the API')
     parser.add_argument('--once', action='store_true',
@@ -196,6 +196,8 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
     try:
         if args.once:
             return once(args, clock)
+        if not args.no_sync:
+            loop_state.arm_timer(args.name, args.board, args.label)
         loop_state.record_watch(args.name, os.getpid(), now=clock())
     except drain.ERRORS as error:
         print(f'watch: FAIL {error}')
@@ -205,7 +207,7 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
     finally:
         # The chat is awake anyway; a recorded dead pid would read as a dead watcher.
         try:
-            loop_state.clear_watch(args.name)
+            loop_state.clear_watch(args.name, pid=os.getpid())
         except loop_state.ERRORS as error:
             print(f'watch: could not clear the watcher: {error}', file=sys.stderr)
 

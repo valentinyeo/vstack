@@ -2,15 +2,13 @@
 """Every per-project hook in setup.md must be in .claude/settings.json (not global-only hooks)."""
 import json
 import re
+import shlex
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / 'skills' / 'valentin-mode' / 'setup.md'
 SETTINGS = ROOT / '.claude/settings.json'
-
-FAIL_OPEN = 'sh -c \'f="$HOME/.claude/hooks/{name}"; [ -f "$f" ] || exit 0; exec python3 "$f"\''
-
 
 def hooks_named_in_setup():
     text = SETUP.read_text()
@@ -36,14 +34,15 @@ def command_strings(settings):
 class ValentinModeSettings(unittest.TestCase):
     def test_settings_registers_every_project_setup_hook(self):
         settings = json.loads(SETTINGS.read_text())
-        commands = command_strings(settings)
+        commands = [shlex.split(command) for command in command_strings(settings)]
         for name in hooks_required_in_settings():
             with self.subTest(hook=name):
-                expected = FAIL_OPEN.format(name=name)
-                self.assertIn(
-                    expected, commands,
-                    f'{name} missing from .claude/settings.json; want fail-open command from setup.md',
-                )
+                matching = [words for words in commands
+                            if len(words) >= 2 and Path(words[1]).name == name]
+                self.assertTrue(matching, f'{name} missing from .claude/settings.json')
+                for words in matching:
+                    self.assertEqual(Path(words[0]).name, 'run-hook',
+                                     f'{name} must use the missing-file launcher')
 
 
 if __name__ == '__main__':

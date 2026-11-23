@@ -29,8 +29,11 @@ class AntigravityInstallTest(unittest.TestCase):
             ):
                 link = home / tail
                 self.assertTrue(link.is_symlink(), tail)
-                self.assertEqual((link.resolve() / 'SKILL.md').read_text(),
-                                 (ROOT / 'skills/valentin-mode/SKILL.md').read_text())
+                installed = (link / 'SKILL.md').read_text()
+                source = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
+                self.assertEqual(installed.split('\n---', 1)[1], source.split('\n---', 1)[1])
+                self.assertIn('hooks/run-hook', installed)
+                self.assertTrue((link / 'context.py').samefile(ROOT / 'skills/valentin-mode/context.py'))
             hooks = json.loads((home / '.gemini/config/hooks.json').read_text())
             block = hooks.get('vstack-valentin-mode', {})
             self.assertIn('PreToolUse', block)

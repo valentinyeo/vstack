@@ -132,6 +132,9 @@ class CheckTest(unittest.TestCase):
         env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory)})
         env.start()
         self.addCleanup(env.stop)
+        timer = patch.object(drain.loop_state, 'timer_enabled', return_value=True)
+        timer.start()
+        self.addCleanup(timer.stop)
 
     def run_check(self, rows, *extra, alive=False, board=2060, label='Poteto',
                   probe=(0, ADD_LINE)):
@@ -799,7 +802,22 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(state['watch_started'], iso(NOW))
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
         loop.clear_watch('HT Test')
+        self.assertIsNone(loop.stored('HT Test')['watch_pid'])
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+
+    def test_an_old_watcher_cannot_clear_its_replacement(self):
+        loop.arm('HT Test', now=NOW)
+        loop.record_watch('HT Test', 101, now=NOW)
+        replacement = loop.record_watch('HT Test', 202, now=NOW + 60)
+        loop.clear_watch('HT Test', pid=101)
+        self.assertEqual(loop.stored('HT Test'), replacement)
+        loop.clear_watch('HT Test', pid=202)
+        self.assertEqual(loop.stored('HT Test'), dict(replacement, watch_pid=None))
+
+    def test_a_watcher_can_clear_its_own_pid(self):
+        recorded = loop.record_watch('HT Test', 101, now=NOW)
+        loop.clear_watch('HT Test', pid=101)
+        self.assertEqual(loop.stored('HT Test'), dict(recorded, watch_pid=None))
 
     def test_no_watcher_recorded_behaves_as_today(self):
         loop.arm('HT Test', every='15m', job='cron-1', now=NOW)
@@ -972,6 +990,19 @@ class WatchTest(unittest.TestCase):
         state = json.loads((self.directory / 'state/watch-test.json').read_text())
         self.assertIsNone(state.get('watch_pid'))
 
+    def test_the_watcher_leaves_a_replacement_pid_on_exit(self):
+        replacement_pid = os.getpid() + 1
+
+        def on_sleep(tick):
+            watch.loop_state.record_watch('Watch Test', replacement_pid, now=NOW + 180)
+
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')],
+                                      '--heartbeat', '180', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        state = json.loads((self.directory / 'state/watch-test.json').read_text())
+        self.assertEqual(state['watch_pid'], replacement_pid)
+        self.assertEqual(state['watch_started'], iso(NOW + 180))
+
     def test_the_cli_records_the_watcher_pid(self):
         env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory / 'state'))
         done = subprocess.run([sys.executable, str(SKILL / 'loop-state'), 'watch',
@@ -1015,7 +1046,8 @@ class WatchSyncTest(unittest.TestCase):
             return code
 
         out = io.StringIO()
-        with patch.object(watch.sync, 'main', side_effect=fake_sync), \
+        with patch.object(watch.loop_state, 'arm_timer'), \
+                patch.object(watch.sync, 'main', side_effect=fake_sync), \
                 patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
                 contextlib.redirect_stdout(out):
             code = watch.main(['--board', '13556', '--label', 'Board Drain Loop',

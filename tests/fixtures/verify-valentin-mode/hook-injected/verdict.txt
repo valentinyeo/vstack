@@ -1,6 +1,6 @@
 PASS loaded: the chat was started with /valentin-mode (three tools version, no self-start)
 PASS responsive: responsive mode injected by the valentin-mode hook
-PASS checks loaded: debug.log shows every declared hook ran: reply-check.py (PreToolUse), context.py (PreToolUse), said-started.py (Stop)
+PASS checks loaded: debug.log shows every declared hook ran: context.py (PreToolUse), said-started.py (Stop)
 PASS session: session sid-pass
 PASS login: board write by VVM Test Agent
 PASS pacer: plan-pick started a worker

@@ -3,7 +3,7 @@
 
 Context size is the last assistant message.usage total in the transcript JSONL, read from the
 file end. Soft threshold injects additionalContext once per 10% band; hard threshold blocks Stop
-and auto PreCompact until the long-chat skill runs mp-fresh, unless warn-only (no Multibot host).
+and auto PreCompact until the long-chat skill runs mp-fresh, unless warn-only (paused or no host).
 
 FAIL-OPEN: any exception exits 0 with no output.
 
@@ -362,8 +362,14 @@ def nohost_warn(home, session_id, now=None):
     return age < NOHOST_TTL
 
 
+def fresh_start_paused(home, env):
+    return env.get('LONG_CHAT_PAUSED') == '1' or (Path(home) / '.config/long-chat/paused').exists()
+
+
 def handoff_enforced(home, session_id, env, now=None):
     """True when hard-limit blocking may run (Multibot can accept mp-fresh)."""
+    if fresh_start_paused(home, env):
+        return False
     if not multibot_host(env):
         return False
     if nohost_warn(home, session_id, now=now):
@@ -425,16 +431,18 @@ def queued(home, session_id):
     return (state_dir(home) / f'{session_id}.queued').is_file()
 
 
-def soft_context(size, window, soft_tokens, hard_tokens):
+def soft_context(size, window, soft_tokens, hard_tokens, paused=False):
     pct = int(round(100 * size / window))
     return {
         'hookSpecificOutput': {
             'hookEventName': 'UserPromptSubmit',
             'additionalContext': (
                 f'Chat context is about {pct}% of the window ({size:,} / {window:,} tokens). '
-                f'Long-chat limits for this window: warn at {soft_tokens:,} tokens, hand off at '
-                f'{hard_tokens:,}. Before autocompact, follow the long-chat skill at your next '
-                f'clean point ({SKILL}): hand over and run mp-fresh in this same Multibot chat.'
+                + ('Automatic fresh start is paused; autocompact may still run.' if paused else (
+                    f'Long-chat limits for this window: warn at {soft_tokens:,} tokens, hand off at '
+                    f'{hard_tokens:,}. Before autocompact, follow the long-chat skill at your next '
+                    f'clean point ({SKILL}): hand over and run mp-fresh in this same Multibot chat.'
+                ))
             ),
         },
     }
@@ -451,7 +459,14 @@ def hard_block():
     return {'decision': 'block', 'reason': hard_reason()}
 
 
-def warn_no_host():
+def warn_no_host(paused=False):
+    if paused:
+        return {
+            'systemMessage': (
+                'Automatic fresh start is paused. Chat context is past the long-chat hard limit; '
+                'autocompact may still run.'
+            ),
+        }
     return {
         'systemMessage': (
             'This chat is past the long-chat hard limit but Multibot cannot run a fresh start '
@@ -484,7 +499,7 @@ def user_prompt(payload, env):
     if soft_notified(home, session_id, band):
         return {}
     mark_soft(home, session_id, band)
-    return soft_context(size, window, soft_tokens, hard_tokens)
+    return soft_context(size, window, soft_tokens, hard_tokens, paused=fresh_start_paused(home, env))
 
 
 def stop_or_precompact(payload, env, event_name):
@@ -510,7 +525,7 @@ def stop_or_precompact(payload, env, event_name):
     if size < hard_tokens:
         return {}
     if not handoff_enforced(home, session_id, env):
-        return warn_no_host()
+        return warn_no_host(paused=fresh_start_paused(home, env))
     if block_count(home, session_id) >= MAX_BLOCKS:
         return {}
     bump_blocks(home, session_id)
@@ -599,6 +614,36 @@ def self_test():
         host_dir.mkdir(parents=True)
         (host_dir / 'live-test.state.json').write_text(json.dumps({
             'tmux': 'live-test', 'pid': os.getpid()}))
+
+        pause_file = home / '.config/long-chat/paused'
+        pause_file.parent.mkdir(parents=True)
+        paused_warning = {
+            'systemMessage': (
+                'Automatic fresh start is paused. Chat context is past the long-chat hard limit; '
+                'autocompact may still run.'),
+        }
+        for mode in ('file', 'env'):
+            paused_env = {**env_host, 'LONG_CHAT_PAUSED': '1' if mode == 'env' else '0'}
+            if mode == 'file':
+                pause_file.touch()
+            paused_stop = {**stop_hard, 'session_id': f'paused-{mode}'}
+            for event in ('Stop', 'PreCompact'):
+                paused_payload = {**paused_stop, 'hook_event_name': event, 'trigger': 'auto'}
+                for _ in range(MAX_BLOCKS + 1):
+                    assert hook(paused_payload, paused_env) == paused_warning, (
+                        f'{mode} pause + {event} + live host -> warn, never block')
+            for level, transcript in (('soft', soft_line), ('hard', hard_line)):
+                prompt = {**payload_soft, 'session_id': f'paused-{mode}-{level}',
+                          'transcript_path': transcript}
+                context = hook(prompt, paused_env)['hookSpecificOutput']['additionalContext']
+                assert 'automatic fresh start is paused' in context.lower(), 'pause explained'
+                assert 'mp-fresh' not in context and 'hand over' not in context, (
+                    'paused prompt never asks for a fresh start')
+                assert hook(prompt, paused_env) == {}, 'paused warning stays once per band'
+            if mode == 'file':
+                pause_file.unlink()
+            assert hook(paused_stop, {**env_host, 'LONG_CHAT_PAUSED': '0'}) == hard_block(), (
+                'pause removed -> original hard block resumes')
 
         cfg_host = agent_host_dir(home)
         (cfg_host / 'pinned.config.json').write_text(json.dumps({

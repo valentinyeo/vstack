@@ -89,6 +89,20 @@ def write(root: Path, name: str, text: str) -> None:
 
 SCORECARD = "  scorecard:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python3 scripts/scorecard.py\n"
 BUDGET = "  budget:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python3 scripts/budget.py\n"
+VERIFY_SKILL = "---\nname: verify-app\ndescription: test fixture verify skill\n---\n\n# verify-app\n"
+FEATURES = "# feature map\n"
+
+
+def verify_skill_repo(
+    test: unittest.TestCase, files: dict[str, str] | None = None
+) -> Path:
+    """A repo whose only relevant content is the given skill files, plus a plain PR job."""
+    holder = tempfile.TemporaryDirectory(prefix="pstack-diff-verify-")
+    test.addCleanup(holder.cleanup)
+    root = Path(holder.name)
+    for name, text in (files or {}).items():
+        write(root, name, text)
+    return root
 
 
 class PstackDiffBaseTest(unittest.TestCase):
@@ -160,7 +174,7 @@ class PstackDiffTest(unittest.TestCase):
     def test_clean_repo_exit_zero(self):
         result = run_diff(FIXTURES / "clean")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("ASKED verify-skill: verify-app", result.stdout)
+        self.assertIn("ASKED verify-skill: /verify-app", result.stdout)
         self.assertNotIn("EXTRA ", result.stdout)
         self.assertNotIn("GAP ", result.stdout)
 
@@ -211,11 +225,12 @@ class PstackDiffTest(unittest.TestCase):
         self.assertIn("pacer-check", result.stdout)
         self.assertNotIn("EXTRA workflow: .github/workflows/checks.yml job pacer-check", result.stdout)
 
-    def test_multi_verify_skills_asked(self):
+    def test_multi_verify_skills_extra(self):
         result = run_diff(FIXTURES / "multi-verify", clones=CLONES)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("ASKED verify-skill: verify-app, verify-other", result.stdout)
-        self.assertNotIn("EXTRA verify-skill", result.stdout)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ASKED verify-skill: /verify-app", result.stdout)
+        self.assertIn("EXTRA verify-skill: verify-other", result.stdout)
+        self.assertIn("merge them into /verify-app", result.stdout)
 
     def test_pstack_flag_wins_over_env(self):
         result = run_diff(
@@ -258,8 +273,8 @@ class PstackDiffTest(unittest.TestCase):
         self.addCleanup(holder.cleanup)
         root = Path(holder.name)
         write(root, ".github/workflows/ci.yml", workflow)
-        write(root, ".claude/skills/verify-app/SKILL.md", "# x\n")
-        write(root, ".claude/skills/verify-app/features/README.md", "x\n")
+        write(root, ".claude/skills/verify-app/SKILL.md", VERIFY_SKILL)
+        write(root, ".claude/skills/verify-app/features/README.md", FEATURES)
         write(
             root,
             ".github/workflows/verify.yml",
@@ -355,8 +370,8 @@ class PstackDiffTest(unittest.TestCase):
             {
                 ".github/workflows/a.yml": real,
                 ".github/workflows/z.yml": helper,
-                skill: "# x\n",
-                features: "x\n",
+                skill: VERIFY_SKILL,
+                features: FEATURES,
             },
             {".github/workflows/z.yml": helper.rstrip("\n") + "\n      - run: grep pstack-verifier\n"},
         )
@@ -382,8 +397,8 @@ class PstackDiffTest(unittest.TestCase):
             {
                 ".github/workflows/a.yml": real,
                 ".github/workflows/z.yml": helper,
-                skill: "# x\n",
-                features: "x\n",
+                skill: VERIFY_SKILL,
+                features: FEATURES,
             },
             {
                 ".github/workflows/z.yml": helper.rstrip("\n")
@@ -412,8 +427,8 @@ class PstackDiffTest(unittest.TestCase):
             {
                 ".github/workflows/a.yml": real,
                 ".github/workflows/z.yml": helper,
-                skill: "# x\n",
-                features: "x\n",
+                skill: VERIFY_SKILL,
+                features: FEATURES,
             },
             {
                 ".github/workflows/z.yml": helper.rstrip("\n")
@@ -460,8 +475,8 @@ def selection_repo(test: unittest.TestCase, finalize: str) -> Path:
     root = Path(holder.name)
     write(root, ".github/workflows/pr-verifier.yml", SELECTION_VERIFIER)
     write(root, "tools/pr-verifier.cjs", finalize)
-    write(root, ".claude/skills/verify-app/SKILL.md", "# x\n")
-    write(root, ".claude/skills/verify-app/features/README.md", "x\n")
+    write(root, ".claude/skills/verify-app/SKILL.md", VERIFY_SKILL)
+    write(root, ".claude/skills/verify-app/features/README.md", FEATURES)
     return root
 
 
@@ -500,6 +515,126 @@ class UncoveredPassGateTest(unittest.TestCase):
     def test_real_multiprompt_verifier_fixture_reports_the_gap(self):
         result = run_diff(FIXTURES / "multiprompt-verifier-rank")
         self.assertIn("GAP uncovered pass gate: .github/workflows/pr-verifier.yml", result.stdout)
+
+
+class VerifySkillLinesTest(unittest.TestCase):
+    """One findable verify-<app> skill: frontmatter, feature map, formal skills, house lines."""
+
+    def test_missing_frontmatter_gap(self):
+        root = verify_skill_repo(
+            self,
+            {
+                ".claude/skills/verify-app/SKILL.md": "# verify-app\nLaunch and drive.\n",
+                ".claude/skills/verify-app/features/README.md": FEATURES,
+            },
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "GAP verify-skill: .claude/skills/verify-app/SKILL.md has no frontmatter", result.stdout
+        )
+        self.assertNotIn("ASKED verify-skill", result.stdout)
+
+    def test_frontmatter_name_mismatch_gap(self):
+        root = verify_skill_repo(
+            self,
+            {
+                ".claude/skills/verify-app/SKILL.md": VERIFY_SKILL.replace(
+                    "name: verify-app", "name: verify-other"
+                ),
+                ".claude/skills/verify-app/features/README.md": FEATURES,
+            },
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("says name: verify-other, folder is verify-app", result.stdout)
+        self.assertIn("not in the slash list", result.stdout)
+
+    def test_missing_features_readme_gap(self):
+        root = verify_skill_repo(
+            self, {".claude/skills/verify-app/SKILL.md": VERIFY_SKILL}
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(
+            "GAP verify-skill: .claude/skills/verify-app/SKILL.md has no features/README.md",
+            result.stdout,
+        )
+
+    def test_formal_skill_allowed_beside_one_verify_skill(self):
+        root = verify_skill_repo(
+            self,
+            {
+                ".claude/skills/verify-app/SKILL.md": VERIFY_SKILL,
+                ".claude/skills/verify-app/features/README.md": FEATURES,
+                ".claude/skills/verify-switch-ai-formal/SKILL.md": VERIFY_SKILL.replace(
+                    "verify-app", "verify-switch-ai-formal"
+                ),
+            },
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verify-skill: /verify-app", result.stdout)
+        self.assertNotIn("EXTRA verify-skill", result.stdout)
+        self.assertNotIn("GAP verify-skill", result.stdout)
+
+    def test_two_non_formal_verify_skills_extra(self):
+        root = verify_skill_repo(
+            self,
+            {
+                ".claude/skills/verify-app/SKILL.md": VERIFY_SKILL,
+                ".claude/skills/verify-app/features/README.md": FEATURES,
+                ".claude/skills/verify-other/SKILL.md": VERIFY_SKILL.replace(
+                    "verify-app", "verify-other"
+                ),
+                ".claude/skills/verify-other/features/README.md": FEATURES,
+                ".claude/skills/verify-check-formal/SKILL.md": VERIFY_SKILL.replace(
+                    "verify-app", "verify-check-formal"
+                ),
+            },
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("ASKED verify-skill: /verify-app", result.stdout)
+        self.assertIn(
+            "EXTRA verify-skill: verify-other (pstack asks for one verify-<app>; "
+            "merge them into /verify-app)",
+            result.stdout,
+        )
+        self.assertNotIn("verify-check-formal", result.stdout)
+
+    def test_house_listed_second_verify_skill_not_extra(self):
+        root = verify_skill_repo(
+            self,
+            {
+                ".claude/skills/verify-app/SKILL.md": VERIFY_SKILL,
+                ".claude/skills/verify-app/features/README.md": FEATURES,
+                ".claude/skills/verify-other/SKILL.md": VERIFY_SKILL.replace(
+                    "verify-app", "verify-other"
+                ),
+                ".claude/skills/verify-other/features/README.md": FEATURES,
+                ".pstack-house.txt": "verify-skill:verify-other the repo ships both tools\n",
+            },
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verify-skill: /verify-app", result.stdout)
+        self.assertIn("HOUSE verify-skill: verify-other: the repo ships both tools", result.stdout)
+        self.assertNotIn("EXTRA verify-skill", result.stdout)
+
+    def test_cursor_verify_skill_counts(self):
+        root = verify_skill_repo(
+            self,
+            {
+                ".cursor/skills/verify-cursor/SKILL.md": VERIFY_SKILL.replace(
+                    "verify-app", "verify-cursor"
+                ),
+                ".cursor/skills/verify-cursor/features/README.md": FEATURES,
+            },
+        )
+        result = run_diff(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ASKED verify-skill: /verify-cursor", result.stdout)
 
 
 if __name__ == "__main__":

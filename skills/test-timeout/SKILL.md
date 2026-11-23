@@ -39,7 +39,7 @@ A rule in a document is not a check. The hook file is already there; registering
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$HOME/.claude/hooks/test-timeout-guard.py\"; [ -f \"$f\" ] || exit 0; exec /usr/bin/python3 \"$f\"'",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/test-timeout-guard.py\"",
             "timeout": 5
           }
         ]
@@ -49,7 +49,7 @@ A rule in a document is not a check. The hook file is already there; registering
 }
 ```
 
-The `[ -f "$f" ] || exit 0` is not noise. A missing or broken link makes python exit 2, and Claude Code reads exit 2 as a block, so a bare `python3 $HOME/.claude/hooks/test-timeout-guard.py` entry stops the chat running any Bash at all. This form exits 0 when the file is gone and still blocks at 2 when the guard says so.
+`run-hook` exits 0 and logs a warning when the script is missing or not executable. A bare Python call would exit 2, which Claude Code reads as a block. An existing guard still blocks at 2 when it rejects an unbounded test.
 
 Then prove it in your own chat: run `pytest` and get the block, run `timeout 600 pytest` and watch it start. If the second command is also blocked, your settings file has the old copy of the hook.
 
@@ -60,6 +60,20 @@ A Bash command whose simple command starts one of these with no `timeout` before
 It reads the command the way a shell does, so a timeout still counts through `env`, `nice`, `nohup`, `setsid` and `cd somewhere &&`. A command that only names a runner passes: `grep pytest`, `cat tests/install.sh`, `git log --grep pytest`.
 
 Two shapes slip through on purpose: a runner hidden inside `bash -c '...'`, and one a pipe builds, such as `printf ... | xargs -I{} {}`. The guard reads the command, not the command the command would build. Do not use those shapes to dodge it; add the timeout.
+
+## Heavy work stays on GitHub
+
+Each chat merges this entry into its own project's Bash `PreToolUse` hooks in `.claude/settings.json`. Preserve existing hooks. The shared install supplies `$HOME/.claude/hooks/heavy-local-guard.py`; report a missing link. Never run `./install` yourself.
+
+```json
+{
+  "type": "command",
+  "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/heavy-local-guard.py\"",
+  "timeout": 5
+}
+```
+
+Refuses heavy jobs under `timeout`, naming `gh workflow run` or push-to-CI. Light tests still pass. Prove registration with JSON payloads using [the heavy-local feature](../../.claude/skills/verify-vstack/features/heavy-local.md), never a real heavy job. Shell `-c` is inspected; scripts, aliases and generated commands are not expanded. Do not use them to dodge the rule.
 
 ## Prove the guard itself
 

@@ -17,6 +17,7 @@ hooks/pstack-source.py | pstack: poteto-mode | why: enforces poteto-mode (a work
 hooks/said-started.py | pstack: poteto-mode | why: enforces poteto-mode (promised work starts now)
 hooks/skill-update.py | pstack: principle-build-the-lever | why: enforces principle-build-the-lever (pstack plugin README.md, 0.15.46: the marketplace is what updates installed skills, and `claude plugin update` is the by-hand form; this hook is the only path that delivers merged vstack rules to running chats) https://app.hypertask.ai/detail/project-13556/128
 hooks/subagent_call.py | pstack: principle-boundary-discipline | why: enforces principle-boundary-discipline (parse harness agent identity at the hook boundary, so parent-only pacing never applies to workers)
+hooks/heavy-local-guard.py | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-13556/162
 hooks/test-timeout-guard.py | pstack: tdd | why: https://app.hypertask.ai/detail/project-13556/37
 hooks/ticket-way.py | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-2060/2573
 hooks/valentin_mode_loaded.py | pstack: principle-boundary-discipline | why: enforces principle-boundary-discipline (parse opt-in transcript markers once for long-chat and pacer hooks)
@@ -57,3 +58,6 @@ skills/vstack-feedback/vstack-feedback | pstack: principle-encode-lessons-in-str
 tools/gh-wrapper/gh | pstack: principle-boundary-discipline | why: https://app.hypertask.ai/detail/project-13556/54
 tools/gh-wrapper/replay.py | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/90
 tools/gh-wrapper/wait-checks | pstack: poteto-mode | why: enforces poteto-mode autonomous-run step 2 (wait on this PR's checks outside the model, with a bounded heartbeat)
+hooks/run-hook | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/156
+scripts/check-hook-paths | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/156
+scripts/install-hook-config.py | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/156

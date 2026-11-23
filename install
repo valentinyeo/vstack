@@ -85,6 +85,11 @@ for s in "$SRC"/*/; do
     continue
   fi
   target=$(cd "$s" && pwd -P)
+  if [ -f "$s/SKILL.md" ] && grep -q '^hooks:' "$s/SKILL.md"; then
+    target=$(python3 "$ROOT/scripts/install-hook-config.py" --skill "$s")
+  else
+    link_one "$name" "$target" "$HOME/.local/state/vstack/skills"
+  fi
   for dest in "${dests[@]}"; do
     link_one "$name" "$target" "$dest"
   done
@@ -111,36 +116,12 @@ for name in ticket hypertask-checkup; do
   done
 done
 
-# These hooks need a ~/.claude/hooks path. Registration belongs to each chat;
-# the retirement migration below removes only commands for deleted hooks.
-
-# Claude settings call this guard at its ~/.claude/hooks path; the copy lives here (SOFT-2845).
-link_one agent-identity-guard.py "$ROOT/hooks/agent-identity-guard.py" "$HOME/.claude/hooks"
-link_one pacer-guard.py "$ROOT/hooks/pacer-guard.py" "$HOME/.claude/hooks"
-link_one test-timeout-guard.py "$ROOT/hooks/test-timeout-guard.py" "$HOME/.claude/hooks"
-link_one pstack-new-gates.py "$ROOT/hooks/pstack-new-gates.py" "$HOME/.claude/hooks"
-
-# vps-state answers "can this server take another chat or worker", and the
-# SessionStart hook can print that answer as a session opens. This script only
-# links the script and the hook file. Each chat registers the hook in its own
-# project's .claude/settings.json, as skills/vps-state/SKILL.md says.
+# Ship the launcher, hooks and their imported helpers together, not a second list.
+for hook in "$ROOT"/hooks/*; do
+  [ -f "$hook" ] || continue
+  link_one "$(basename "$hook")" "$hook" "$HOME/.claude/hooks"
+done
 link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
-link_one vps-state-hook "$ROOT/hooks/vps-state-hook" "$HOME/.claude/hooks"
-
-# skill-update keeps the shared checkout current and tells a chat to re-read a
-# changed valentin-mode (VSTA-56). Register it once, globally, as a
-# UserPromptSubmit hook: it does the update at most once per ten minutes for the
-# whole server, so every chat's skills follow origin/main without anyone asking.
-link_one skill-update.py "$ROOT/hooks/skill-update.py" "$HOME/.claude/hooks"
-link_one long-chat.py "$ROOT/hooks/long-chat.py" "$HOME/.claude/hooks"
-
-# long-chat acts only when valentin-mode is loaded, so it is safe to register
-# once in the global ~/.claude/settings.json (VSTA-97). Per-project copies would
-# run the hook twice in vstack chats.
-
-# The long-chat and pacer hooks share the opt-in boundary reader.
-link_one valentin_mode_loaded.py "$ROOT/hooks/valentin_mode_loaded.py" "$HOME/.claude/hooks"
-link_one book-check.py "$ROOT/hooks/book-check.py" "$HOME/.claude/hooks"
 
 # Chats read one server facts file (VSTA-146). A hand-written tools.md note had
 # the two servers the wrong way round and said only inne runs on Hetzner, and a
@@ -231,6 +212,11 @@ for name in sys.argv[1:split]:
         temporary.chmod(path.stat().st_mode & 0o777)
         os.replace(temporary, path)
 PY
+
+# Migrate only this checkout's registered hooks, after their files are installed.
+if [ -f "$ROOT/scripts/install-hook-config.py" ]; then
+  python3 "$ROOT/scripts/install-hook-config.py"
+fi
 
 # Drop retired links from older installs; preserve real files and unrelated hooks.
 for name in "${retired_hooks[@]}"; do

@@ -307,6 +307,8 @@ def read_view(args, now):
         code, text = loop_state.status(state_name, now)
         if code:
             findings.append(('loop state', f'loop state: {text}'))
+        if not loop_state.timer_enabled(state_name):
+            findings.append(('sync timer', 'sync timer off: re-arm this chat with ./loop-state timer.'))
         findings += [('sync', line) for line in sync_findings(state_name, now)]
     return {'board': board, 'rows': rows, 'workable': workable, 'data': data,
             'notes': waiting_lines + blocked_lines, 'findings': findings}

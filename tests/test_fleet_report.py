@@ -105,6 +105,30 @@ sys.exit({code})
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)
 
+    def test_missing_hook_is_visible_and_settings_stay_unchanged(self):
+        self.fake_version_script("valentin-mode v5 (latest)")
+        self.fake_loop_state(0)
+        self.fake_pstack_diff(0, 0)
+        settings = self.home / '.claude/settings.json'
+        settings.write_text((ROOT / 'tests/fixtures/hook-paths/skill-update-missing.json').read_text())
+        before = settings.read_bytes()
+        rows = self.run_report([dict(name='Demo', harness='codex', cwd=str(self.home / 'repo'))])
+        self.assertEqual(rows[0]['hook_paths'], 'MISSING')
+        self.assertIn('HOOKS MISSING', rows[0]['verdict'])
+        self.assertIn('skill-update.py', rows[0]['hook_details'])
+        mod = load_module()
+        self.assertIn('skill-update.py', mod.format_table(rows))
+        page = self.home / 'report.html'
+        mod.write_html(page, rows)
+        self.assertIn('skill-update.py', page.read_text())
+        self.assertIn('reinstall vstack', page.read_text())
+        self.assertEqual(settings.read_bytes(), before)
+
+    def test_inne_sessions_are_not_inspected(self):
+        self.fake_version_script("valentin-mode v5 (latest)")
+        rows = self.run_report([dict(name='Not ours', harness='codex', cwd='/home/inne/project')])
+        self.assertEqual(rows, [])
+
     def test_latest_is_ok(self):
         mod = load_module()
         self.fake_version_script("valentin-mode v5 (latest)")

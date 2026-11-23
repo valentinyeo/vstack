@@ -1,7 +1,7 @@
 ---
 name: cloud-agent
 description: >-
-  Send a coding brief to a vendor cloud agent (Cursor, Codex, Claude) instead of running it on this server, and get back the agent link and pull request. Use when starting a code worker, when the server is busy, when pstack asks for environment "cloud", or at /cloud-agent.
+  Send a coding brief to a vendor cloud agent (Codex, Claude) instead of running it on this server, and get back the agent link and pull request. Use when starting a code worker, when the server is busy, when pstack asks for environment "cloud", or at /cloud-agent.
 ---
 
 # Cloud agent
@@ -18,22 +18,21 @@ Prior art: pstack `swarm` spawns workers with `environment: "cloud"`, and `potet
 
 | Vendor | Use for | Cost |
 |---|---|---|
-| `cursor` | Code workers, on Composer or Grok only | Included in our Cursor plan |
 | `codex` | Code workers | ChatGPT plan allowance |
 | `claude` | Claude-native jobs only, after `plan-pick --claude-helper` exits 0 | Claude plan allowance |
 
-Code workers never run on Claude, per the pstack models rule. Never ask Valentin for a Cursor API key or a spend limit: the Cursor CLI login launches cloud agents.
+Code workers go to `codex`; `claude` stays Claude-native only, per the pstack models rule.
+Cursor is off (2026-11-23): the launcher refuses it.
 
 ## Run
 
-Push the branch first. A cloud agent clones from GitHub and cannot see local files, so the brief carries everything the worker needs.
+Push the branch first. A cloud agent clones from GitHub and cannot see local files, so the brief carries everything the worker needs. Include `Owner chat: <your chat name>` in the brief and require that same line in the PR body; the Codex PR writer copies it from the full brief.
 
 ```sh
-skills/cloud-agent/cloud-agent cursor --repo <checkout> --brief brief.txt
-skills/cloud-agent/cloud-agent codex  --repo <checkout> --brief brief.txt --env <codex env>
+skills/cloud-agent/cloud-agent codex --repo <checkout> --brief brief.txt --env <codex env>
 ```
 
-Run it as a tracked background job. It prints one JSON line: `status`, `agent_url`, `pr_url`, `branch`. Exit 75 means a usage limit or a refused lane, so try the next vendor. `--no-wait` returns once the agent has started.
+Run it as a tracked background job. It prints one JSON line: `status`, `agent_url`, `pr_url`, `branch`. Exit 75 means a usage limit or a refused lane. `--no-wait` returns once the agent has started.
 
 Before preflight or any vendor runs, the launcher calls `~/.local/bin/plan-pick --lane-ok <vendor> --cloud` in the checkout. Exit 3 refuses with the reason, exit 75 and a suggestion to use `plan-pick --run`. A missing `plan-pick` warns and allows the launch. An installed but old or broken picker refuses; install token-ladder's `--lane-ok` support first.
 
@@ -41,8 +40,5 @@ The result is a claim. Check the PR diff and its checks before calling the work 
 
 ## Traps
 
-- Cursor: `cursor-agent -p "& ..."` runs locally. Only the interactive CLI hands off, after `&` is typed alone. The script does this.
 - Codex: each repo needs a cloud environment, created once at https://chatgpt.com/codex. Run `codex cloud list --json` and copy each repo's `environment_label` into the codex-envs map under the cloud-agent config folder (`{"owner/repo": "<label>"}`). The launcher names that path when the map is missing.
-- Cursor: a long brief goes in as one bracketed paste, so the pane shows `[Pasted text #1 +N lines]` instead of the text. The launcher refuses to submit when N falls short of the brief, and presses Enter up to three times because the first lands while Cursor is still drawing the paste.
-- Cursor: the checkout's branch must exist on GitHub. Preflight runs `git push -u origin` when it does not; cursor-agent still sometimes shows a push dialog, which the launcher answers `y` on.
 - Claude: the repo needs the Claude GitHub App, or the session cannot push.

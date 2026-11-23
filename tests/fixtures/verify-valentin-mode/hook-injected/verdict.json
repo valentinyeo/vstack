@@ -15,7 +15,7 @@
     {
       "name": "checks loaded",
       "pass": true,
-      "reason": "debug.log shows every declared hook ran: reply-check.py (PreToolUse), context.py (PreToolUse), said-started.py (Stop)"
+      "reason": "debug.log shows every declared hook ran: context.py (PreToolUse), said-started.py (Stop)"
     },
     {
       "name": "session",
