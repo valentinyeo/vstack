@@ -49,6 +49,41 @@ class ValentinModeContext(unittest.TestCase):
         self.assertTrue(first['hookSpecificOutput']['additionalContext'])
         self.assertEqual(later, {}, 'every later tool call in the same chat says nothing')
 
+    def test_unanswered_messages_remind_without_denying_before_and_after_rules_arrive(self):
+        reminder = ("Valentin's newest message has no reply yet. Answer it directly, then continue the work. "
+                    "No separate acknowledgment.")
+        for human in ({'type': 'user', 'message': {'content': 'status?'}},
+                      {'type': 'attachment', 'attachment': {'type': 'queued_command', 'prompt': 'status?'}}):
+            with self.subTest(kind=human['type']), tempfile.TemporaryDirectory() as home:
+                transcript = Path(home) / 'transcript.jsonl'
+                transcript.write_text(json.dumps(human) + '\n')
+                payload = json.dumps({'session_id': 'sid', 'transcript_path': str(transcript)})
+                env = dict(os.environ, HOME=home, REPLY_CHECK_RETRIES='1')
+                for step in range(3):
+                    result = subprocess.run([sys.executable, str(MODULE)], input=payload,
+                                            text=True, capture_output=True, env=env, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, '')
+                    output = json.loads(result.stdout)
+                    if step == 0:
+                        hook = output['hookSpecificOutput']
+                        self.assertEqual(set(hook), {'hookEventName', 'additionalContext'})
+                        self.assertEqual(hook['hookEventName'], 'PreToolUse')
+                        self.assertTrue(hook['additionalContext'].startswith(reminder + '\n\n'))
+                        self.assertIn('valentin-mode v', hook['additionalContext'])
+                        self.assertIn(LAST, hook['additionalContext'])
+                    else:
+                        self.assertEqual(output, {'hookSpecificOutput': {
+                            'hookEventName': 'PreToolUse', 'additionalContext': reminder}})
+                with transcript.open('a') as handle:
+                    handle.write(json.dumps({'type': 'assistant',
+                                             'message': {'content': 'Two of four done.'}}) + '\n')
+                result = subprocess.run([sys.executable, str(MODULE)], input=payload,
+                                        text=True, capture_output=True, env=env, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, '')
+                self.assertEqual(json.loads(result.stdout), {})
+
     def test_another_chat_still_gets_its_rules(self):
         hook = module()
         with tempfile.TemporaryDirectory() as home:

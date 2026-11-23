@@ -123,6 +123,14 @@ class ReplyCheck(unittest.TestCase):
         entries = [human('do the ticket'), tool_call(), tool_result(), queued('is it reliable?'), tool_call()]
         self.assert_reminded(self.hook(entries))
 
+    def test_each_step_reminds_until_a_reply_exists(self):
+        entries = [human('status?'), tool_call()]
+        for _ in range(3):
+            self.assert_reminded(self.hook(entries))
+            entries.extend([tool_result(), tool_call()])
+        entries.append(say('Two of four done.'))
+        self.assert_allowed(self.hook(entries))
+
     def test_a_plain_string_message_counts(self):
         self.assert_reminded(self.hook([human_string('doyou want me to paste these promptps?'), tool_call()]))
 

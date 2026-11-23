@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: put responsive mode's rules in the chat, and hold the tool call until he has a reply.
+"""PreToolUse hook: put responsive mode's rules in the chat and remind it to reply without denying tools.
 
 Valentin, 2026-11-22: a test chat loaded valentin mode and skipped nothing, yet the rules arrived only as the
 result of a shell line the chat chose to run, so a chat that skips the line never gets them. Claude Code does
 not expand a `!`...`` line in a SKILL.md, so the line is text the model may run or ignore. A PreToolUse hook
-can hand text straight to the model instead: on 2.1.330 the context arrives even beside a deny, and the debug
-log records it. This hook sends the version line and responsive mode's body once per chat, at its first tool
-call, then nothing for later calls. Claude Code registers only one command per hook event from a skill's
-frontmatter, so this hook also runs responsive mode's reply guard, reply-check.py, on every call.
+can hand text straight to the model instead, and on 2.1.330 the debug log records it. This hook sends the
+version line and responsive mode's body once per chat, at its first tool call. Claude Code registers only
+one command per hook event from a skill's frontmatter, so this hook also runs responsive mode's reply
+check, reply-check.py, on every call. An unanswered message adds a reminder to the context without a deny.
 
 State goes in $HOME/.local/state/valentin-mode-context/<session>.injected, or a hash of the transcript path
 when the hook input carries no session id. Fails open: any problem prints `{}`.
@@ -87,7 +87,7 @@ def reply_check():
 
 
 def must_reply(transcript):
-    """True when responsive mode would hold this tool call for a missing reply."""
+    """True when responsive mode would remind the chat about a missing reply."""
     guard = reply_check()
     if guard is None:
         return False
@@ -112,7 +112,7 @@ def payload_context():
 
 
 def answer(payload, home=None):
-    """One PreToolUse answer: the rules once, and responsive mode's reply deny every call."""
+    """One PreToolUse answer: the rules once, and a reminder on every call until the chat replies."""
     home = home or os.path.expanduser('~')
     key = session_key(payload)
     output = {}
@@ -156,6 +156,24 @@ def self_test():
                 bad.append('a sent chat leaves its marker')
             if 'additionalContext' not in answer({'session_id': 'other'}).get('hookSpecificOutput', {}):
                 bad.append('another chat still gets its rules')
+            transcript = Path(home) / 'transcript.jsonl'
+            human = {'type': 'user', 'message': {'content': 'status?'}}
+            reply = {'type': 'assistant', 'message': {'content': 'Two of four done.'}}
+            reminder = {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                                               'additionalContext': reply_check().MESSAGE}}
+            for entries, want, why in (
+                    ([human], reminder, 'an unanswered message gets a reminder without a deny'),
+                    ([human], reminder, 'the next call still gets the reminder'),
+                    ([human, reply], {}, 'a reply stops the reminder'),
+                    ([human, reply, human], reminder, 'a new message gets the reminder again')):
+                transcript.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+                result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
+                                        input=json.dumps({'session_id': 'abc',
+                                                          'transcript_path': str(transcript)}),
+                                        text=True, capture_output=True, timeout=10,
+                                        env=dict(os.environ, REPLY_CHECK_RETRIES='1'))
+                if result.returncode or result.stderr or json.loads(result.stdout) != want:
+                    bad.append(why)
         finally:
             if previous is None:
                 os.environ.pop('HOME', None)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: no tool step until Valentin's newest message has a reply.
+"""PreToolUse reminder: answer Valentin's newest message without denying tool calls.
 
 Valentin, 2026-11-20: "the chat ignores his new messages while it keeps working". A chat that loaded
-responsive-mode answers him first, then carries on. This hook holds the next tool call of a message that got
-no assistant text after it.
+responsive-mode answers him first, then carries on. This hook reminds the chat at each tool call when his
+newest message has no assistant text after it.
 
 Read from a real transcript (2.1.329), two shapes:
   - He types while the chat is idle: a user entry whose message.content holds the typed text.
@@ -148,6 +148,7 @@ def unanswered_after_retries(transcript_path):
 
 
 def self_test():
+    import subprocess
     import tempfile
 
     def write(entries):
@@ -180,10 +181,10 @@ def self_test():
                 "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
 
     cases = [
-        ([human("ship it"), call()], True, "an unanswered message holds the tool call"),
+        ([human("ship it"), call()], True, "an unanswered message gets a reminder without a deny"),
         ([human("ship it"), say("On it."), call()], False, "a reply before the tool call passes"),
         ([human("ship it"), call(), result(), queued("is it reliable?"), call()], True,
-         "a message sent mid-turn is held"),
+         "a message sent mid-turn gets a reminder without a deny"),
         ([human("ship it"), call(), result(), queued("is it reliable?"), say("Yes."), call()], False,
          "a reply to the mid-turn message passes"),
         ([human("a"), say("ok"), meta("<task-notification>\n<task-id>x</task-id>"), call()], False,
@@ -205,8 +206,17 @@ def self_test():
     ]
     bad = []
     for entries, want, why in cases:
-        if unanswered(timeline(write(entries))) != want:
+        transcript = write(entries)
+        if unanswered(timeline(transcript)) != want:
             bad.append(why)
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
+                                input=json.dumps({"transcript_path": transcript}), text=True,
+                                capture_output=True, timeout=10,
+                                env=dict(os.environ, REPLY_CHECK_RETRIES="1"))
+        expected = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": MESSAGE}}
+        output = json.loads(result.stdout) if result.stdout.strip() else None
+        if result.returncode or result.stderr or output != (expected if want else None):
+            bad.append("hook output: " + why)
     for entries, want, why in replies:
         if last_reply(write(entries)) != want:
             bad.append(why)
