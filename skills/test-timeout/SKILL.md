@@ -10,7 +10,7 @@ description: >-
 
 Prior art: pstack checked. `tdd` and the `poteto-mode` bug-fix playbook say how to run a failing test first; neither has a rule about a test that never ends. The host watchdog stops node and bun tools only, so python, pytest and shell test scripts run unbounded there.
 
-**Rule: no suite, no build and no desktop app on this host. Push and read CI. A syntax check or one named test file under `timeout 60` is the only heavy-ish local command left.**
+**Rule: no suite, no build and no desktop app on this host. Push and read CI. A syntax check or one named test file under `timeout` of 90s or less is the only heavy-ish local command left.**
 
 ```
 timeout 60 python3 -m unittest tests.test_one -v   # good, one named test
@@ -70,9 +70,9 @@ Each chat merges this entry into its own project's Bash `PreToolUse` hooks in `.
 }
 ```
 
-The guard reads its blocked list from `config/heavy-local.json`. Gradle, Wine and `xvfb-run`, the Windows desktop app, Zig, any package-manager `test` or `build`, `pytest`, `cargo` and `go` builds and tests, and `python3 -m unittest discover -s tests` on this host are refused with or without `timeout`, naming `gh workflow run` or a branch push. The only exceptions are the lines in `config/heavy-local-allow.txt`, each with its reason: a syntax check, `--help` or `--version`, and one named test file under `timeout 60`.
+The guard reads its blocked list from `config/heavy-local.json`. Gradle, Wine and `xvfb-run`, the Windows desktop app, Zig, any package-manager `test` or `build`, `pytest`, `cargo` and `go` builds and tests, and `python3 -m unittest discover -s tests` on this host are refused with or without `timeout`, naming `gh workflow run` or a branch push. The only exceptions are the lines in `config/heavy-local-allow.txt`, each with its reason: a syntax check, `--help` or `--version`, and one named test file (no wildcards) under `timeout` of 90s or less.
 
-Pacer workers on OpenCode and Antigravity never run these hooks. `scripts/worker-shims` writes the same refusal as a command shim into a worker-shims folder in vstack's local state, and plan-pick puts that folder first on a worker's PATH. A shim sees only its own words, so a worker gets no `timeout 60` exception: it pushes and reads CI.
+Pacer workers on OpenCode and Antigravity never run these hooks. `scripts/worker-shims` writes the same refusal as a command shim into a worker-shims folder in vstack's local state, and plan-pick puts that folder first on a worker's PATH. A shim sees only its own words (never a wrapping `timeout`), so a worker gets no single-file test exception: it pushes and reads CI.
 
 Light tests still pass. Prove registration with JSON payloads using [the heavy-local feature](../../.claude/skills/verify-vstack/features/heavy-local.md), never a real job. Shell `-c` is inspected; aliases and generated commands are not expanded.
 

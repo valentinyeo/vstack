@@ -8,4 +8,6 @@
 ^(timeout [0-9.]+[smhd]? )?zig fmt( --check)? \S+( \S+)*$ | formats or checks formatting, compiles nothing
 ^(timeout [0-9.]+[smhd]? )?zig version$ | prints the compiler version
 ^(timeout [0-9.]+[smhd]? )?\S+ --(help|version)$ | prints usage and exits
-^timeout (60|1m|[1-5]?[0-9])s? (python3? -m (unittest|pytest|py\.test)|pytest|py\.test) \S+( -{1,2}[A-Za-z-]+)*$ | one named test file under a timeout of 60 seconds or less
+^timeout ((90|[1-8][0-9]|[1-9])s?|1m) python3? -m unittest discover( (-[vfcb]|--(verbose|failfast|catch|buffer)|(-[stk] |--(start-directory|top-level-directory)[ =])\S+))* (-p |--pattern[ =])[A-Za-z0-9_.-]+\.py( (-[vfcb]|--(verbose|failfast|catch|buffer)|(-[stk] |--(start-directory|top-level-directory)[ =])\S+))*$ | one named unittest file via discover with no wildcard under a timeout of 90 seconds or less
+^timeout ((90|[1-8][0-9]|[1-9])s?|1m) python3? -m unittest ([A-Za-z0-9_]+\.)*test_[A-Za-z0-9_.]+( -{1,2}[A-Za-z-]+)*$ | one named unittest module under a timeout of 90 seconds or less
+^timeout ((90|[1-8][0-9]|[1-9])s?|1m) (python3? -m (pytest|py\.test)|pytest|py\.test) [A-Za-z0-9_./-]+\.py(::[A-Za-z0-9_.:-]+)?( -{1,2}[A-Za-z-]+)*$ | one named pytest file under a timeout of 90 seconds or less

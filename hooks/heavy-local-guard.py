@@ -6,8 +6,8 @@ into config/heavy-local.json, added `--shim` so pacer workers on harnesses that 
 run Claude hooks get the same refusal, and moved the only exceptions into
 config/heavy-local-allow.txt, one line each with its reason.
 
-A worker shim sees only its own words, so the `timeout 60` exception for one named test
-file reaches a chat and not a shim: a worker pushes and reads CI instead.
+A worker shim sees only its own words (never a wrapping `timeout`), so the `timeout` <= 90s
+exception for one named test file reaches a chat and not a shim: a worker pushes and reads CI.
 
 heavy-local-guard.py --self-test
 """

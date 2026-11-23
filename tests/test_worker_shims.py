@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SHIMS = ROOT / 'scripts/worker-shims'
 GUARD = ROOT / 'hooks/heavy-local-guard.py'
 DATA = json.loads((ROOT / 'config/heavy-local.json').read_text())
-PRETEND = ('gradle', 'gradlew', 'zig', 'npm', 'pytest', 'wine', 'xvfb-run', 'cargo', 'go')
+PRETEND = ('gradle', 'gradlew', 'zig', 'npm', 'pytest', 'wine', 'xvfb-run', 'cargo', 'go', 'python3')
 
 
 def generate(home, *, real=None):
@@ -61,10 +61,15 @@ class WorkerShims(unittest.TestCase):
         self.assertIn('worker-shims', (ROOT / 'install').read_text())
 
     def test_a_heavy_command_gets_the_hooks_own_refusal(self):
+        # Worker shims see only their own argv (never a wrapping `timeout`), so single-file
+        # unittest commands keep being refused here even when a chat allows them under timeout <= 90s.
         for shim, args in (('gradlew', ('assembleDebug',)), ('gradle', ('test',)),
                            ('zig', ('build',)), ('npm', ('test',)), ('pytest', ()),
                            ('wine', ('app.exe',)), ('cargo', ('test',)),
-                           ('go', ('test', './...',))):
+                           ('go', ('test', './...',)),
+                           ('python3', ('-m', 'unittest', 'discover', '-s', 'tests')),
+                           ('python3', ('-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_hook_paths.py', '-v')),
+                           ('python3', ('-m', 'unittest', 'tests.test_heavy_local_guard'))):
             with self.subTest(shim=shim, args=args):
                 with tempfile.TemporaryDirectory() as home:
                     out, _ = generate(home, real=PRETEND)
@@ -77,7 +82,8 @@ class WorkerShims(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             out, _ = generate(home, real=PRETEND)
             for shim, args in (('zig', ('version',)), ('gradle', ('--version',)),
-                               ('zig', ('fmt', '--check', 'src/main.zig'))):
+                               ('zig', ('fmt', '--check', 'src/main.zig')),
+                               ('python3', ('-m', 'py_compile', 'hooks/heavy-local-guard.py'))):
                 with self.subTest(shim=shim, args=args):
                     result = run(out / shim, *args, home=home)
                     self.assertEqual(result.returncode, 0, result.stderr)

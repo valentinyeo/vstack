@@ -7,7 +7,7 @@ the setup in `skills/test-timeout/SKILL.md`.
 ## Sub-features
 
 - `block` refuses Gradle, Zig build/test, Wine and `xvfb-run`, the Windows desktop app, package-manager `test` and `build`, `pytest`, `cargo` and `go` builds and tests, and a full-suite `python3 -m unittest discover`, including under `timeout`.
-- `allow` passes only the lines listed in `config/heavy-local-allow.txt`: a syntax check, `--help` or `--version`, and one named test file under `timeout 60`. Every line carries its reason.
+- `allow` passes only the lines listed in `config/heavy-local-allow.txt`: a syntax check, `--help` or `--version`, and one named test file (`tests.test_<one>`, `discover ... -p <one file with no wildcard>`, or one pytest `.py` file) under `timeout` of 90s or less. Every line carries its reason.
 - `shims` writes one shim per blocked command with `scripts/worker-shims`, generated from the same `config/heavy-local.json`, so an OpenCode or Antigravity worker gets the same message and exit 2. A light command execs the real binary; a runner this host lacks says so and exits 127.
 - `wiring` drives the registered command through installed symlinks in a temporary HOME.
 - `rule` keeps the per-chat setup in test-timeout discoverable.
@@ -39,6 +39,6 @@ PASS heavy-local: installed hook blocks heavy jobs; light commands and missing l
 
 - A missing hook link, or a missing `config/heavy-local.json`, fails open so Bash stays usable. Report it; enforcement is absent until repaired.
 - Test payloads only. Never launch a heavy job to prove a block.
-- A shim sees only its own words, so the `timeout 60` exception for one named test file reaches a chat and not a worker. A worker pushes and reads CI.
+- A shim sees only its own words (never a wrapping `timeout`), so the `timeout` <= 90s exception for one named test file reaches a chat and not a worker. A worker pushes and reads CI.
 - `timeout` no longer buys a heavy job here.
 - Scripts, aliases and generated commands are not expanded. The rule still applies.
