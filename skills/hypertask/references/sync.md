@@ -80,10 +80,11 @@ Never patch the card and say nothing: the next run undoes it or repeats it. The 
 
 `skills/hypertask-work/reconcile --board 15` previews Hypertask product moves. Dedicated rules:
 
-- Ticket keys start with `HTPR-`. PRs come from `hypertask-ai/hypertask`.
-- Live workers move tickets to In Progress. Open PRs move them to AI Review. An open PR outranks a live worker.
+- Ticket keys start with `HTPR-`. PRs come from every repo the board ships from: `hypertask-ai/hypertask` (release branch `production`) and `valentinyeo/vstack` (release branch `main`). One search covers them all.
+- Live workers move tickets to In Progress. Open and merged PRs move them to AI Review. An open PR outranks a live worker.
+- A merged PR counts only when its base is that repo's release branch. A stacked PR merged into a feature branch is not a ship.
 - An open PR or a live worker moves a ticket even inside the two-hour grace. The grace only protects an idle ticket.
-- An In Progress ticket with no live worker and no open PR moves to Backlog after two hours. Tickets in Backlog stay.
+- An In Progress ticket with no live worker and no shipped PR moves to Backlog after two hours. Tickets in Backlog stay unless a shipped PR now names them.
 - UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, QA and every Flag column stay. No Flag and unknown columns also stay.
 - Each run permits at most five moves, even with a higher `--limit`.
 - Worker facts come from the installed Hypertask workers. An active service alone proves no ticket work: its local PID must exist and its queue must name that board's ticket. Claiming, launching and running count as active. Progress expires after 15 minutes. A live lease or a process that names the ticket also counts. Unreadable worker facts refuse all moves.
