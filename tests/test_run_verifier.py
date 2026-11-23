@@ -73,6 +73,23 @@ elif mode == "progress_until_cap":
     for _ in range(200):
         print(json.dumps({"type": "tool_execution_update", "toolCallId": "1", "toolName": "bash"}), flush=True)
         time.sleep(0.15)
+elif mode == "silent_bash_then_pass":
+    print(json.dumps({"type": "tool_execution_start", "toolCallId": "1", "toolName": "bash",
+                      "args": {"command": "python3 -m unittest discover -s tests"}}), flush=True)
+    time.sleep(float(os.environ.get("FAKE_SILENT_SECONDS", "0.95")))
+    print(json.dumps({"type": "tool_execution_end", "toolCallId": "1", "toolName": "bash",
+                      "result": {"structuredContent": {"output": "ok", "exit_code": 0}, "isError": False}}),
+          flush=True)
+    print(json.dumps({"type": "message_end", "message": {"role": "assistant",
+                                                         "content": [{"type": "text", "text": "PASS"}]}}),
+          flush=True)
+elif mode == "hang_after_tool_end":
+    print(json.dumps({"type": "tool_execution_start", "toolCallId": "1", "toolName": "bash",
+                      "args": {"command": "echo hi"}}), flush=True)
+    print(json.dumps({"type": "tool_execution_end", "toolCallId": "1", "toolName": "bash",
+                      "result": {"structuredContent": {"output": "hi", "exit_code": 0}, "isError": False}}),
+          flush=True)
+    time.sleep(30)
 elif mode == "spawn_child_hang":
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     with open(os.environ["FAKE_CHILD_PID"], "w", encoding="utf-8") as handle:
@@ -335,6 +352,31 @@ class RunVerifierTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertGreaterEqual(elapsed, 1.0, f"active lane was cut off before hard cap ({elapsed:.2f}s)")
         self.assertIn("timed out after 1.2s", result.stderr)
+        self.assertEqual(self.env_file.read_text(), "VERIFIER_MODEL=opencode-go/glm-5.3-flash\n")
+
+    def test_silent_bash_tool_running_past_idle_timeout_still_passes(self):
+        result = self.run_verifier(
+            {"deepseek-v4.1-flash": "silent_bash_then_pass", "glm-5.3-flash": "fail"},
+            args=["--attempt-timeout", "5", "--idle-timeout", "0.3", "--no-bash-timeout", "0.5",
+                  "--", "--thinking", "low"],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.attempts(), ["opencode-go deepseek-v4.1-flash"])
+        self.assertEqual(self.env_file.read_text(), "VERIFIER_MODEL=opencode-go/deepseek-v4.1-flash\n")
+        self.assertIn('"PASS"', self.out.read_text())
+        self.assertNotIn("no output for", result.stderr)
+
+    def test_idle_timeout_resumes_after_tool_execution_ends(self):
+        start = time.monotonic()
+        result = self.run_verifier(
+            {"deepseek-v4.1-flash": "hang_after_tool_end", "glm-5.3-flash": "pass"},
+            args=["--attempt-timeout", "5", "--idle-timeout", "0.3", "--no-bash-timeout", "0.5",
+                  "--", "--thinking", "low"],
+        )
+        elapsed = time.monotonic() - start
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 2.5, f"model silent after tool end should fail over early, took {elapsed:.2f}s")
+        self.assertIn("no output for 0.3s", result.stderr)
         self.assertEqual(self.env_file.read_text(), "VERIFIER_MODEL=opencode-go/glm-5.3-flash\n")
 
     def test_aborted_lane_kills_its_child_process_group(self):

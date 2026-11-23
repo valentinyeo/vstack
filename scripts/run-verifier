@@ -13,9 +13,10 @@ An attempt succeeds when its JSON trace shows a bash run and the last assistant 
 read through scripts/verdict.py: a bare PASS, PASS+NOTES or FAIL line, a VERDICT: <x> line, or a JSON
 verdict field. These are exactly the two things the vstack verdict step asks for.
 A stuck lane fails over early when it prints a 429/quota error to stderr or a provider error event,
-stays silent past --idle-timeout (default 120s), or never starts a bash call within --no-bash-timeout
-(default 150s); active lanes keep the full --attempt-timeout hard cap. On abort or timeout the whole
-process group is terminated so no child processes leak into the next lane.
+stays silent past --idle-timeout (default 120s, paused while a tool call is running), or never starts
+a bash call within --no-bash-timeout (default 150s); active lanes keep the full --attempt-timeout hard
+cap. On abort or timeout the whole process group is terminated so no child processes leak into the next
+lane.
 Non-zero exits, empty traces and 429 or quota errors fall through to the next attempt. The trace moves to
 --out on success, `VERIFIER_MODEL=<lane>/<id>` is appended to $GITHUB_ENV when set, and stderr names the
 lane that answered. When every attempt fails, the last trace is copied to --out, stderr prints a clear
@@ -162,6 +163,8 @@ def attempt(pi, lane, model, extra, prompt, path, env, limit=None,
     started = time.monotonic()
     last_output = started
     saw_bash = False
+    open_tools = set()
+    open_anonymous_tools = 0
     abort_reason = None
     stdout_buf = b""
     stderr_buf = b""
@@ -180,7 +183,8 @@ def attempt(pi, lane, model, extra, prompt, path, env, limit=None,
                         abort_reason = "timed out after %ss" % fmt_seconds(limit)
                         break
                     deadlines.append(started + limit - now)
-                if idle_timeout is not None and idle_timeout > 0:
+                tool_running = bool(open_tools) or open_anonymous_tools > 0
+                if idle_timeout is not None and idle_timeout > 0 and not tool_running:
                     if now - last_output >= idle_timeout:
                         abort_reason = "no output for %ss" % fmt_seconds(idle_timeout)
                         break
@@ -218,6 +222,19 @@ def attempt(pi, lane, model, extra, prompt, path, env, limit=None,
                                 event = json.loads(text)
                             except ValueError:
                                 continue
+                            kind = event.get("type")
+                            if kind == "tool_execution_start":
+                                call_id = event.get("toolCallId")
+                                if call_id is not None and call_id != "":
+                                    open_tools.add(call_id)
+                                else:
+                                    open_anonymous_tools += 1
+                            elif kind == "tool_execution_end":
+                                call_id = event.get("toolCallId")
+                                if call_id is not None and call_id != "":
+                                    open_tools.discard(call_id)
+                                elif open_anonymous_tools > 0:
+                                    open_anonymous_tools -= 1
                             if bash_started_or_ended(event):
                                 saw_bash = True
                             if quota_error_event(event):
