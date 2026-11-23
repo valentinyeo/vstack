@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,6 +21,19 @@ def run(payload=None, env=None):
         base.update(env)
     return subprocess.run([sys.executable, str(GUARD)], input=payload, text=True,
                           capture_output=True, env=base, cwd=str(ROOT))
+
+
+def picker_env(where, answer):
+    """A temp HOME plus a fake plan-pick on PATH. answer None means no picker at all."""
+    bin_dir = Path(where, 'bin')
+    bin_dir.mkdir()
+    if answer is not None:
+        found = bin_dir / 'plan-pick'
+        found.write_text(answer)
+        found.chmod(0o755)
+    env = {'PATH': str(bin_dir), 'HOME': str(Path(where, 'home'))}
+    Path(env['HOME']).mkdir()
+    return env
 
 
 def payload(command, transcript=LOADED, agent_id=None, agent_type=None):
@@ -67,23 +81,55 @@ class PacerGuardPace(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(WORKER_MESSAGE, result.stderr)
 
-    def test_sub_write_code(self):
+    def sub_write(self, env):
         body = tool_payload('Write', {'file_path': 'x.py', 'content': 'print(1)\n'},
                             agent_id='agent-def456', agent_type='general-purpose')
-        result = run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1'})
-        self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn(CODE_MESSAGE, result.stderr)
+        return run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1', **env})
 
-    def test_sub_edit_code(self):
+    def main_write(self, env):
+        body = tool_payload('Write', {'file_path': 'x.py', 'content': 'print(1)\n'})
+        return run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1', **env})
+
+    def test_sub_write_code_when_the_helper_is_allowed(self):
+        with tempfile.TemporaryDirectory() as where:
+            result = self.sub_write(picker_env(where, '#!/bin/sh\nexit 0\n'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_sub_edit_code_when_the_helper_is_allowed(self):
         body = tool_payload('Edit', {'file_path': 'hooks/x.py', 'old_string': 'a', 'new_string': 'b'},
                             agent_id='agent-def456', agent_type='general-purpose')
-        result = run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1'})
+        with tempfile.TemporaryDirectory() as where:
+            env = picker_env(where, '#!/bin/sh\nexit 0\n')
+            result = run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1', **env})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_sub_write_code_when_the_helper_is_refused(self):
+        with tempfile.TemporaryDirectory() as where:
+            result = self.sub_write(picker_env(where, '#!/bin/sh\nexit 1\n'))
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn(CODE_MESSAGE, result.stderr)
 
-    def test_main_write_code(self):
-        body = tool_payload('Write', {'file_path': 'x.py', 'content': 'print(1)\n'})
-        result = run(payload=body, env={'MULTIPROMPT_TAB': 'tab-1'})
+    def test_sub_write_code_when_the_picker_is_missing(self):
+        with tempfile.TemporaryDirectory() as where:
+            result = self.sub_write(picker_env(where, None))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(CODE_MESSAGE, result.stderr)
+
+    def test_sub_write_code_when_the_picker_hangs(self):
+        with tempfile.TemporaryDirectory() as where:
+            result = self.sub_write(picker_env(where, '#!/bin/sh\nexec sleep 30\n'))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(CODE_MESSAGE, result.stderr)
+
+    def test_main_write_code_stays_blocked_when_the_helper_is_allowed(self):
+        with tempfile.TemporaryDirectory() as where:
+            result = self.main_write(picker_env(where, '#!/bin/sh\nexit 0\n'))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(CODE_MESSAGE, result.stderr)
+
+    def test_main_write_code_stays_blocked_without_a_picker(self):
+        with tempfile.TemporaryDirectory() as where:
+            result = self.main_write(picker_env(where, None))
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn(CODE_MESSAGE, result.stderr)
 
