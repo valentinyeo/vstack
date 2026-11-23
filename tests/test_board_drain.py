@@ -132,6 +132,9 @@ class CheckTest(unittest.TestCase):
         env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory)})
         env.start()
         self.addCleanup(env.stop)
+        timer = patch.object(drain.loop_state, 'timer_enabled', return_value=True)
+        timer.start()
+        self.addCleanup(timer.stop)
 
     def run_check(self, rows, *extra, alive=False, board=2060, label='Poteto',
                   probe=(0, ADD_LINE)):
@@ -1015,7 +1018,8 @@ class WatchSyncTest(unittest.TestCase):
             return code
 
         out = io.StringIO()
-        with patch.object(watch.sync, 'main', side_effect=fake_sync), \
+        with patch.object(watch.loop_state, 'arm_timer'), \
+                patch.object(watch.sync, 'main', side_effect=fake_sync), \
                 patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
                 contextlib.redirect_stdout(out):
             code = watch.main(['--board', '13556', '--label', 'Board Drain Loop',

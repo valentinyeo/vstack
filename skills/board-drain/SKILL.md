@@ -23,10 +23,12 @@ Owners start through `~/.local/bin/plan-pick --run` in `../hypertask-work/lease`
 Session crons die with the chat; recurring ones expire in 7 days. Arm at session start, restart, handover, valentin-mode load, or any drain-check fail:
 
 1. `./loop-state status --name "<your Multibot name>"`. Exit 0: already armed.
-2. **Claude Code:** `./watch --board <id> --label <label> --name "<name>"` as a tracked background Bash job (`run_in_background`, 7200000 ms timeout). It polls every 3 minutes; its exit is your tick. The watcher syncs on its own; your tick's Sync is a check.
+2. **Claude Code:** `./watch --board <id> --label <label> --name "<name>"` as a tracked background Bash job (`run_in_background`, 7200000 ms timeout). It polls every 3 minutes; its exit is your tick.
 3. Arm a safety cron at the larger of 6 hours and `~/.local/bin/plan-pick --loop-interval` (at least 2h) that runs the loop prompt if the watcher dies. Record it: `./loop-state arm --name "<name>" --every <that interval> --job <job id> --board <id> --label <label>`.
 4. **Codex or any chat without tracked background jobs:** one recurring job on the plan pace (`~/.local/bin/plan-pick --loop-interval`; at least 2h) carrying the loop prompt. Record: `./loop-state arm --name "<name>" --every <that interval> --job <job id> --board <id> --label <label>`.
 5. Every tick ends by starting a fresh watcher on Claude Code (step 2).
+
+`watch` arms independent 15-minute sync via `board-sync@<name-slug>.timer`; for `sync timer off`, run `./loop-state timer --board <id> --label <label> --name "<name>"`.
 
 Its heartbeat comes from the plan pacer (at most 2h); a quiet chat wakes only on a view change or that heartbeat.
 

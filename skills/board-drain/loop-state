@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Record, read and clear the state of a chat's own board drain loop."""
 import argparse
+import fcntl
 from datetime import datetime, timezone
 import importlib.machinery
 import importlib.util
@@ -11,6 +12,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 loader = importlib.machinery.SourceFileLoader(
@@ -27,7 +29,7 @@ SOON = 86400
 SYNC_STALE = 45 * 60
 PACER_FLOOR = 7200
 PLAN_PICK = Path.home() / '.local/bin' / 'plan-pick'
-ERRORS = (ValueError, KeyError, TypeError, OSError)
+ERRORS = (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError)
 
 
 def iso(seconds):
@@ -117,20 +119,29 @@ def stored(name):
 
 
 def store(name, state):
+    """Merge only changed fields, atomically: the timer and chat write independently."""
     target = state_path(name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(state, indent=2) + '\n')
-    return state
+    directory = os.open(target.parent, os.O_RDONLY)
+    temporary = None
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        merged = {'name': name, **stored(name), **state}
+        with tempfile.NamedTemporaryFile(mode='w', dir=target.parent, delete=False) as out:
+            temporary = Path(out.name)
+            out.write(json.dumps(merged, indent=2) + '\n')
+        temporary.replace(target)
+        return merged
+    finally:
+        if temporary:
+            temporary.unlink(missing_ok=True)
+        os.close(directory)
 
 
 def record_watch(name, pid, now=None):
     """Record the watcher this chat leaves running; a dead pid is a dead loop."""
     moment = time.time() if now is None else now
-    state = stored(name)
-    state.setdefault('name', name)
-    state['watch_pid'] = int(pid)
-    state['watch_started'] = iso(moment)
-    return store(name, state)
+    return store(name, {'watch_pid': int(pid), 'watch_started': iso(moment)})
 
 
 def clear_watch(name):
@@ -138,8 +149,100 @@ def clear_watch(name):
     state = stored(name)
     if 'watch_pid' not in state:
         return state
-    state['watch_pid'] = None
-    return store(name, state)
+    return store(name, {'watch_pid': None})
+
+
+def timer_unit(name):
+    return f'board-sync@{slug(name)}.timer'
+
+
+def bus_environment():
+    runtime = f'/run/user/{os.getuid()}'
+    return {'XDG_RUNTIME_DIR': runtime, 'DBUS_SESSION_BUS_ADDRESS': f'unix:path={runtime}/bus'}
+
+
+def systemctl(*args):
+    return subprocess.run(['systemctl', '--user', *args], capture_output=True, text=True,
+                          timeout=30, env={**os.environ, **bus_environment()})
+
+
+def timer_enabled(name):
+    try:
+        return systemctl('is-enabled', '--quiet', timer_unit(name)).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def unit_quote(value):
+    """Quote systemd syntax, including specifiers; ExecStart also escapes dollars."""
+    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace(
+        '%', '%%').replace('\n', '\\n').replace('\r', '\\r') + '"'
+
+
+def prune_timers(name, now):
+    for path in state_dir().glob('*.json'):
+        if path == state_path(name):
+            continue
+        try:
+            state = json.loads(path.read_text())
+            if not isinstance(state, dict) or not isinstance(state.get('name'), str):
+                continue
+            other = state['name']
+            unit = timer_unit(other)
+            if path != state_path(other) or state.get('sync_timer') != unit:
+                continue
+            touched = [reconcile.stamp(state[key]) for key in
+                       ('armed_at', 'watch_started', 'sync_timer_armed_at') if state.get(key)]
+            # Scheduled syncs refresh mtime, but must never extend a dead chat's lease.
+            last_chat = min(path.stat().st_mtime, max(touched)) if touched else path.stat().st_mtime
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if now - last_chat > WEEK:
+            systemctl('disable', '--now', unit).check_returncode()
+
+
+def arm_timer(name, board, label, now=None):
+    """Converge only this chat's units, then disable abandoned chats' recorded timers."""
+    moment = time.time() if now is None else now
+    if board < 1:
+        raise ValueError('--board must be positive')
+    unit = timer_unit(name)
+    config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+    directory = config / 'systemd/user'
+    directory.mkdir(parents=True, exist_ok=True)
+    environment = {
+        **bus_environment(),
+        'PATH': f'{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin',
+        'BOARD_DRAIN_STATE_DIR': str(state_dir().resolve()),
+        'BOARD_DRAIN_CRED_DIR': str(Path(os.environ.get('BOARD_DRAIN_CRED_DIR') or
+            Path.home() / '.config/hypertask-agents/credentials/sessions').resolve()),
+    }
+    command = ['/usr/bin/timeout', '600', sys.executable,
+               str(Path(__file__).resolve().with_name('sync')), '--board', str(board),
+               '--label', label, '--name', name, '--own-token']
+    service = ('[Unit]\nDescription=Sync this chat board view\n\n[Service]\nType=oneshot\n'
+               'TimeoutStartSec=610\n' +
+               ''.join('Environment=' + unit_quote(f'{key}={value}') + '\n'
+                       for key, value in environment.items()) +
+               'ExecStart=' + ' '.join(unit_quote(arg.replace('$', '$$')) for arg in command) + '\n')
+    timer = ('[Unit]\nDescription=Keep this chat board view synced\n\n[Timer]\n'
+             'OnStartupSec=1min\nOnUnitActiveSec=15min\nRandomizedDelaySec=3min\n'
+             'Unit=' + unit.removesuffix('.timer') + '.service\n\n[Install]\nWantedBy=timers.target\n')
+    for filename, content in ((unit, timer), (unit.removesuffix('.timer') + '.service', service)):
+        target = directory / filename
+        if target.exists() and target.read_text() == content:
+            continue
+        with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as out:
+            temporary = Path(out.name)
+            out.write(content)
+        temporary.replace(target)
+    # Retry reload even after a crash between replacing a unit and reloading it.
+    systemctl('daemon-reload').check_returncode()
+    systemctl('enable', '--now', unit).check_returncode()
+    state = store(name, {'board': board, 'label': label, 'sync_timer': unit,
+                         'sync_timer_armed_at': iso(moment)})
+    prune_timers(name, moment)
+    return state
 
 
 def loop_interval(timeout=20):
@@ -167,20 +270,13 @@ def arm(name, every='2h', expires=None, job=None, now=None, board=None, label=No
     """Record the armed loop, plus the board and label it drains when the chat passes them."""
     moment = time.time() if now is None else now
     expiry = reconcile.stamp(expires) if expires else moment + WEEK
-    prior = stored(name)
     state = {'name': name, 'every': every, 'armed_at': iso(moment), 'expires_at': iso(expiry),
              'job': job, 'owner_pid': owner_pid(), 'host': socket.gethostname()}
     if board is not None:
         state['board'] = board
     if label is not None:
         state['label'] = label
-    for key in ('last_sync', 'watch_pid', 'watch_started'):
-        if key in prior:
-            state[key] = prior[key]
-    target = state_path(name)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(state, indent=2) + '\n')
-    return state
+    return store(name, state)
 
 
 def status(name, now=None):
@@ -214,10 +310,7 @@ def record_sync(name, ok, reason, now=None):
     """Record this chat's last board sync. A record alone never arms the loop."""
     moment = time.time() if now is None else now
     record = {'at': iso(moment), 'ok': bool(ok), 'reason': reason or ''}
-    state = stored(name)
-    state.setdefault('name', name)
-    state['last_sync'] = record
-    store(name, state)
+    store(name, {'last_sync': record})
     return record
 
 
@@ -234,9 +327,12 @@ def clear(name):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for command in ('arm', 'status', 'clear', 'watch'):
+    for command in ('arm', 'status', 'clear', 'watch', 'timer'):
         sub = commands.add_parser(command)
         sub.add_argument('--name', required=True)
+        if command == 'timer':
+            sub.add_argument('--board', type=int, required=True)
+            sub.add_argument('--label', required=True)
         if command == 'watch':
             sub.add_argument('--pid', type=int, required=True, help='The watcher process id')
         if command == 'arm':
@@ -247,6 +343,10 @@ def main(argv=None):
             sub.add_argument('--label', help='The board label this loop drains')
     args = parser.parse_args(argv)
     try:
+        if args.command == 'timer':
+            state = arm_timer(args.name, args.board, args.label)
+            print(f'enabled {state["sync_timer"]}')
+            return 0
         if args.command == 'arm':
             state = arm(args.name, args.every, args.expires, args.job,
                         board=args.board, label=args.label)
