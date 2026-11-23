@@ -34,6 +34,34 @@ jobs:
           ln -s "$RUNNER_TEMP/cursor-plugins/pstack" "$RUNNER_TEMP/pstack/$version"
           python3 skills/pstack-diff/pstack-diff --base "$BASE" --pstack "$RUNNER_TEMP/pstack"
 
+  verify-vstack:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Does this change touch chat wiring?
+        id: touched
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE"...HEAD > changed.txt
+          if grep -Eq '^(hooks/|install$)|(^|/)settings(\.local)?\.json$|SKILL\.md$' changed.txt; then
+            echo 'run=1' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=0' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install the change into a scratch HOME and check its wiring
+        if: steps.touched.outputs.run == '1'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          .claude/skills/verify-vstack/run --no-drive --base "$BASE"
+
   pacer-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

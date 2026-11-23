@@ -28,6 +28,7 @@ Nobody pushes to main.
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | No bare ticket ids to Valentin | `hooks/no-bare-ids.py`, `tests/test_no_bare_ids.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
+| A vstack change keeps chats working | `.claude/skills/verify-vstack/run` (Doctor in CI, Drive by the PR owner), `tests/test_verify_vstack.py` |
 | A settings file or install line never names a hook this repo deleted | `tests/test_hook_wiring.py` |
 | A merged rule reaches a running chat without anyone asking | `hooks/skill-update.py`, `tests/test_skill_update.py` |
 | vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `tests/test_pr_queue.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
