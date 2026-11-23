@@ -645,7 +645,8 @@ def probe_scope(board, repos=()):
     repos = tuple(sorted(set(repos)))
     if repos:
         return ' '.join(f'repo:{repo}' for repo in repos)
-    return '(user:valentinyeo OR user:hypertask-ai)'
+    # Search rejects a parenthesised OR with 422; repeated user: qualifiers are ORed for us.
+    return 'user:valentinyeo user:hypertask-ai'
 
 
 def saved_pull_index(saved):
@@ -675,6 +676,18 @@ def search_item_to_pull(item, saved_index=()):
     return {'url': url, 'title': item.get('title') or '', 'body': item.get('body') or '',
             'headRefName': head, 'state': state, 'number': number,
             'repository': {'nameWithOwner': repo or (saved or {}).get('repository', {}).get('nameWithOwner', '')}}
+
+
+def probe_items(board, saved):
+    """The change probe's rows, or None when GitHub will not answer the search."""
+    try:
+        with phase('probe'):
+            return probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+        # A refused probe is a missed probe, never a dead sync: read every fact instead.
+        print(f'reconcile: probe failed: {error}; reading every fact instead',
+              file=sys.stderr, flush=True)
+        return None
 
 
 def probe_changed_prs(board, since_iso, repos=()):
@@ -1610,11 +1623,18 @@ def board_run():
         budget_skip = False
         probe_since = None
         facts_refreshed = True
+        quiet = bool(saved and saved_facts_fresh(saved, time.time()) and not args.ticket and keys)
         try:
-            if saved and saved_facts_fresh(saved, time.time()) and not args.ticket and keys:
-                with phase('probe'):
-                    probe_since = format_reset(time.time())
-                    items = probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
+            if quiet:
+                probe_since = format_reset(time.time())
+                items = probe_items(board, saved)
+                if items is None:
+                    quiet, probe_since = False, None
+            if not quiet:
+                pulls = discover(keys, created=created, **options)
+                with phase('pulls'):
+                    prefetch(pulls, **options)
+            else:
                 known = saved.get('tickets') or {}
                 new_keys = {key for key in keys if key not in known}
                 board_changed = board_task_changes(saved, candidates, keys)
@@ -1628,10 +1648,6 @@ def board_run():
                                  clear=False, **options)
                 print(f'reconcile: quiet sync; probe={len(items)} PR updates, '
                       f'refresh={len(pr_changed)} tickets', file=sys.stderr, flush=True)
-            else:
-                pulls = discover(keys, created=created, **options)
-                with phase('pulls'):
-                    prefetch(pulls, **options)
         except BudgetRefused as refused:
             budget_skip = True
             if saved:
