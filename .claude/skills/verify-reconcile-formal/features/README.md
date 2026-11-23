@@ -1,4 +1,4 @@
-# reconcile model verification map
+# reconcile formal verification map
 
 The parts of reconcile planning this skill proves. Read this, then the file for
 the feature.
@@ -8,7 +8,7 @@ the feature.
 - `python3` only. No network, no gh login, no board.
 - The enumeration builds its own fact combinations, so a leftover from an
   earlier run cannot make a check pass.
-- `python3 .claude/skills/verify-reconcile-model/check_model.py` runs
+- `python3 .claude/skills/verify-reconcile-formal/check_model.py` runs
   `tests/test_verify_reconcile_model.py`, which is where every feature below is
   asserted.
 
@@ -30,4 +30,4 @@ the feature.
 ## Out of scope
 
 Live Hypertask reads, GitHub prefetch, apply limits, and the board-15 login
-guard. `verify-reconcile` drives those.
+guard. `.claude/skills/verify-vstack/features/reconcile.md` drives those.

@@ -7,7 +7,6 @@
 verify-skill:verify-board-drain board drain's own proof, kept beside verify-vstack
 verify-skill:verify-hypertask the /hypertask skill's own proof, kept beside verify-vstack
 verify-skill:verify-reconcile the board sync (reconcile) proof, kept beside verify-vstack
-verify-skill:verify-reconcile-model the exhaustive reconcile model check, kept beside verify-vstack
 verify-skill:verify-repo-tidy the /repo-tidy skill's own proof, kept beside verify-vstack
 verify-skill:verify-responsive-mode responsive mode's own proof, kept beside verify-vstack
 verify-skill:verify-test-timeout the test-timeout guard's proof, kept beside verify-vstack
