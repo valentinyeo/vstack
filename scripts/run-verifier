@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """run-verifier: take the first verdict any verifier lane and model gives.
 
-  run-verifier --out verifier.jsonl --prompt-file PROMPT [--event PATH] [--attempt-timeout SECONDS] -- <extra pi args>
+  run-verifier --out verifier.jsonl --prompt-file PROMPT [--event PATH] [--attempt-timeout SECONDS]
+               [--idle-timeout SECONDS] [--no-bash-timeout SECONDS] -- <extra pi args>
   run-verifier --self-test
 
 Models come from `pick-verifier-model --all`, so every attempt is from a family no author declares.
@@ -11,9 +12,16 @@ first lane is tried before the second lane starts.
 An attempt succeeds when its JSON trace shows a bash run and the last assistant message holds a verdict,
 read through scripts/verdict.py: a bare PASS, PASS+NOTES or FAIL line, a VERDICT: <x> line, or a JSON
 verdict field. These are exactly the two things the vstack verdict step asks for.
-Non-zero exits, empty traces and 429 or quota errors fall through to the next attempt. The trace moves to --out on success, `VERIFIER_MODEL=<lane>/<id>`
-is appended to $GITHUB_ENV when set, and stderr names the lane that answered. When every attempt fails,
-the last trace is copied to --out and the exit code is 1. Never prints prompt text or keys.
+A stuck lane fails over early when it prints a 429/quota error to stderr or a provider error event,
+stays silent past --idle-timeout (default 120s, paused while a tool call is running), or never starts
+a bash call within --no-bash-timeout (default 150s); active lanes keep the full --attempt-timeout hard
+cap. On abort or timeout the whole process group is terminated so no child processes leak into the next
+lane.
+Non-zero exits, empty traces and 429 or quota errors fall through to the next attempt. The trace moves to
+--out on success, `VERIFIER_MODEL=<lane>/<id>` is appended to $GITHUB_ENV when set, and stderr names the
+lane that answered. When every attempt fails, the last trace is copied to --out, stderr prints a clear
+`NO VERDICT: every model lane failed: <lane: reason, ...>. This is not a code failure.` line, and the
+exit code is 1. Never prints prompt text or keys.
 """
 import argparse
 import contextlib
@@ -21,11 +29,14 @@ import io
 import json
 import os
 import re
+import selectors
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from verdict import find_verdict
@@ -40,6 +51,9 @@ LANES = (
 )
 QUOTA = re.compile(r"\b429\b|\bquota\b|rate.?limit|credit balance", re.I)
 FAILURE = "run-verifier: %s/%s gave no verdict (%s), trying next\n"
+NO_VERDICT = "NO VERDICT: every model lane failed: %s. This is not a code failure."
+DEFAULT_IDLE_TIMEOUT = 120
+DEFAULT_NO_BASH_TIMEOUT = 150
 
 
 def read(path):
@@ -87,22 +101,180 @@ def verdict(trace):
     return find_verdict("\n".join(answer))[0] is not None
 
 
-def attempt(pi, lane, model, extra, prompt, path, env, limit=None):
-    """One pi run. Returns the reason it gave no verdict, or None on success."""
+def fmt_seconds(seconds):
+    return "%d" % seconds if seconds == int(seconds) else "%g" % seconds
+
+
+def format_no_verdict(failures):
+    detail = ", ".join("%s/%s: %s" % (lane, model, reason) for lane, model, reason in failures)
+    return NO_VERDICT % (detail or "no API key set")
+
+
+def bash_started_or_ended(event):
+    return event.get("type") in ("tool_execution_start", "tool_execution_end") and event.get("toolName") == "bash"
+
+
+def quota_error_event(event):
+    """True when a pi JSON event reports a provider 429/quota error, never normal prose or tool output."""
+    kind = event.get("type")
+    if kind in ("error", "auto_retry_start"):
+        text = " ".join(str(event.get(k) or "") for k in ("errorMessage", "error", "message"))
+        return bool(QUOTA.search(text))
+    if kind == "message_end":
+        message = event.get("message") or {}
+        if message.get("role") == "assistant" and message.get("stopReason") == "error":
+            return bool(QUOTA.search(str(message.get("errorMessage") or "")))
+    return False
+
+
+def terminate_group(proc):
+    """Stop pi and every child it spawned so a timed-out lane leaves no orphan processes."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            break
+        deadline = time.monotonic() + (0.5 if sig == signal.SIGTERM else 1.0)
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if proc.poll() is not None:
+            break
     try:
-        with open(path, "w", encoding="utf-8") as out, open(path + ".err", "w", encoding="utf-8") as err:
-            result = subprocess.run([*pi, "--provider", lane, "--model", model, *extra, "--mode", "json", "-p", prompt],
-                                    stdout=out, stderr=err, env=env, timeout=limit)
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def attempt(pi, lane, model, extra, prompt, path, env, limit=None,
+            idle_timeout=DEFAULT_IDLE_TIMEOUT, no_bash_timeout=DEFAULT_NO_BASH_TIMEOUT):
+    """One pi run. Returns the reason it gave no verdict, or None on success."""
+    command = [*pi, "--provider", lane, "--model", model, *extra, "--mode", "json", "-p", prompt]
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
     except OSError as problem:
         return "cannot run %s: %s" % (pi[0], problem.strerror)
-    except subprocess.TimeoutExpired:
-        return "timed out after %ds" % limit
+
+    started = time.monotonic()
+    last_output = started
+    saw_bash = False
+    open_tools = set()
+    open_anonymous_tools = 0
+    abort_reason = None
+    stdout_buf = b""
+    stderr_buf = b""
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ, "out")
+    sel.register(proc.stderr, selectors.EVENT_READ, "err")
+
+    try:
+        with open(path, "wb") as out_file, open(path + ".err", "wb") as err_file:
+            while sel.get_map():
+                now = time.monotonic()
+                deadlines = []
+                if limit is not None and limit > 0:
+                    if now - started >= limit:
+                        abort_reason = "timed out after %ss" % fmt_seconds(limit)
+                        break
+                    deadlines.append(started + limit - now)
+                tool_running = bool(open_tools) or open_anonymous_tools > 0
+                if idle_timeout is not None and idle_timeout > 0 and not tool_running:
+                    if now - last_output >= idle_timeout:
+                        abort_reason = "no output for %ss" % fmt_seconds(idle_timeout)
+                        break
+                    deadlines.append(last_output + idle_timeout - now)
+                if no_bash_timeout is not None and no_bash_timeout > 0 and not saw_bash:
+                    if now - started >= no_bash_timeout:
+                        abort_reason = "no bash call after %ss" % fmt_seconds(no_bash_timeout)
+                        break
+                    deadlines.append(started + no_bash_timeout - now)
+
+                wait_for = min(deadlines) if deadlines else 0.2
+                wait_for = max(0.0, min(wait_for, 0.2))
+                events = sel.select(timeout=wait_for)
+                if not events:
+                    if proc.poll() is not None:
+                        break
+                    continue
+
+                for key, _ in events:
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        sel.unregister(key.fileobj)
+                        continue
+                    last_output = time.monotonic()
+                    if key.data == "out":
+                        out_file.write(chunk)
+                        out_file.flush()
+                        stdout_buf += chunk
+                        while b"\n" in stdout_buf:
+                            raw_line, stdout_buf = stdout_buf.split(b"\n", 1)
+                            text = raw_line.decode("utf-8", errors="replace").strip()
+                            if not text.startswith("{"):
+                                continue
+                            try:
+                                event = json.loads(text)
+                            except ValueError:
+                                continue
+                            kind = event.get("type")
+                            if kind == "tool_execution_start":
+                                call_id = event.get("toolCallId")
+                                if call_id is not None and call_id != "":
+                                    open_tools.add(call_id)
+                                else:
+                                    open_anonymous_tools += 1
+                            elif kind == "tool_execution_end":
+                                call_id = event.get("toolCallId")
+                                if call_id is not None and call_id != "":
+                                    open_tools.discard(call_id)
+                                elif open_anonymous_tools > 0:
+                                    open_anonymous_tools -= 1
+                            if bash_started_or_ended(event):
+                                saw_bash = True
+                            if quota_error_event(event):
+                                abort_reason = "429 or quota"
+                                break
+                    else:
+                        err_file.write(chunk)
+                        err_file.flush()
+                        stderr_buf += chunk
+                        if QUOTA.search(stderr_buf.decode("utf-8", errors="replace")):
+                            abort_reason = "429 or quota"
+                            break
+                        if len(stderr_buf) > 4096:
+                            stderr_buf = stderr_buf[-1024:]
+                    if abort_reason:
+                        break
+                if abort_reason:
+                    break
+    finally:
+        sel.close()
+        if abort_reason is not None or proc.poll() is None:
+            terminate_group(proc)
+        else:
+            proc.wait()
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        proc.stdout.close()
+        proc.stderr.close()
+
+    if abort_reason is not None:
+        return abort_reason
+
     trace, noise = read(path), read(path + ".err")
-    if result.returncode == 0 and bash_evidence(trace) and verdict(trace):
+    if proc.returncode == 0 and bash_evidence(trace) and verdict(trace):
         return None
     reasons = []
-    if result.returncode:
-        reasons.append("exit %d" % result.returncode)
+    if proc.returncode:
+        reasons.append("exit %d" % proc.returncode)
     if QUOTA.search(trace) or QUOTA.search(noise):
         reasons.append("429 or quota")
     if not trace.strip():
@@ -114,17 +286,19 @@ def attempt(pi, lane, model, extra, prompt, path, env, limit=None):
     return ", ".join(reasons) or None
 
 
-def run(out, prompt_file, event, extra, env, limit=None):
+def run(out, prompt_file, event, extra, env, limit=None,
+        idle_timeout=DEFAULT_IDLE_TIMEOUT, no_bash_timeout=DEFAULT_NO_BASH_TIMEOUT):
     prompt = read(prompt_file)
     pi = shlex.split(env.get("PI_BIN") or "pi")
     wanted = models(event)
     planned = [(lane, ids.get(model, model)) for lane, key, ids in LANES if env.get(key) for model in wanted]
+    failures = []
     with tempfile.TemporaryDirectory() as scratch:
         last = None
         for index, (lane, model) in enumerate(planned):
             path = os.path.join(scratch, "attempt-%d.jsonl" % index)
             last = path
-            reason = attempt(pi, lane, model, extra, prompt, path, env, limit)
+            reason = attempt(pi, lane, model, extra, prompt, path, env, limit, idle_timeout, no_bash_timeout)
             if reason is None:
                 shutil.move(path, out)
                 if env.get("GITHUB_ENV"):
@@ -132,10 +306,12 @@ def run(out, prompt_file, event, extra, env, limit=None):
                         handle.write("VERIFIER_MODEL=%s/%s\n" % (lane, model))
                 sys.stderr.write("run-verifier: verdict from %s/%s\n" % (lane, model))
                 return 0
+            failures.append((lane, model, reason))
             sys.stderr.write(FAILURE % (lane, model, reason))
         if last:
             shutil.copyfile(last, out)
     sys.stderr.write("run-verifier: no lane gave a verdict\n")
+    sys.stderr.write(format_no_verdict(failures) + "\n")
     return 1
 
 
@@ -203,6 +379,8 @@ def self_test():
                 assert "verdict from %s\n" % model in text, (name, text)
             else:
                 assert "no lane gave a verdict\n" in text, (name, text)
+                assert "NO VERDICT: every model lane failed:" in text, (name, text)
+                assert "This is not a code failure." in text, (name, text)
     print("run-verifier self-test ok")
 
 
@@ -237,7 +415,9 @@ def main():
     parser.add_argument("--out")
     parser.add_argument("--prompt-file")
     parser.add_argument("--event", default=os.environ.get("GITHUB_EVENT_PATH"))
-    parser.add_argument("--attempt-timeout", type=int, default=960)
+    parser.add_argument("--attempt-timeout", type=float, default=960)
+    parser.add_argument("--idle-timeout", type=float, default=DEFAULT_IDLE_TIMEOUT)
+    parser.add_argument("--no-bash-timeout", type=float, default=DEFAULT_NO_BASH_TIMEOUT)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("extra", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -246,7 +426,8 @@ def main():
     if not args.out or not args.prompt_file:
         parser.error("--out and --prompt-file are required")
     extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-    return run(args.out, args.prompt_file, args.event, extra, os.environ, args.attempt_timeout)
+    return run(args.out, args.prompt_file, args.event, extra, os.environ,
+               args.attempt_timeout, args.idle_timeout, args.no_bash_timeout)
 
 
 if __name__ == "__main__":
