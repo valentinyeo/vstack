@@ -69,9 +69,18 @@ jobs:
       - name: Lint changed skills with the shared script
         working-directory: change
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
+          # The base ref is fetched live, so the event's base.sha can be older than the
+          # tree the merge step built. Judge that tree against the base branch itself.
+          if [ -n "${BASE_REF:-}" ]; then
+            git fetch --no-tags --quiet origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+            BASE=$(git merge-base "refs/remotes/origin/$BASE_REF" HEAD)
+          else
+            BASE=$BEFORE
+          fi
           test -n "$BASE"
           test "$BASE" != 0000000000000000000000000000000000000000
           if [ -f house-rules.md ]; then house=house-rules.md; else house=../catalog/house-rules.md; fi
