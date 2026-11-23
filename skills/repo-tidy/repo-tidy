@@ -17,7 +17,7 @@ A repo mid-rebase or mid-merge is skipped whole. Nothing is deleted under
 the projects root. --max-remove caps one run so a bug cannot empty a repo.
 
 Usage:
-  repo-tidy [--apply] [--all | REPO_PATH...] [--json] [--mine SESSION_CWD]
+  repo-tidy [--apply] [--all | REPO_PATH...] [--json] [--mine SESSION_CWD --branch BRANCH]
             [--max-remove N] [--projects-root DIR] [--jobs N]
 """
 
@@ -612,7 +612,8 @@ class RepoRun:
         self.tidy_local_branches(base, base_set, github, remote_ok)
         if remote_ok:
             self.tidy_remote_branches(base, base_set, github)
-            self.tidy_setting(github)
+            if not self.opts.mine:
+                self.tidy_setting(github)
         removed = (len(result["worktrees"]["removed"]) + len(result["branches"]["deleted"])
                    + len(result["remote"]["deleted"]))
         # statvfs is the whole filesystem, so a dry run frees nothing and a run
@@ -628,14 +629,26 @@ class RepoRun:
             return
         main_path = str(Path(entries[0]["path"]).resolve())
 
-        missing = [e for e in entries[1:] if not Path(e["path"]).exists()]
+        candidates = entries[1:]
+        if self.opts.mine:
+            candidates = [e for e in candidates if e.get("branch") == self.opts.branch]
+        missing = [e for e in candidates if not Path(e["path"]).exists()]
         for entry in missing:
-            if self.opts.apply:
+            if self.opts.mine:
+                if not under(entry["path"], self.opts.projects_root) or self.live.in_use(entry["path"]):
+                    self.note("HOLD", "registration", entry["path"], "outside root or in use")
+                    continue
+                if self.opts.apply:
+                    code, _, err = git(["-C", str(self.repo), "worktree", "remove", entry["path"]])
+                    if code != 0:
+                        self.note("HOLD", "registration", entry["path"], err.strip())
+                        continue
+            elif self.opts.apply:
                 git(["-C", str(self.repo), "worktree", "prune"])
             self.result["worktrees"]["pruned"].append(entry["path"])
             self.note("PRUNE", "worktree", entry["path"], "directory is gone")
 
-        candidates = [e for e in entries[1:] if Path(e["path"]).exists()]
+        candidates = [e for e in candidates if Path(e["path"]).exists()]
         verdicts = self.inspect_worktrees(
             candidates, base, base_set, remote_set, github, remote_ok, cutoff)
 
@@ -763,7 +776,8 @@ class RepoRun:
                 shutil.rmtree(str(target))
             except OSError as exc:
                 return False, "rm -rf failed: %s" % exc
-        git(["-C", str(self.repo), "worktree", "prune"])
+        if not self.opts.mine:
+            git(["-C", str(self.repo), "worktree", "prune"])
         return True, "removed"
 
     def is_registered(self, path):
@@ -795,6 +809,8 @@ class RepoRun:
         remote = remote_branches(self.repo)
 
         for name, sha in sorted(branches.items()):
+            if self.opts.mine and name != self.opts.branch:
+                continue
             if name == expected:
                 continue
             if name in worktree_branches or name == current:
@@ -862,6 +878,8 @@ class RepoRun:
         protected = github.read_protected()
         candidates = []
         for name, info in sorted(remote.items()):
+            if self.opts.mine and name != self.opts.branch:
+                continue
             if name == default:
                 continue
             if name in github.open:
@@ -1030,7 +1048,8 @@ def main(argv):
                         help="every repo under the projects root plus the two shares")
     parser.add_argument("--json", action="store_true", help="print full detail")
     parser.add_argument("--mine", metavar="SESSION_CWD",
-                        help="only the repo this session works in")
+                        help="only this session's named branch in this repo")
+    parser.add_argument("--branch", help="branch owned by this chat; required with --mine")
     parser.add_argument("--max-remove", type=int, default=DEFAULT_MAX_REMOVE,
                         help="cap deletions per repo per run (default %d)" % DEFAULT_MAX_REMOVE)
     parser.add_argument("--projects-root", default=None,
@@ -1043,6 +1062,10 @@ def main(argv):
     parser.add_argument("paths", nargs="*", help="repo paths")
     opts = parser.parse_args(argv)
 
+    if bool(opts.mine) != bool(opts.branch):
+        parser.error("--mine and --branch must be used together")
+    if opts.mine and (opts.all or opts.paths):
+        parser.error("--mine cannot be combined with --all or repo paths")
     if opts.max_remove < 0:
         parser.error("--max-remove must be 0 or more")
     if opts.repo_timeout < 1:

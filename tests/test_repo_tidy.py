@@ -213,13 +213,63 @@ class TestRebaseInProgress(SandboxCase):
 class TestMine(SandboxCase):
     neighbour = True
 
-    def test_mine_mode_touches_one_repo(self):
+    def test_mine_mode_requires_a_branch(self):
         result = tidy(self.world, "--apply", "--mine", str(self.world.repo))
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("--branch", result.stderr)
+
+    def test_mine_mode_touches_only_named_branch(self):
+        result = tidy(self.world, "--apply", "--mine", str(self.world.repo),
+                      "--branch", "clean-merged")
+        self.assertFalse(self.world.wt_path("merged-clean").exists(), result.stdout)
+        self.assertTrue(self.world.wt_path("squash-clean").exists(), result.stdout)
+        after = sandbox.snapshot(self.world.root)
+        self.assertIn("squash-merged", after["branches"])
+        self.assertIn("squash-merged", after["remote"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("other-done", str(list((self.world.projects).glob("other-done"))))
         self.assertTrue((self.world.projects / "other-done").exists(), result.stdout)
         self.assertIn("sandbox:", result.stdout)
         self.assertNotIn("other:", result.stdout)
+
+    def test_mine_keeps_dirty_worktree_and_its_local_branch(self):
+        result = tidy(self.world, "--apply", "--mine", str(self.world.repo),
+                      "--branch", "wip-edit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.world.wt_path("wip").exists())
+        self.assertIn("wip", result.stdout)
+        self.assertIn("wip-edit", sandbox.snapshot(self.world.root)["branches"])
+
+    def test_mine_removes_only_its_missing_registration(self):
+        own = self.world.projects / "mine-missing"
+        sibling = self.world.projects / "sibling-missing"
+        for path in (own, sibling):
+            self.world.git(["worktree", "add", "-q", "-b", path.name, str(path), "main"], cwd=self.world.repo)
+            shutil.rmtree(path)
+        result = tidy(self.world, "--apply", "--mine", str(self.world.repo),
+                      "--branch", own.name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        registered = self.world.git(["worktree", "list", "--porcelain"], cwd=self.world.repo).stdout
+        self.assertNotIn(str(own), registered)
+        self.assertIn(str(sibling), registered)
+        self.assertNotIn(own.name, sandbox.snapshot(self.world.root)["branches"])
+        self.assertIn(sibling.name, sandbox.snapshot(self.world.root)["branches"])
+
+    def test_mine_does_not_override_a_locked_missing_registration(self):
+        own = self.world.projects / "mine-locked-missing"
+        self.world.git(["worktree", "add", "-q", "-b", own.name, str(own), "main"], cwd=self.world.repo)
+        self.world.git(["worktree", "lock", str(own)], cwd=self.world.repo)
+        shutil.rmtree(own)
+        result = tidy(self.world, "--apply", "--mine", str(self.world.repo),
+                      "--branch", own.name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(own), self.world.git(["worktree", "list", "--porcelain"], cwd=self.world.repo).stdout)
+        self.assertIn(own.name, sandbox.snapshot(self.world.root)["branches"])
+
+    def test_branch_without_mine_is_rejected(self):
+        result = tidy(self.world, "--apply", "--all", "--branch", "clean-merged")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("--mine", result.stderr)
 
     def test_a_worktree_path_is_a_repo(self):
         result = tidy(self.world, str(self.world.wt_path("wip")))
@@ -230,7 +280,7 @@ class TestMine(SandboxCase):
     def test_mine_outside_a_repo_does_nothing(self):
         outside = self.world.root / "not-a-repo"
         outside.mkdir()
-        result = tidy(self.world, "--apply", "--mine", str(outside))
+        result = tidy(self.world, "--apply", "--mine", str(outside), "--branch", "mine")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "")
 

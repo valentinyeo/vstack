@@ -14,8 +14,8 @@ Dry run by default. `--apply` removes.
 
 ## Run it on your own repo
 
-1. After your session merges something: `"$HOME/.local/bin/repo-tidy" --apply --mine $PWD`. It reads
-   only the one repo you are in.
+1. After your session merges something: `"$HOME/.local/bin/repo-tidy" --apply --mine "$PWD" --branch "<your merged branch>"`. It removes
+   only that branch and its worktree, never another chat's copies in the same repo.
 2. Read only, any time: `"$HOME/.local/bin/repo-tidy" --all` prints each repo as it finishes.
    `--apply --all` is there when you mean it. Nothing runs it on a timer, and
    nobody sweeps other chats' repos for them. It runs at `nice` 10, four repos
@@ -24,7 +24,7 @@ Dry run by default. `--apply` removes.
 
 ## Set up your own check
 
-After each merge, run `"$HOME/.local/bin/repo-tidy" --apply --mine "$PWD"` from your own loop. Cleanup belongs to the merge lifecycle, not every chat turn.
+After each merge, run `"$HOME/.local/bin/repo-tidy" --apply --mine "<main checkout>" --branch "<your merged branch>"` from outside the finished worktree. Keep every gate. Retry held items on your own next loop tick. PR housekeeping retains your observed PR as `cleanup` until its local refs are gone, even after a worker exits. No timer cleans other chats' work.
 
 ## The gates
 
@@ -71,7 +71,7 @@ directory under repo-tidy.
 ```
 "$HOME/.local/bin/repo-tidy"                      # dry run, this repo
 "$HOME/.local/bin/repo-tidy" --all                # dry run, every repo
-"$HOME/.local/bin/repo-tidy" --apply --mine $PWD  # this repo, after your merge
+"$HOME/.local/bin/repo-tidy" --apply --mine "$PWD" --branch my-branch # your merge only
 "$HOME/.local/bin/repo-tidy" --apply --all        # every repo, when you mean it
 "$HOME/.local/bin/repo-tidy" --all --json         # machine readable
 ```
