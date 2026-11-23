@@ -30,18 +30,22 @@ Each feature file starts with an H1 title and one paragraph. It then uses exactl
 
 ## Features
 
+Each row's third column names the tool under `tools/` that drives it, or the Doctor check that reads it.
+
 | File | Checks | What it proves |
 | --- | --- | --- |
 | [install-update.md](install-update.md) | `install`, `skill-links`, `drive-skill` | The install that reaches a chat records the commit it came from and links a whole skill tree |
 | [hook-wiring.md](hook-wiring.md) | `settings`, `base-wiring`, `wiring`, `hook-links`, `bin-links`, `frontmatter` | Every hook a chat calls resolves, and a change never orphans one |
-| [board-drain.md](board-drain.md) | verify-board-drain | A restarted chat re-arms its own drain loop |
+| [board-drain.md](board-drain.md) | tools/board-drain | A restarted chat re-arms its own drain loop |
 | [cloud-agent.md](cloud-agent.md) | `tests/test_cloud_agent.py` | Direct cloud workers refuse a skipped or ahead-of-pace lane before any vendor runs |
-| [hypertask.md](hypertask.md) | verify-hypertask | A fresh chat sets itself up on a board and works a task |
-| [reconcile.md](reconcile.md) | verify-reconcile | Board sync reads a real board and plans the right moves |
-| [repo-tidy.md](repo-tidy.md) | verify-repo-tidy | Worktree and branch cleanup keeps exactly the right ones |
-| [responsive-mode.md](responsive-mode.md) | verify-responsive-mode | A chat answers fast and still finishes the job |
+| [hypertask.md](hypertask.md) | tools/hypertask | A fresh chat sets itself up on a board and works a task |
+| [reconcile.md](reconcile.md) | tools/reconcile | Board sync reads a real board and plans the right moves |
+| [repo-tidy.md](repo-tidy.md) | tools/repo-tidy | Worktree and branch cleanup keeps exactly the right ones |
+| [responsive-mode.md](responsive-mode.md) | tools/responsive-mode | A chat answers fast and still finishes the job |
 | [heavy-local.md](heavy-local.md) | heavy-local hook journey | Each chat blocks heavy jobs locally and points to GitHub |
-| [test-timeout.md](test-timeout.md) | verify-test-timeout | The test guard refuses a hung command and passes a wrapped one |
-| [valentin-mode.md](valentin-mode.md) | verify-valentin-mode | A fresh chat uses valentin mode's three tools |
-| [valentin-subskills.md](valentin-subskills.md) | verify-valentin-subskills | A fresh chat follows valentin mode's sub-rules |
-| [vps-state.md](vps-state.md) | verify-vps-state | The host verdict matches a second read of the same host |
+| [test-timeout.md](test-timeout.md) | tools/test-timeout | The test guard refuses a hung command and passes a wrapped one |
+| [valentin-mode.md](valentin-mode.md) | tools/valentin-mode | A fresh chat uses valentin mode's three tools |
+| [valentin-subskills.md](valentin-subskills.md) | tools/valentin-subskills | A fresh chat follows valentin mode's sub-rules |
+| [vps-state.md](vps-state.md) | tools/vps-state | The host verdict matches a second read of the same host |
+
+Beside this map, `.claude/skills/verify-reconcile-formal/` is the formal check of reconcile's stage model, the first deliverable of pstack `create-formal-verification-skill` (SOFT-2921). pstack allows one formal skill beside the app's verify skill, so that dir stays its own skill and every other tool's journey lives in the files above.

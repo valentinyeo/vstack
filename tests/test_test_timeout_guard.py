@@ -16,7 +16,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / 'hooks/test-timeout-guard.py'
-VERIFY = ROOT / '.claude/skills/verify-test-timeout'
+VERIFY = ROOT / '.claude/skills/verify-vstack/tools/test-timeout'
+MAP = ROOT / '.claude/skills/verify-vstack/features/test-timeout.md'
 GRADE = VERIFY / 'grade.py'
 RUN = VERIFY / 'run'
 
@@ -278,16 +279,11 @@ class VerifyTestTimeoutRun(unittest.TestCase):
         for name in ('meta.json', 'verdict.txt', 'verify-test-timeout'):
             self.assertIn(name, self.text, name)
 
-    def test_the_feature_map_names_every_check_and_its_file(self):
-        features = VERIFY / 'features'
-        readme = (features / 'README.md').read_text()
-        rows = re.findall(r'\[([\w-]+\.md)\]\(([\w-]+\.md)\)[^\n|]*\|\s*`([\w ]+)`', readme)
-        self.assertEqual(sorted(check.strip() for _name, _file, check in rows),
-                         ['allowed', 'blocked', 'killed'])
-        for name, filename, _check in rows:
-            with self.subTest(file=filename):
-                self.assertEqual(name, filename)
-                self.assertTrue((features / filename).is_file(), filename)
+    def test_the_feature_file_names_every_check(self):
+        text = MAP.read_text()
+        for check in ('blocked', 'allowed', 'killed'):
+            self.assertIn('`%s`' % check, text, check)
+        self.assertIn('(test-timeout.md)', (MAP.parent / 'README.md').read_text())
 
 
 class TestTimeoutSkill(unittest.TestCase):

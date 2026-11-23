@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / '.claude/skills/verify-board-drain'
+SKILL = ROOT / '.claude/skills/verify-vstack/tools/board-drain'
 GRADE = SKILL / 'grade.py'
 RUN = SKILL / 'run'
 FIXTURES = ROOT / 'tests/fixtures/verify-board-drain'

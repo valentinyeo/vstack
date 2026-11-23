@@ -25,7 +25,7 @@ Nobody pushes to main.
 | A chat never waits on Valentin to merge or review a finished, green PR | `skills/hypertask-work/merge-ask`, `skills/board-drain/drain-check`, `skills/responsive-mode/reply-check.py`, `tests/test_board_drain.py`, `tests/test_responsive_mode_checks.py` |
 | Advisors respect configured project boundaries | `hooks/out-of-bounds.py` |
 | Long-chat and pacing hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |
-| Responsive mode's rules reach the chat without the chat choosing to fetch them | `skills/valentin-mode/context.py`, `.claude/skills/verify-valentin-mode/grade.py`, `tests/test_valentin_mode_context.py` |
+| Responsive mode's rules reach the chat without the chat choosing to fetch them | `skills/valentin-mode/context.py`, `.claude/skills/verify-vstack/tools/valentin-mode/grade.py`, `tests/test_valentin_mode_context.py` |
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | No bare ticket ids to Valentin | `hooks/no-bare-ids.py`, `tests/test_no_bare_ids.py` |
 | Each chat and every pacer worker refuses heavy local builds and tests before they start | `hooks/heavy-local-guard.py`, `config/heavy-local.json`, `scripts/worker-shims`, `tests/test_heavy_local_guard.py`, `tests/test_worker_shims.py` |

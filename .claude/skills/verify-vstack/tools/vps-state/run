@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""verify-vps-state: drive skills/vps-state/vps-state on this real host and grade it.
+
+    .claude/skills/verify-vstack/tools/vps-state/run              # this checkout's copy
+    .claude/skills/verify-vstack/tools/vps-state/run --script PATH # a branch's copy
+
+It launches the script for real against this host's /proc, saves every output and
+exit code under ~/.local/state/verify-vps-state/<run-id>/, reads the same numbers
+again with independent tools (nproc, /proc/loadavg, free -b, df -B1 /), and grades
+PASS or FAIL. Exit 0 PASS, 1 FAIL, 3 doctor failure.
+
+The proof is never the script's own claim: every reported number is compared with
+an independent read, and only those comparisons decide the verdict.
+"""
+
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parents[5]
+DEFAULT_SCRIPT = ROOT / "skills" / "vps-state" / "vps-state"
+HOOK = ROOT / "hooks" / "vps-state-hook"
+EVIDENCE_ROOT = pathlib.Path.home() / ".local" / "state" / "verify-vps-state"
+STATUS = pathlib.Path.home() / ".local" / "state" / "vps-load" / "status"
+RUN_TIMEOUT = 30
+SLOW_SECONDS = 5.0
+EXIT_FOR = {"ADD": 0, "CAREFUL": 1, "HOLD": 2}
+STATE_WORD = {"ADD": "add", "CAREFUL": "steady", "HOLD": "hold"}
+
+# load5 moves between two reads of a busy host; disk and memory should not.
+TOLERANCE = {"load5": 0.25, "mem_avail_gb": 0.05, "disk_free_gb": 0.02,
+             "disk_used_pct": 0.02}
+
+
+def close_enough(reported, live, tolerance):
+    if reported is None or live is None:
+        return False
+    if live == 0:
+        return abs(reported) <= tolerance
+    return abs(reported - live) / abs(live) <= tolerance
+
+
+def cross_check(reported, live):
+    """One check per number, comparing what vps-state said with an outside read."""
+    checks = []
+    same = reported.get("cores") is not None and reported.get("cores") == live.get("cores")
+    checks.append(("cores", same, "vps-state {} vs nproc {}".format(
+        reported.get("cores"), live.get("cores"))))
+    for key, tolerance in TOLERANCE.items():
+        ok = close_enough(reported.get(key), live.get(key), tolerance)
+        checks.append((key, ok, "vps-state {} vs live {} (tolerance {:.0%})".format(
+            reported.get(key), live.get(key), tolerance)))
+    return checks
+
+
+def grade(checks):
+    return "PASS" if checks and all(ok for _, ok, _ in checks) else "FAIL"
+
+
+def exit_codes_ok(verdicts, codes):
+    for kind in ("chat", "worker"):
+        expected = EXIT_FOR.get(verdicts.get(kind))
+        if expected is None or codes.get(kind) != expected:
+            return False
+    return True
+
+
+def read_live():
+    """The same host facts, read without vps-state."""
+    live = {}
+    try:
+        live["cores"] = os.cpu_count()
+    except Exception:
+        live["cores"] = None
+    try:
+        live["load5"] = float(pathlib.Path("/proc/loadavg").read_text().split()[1])
+    except (OSError, IndexError, ValueError):
+        live["load5"] = None
+    try:
+        done = subprocess.run(["free", "-b"], capture_output=True, text=True, timeout=5)
+        for line in done.stdout.splitlines():
+            if line.startswith("Mem:"):
+                live["mem_avail_gb"] = round(int(line.split()[6]) / 1073741824, 2)
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        live["mem_avail_gb"] = None
+    try:
+        done = subprocess.run(["df", "-B1", "/"], capture_output=True, text=True, timeout=5)
+        fields = done.stdout.splitlines()[-1].split()
+        free = int(fields[3])
+        total = int(fields[1])
+        live["disk_free_gb"] = round(free / 1073741824, 2)
+        live["disk_used_pct"] = round((total - free) / total * 100, 1)
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        live["disk_free_gb"] = None
+        live["disk_used_pct"] = None
+    return live
+
+
+def read_status():
+    try:
+        return STATUS.read_text().strip()
+    except OSError:
+        return None
+
+
+def run_cmd(cmd, cwd=None, timeout=RUN_TIMEOUT):
+    started = time.monotonic()
+    try:
+        done = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return done, round(time.monotonic() - started, 3)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, round(time.monotonic() - started, 3)
+
+
+def doctor(script, directory):
+    lines = []
+    ok = True
+
+    def check(name, good, detail):
+        nonlocal ok
+        ok = ok and good
+        lines.append("{} {}: {}".format("PASS" if good else "FAIL", name, detail))
+
+    check("script", script.is_file() and os.access(script, os.X_OK),
+          str(script) + (" is executable" if os.access(script, os.X_OK) else " is missing or not executable"))
+    check("python3", shutil.which("python3") is not None, "python3 on PATH")
+    loadavg = pathlib.Path("/proc/loadavg")
+    check("proc", loadavg.is_file(), str(loadavg) + " readable")
+    check("ps", shutil.which("ps") is not None, "ps on PATH")
+    check("free", shutil.which("free") is not None, "free on PATH, used for the independent read")
+    check("df", shutil.which("df") is not None, "df on PATH, used for the independent read")
+    (directory / "doctor.txt").write_text("\n".join(lines) + "\n")
+    return ok, lines
+
+
+def run_id():
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+
+def git_sha(path):
+    done, _ = run_cmd(["git", "rev-parse", "--short", "HEAD"], cwd=str(path), timeout=5)
+    return done.stdout.strip() if done and done.returncode == 0 else None
+
+
+def drive(script, directory):
+    results = {}
+    script = str(script)
+
+    for name, args in (("json", ["--json"]), ("brief", ["--brief"]), ("human", [])):
+        done, elapsed = run_cmd([script] + args)
+        (directory / (name + ".out")).write_text(done.stdout if done else "")
+        (directory / (name + ".err")).write_text(done.stderr if done else "")
+        results[name] = {"code": done.returncode if done else None, "seconds": elapsed,
+                         "out": done.stdout if done else ""}
+        if name == "json":
+            # The JSON run wrote the status file; read it before anything else does.
+            results["status"] = read_status()
+    for kind in ("chat", "worker"):
+        done, elapsed = run_cmd([script, "--can-launch", kind])
+        code = done.returncode if done else None
+        (directory / "can-launch-{}.code".format(kind)).write_text("{}\n".format(code))
+        results["can-launch-" + kind] = {"code": code, "seconds": elapsed}
+
+    if os.access(HOOK, os.X_OK):
+        done, elapsed = run_cmd([str(HOOK)], timeout=10)
+        (directory / "hook.out").write_text(done.stdout if done else "")
+        (directory / "hook.code").write_text("{}\n".format(done.returncode if done else None))
+        results["hook"] = {"code": done.returncode if done else None, "seconds": elapsed,
+                           "out": done.stdout if done else ""}
+    results["status_after_hook"] = read_status()
+    (directory / "status.txt").write_text("{}\n".format(results.get("status")))
+    return results
+
+
+def grade_run(directory, results, live):
+    checks = []
+    try:
+        payload = json.loads(results["json"]["out"])
+    except (KeyError, ValueError):
+        payload = None
+    facts = (payload or {}).get("facts") or {}
+    reported = {
+        "cores": facts.get("cores"),
+        "load5": (facts.get("load") or {}).get("load5"),
+        "mem_avail_gb": (facts.get("memory") or {}).get("avail_gb"),
+        "disk_free_gb": (facts.get("disk") or {}).get("free_gb"),
+        "disk_used_pct": (facts.get("disk") or {}).get("used_pct"),
+    }
+    (directory / "reported.json").write_text(json.dumps(reported, indent=2) + "\n")
+    (directory / "live.json").write_text(json.dumps(live, indent=2) + "\n")
+
+    checks.append(("json", payload is not None,
+                   "vps-state --json parsed" if payload else "vps-state --json did not parse"))
+    checks.extend(cross_check(reported, live))
+
+    verdicts = (payload or {}).get("verdict") or {}
+    codes = {kind: results["can-launch-" + kind]["code"] for kind in ("chat", "worker")}
+    checks.append(("exit-codes", exit_codes_ok(verdicts, codes),
+                   "verdict {} matches exit codes {}".format(verdicts, codes)))
+
+    brief_lines = [line for line in results.get("brief", {}).get("out", "").splitlines() if line.strip()]
+    brief_ok = len(brief_lines) == 1 and brief_lines[0].startswith(
+        "{} worker, {} chat:".format(verdicts.get("worker"), verdicts.get("chat")))
+    checks.append(("brief", brief_ok,
+                   "one line: {}".format(brief_lines[0] if brief_lines else "(empty)")))
+
+    human = results.get("human", {}).get("out", "")
+    human_first = human.splitlines()[0] if human else ""
+    verdict_prefix = "{} worker, {} chat:".format(verdicts.get("worker"), verdicts.get("chat"))
+    checks.append(("human", human_first.startswith(verdict_prefix),
+                   "human block leads with the verdict line: {}".format(human_first)))
+    checks.append(("cleanup", "Clean up your own" in human and "never another session" in human,
+                   "human block carries the clean-up section and the rule"))
+
+    status = results.get("status")
+    expected_state = STATE_WORD.get(verdicts.get("worker"), "?")
+    load5 = reported.get("load5")
+    status_ok = bool(status) and status.startswith(expected_state + " ") and (
+        load5 is None or "load5={:.2f}".format(load5) in status) and (
+        "cores={}".format(reported.get("cores")) in status)
+    checks.append(("status", status_ok,
+                   "status file {!r} carries the worker verdict {!r}".format(status, expected_state)))
+
+    slowest = max(results[name]["seconds"] for name in ("json", "brief", "human"))
+    checks.append(("speed", slowest < SLOW_SECONDS,
+                   "slowest run {:.2f}s, budget {:.0f}s".format(slowest, SLOW_SECONDS)))
+
+    hook = results.get("hook")
+    if hook is None:
+        checks.append(("hook", False, "hooks/vps-state-hook missing"))
+    else:
+        hook_lines = hook["out"].splitlines()
+        first = hook_lines[0] if hook_lines else ""
+        ok = (hook["code"] == 0 and first.startswith("Server: ")
+              and any("run ~/.local/bin/vps-state before starting chats or workers" in line
+                      for line in hook_lines)
+              and hook["seconds"] < 3.0 and len(hook_lines) == 2)
+        checks.append(("hook", ok, "exit {} in {:.2f}s: {}".format(
+            hook["code"], hook["seconds"], " / ".join(hook_lines) or "(no output)")))
+    return checks, payload
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    script = DEFAULT_SCRIPT
+    if "--script" in args:
+        index = args.index("--script")
+        if index + 1 >= len(args):
+            print("usage: run [--script PATH]")
+            return 3
+        script = pathlib.Path(args[index + 1]).resolve()
+    directory = EVIDENCE_ROOT / run_id()
+    directory.mkdir(parents=True, exist_ok=True)
+
+    ok, doctor_lines = doctor(script, directory)
+    print("\n".join(doctor_lines))
+    if not ok:
+        print("verdict: FAIL (doctor)")
+        return 3
+
+    (directory / "meta.json").write_text(json.dumps({
+        "run_id": directory.name,
+        "script": str(script),
+        "script_sha": git_sha(script.parent),
+        "repo_sha": git_sha(ROOT),
+        "host": os.uname().nodename,
+        "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, indent=2) + "\n")
+
+    results = drive(script, directory)
+    live = read_live()
+    checks, _ = grade_run(directory, results, live)
+    verdict = grade(checks)
+
+    lines = ["{} {}".format("PASS" if ok else "FAIL", name) + "  " + detail
+             for name, ok, detail in checks]
+    (directory / "verdict.txt").write_text(
+        "verdict: {}\n".format(verdict) + "\n".join(lines) + "\n")
+    (directory / "verdict.json").write_text(json.dumps({
+        "verdict": verdict,
+        "run_id": directory.name,
+        "checks": [{"name": name, "ok": ok, "detail": detail} for name, ok, detail in checks],
+    }, indent=2) + "\n")
+    print("\n".join(lines))
+    print("verdict: {}".format(verdict))
+    print("evidence: {}".format(directory))
+    return 0 if verdict == "PASS" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

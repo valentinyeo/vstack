@@ -130,7 +130,7 @@ class VerifyReconcileModel(unittest.TestCase):
                         count += 1
         for key, stages in stages_by_board.items():
             self.assertEqual(len(set(stages)), 1, f'ranking split on {key}: {stages}')
-        print(f'verify-reconcile-model: combinations={count}')
+        print(f'verify-reconcile-formal: combinations={count}')
         self.assertGreater(count, 500)
 
     def test_main_column_rule_rows(self):
@@ -169,7 +169,7 @@ class VerifyReconcileModel(unittest.TestCase):
             with self.subTest(board=15, column=column):
                 self.assertEqual(r.target(r.Facts(column, 8000), r.BOARDS[15])[0], expected)
                 count += 1
-        print(f'verify-reconcile-model: main-rule-rows={count}')
+        print(f'verify-reconcile-formal: main-rule-rows={count}')
 
     def test_a_merge_older_than_the_column_never_promotes(self):
         """The owner's rule, on every board: an old merge is history, not evidence.

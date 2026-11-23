@@ -38,7 +38,7 @@ All of these PRs edit `skills/hypertask-work/reconcile`. They land one at a time
 | --- | --- | --- | --- |
 | 1 | #135 a grep is not a worker | SOFT-2799 | none |
 | 2 | board 15 catches stale, PR-first, grace on idle only | HTPR-9521 | 1 |
-| 3 | verify-reconcile skill (new files only) | SOFT-2920 | none, lands any time |
+| 3 | the reconcile verify tool, now `.claude/skills/verify-vstack/tools/reconcile` (new files only) | SOFT-2920 | none, lands any time |
 | 4 | one rule model plus an exhaustive model check | SOFT-2921 | 2 |
 | 5 | loud failure without a user bus; under 30 GitHub calls | SOFT-2919 | 4 |
 | 6 | board 15 apply accepts any agent's own login | SOFT-2919 | 5 |
@@ -57,9 +57,9 @@ PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN`
 - [ ] Rebased on PR 1. Board 15 reads leases and processes through PR 1's `is_worker`.
 - [ ] Unit: one test per real card, built as facts through the rule function. These cards are HTPR-9514, HTPR-9511 (stale In Progress goes to Backlog), HTPR-9387 (open PR inside the grace goes to AI Review) and HTPR-7742 (worker plus open PR goes to AI Review).
 - [ ] Unit: an idle card in Verification Backlog is kept.
-- [ ] Live: `verify-reconcile --board 15` dry run has unknown=0. No card with a live plan-pick worker is planned out of In Progress.
+- [ ] Live: `.claude/skills/verify-vstack/tools/reconcile/run --board 15` dry run has unknown=0. No card with a live plan-pick worker is planned out of In Progress.
 
-## PR 3: verify-reconcile (SOFT-2920)
+## PR 3: the reconcile verify tool (SOFT-2920), now `.claude/skills/verify-vstack/tools/reconcile`
 
 - [ ] Proof run pasted in the PR: one dry run on board 15, and one with no user bus that must FAIL `bus`.
 - [ ] Live cases list only cards whose current column differs from the expected one. A case that passes under the old code proves nothing. Real-card regressions live in unit fixtures (PR 2), not here.
@@ -74,14 +74,14 @@ PR 1 comes before PR 2. Once board 15 counts processes, a plain `grep HTPR-NNNN`
   - A protected or unmanaged column never moves.
   - Both boards rank PR over worker over idle the same way.
 - [ ] Ticket SOFT-2921 runs pstack `create-formal-verification-skill` (valentin mode: sync work is formal). This exhaustive check is its first deliverable.
-- [ ] Live: `verify-reconcile --board 15 --apply` then the second dry run plans no moves for the cards it moved.
+- [ ] Live: `.claude/skills/verify-vstack/tools/reconcile/run --board 15 --apply` then the second dry run plans no moves for the cards it moved.
 
 ## PR 5: loud on a missing bus, fewer calls (SOFT-2919)
 
 - [ ] Change: set `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` defaults when missing. If worker facts still cannot be read, exit non-zero with one clear line. Never print 348 UNKNOWN lines.
 - [ ] Change: read PR state from the search result. Drop the per-PR `read_product_pull` calls.
 - [ ] Perf: metric is `github calls=` from stderr on `reconcile --board 15`. Baseline on main: 79, measured by HT Product Lead on 20 Nov. Fails above 30.
-- [ ] Live: `env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS verify-reconcile --board 15 --keep-bus` passes `bus` and `unknown`.
+- [ ] Live: `env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS .claude/skills/verify-vstack/tools/reconcile/run --board 15 --keep-bus` passes `bus` and `unknown`.
 
 ## PR 6: board 15 apply login
 
@@ -104,7 +104,7 @@ Each becomes a unit test from the real card, then a fix, in PR 4 or later.
 
 ## After every PR
 
-- The owner runs `verify-reconcile` on boards 15 and 2060 before the change goes live.
-- Each chat runs `verify-reconcile --label <its label>` in its own loop.
+- The owner runs `.claude/skills/verify-vstack/tools/reconcile/run` on boards 15 and 2060 before the change goes live.
+- Each chat runs its reconcile with `--label <its label>` in its own loop.
 - Every card a chat reports as wrong becomes a unit fixture first, then a fix.
 - Done means a second dry run after apply plans no moves.

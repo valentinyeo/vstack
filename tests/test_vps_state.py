@@ -19,14 +19,14 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills" / "vps-state" / "vps-state"
 HOOK = ROOT / "hooks" / "vps-state-hook"
-VERIFY = ROOT / ".claude" / "skills" / "verify-vps-state"
+VERIFY = ROOT / ".claude" / "skills" / "verify-vstack" / "tools" / "vps-state"
 VERIFY_RUN = VERIFY / "run"
 FIX = ROOT / "tests" / "fixtures" / "vps-state"
 
 # A Claude Code Bash shell inherits a PATH with no ~/.local/bin, so a bare
 # command name exits 127 there. These are the files that tell a chat what to type.
-DOCS = [ROOT / "skills" / "vps-state" / "SKILL.md", VERIFY / "SKILL.md"] + sorted(
-    (VERIFY / "features").glob("*.md"))
+DOCS = [ROOT / "skills" / "vps-state" / "SKILL.md",
+        ROOT / ".claude" / "skills" / "verify-vstack" / "features" / "vps-state.md"]
 CLAUDE_BASH_PATH = "/usr/bin:/bin"
 
 GB = 1024 ** 3
