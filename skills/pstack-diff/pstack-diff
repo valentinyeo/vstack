@@ -32,6 +32,17 @@ REUSABLE_USES = re.compile(
     re.M,
 )
 
+# A verifier that plans journeys from a changed-file selection can pass while files it could
+# not map go unexercised. That is how multiprompt PR 1205 shipped a broken session command:
+# PASS+NOTES with its three changed session source files listed as unmapped.
+SELECTION = re.compile(r"selection\.json|\bunmapped\b", re.I)
+UNCOVERED_GATE = re.compile(r"uncovered[_-]?gate", re.I)
+RUNS_FILE = re.compile(r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.(?:cjs|mjs|js|py|sh))(?![\w./-])")
+UNCOVERED_FIX = (
+    "Fix: route the pass verdict through uncovered_gate (vstack ships scripts/uncovered_gate.py) "
+    "so PASS and PASS+NOTES become FAIL and name the files."
+)
+
 AI_JUDGE = re.compile(
     r"cursor-agent|(?:^|[\s\"'])(?:pi\s+-p|pi\s+--provider)|claude\s+-p|codex\s+exec|"
     r"api\.deepseek\.com|openrouter\.ai|ai-gateway\.vercel\.sh|"
@@ -375,6 +386,35 @@ def _rule_line(line: str) -> bool:
 RULE_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
+def _verifier_files(root: Path, workflow: Path) -> list[Path]:
+    """The repo files the workflow runs, so a gate inside a helper still counts."""
+    found: set[Path] = set()
+    text = workflow.read_text(encoding="utf-8", errors="replace")
+    for token in RUNS_FILE.findall(text):
+        path = root / token
+        if path.is_file() and path != workflow:
+            found.add(path)
+    return sorted(found)
+
+
+def uncovered_pass_gate(root: Path, asked_verifier: str | None) -> list[str]:
+    """ASKED when the verifier's pass path runs uncovered_gate, GAP when it can ignore the files."""
+    if not asked_verifier:
+        return []
+    workflow = root / asked_verifier.split(" via ", 1)[0].rsplit(" job ", 1)[0]
+    if not workflow.is_file():
+        return []
+    paths = [workflow] + _verifier_files(root, workflow)
+    texts = {path: path.read_text(encoding="utf-8", errors="replace") for path in paths}
+    if not any(SELECTION.search(text) for text in texts.values()):
+        return []
+    wired = [path for path in paths if UNCOVERED_GATE.search(texts[path])]
+    if wired:
+        return [f"ASKED uncovered pass gate: {wired[0].relative_to(root).as_posix()}"]
+    names = " with ".join(path.relative_to(root).as_posix() for path in paths)
+    return [f"GAP uncovered pass gate: {names} can PASS while changed product files go unexercised. {UNCOVERED_FIX}"]
+
+
 def rule_restatements(root: Path) -> list[str]:
     lines: list[str] = []
     paths: list[Path] = []
@@ -402,7 +442,9 @@ def analyze(root: Path, pstack: Path, pinned_verifier: str | None = None) -> lis
     latest = latest_pstack(pstack)
     lines = [f"ASKED pstack recipe: {latest.name}"]
     lines.extend(verify_skills(root))
-    lines.extend(classify_workflows(root, pinned_verifier))
+    workflow_lines = classify_workflows(root, pinned_verifier)
+    lines.extend(workflow_lines)
+    lines.extend(uncovered_pass_gate(root, _asked_verifier(workflow_lines)))
     lines.extend(rule_restatements(root))
     return lines
 

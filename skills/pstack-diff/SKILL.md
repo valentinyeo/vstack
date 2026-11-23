@@ -33,4 +33,9 @@ By default the newest installed pstack is the reference. Set `PSTACK_DIFF_PSTACK
 - **GAP** — missing required verification piece (usually no verify skill with a feature map).
 - **EXTRA** — duplicate verifier, non-pstack gate, or local rules that restate verdicts; delete or link to pstack instead.
 
+`GAP uncovered pass gate` means the verifier plans journeys from a changed-file selection, so it
+can PASS while files it could not map went unexercised. Fix: its verdict goes through
+`uncovered_gate` (`scripts/uncovered_gate.py` in vstack; `scripts/verdict.py` already runs it),
+which turns PASS and PASS+NOTES into FAIL and names the files.
+
 Land one PR that clears every GAP and EXTRA line for this repo. Re-run until exit 0.

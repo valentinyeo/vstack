@@ -30,6 +30,7 @@ Nobody pushes to main.
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | A vstack change keeps chats working | `.claude/skills/verify-vstack/run` (Doctor in CI, Drive by the PR owner), `tests/test_verify_vstack.py` |
 | A settings file or install line never names a hook this repo deleted | `tests/test_hook_wiring.py` |
+| A change ships only when a journey exercised it | `scripts/uncovered_gate.py` (behind every vstack review), `GAP uncovered pass gate` in `skills/pstack-diff`, `tests/test_uncovered_gate.py` |
 | A merged rule reaches a running chat without anyone asking | `hooks/skill-update.py`, `tests/test_skill_update.py` |
 | vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `tests/test_pr_queue.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
 | A vstack tool acts only on the chat that runs it; the building chat is never its operator | `tests/test_own_chat_only.py` |
