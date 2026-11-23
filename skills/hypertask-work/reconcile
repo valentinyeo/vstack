@@ -114,7 +114,9 @@ class BoardConfig:
     managed: frozenset
     protected: frozenset
     rules: tuple
-    repository: str | None = None
+    # Every (repo, release branch) pair this board ships from. A merged PR counts
+    # as shipped only when its base is that repository's release branch.
+    repos: tuple = ()
     # A board read at runtime carries its real column titles; a configured board
     # keeps None and lets each stage name resolve from the ticket's own column.
     columns: frozenset | None = None
@@ -127,6 +129,7 @@ PRODUCT_RULES = (
     (lambda f: f.column in PRODUCT_PROTECTED or f.column.startswith('Flag:'), None, 'protected column'),
     (lambda f: f.column not in PRODUCT_MANAGED, None, 'unknown column; kept'),
     (lambda f: any(p.state == 'OPEN' for p in f.pulls), 'AI Review', 'open PR'),
+    (lambda f: any(p.state == 'MERGED' for p in f.pulls), 'AI Review', 'merged PR; live proof pending'),
     (lambda f: f.alive, 'In Progress', 'live worker'),
     (lambda f: f.age < 7200, None, 'touched within 2h'),
     (lambda f: f.column == 'In Progress', 'Backlog', 'idle In Progress; no live worker or open PR'),
@@ -134,9 +137,12 @@ PRODUCT_RULES = (
 )
 BOARDS = {
     2060: BoardConfig(2060, 'SOFT', frozenset(MANAGED), frozenset(PROTECTED), RULES),
+    # The Product board ships from the product repo and from vstack itself.
     15: BoardConfig(15, 'HTPR', PRODUCT_MANAGED, PRODUCT_PROTECTED, PRODUCT_RULES,
-                    'hypertask-ai/hypertask'),
+                    (('hypertask-ai/hypertask', 'production'), ('valentinyeo/vstack', 'main'))),
 }
+# Release branches for boards that name no repos, so the shipped rule still holds.
+FLEET_RELEASES = {'hypertask-ai/hypertask': 'production', 'valentinyeo/vstack': 'main'}
 DEFAULT = BOARDS[2060]
 
 
@@ -640,8 +646,8 @@ def saved_facts_fresh(saved, now):
 
 
 def probe_scope(board, repos=()):
-    if board.repository:
-        return f'repo:{board.repository}'
+    if board.repos:
+        return search_scope(board)
     repos = tuple(sorted(set(repos)))
     if repos:
         return ' '.join(f'repo:{repo}' for repo in repos)
@@ -795,7 +801,7 @@ def github_search_batch(keys, board=DEFAULT):
     def search(batch):
         fields = []
         for n, key in enumerate(batch):
-            scope = f'repo:{board.repository}' if board.repository else 'user:valentinyeo user:hypertask-ai'
+            scope = search_scope(board)
             query = f'is:pr {scope} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
             fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
                           '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number repository{nameWithOwner}}}}')
@@ -904,12 +910,40 @@ def today():
     return datetime.now(timezone.utc).date()
 
 
+def search_scope(board=DEFAULT):
+    """Every repository one board ships from, in the one query the search pays for."""
+    if board.repos:
+        return ' '.join(f'repo:{repo}' for repo, _ in board.repos)
+    return 'user:valentinyeo user:hypertask-ai'
+
+
+def release_branch(repo, board=DEFAULT):
+    """The branch a merge must reach to ship, or None when the repo is unknown here."""
+    known = dict(board.repos) if board.repos else FLEET_RELEASES
+    return known.get(repo)
+
+
+def shipped(pull, board=DEFAULT):
+    """A merged PR counts only when its base is its repository's release branch.
+
+    A stacked PR merged into a feature branch is still open work, not a ship.
+    """
+    if pull.get('state') != 'MERGED':
+        return True
+    release = release_branch(pull['repository']['nameWithOwner'], board)
+    # A repo this board names no release branch for keeps the old reading, and so
+    # does a cached pull read before this rule existed: re-reading the whole window
+    # to refill one field would blow the run's GitHub budget, and every pull read
+    # from now on carries its base.
+    return release is None or pull.get('baseRefName') in (None, release)
+
+
 def scan_window(board, kind, field, start, end):
     """Every PR of one kind in a date range. GitHub search shows 1,000 results at
     most, so a range over that is split until nothing can be hidden.
     """
     found, windows = [], [(start, end)]
-    scope = f'repo:{board.repository}' if board.repository else 'user:valentinyeo user:hypertask-ai'
+    scope = search_scope(board)
     while windows:
         start, end = windows.pop()
         cursor = None
@@ -918,7 +952,7 @@ def scan_window(board, kind, field, start, end):
             after = ',after:' + json.dumps(cursor) if cursor else ''
             result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{search(query:' + json.dumps(query) +
                                     ',type:ISSUE,first:100' + after + '){issueCount pageInfo{hasNextPage endCursor} '
-                                    'nodes{... on PullRequest{url headRefName state number mergedAt repository{nameWithOwner}}}}}'))
+                                    'nodes{... on PullRequest{url headRefName state number mergedAt baseRefName repository{nameWithOwner}}}}}'))
             if result.get('errors'):
                 raise ValueError('GitHub branch search errors')
             page = result['data']['search']
@@ -929,7 +963,8 @@ def scan_window(board, kind, field, start, end):
                 windows.extend([(start, middle), (middle + timedelta(days=1), end)])
                 break
             found += [pull for pull in page['nodes']
-                      if pull and pull['state'] != 'CLOSED' and allowed_repository(pull, board)]
+                      if pull and pull['state'] != 'CLOSED' and allowed_repository(pull, board)
+                      and shipped(pull, board)]
             if not page['pageInfo']['hasNextPage']:
                 break
             next_cursor = page['pageInfo']['endCursor']
@@ -987,11 +1022,11 @@ def head_pulls(keys, board=DEFAULT):
     """Targeted lookup for tickets older than the scan window: branches that
     start with the ticket key. GitHub matches only the start of a branch name.
     """
-    scope = f'repo:{board.repository}' if board.repository else 'user:valentinyeo user:hypertask-ai'
+    scope = search_scope(board)
 
     def lookup(batch):
         fields = [f'q{n}:search(query:{json.dumps(f"is:pr {scope} head:{key}")},type:ISSUE,first:100)'
-                  '{pageInfo{hasNextPage} nodes{... on PullRequest{url headRefName state number repository{nameWithOwner}}}}'
+                  '{pageInfo{hasNextPage} nodes{... on PullRequest{url headRefName state number baseRefName repository{nameWithOwner}}}}'
                   for n, key in enumerate(batch)]
         result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
         if result.get('errors'):
@@ -1001,14 +1036,17 @@ def head_pulls(keys, board=DEFAULT):
             page = result['data'][f'q{n}']
             if page['pageInfo']['hasNextPage']:
                 raise ValueError(f'{key}: GitHub branch search truncated')
-            pulls += [p for p in page['nodes'] if p and p['state'] != 'CLOSED' and allowed_repository(p, board)]
+            pulls += [p for p in page['nodes'] if p and p['state'] != 'CLOSED' and allowed_repository(p, board)
+                      and shipped(p, board)]
         return pulls
     return [pull for i in range(0, len(keys), 12) for pull in lookup(keys[i:i + 12])]
 
 
 def allowed_repository(pull, board):
     repo = pull['repository']['nameWithOwner']
-    return repo == board.repository if board.repository else repo.split('/')[0] in ('valentinyeo', 'hypertask-ai')
+    if board.repos:
+        return repo in dict(board.repos)
+    return repo.split('/')[0] in ('valentinyeo', 'hypertask-ai')
 
 
 def scan_plan(created, days=WINDOW_DAYS, today=None):
@@ -1037,10 +1075,9 @@ def discover(keys, board=DEFAULT, created=None):
     def search(batch):
         fields = []
         for n, key in enumerate(batch):
-            scope = f'repo:{board.repository}' if board.repository else 'user:valentinyeo user:hypertask-ai'
-            query = f'is:pr {scope} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
+            query = f'is:pr {search_scope(board)} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
             fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
-                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number repository{nameWithOwner}}}}')
+                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number baseRefName repository{nameWithOwner}}}}')
         result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
         if result.get('errors'):
             raise ValueError('GitHub search errors')
@@ -1048,7 +1085,8 @@ def discover(keys, board=DEFAULT, created=None):
             page = result['data'][f'q{n}']
             if page['pageInfo']['hasNextPage']:
                 raise ValueError(f'{key}: GitHub search truncated')
-            found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
+            found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board)
+                          and shipped(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
     with phase('search'):
         for offset in range(0, len(keys), 12):
             search(keys[offset:offset + 12])
@@ -1246,14 +1284,15 @@ def all_comments(repo, number):
     return [comment for page in pages for comment in page]
 
 
-def read_product_pull(number):
+def read_product_pull(pull):
     """One PR's live state, for an apply preflight that must not trust a search.
 
     Never read on a dry run: board 15 takes its PR state from the search result
-    it already paid for.
+    it already paid for. The search names the repository, so a PR found in a
+    second repo is read from that repo and not from the product one.
     """
-    detail = json.loads(run('gh', 'pr', 'view', str(number), '--repo', 'hypertask-ai/hypertask',
-                            '--json', 'url,state'))
+    detail = json.loads(run('gh', 'pr', 'view', str(pull['number']), '--repo',
+                            pull['repository']['nameWithOwner'], '--json', 'url,state'))
     return Pull(detail['url'], detail['state'], '', False)
 
 
@@ -1261,7 +1300,7 @@ def refreshed(pulls, board=DEFAULT):
     """The pulls an apply preflight acts on, re-read once each, and only when it writes."""
     if not product_board(board):
         return pulls
-    return [{**pull, 'state': read_product_pull(pull['number']).state} for pull in pulls]
+    return [{**pull, 'state': read_product_pull(pull).state} for pull in pulls]
 
 
 def prefetch(pulls, board=DEFAULT, clear=True):
