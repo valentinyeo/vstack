@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, blocked links, armed loop."""
 import argparse
+from dataclasses import replace
 import importlib.machinery
 import importlib.util
 import json
@@ -191,8 +192,7 @@ def fixture_board(board_id, rows):
     prefix = ''
     if rows:
         prefix = str(rows[0]['task'].get('ticketNumber') or '').split('-')[0]
-    return reconcile.BoardConfig(board_id, prefix, reconcile.DEFAULT.managed,
-                                 reconcile.DEFAULT.protected, reconcile.DEFAULT.rules)
+    return replace(reconcile.DEFAULT, id=board_id, prefix=prefix)
 
 
 def ticket_relations(key):

@@ -214,6 +214,9 @@ def plan_stage(facts, here, board):
     if merged and here == Stage.BACKLOG and facts.column_entered is None:
         return None, 'column entry unreadable; kept'
     fresh = [p for p in merged if merged_since_entry(p, facts, here)]
+    if fresh and product_board(board):
+        # The product board runs no verifier gate, so a merge is review evidence alone.
+        return Stage.REVIEW, 'merged PR; live proof pending'
     if fresh and all(p.passed for p in fresh):
         return Stage.REVIEW, 'merged PR with PASS; live proof pending'
     if fresh:
@@ -814,6 +817,13 @@ def write_board_facts(board_id, payload):
 
 
 def saved_facts_fresh(saved, now):
+    for entry in (saved.get('tickets') or {}).values():
+        if any(p.get('state') == 'MERGED' and 'mergedAt' not in p
+               for p in entry.get('pulls') or ()):
+            return False
+        if any(f.get('state') == 'MERGED' and 'merged_at' not in f
+               for f in (entry.get('facts') or {}).values()):
+            return False
     try:
         return now - float(saved['at']) <= FACTS_MAX_AGE
     except (KeyError, TypeError, ValueError):
@@ -858,6 +868,7 @@ def search_item_to_pull(item, saved_index=()):
     head = item.get('headRefName') or (saved or {}).get('headRefName') or ''
     return {'url': url, 'title': item.get('title') or '', 'body': item.get('body') or '',
             'headRefName': head, 'state': state, 'number': number,
+            'mergedAt': (item.get('pull_request') or {}).get('merged_at') or (saved or {}).get('mergedAt'),
             'repository': {'nameWithOwner': repo or (saved or {}).get('repository', {}).get('nameWithOwner', '')}}
 
 
@@ -950,7 +961,8 @@ def restore_pull_facts(saved):
     for entry in (saved.get('tickets') or {}).values():
         for ref, fact in (entry.get('facts') or {}).items():
             repo, number = ref.rsplit('#', 1)
-            PULLS[(repo, int(number))] = Pull(fact['url'], fact['state'], fact['checks'], fact['passed'])
+            PULLS[(repo, int(number))] = Pull(fact['url'], fact['state'], fact['checks'], fact['passed'],
+                                             fact.get('merged_at'))
 
 
 def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved_at=None):
@@ -968,7 +980,8 @@ def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved_at=N
                 if ref in PULLS:
                     got = PULLS[ref]
                     entry['facts'][f'{repo}#{pull["number"]}'] = {
-                        'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed}
+                        'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed,
+                        'merged_at': got.merged_at}
         tickets[key] = entry
     repos = sorted({pull['repository']['nameWithOwner'] for plist in pulls.values() for pull in plist})
     return {'at': saved_at if saved_at is not None else now,
@@ -993,7 +1006,7 @@ def github_search_batch(keys, board=DEFAULT):
         for n, key in enumerate(batch):
             query = f'is:pr {search_scope(board)} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
             fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
-                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state number repository{nameWithOwner}}}}')
+                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state mergedAt number repository{nameWithOwner}}}}')
         result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
         if result.get('errors'):
             raise ValueError('GitHub search errors')

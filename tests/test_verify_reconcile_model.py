@@ -70,7 +70,7 @@ class VerifyReconcileModel(unittest.TestCase):
             work = r.resolve_column(r.Stage.IN_PROGRESS, board, names)
             for column in sorted(board.managed):
                 for age, alive, pulls, waiting, blocked, verification in itertools.product(
-                        (100.0, 8000.0), (False, True), PR_STATES, (False,), (False,), (False, True)):
+                        (100.0, 8000.0), (False, True), PR_STATES, (False, True), (False, True), (False, True)):
                     facts = r.Facts(column, age, alive, pulls, waiting, blocked, verification, ENTRY)
                     count += 1
                     here = r.column_stage_of(board, column)
@@ -132,6 +132,44 @@ class VerifyReconcileModel(unittest.TestCase):
             self.assertEqual(len(set(stages)), 1, f'ranking split on {key}: {stages}')
         print(f'verify-reconcile-model: combinations={count}')
         self.assertGreater(count, 500)
+
+    def test_main_column_rule_rows(self):
+        rows = (
+            (r.Facts('Todo', 8000, True), 'Doing'),
+            (r.Facts('Doing', 8000, True), 'Doing'),
+            (r.Facts('Doing', 100, True, (pull(checks='red'),)), 'Checks'),
+            (r.Facts('Doing', 100, True, (pull(),)), 'AI Review'),
+            (r.Facts('Doing', 8000, pulls=(pull(checks='running'),)), 'Checks'),
+            (r.Facts('Doing', 8000, pulls=(pull(checks='missing'),)), 'Checks'),
+            (r.Facts('Checks', 8000, pulls=(pull(passed=True),)), 'AI Review'),
+            (r.Facts('Doing', 7199, pulls=(pull('MERGED', passed=True),)), 'AI Review'),
+            (r.Facts('Doing', 8000, pulls=(pull('MERGED'),)), 'AI Review'),
+            (r.Facts('Doing', 8000, pulls=(pull('MERGED'), pull(checks='red'))), 'Checks'),
+            (r.Facts('Doing', 7199), 'Doing'),
+            (r.Facts('Doing', 7200), 'Todo'),
+            (r.Facts('Doing', 8000, True, waiting=True), 'Doing'),
+            (r.Facts('Doing', 8000, True, blocked=True), 'Doing'),
+            (r.Facts('Valentin Review', 8000, True), 'Valentin Review'),
+            (r.Facts('Done', 8000, True), 'Done'),
+            (r.Facts('Todo', 60, verification=True), 'Verification Backlog'),
+            (r.Facts('Verification Backlog', 60), 'Todo'),
+            (r.Facts('Verification Backlog', 8000, pulls=(pull(),), verification=True), 'AI Review'),
+            (r.Facts('Verification Backlog', 8000, pulls=(pull('MERGED'),), verification=True), 'AI Review'),
+            (r.Facts('Verification Backlog', 8000, True, verification=True), 'Doing'),
+            (r.Facts('Verification Backlog', 8000, verification=True), 'Verification Backlog'),
+        )
+        count = 0
+        for board_id in (2060, 13556):
+            for facts, expected in rows:
+                with self.subTest(board=board_id, facts=facts):
+                    self.assertEqual(r.target(facts, r.BOARDS[board_id])[0], expected)
+                    count += 1
+        for column, expected in (('Backlog', 'Backlog'), ('In Progress', 'Backlog'),
+                                 ('AI Review', 'AI Review'), ('UX needed', 'UX needed')):
+            with self.subTest(board=15, column=column):
+                self.assertEqual(r.target(r.Facts(column, 8000), r.BOARDS[15])[0], expected)
+                count += 1
+        print(f'verify-reconcile-model: main-rule-rows={count}')
 
     def test_a_merge_older_than_the_column_never_promotes(self):
         """The owner's rule, on every board: an old merge is history, not evidence.

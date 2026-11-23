@@ -9,7 +9,7 @@ Reconcile picks a card column from worker and GitHub facts. A bug here moves the
 
 ## Property
 
-After one planned move, age reset to zero and a second plan must KEEP the new column, and still KEEP after age passes two hours. Hard evidence (open PR, a merge newer than the card's column entry, live worker) moves even inside the grace window. A merge older than the column entry never promotes and never demotes. Protected and unknown columns never move. Every configured board ranks PR evidence above worker above idle the same way.
+After a planned move, check the next plan both inside and after the two-hour grace window. Reopened backlog cards ignore merges older than `staleness.sectionChangedAt`. Work and review stages count merges regardless of later edits. Protected, unknown, waiting and blocked cards never move. Every configured board ranks PR evidence above worker above idle the same way. Main's column-rule rows run alongside the fixed-point enumeration.
 
 ## Command
 

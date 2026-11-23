@@ -1104,9 +1104,14 @@ else:
         for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
                 self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
-        # A shipped PR is real evidence, so the card goes to review, never back.
-        self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),)), board=r.BOARDS[15]),
+        # A shipped PR is real evidence once the card's entry is readable, so the
+        # card goes to review, never back. With no entry the model does not guess.
+        self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),),
+                                          column_entered=r.stamp('2026-11-20T10:00:00Z')),
+                                   board=r.BOARDS[15]),
                          ('AI Review', 'merged PR; live proof pending'))
+        self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),)), board=r.BOARDS[15]),
+                         ('Backlog', 'column entry unreadable; kept'))
         self.assertEqual(self.target('AI Review', pulls=(pull('MERGED'),)), 'AI Review')
 
     # HTPR-7807 as the board has it: reopened into Backlog on 2026-11-20, behind
@@ -2143,6 +2148,37 @@ class CallBudgetTest(unittest.TestCase):
             self.assertEqual(r.verifier_policy('valentinyeo/another-repo', HEAD), {})
         self.assertEqual(run.call_count, 1)
 
+    def test_quiet_cache_preserves_merge_time_and_reopen_guard(self):
+        card = task('Todo')
+        key = card['ticketNumber']
+        merged_at = NOW - 86400
+        entered = NOW - 8000
+        merged = r.Pull('https://github.com/example/x/pull/1', 'MERGED', 'green', True,
+                        merged_at)
+        metadata = {'url': merged.url, 'state': 'MERGED', 'number': 1,
+                    'repository': {'nameWithOwner': 'example/x'}}
+        r.PULLS[('example/x', 1)] = merged
+        saved = r.serialize_board_facts(r.DEFAULT, [card], {key: [metadata]}, NOW)
+        r.PULLS.clear()
+        r.restore_pull_facts(saved)
+        restored = r.PULLS[('example/x', 1)]
+        self.assertEqual(restored.merged_at, merged_at)
+        self.assertEqual(r.target(r.Facts('Todo', 8000, pulls=(restored,),
+                                        column_entered=entered))[0], 'Todo')
+
+    def test_old_quiet_cache_without_merge_times_forces_refresh(self):
+        for entry in ({'pulls': [{'state': 'MERGED'}]},
+                      {'facts': {'example/x#1': {'state': 'MERGED'}}}):
+            saved = {'at': NOW, 'tickets': {task()['ticketNumber']: entry}}
+            self.assertFalse(r.saved_facts_fresh(saved, NOW))
+
+    def test_quiet_probe_preserves_product_merge_time(self):
+        merged_at = '2026-01-02T00:00:00Z'
+        item = {'html_url': 'https://github.com/hypertask-ai/hypertask/pull/1',
+                'number': 1, 'state': 'closed', 'pull_request': {'merged_at': merged_at}}
+        metadata = r.search_item_to_pull(item)
+        self.assertEqual(r.pull_facts(metadata, r.BOARDS[15]).merged_at, r.stamp(merged_at))
+
     def test_quiet_sync_uses_one_probe_and_matches_full_plan(self):
         t1 = {**task('Doing'), 'ticketNumber': 'SOFT-1', 'updatedAt': NOW - 8000}
         t2 = {**task('Todo'), 'ticketNumber': 'SOFT-2', 'updatedAt': NOW - 9000}
@@ -2582,6 +2618,9 @@ class WholeSyncTest(unittest.TestCase):
 
         def respond(args, **kwargs):
             call = ' '.join(args)
+            if 'project sections' in call:
+                return subprocess.CompletedProcess(
+                    [], 0, json.dumps({'sections': self.VSTA_PROJECT['project']['sections']}), '')
             if 'project show' in call:
                 return subprocess.CompletedProcess([], 0, json.dumps(self.VSTA_PROJECT), '')
             if 'search/issues' in call:
