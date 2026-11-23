@@ -469,12 +469,13 @@ class CursorBriefPasteTests(unittest.TestCase):
 
     def launch(self, pane_for, brief=LONG_BRIEF):
         """Launch cursor against a fake tmux. Returns (row, enters, pasted brief text)."""
-        state = {'enters': 0, 'buffer': None}
+        state = {'enters': 0, 'reads': 0, 'buffer': None}
         ok = subprocess.CompletedProcess([], 0, '', '')
 
         def fake_run(args, cwd=None, timeout=None):
             if 'capture-pane' in args:
-                return subprocess.CompletedProcess(args, 0, pane_for(state['enters']), '')
+                state['reads'] += 1
+                return subprocess.CompletedProcess(args, 0, pane_for(state), '')
             if 'load-buffer' in args:
                 state['buffer'] = Path(args[-1]).read_text()
                 return ok
@@ -497,14 +498,14 @@ class CursorBriefPasteTests(unittest.TestCase):
         return row, state['enters'], state['buffer']
 
     def test_the_whole_brief_is_pasted_with_every_line_and_no_flattening(self):
-        row, enters, pasted = self.launch(lambda enters: cursor_pane(60, PANE))
+        row, enters, pasted = self.launch(lambda pane: cursor_pane(60, PANE))
         self.assertEqual(pasted, LONG_BRIEF)
         self.assertEqual(row['status'], 'started')
         self.assertEqual(enters, 1)
 
     def test_a_collapsed_paste_and_an_ignored_first_enter_still_submit(self):
-        def pane_for(enters):
-            if enters < 2:
+        def pane_for(pane):
+            if pane['enters'] < 2:
                 return cursor_pane(60)
             return cursor_pane(60, 'Checking git status\n  ' + PANE.strip())
 
@@ -513,14 +514,26 @@ class CursorBriefPasteTests(unittest.TestCase):
         self.assertEqual(row['status'], 'started')
         self.assertTrue((row['task_id'] or '').startswith('bc-'))
 
+    def test_checking_git_status_keeps_waiting_for_the_url(self):
+        # The live proof, 2026-11-23: `Checking git status` confirmed the Enter, the URL arrived
+        # about 30s later, and stopping at the confirmation reported a failed launch.
+        def pane_for(pane):
+            if pane['reads'] < 6:
+                return cursor_pane(60, 'Checking git status\n')
+            return cursor_pane(60, 'Checking git status\n  ' + PANE.strip())
+
+        row, enters, _ = self.launch(pane_for)
+        self.assertEqual(enters, 1)
+        self.assertEqual(row['status'], 'started')
+
     def test_three_ignored_enters_fail_once_with_the_counts_in_the_error(self):
-        row, enters, _ = self.launch(lambda enters: cursor_pane(60))
+        row, enters, _ = self.launch(lambda pane: cursor_pane(60))
         self.assertEqual(enters, 3)
         self.assertEqual(row['status'], 'failed')
         self.assertIn('3 Enter presses', row['error'] or '')
 
     def test_a_short_paste_token_stops_the_launch_before_any_enter(self):
-        row, enters, _ = self.launch(lambda enters: cursor_pane(2), brief=LONG_BRIEF + '\n')
+        row, enters, _ = self.launch(lambda pane: cursor_pane(2), brief=LONG_BRIEF + '\n')
         self.assertEqual(enters, 0, 'a brief cursor only half received must never be submitted')
         self.assertEqual(row['status'], 'failed')
         self.assertIn('2 of the 61 lines', row['error'] or '')

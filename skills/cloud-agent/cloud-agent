@@ -612,7 +612,7 @@ def launch_cursor(repo, brief, model, no_wait, timeout):
 
         # Only the pane after cursor starts working counts as a limit: the pane still shows the
         # brief the user wrote, and a brief may say "rate limit" or "quota" in its own words.
-        if pane is None:
+        if not extract_cursor_url(pane or '')[0]:
             pane = wait_cursor_agent_url(tmux, session, read,
                                          max(0.0, deadline - time.monotonic()))
         agent_url, task_id = extract_cursor_url(pane or '')
