@@ -846,16 +846,67 @@ class LoopStateTest(unittest.TestCase):
     def test_a_dead_watcher_reads_watcher_dead(self):
         loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
         loop.record_watch('HT Test', dead_pid(), now=NOW)
-        self.assertEqual(loop.status('HT Test', now=NOW), (2, 'watcher dead'))
+        self.assertEqual(loop.status('HT Test', now=NOW),
+                         (2, f'watcher dead since {iso(NOW)}'))
 
     def test_a_live_watcher_leaves_the_loop_armed(self):
         loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
         state = loop.record_watch('HT Test', os.getpid(), now=NOW)
         self.assertEqual(state['watch_started'], iso(NOW))
+        self.assertEqual(state['watch_beat'], iso(NOW))
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+
+    def test_an_exited_watcher_reads_dead_until_a_new_one_starts(self):
+        """VSTA-151: the watcher exits, the chat never re-arms, and the loop read armed."""
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
+        loop.record_watch('HT Test', os.getpid(), now=NOW)
         loop.clear_watch('HT Test')
         self.assertIsNone(loop.stored('HT Test')['watch_pid'])
+        self.assertEqual(loop.status('HT Test', now=NOW + 60),
+                         (2, f'watcher dead since {iso(NOW)}'))
+        loop.record_watch('HT Test', os.getpid(), now=NOW + 120)
+        self.assertEqual(loop.status('HT Test', now=NOW + 120)[0], 0)
+
+    def test_a_hung_watcher_past_three_polls_reads_dead(self):
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
+        loop.record_watch('HT Test', os.getpid(), now=NOW, every=180)
+        self.assertEqual(loop.status('HT Test', now=NOW + 540)[0], 0)
+        self.assertEqual(loop.status('HT Test', now=NOW + 541),
+                         (2, f'watcher dead since {iso(NOW)}'))
+
+    def test_a_live_watcher_without_beats_counts_as_alive_during_upgrade(self):
+        """An old pre-upgrade watcher wrote watch_pid and watch_started, never watch_beat."""
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
+        loop.store('HT Test', {'watch_pid': os.getpid(), 'watch_started': iso(NOW - 3600)})
+        self.assertNotIn('watch_beat', loop.stored('HT Test'))
+        self.assertEqual(loop.watch_health('HT Test', now=NOW), ('ok', 'watcher ok'))
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
+        loop.store('HT Test', {'watch_pid': dead_pid()})
+        self.assertEqual(loop.watch_health('HT Test', now=NOW),
+                         ('dead', f'watcher dead since {iso(NOW - 3600)}'))
+        self.assertEqual(loop.status('HT Test', now=NOW),
+                         (2, f'watcher dead since {iso(NOW - 3600)}'))
+
+    def test_the_pulse_deadline_follows_the_poll_interval(self):
+        self.assertEqual(loop.beat_limit({'watch_every': 60}), loop.BEAT_FLOOR)
+        self.assertEqual(loop.beat_limit({'watch_every': 180}), 540)
+        self.assertEqual(loop.beat_limit({}), 540)
+        self.assertEqual(loop.beat_limit({'watch_every': 'broken'}), 540)
+
+    def test_the_cli_watcher_verb_prints_one_line(self):
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory))
+        command = [sys.executable, str(SKILL / 'loop-state')]
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_watch('HT Test', os.getpid(), now=NOW, every=180)
+        live = subprocess.run(command + ['watcher', '--name', 'HT Test'],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(live.returncode, 0, live.stderr)
+        self.assertEqual(live.stdout.strip(), 'watcher ok')
+        loop.record_watch('HT Test', dead_pid(), now=NOW - 3600, every=180)
+        dead = subprocess.run(command + ['watcher', '--name', 'HT Test'],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(dead.returncode, 1, dead.stderr)
+        self.assertEqual(dead.stdout.strip(), f'watcher dead since {iso(NOW - 3600)}')
 
     def test_an_old_watcher_cannot_clear_its_replacement(self):
         loop.arm('HT Test', now=NOW)
@@ -1054,6 +1105,25 @@ class WatchTest(unittest.TestCase):
         state = json.loads((self.directory / 'state/watch-test.json').read_text())
         self.assertEqual(state['watch_pid'], replacement_pid)
         self.assertEqual(state['watch_started'], iso(NOW + 180))
+
+    def test_the_watcher_pulses_on_every_poll(self):
+        """VSTA-151: the pulse is the marker a dead watcher leaves behind."""
+        beats = []
+
+        def on_sleep(tick):
+            state = json.loads((self.directory / 'state/watch-test.json').read_text())
+            beats.append(state.get('watch_beat'))
+
+        with patch.object(watch.loop_state, 'loop_interval', return_value=loop.PACER_FLOOR):
+            code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(beats[:3], [iso(NOW), iso(NOW + 180), iso(NOW + 360)])
+        state = json.loads((self.directory / 'state/watch-test.json').read_text())
+        self.assertEqual(state['watch_every'], 180)
+        self.assertEqual(state['watch_beat'], iso(NOW + 7020))
+        self.assertIsNone(state.get('watch_pid'))
+        self.assertEqual(loop.watch_health('Watch Test', now=NOW + 7020),
+                         ('dead', f'watcher dead since {iso(NOW + 7020)}'))
 
     def test_the_cli_records_the_watcher_pid(self):
         env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory / 'state'))
