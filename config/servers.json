@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "main_server": "contabo-uk",
+  "servers": [
+    {
+      "id": "contabo-uk",
+      "role": "main",
+      "ip": "80.190.82.74",
+      "hostname": "hypertask-vps",
+      "previous_hostname": "vmi3202882",
+      "users": ["valentin"],
+      "runs": "every chat of Valentin's own: Multi Bot, Hypertask, vstack, Postbox, Matt Live Stream and the rest",
+      "reaches_other_with": ["hetzner", "vps"]
+    },
+    {
+      "id": "hetzner",
+      "role": "shared",
+      "ip": "46.224.218.39",
+      "hostname": "ubuntu-4gb-nbg1-1",
+      "users": ["valentin", "inne", "agent"],
+      "valentin_runs": [
+        "local-helper (port 8766, controls his Windows PC)",
+        "the Slack reader (triage)"
+      ],
+      "inne": "a separate medical company account with its own Claude subscription, kept apart from Valentin's data; inne also uses Multi Bot",
+      "agent": "an account exists; TODO: its owner says what it is",
+      "reaches_other_with": ["contabo-uk", "contabo"]
+    }
+  ]
+}

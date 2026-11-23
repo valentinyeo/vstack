@@ -142,6 +142,13 @@ link_one long-chat.py "$ROOT/hooks/long-chat.py" "$HOME/.claude/hooks"
 link_one valentin_mode_loaded.py "$ROOT/hooks/valentin_mode_loaded.py" "$HOME/.claude/hooks"
 link_one book-check.py "$ROOT/hooks/book-check.py" "$HOME/.claude/hooks"
 
+# Chats read one server facts file (VSTA-146). A hand-written tools.md note had
+# the two servers the wrong way round and said only inne runs on Hetzner, and a
+# chat repeated it. Link the file every harness already reads reference notes
+# from, so the old claim cannot come back and Multi Bot can read the JSON twin.
+link_one servers.md "$ROOT/docs/servers.md" "$HOME/.claude/reference"
+link_one servers.json "$ROOT/config/servers.json" "$HOME/.claude/reference"
+
 if [ "$moved" -eq 0 ]; then
   echo "vstack install: linked skills from $ROOT"
 else

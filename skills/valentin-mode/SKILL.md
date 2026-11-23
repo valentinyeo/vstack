@@ -44,15 +44,15 @@ Prior art: pstack `poteto-mode` covers the work loop; only his rules and their h
 
 ### Subscription pacer
 
-Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt; reviews add `--not-vendor <author vendor>`. Wire hooks per [setup.md](setup.md). The chat he talks to runs on Claude, never a code worker; it only writes briefs, reads one result line and answers him: code, tests, rebases, log reading and PR babysitting go to workers. The pstack models rule holds the lanes; every brief includes docs/worker-brief.md. Pace decides only who runs the work: a Claude subagent only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Never ask him to pay more; bring the free option.
+Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, brief in brief.txt; reviews add `--not-vendor <author vendor>`. Wire hooks per [setup.md](setup.md). The chat he talks to runs on Claude, never a code worker; it only writes briefs, reads one result line and answers him: code, tests, rebases, log reading and PR babysitting go to workers. The pstack models rule holds the lanes; every brief includes docs/worker-brief.md. Pace decides who runs the work: a Claude subagent only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Never ask him to pay more; bring the free option.
 
 ### Board work
 
-Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
+Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`): login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself at session start, on restart or handover, and on skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, restart, handover and skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
 
 ### PR owner
 
@@ -61,7 +61,7 @@ Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh wor
 ## Working
 
 - **Gaps in Hypertask, Multi Bot, vstack:** `hypertask feedback`, `multibot-feedback`, or `vstack-feedback` now; send him the link.
-- **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs. Add a row to its rule table.
+- **Bans live in lint:** a ban only in markdown is not a ban. Fix a corrected mistake class at the highest level: architecture, then lint or test, docs. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook. Fix flaky checks per pstack tdd; never rerun to pass.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. House change: one free GitHub runner, or a cloud agent when a runner cannot. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls).
@@ -85,6 +85,7 @@ Design work follows [designing.md](designing.md).
 
 Hidden skills: read the path shown; the Skill tool refuses them. Slash commands still work.
 
+- anything about servers, hosts, ssh, which machine a chat runs on, or inne data -> read ../../docs/servers.md
 - plain words for him, ticket comments and PR text -> read ../unjargon/SKILL.md
 - rewrite a reply for a product owner, he says "pospeak" or "too technical" -> read ../pospeak/SKILL.md
 - a report, plan or research page to scan -> read ../report-page/SKILL.md
