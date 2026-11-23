@@ -48,7 +48,7 @@ Start every code worker and reviewer through `~/.local/bin/plan-pick --run`, bri
 
 ### Board work
 
-Before board work, read `/hypertask` (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
+Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`). It owns login, tickets, columns, views and sync. Run its checkup on a new project and daily.
 
 ### Board drain
 
