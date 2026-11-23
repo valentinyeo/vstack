@@ -22,6 +22,7 @@ Nobody pushes to main.
 | Advice replies name their pstack source | `hooks/pstack-reply.py` |
 | Promised work starts in that turn | `hooks/said-started.py` |
 | A chat with an open ticket never ends its turn idle | `skills/responsive-mode/idle-stop.py`, `tests/test_idle_stop.py` |
+| A chat never waits on Valentin to merge or review a finished, green PR | `skills/hypertask-work/merge-ask`, `skills/board-drain/drain-check`, `skills/responsive-mode/reply-check.py`, `tests/test_board_drain.py`, `tests/test_responsive_mode_checks.py` |
 | Advisors respect configured project boundaries | `hooks/out-of-bounds.py` |
 | Long-chat and pacing hooks act only in a chat that loaded valentin-mode | `hooks/valentin_mode_loaded.py`, `tests/test_valentin_mode_loaded.py` |
 | Responsive mode's rules reach the chat without the chat choosing to fetch them | `skills/valentin-mode/context.py`, `.claude/skills/verify-valentin-mode/grade.py`, `tests/test_valentin_mode_context.py` |

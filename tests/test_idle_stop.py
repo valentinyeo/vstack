@@ -218,7 +218,7 @@ class SkillWiring(unittest.TestCase):
         text = (SKILL / 'SKILL.md').read_text()
         self.assertIn('command: python3 "$CLAUDE_PLUGIN_ROOT/idle-stop.py"', text)
         self.assertIn('command: python3 "$CLAUDE_PLUGIN_ROOT/said-started.py"', text)
-        self.assertIn('Loading this skill turns on three checks in this chat', text)
+        self.assertIn('Loading this skill turns on four checks in this chat', text)
 
     def test_valentin_mode_turns_the_check_on(self):
         text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()

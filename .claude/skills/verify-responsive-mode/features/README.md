@@ -24,6 +24,8 @@ never from the chat's own claim.
 
 `reply-check.py` returns the reminder as `hookSpecificOutput.additionalContext` on each tool call until Valentin's newest message has a reply. It never sets `permissionDecision` or denies the call. Once a reply exists, it prints nothing. `tests/test_responsive_mode_checks.py` and the hook's `--self-test` check that output. The live grader checks reply timing and hook loading, not permission denials.
 
+At Stop the same file reads the final reply. A reply that asks Valentin to merge, ship, approve or review a pull request gets the fix as `hookSpecificOutput.additionalContext` with event `Stop`: merge it yourself per pstack shipping; ask him only a product question. It never blocks the turn. The matcher and the fix line live in `skills/hypertask-work/merge-ask`, shared with the board drain, so a product question still passes.
+
 ## Driving conventions
 
 - Only `run` starts a chat.

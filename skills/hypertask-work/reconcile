@@ -91,6 +91,9 @@ class Pull:
     checks: str
     passed: bool
     merged_at: float | None = None
+    # None is unknown (saved facts and searches carry no merge state); only a
+    # conflicting PR is a no.
+    mergeable: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -1784,7 +1787,7 @@ def pull_facts(pull, board=DEFAULT):
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
-PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid author{login}
+PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid mergeable author{login}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
  ... on CheckRun{name status conclusion checkSuite{commit{oid} workflowRun{databaseId}}}
  ... on StatusContext{state}}}}
@@ -1841,7 +1844,9 @@ def pull_from_node(repo, number, node):
         if not passed and total > len(comments):
             # A verdict older than the newest hundred still counts; read them all.
             passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
-    return Pull(node['url'], node['state'], checks, passed, moment(node.get('mergedAt')))
+    mergeable = node.get('mergeable')
+    return Pull(node['url'], node['state'], checks, passed, moment(node.get('mergedAt')),
+                None if mergeable in (None, 'UNKNOWN') else mergeable == 'MERGEABLE')
 
 
 def read_pull_group(refs):

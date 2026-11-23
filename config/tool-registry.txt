@@ -41,6 +41,7 @@ skills/board-drain/watch | pstack: poteto-mode | why: enforces poteto-mode auton
 skills/cloud-agent/cloud-agent | pstack: swarm | why: https://app.hypertask.ai/detail/project-13556/48
 skills/fleet-report/fleet-report | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/92
 skills/hypertask-work/board-lint | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/105
+skills/hypertask-work/merge-ask | pstack: poteto-mode | why: enforces poteto-mode playbooks shipping and babysit (whoever opens a PR carries it to merge and live proof; Valentin answers product questions only) https://app.hypertask.ai/detail/project-13556/158
 skills/hypertask-work/lease | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/8
 skills/hypertask-work/reconcile | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/85
 skills/hypertask/scripts/ticket-lint | pstack: correct | why: enforces correct (reject repeated design-pick, secret-paste and unanswerable asks at the ticket-writing boundary)

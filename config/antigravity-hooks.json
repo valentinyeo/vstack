@@ -22,6 +22,11 @@
           },
           {
             "type": "command",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.local/share/vstack/skills/responsive-mode/reply-check.py\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.local/share/vstack/skills/valentin-mode/no-bare-ids.py\"",
             "timeout": 15
           },
