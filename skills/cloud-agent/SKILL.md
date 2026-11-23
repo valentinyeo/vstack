@@ -32,7 +32,9 @@ Push the branch first. A cloud agent clones from GitHub and cannot see local fil
 skills/cloud-agent/cloud-agent codex --repo <checkout> --brief brief.txt --env <codex env>
 ```
 
-Run it as a tracked background job. It prints one JSON line: `status`, `agent_url`, `pr_url`, `branch`. Exit 75 means a usage limit. `--no-wait` returns once the agent has started.
+Run it as a tracked background job. It prints one JSON line: `status`, `agent_url`, `pr_url`, `branch`. Exit 75 means a usage limit or a refused lane. `--no-wait` returns once the agent has started.
+
+Before preflight or any vendor runs, the launcher calls `~/.local/bin/plan-pick --lane-ok <vendor> --cloud` in the checkout. Exit 3 refuses with the reason, exit 75 and a suggestion to use `plan-pick --run`. A missing `plan-pick` warns and allows the launch. An installed but old or broken picker refuses; install token-ladder's `--lane-ok` support first.
 
 Verify the PR diff and checks per pstack `principle-prove-it-works`.
 

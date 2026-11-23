@@ -348,6 +348,115 @@ class PreflightTests(unittest.TestCase):
             git(remote, 'rev-parse', '--verify', 'vsta-120-tip')
 
 
+class PlanGateTests(unittest.TestCase):
+    ACTIVE_VENDORS = ('codex', 'claude')
+
+    def setUp(self):
+        self.m = load_script()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.home = Path(self.directory.name)
+        self.gate = self.home / '.local/bin/plan-pick'
+        self.gate.parent.mkdir(parents=True)
+        home = patch.object(self.m, 'HOME', self.home)
+        home.start()
+        self.addCleanup(home.stop)
+
+    def gate_script(self, code, reason=''):
+        self.gate.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "' + str(self.home / 'args') + '"\n'
+                             'printf "%s\\n" "' + reason + '"\nexit ' + str(code) + '\n')
+        self.gate.chmod(0o755)
+
+    def invoke(self, vendor, repo=None):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(self.m, 'read_brief', return_value='Do the task.'), \
+                patch.object(self.m, 'preflight', return_value=None) as preflight, \
+                patch.object(self.m, 'launch_codex', return_value=self.m.outcome('codex', 'started')) as codex, \
+                patch.object(self.m, 'launch_claude', return_value=self.m.outcome('claude', 'started')) as claude, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.m.main([vendor, '--repo', str(repo or self.home),
+                                '--brief', 'brief.txt', '--no-wait'])
+        row = json.loads(out.getvalue())
+        return code, row, err.getvalue(), preflight, (codex, claude)
+
+    def test_skipped_lane_refuses_every_vendor_before_preflight_or_launch(self):
+        for vendor in self.ACTIVE_VENDORS:
+            with self.subTest(vendor=vendor):
+                reason = f'{vendor}: limited until 2026-12-23 19:35 UTC'
+                self.gate_script(3, reason)
+                code, row, err, preflight, launches = self.invoke(vendor)
+                self.assertEqual(code, 75)
+                self.assertEqual(row['status'], 'limit')
+                self.assertIn(reason, row['error'])
+                self.assertIn(reason, err)
+                self.assertIn('plan-pick --run', err)
+                self.assertEqual((self.home / 'args').read_text().splitlines(), ['--lane-ok', vendor, '--cloud'])
+                preflight.assert_not_called()
+                for launch in launches:
+                    launch.assert_not_called()
+
+    def test_allowed_lane_reaches_only_the_selected_vendor(self):
+        self.gate_script(0, 'allowed')
+        for index, vendor in enumerate(self.ACTIVE_VENDORS):
+            with self.subTest(vendor=vendor):
+                code, row, err, preflight, launches = self.invoke(vendor)
+                self.assertEqual(code, 0)
+                self.assertEqual(row['status'], 'started')
+                self.assertNotIn('warning', err.lower())
+                preflight.assert_called_once()
+                self.assertEqual([launch.call_count for launch in launches],
+                                 [int(i == index) for i in range(len(self.ACTIVE_VENDORS))])
+
+    def test_missing_repo_reports_the_repo_not_the_lane_check(self):
+        self.gate_script(0)
+        for vendor in self.ACTIVE_VENDORS:
+            with self.subTest(vendor=vendor):
+                code, row, err, preflight, launches = self.invoke(
+                    vendor, repo=self.home / 'gone')
+                self.assertEqual(code, 1)
+                self.assertEqual(row['status'], 'failed')
+                self.assertIn('is not a directory', row['error'])
+                self.assertNotIn('plan-pick', row['error'])
+                self.assertFalse((self.home / 'args').exists())
+                preflight.assert_not_called()
+                for launch in launches:
+                    launch.assert_not_called()
+
+    def test_missing_plan_pick_warns_and_fails_open(self):
+        code, row, err, preflight, launches = self.invoke('codex')
+        self.assertEqual(code, 0)
+        self.assertEqual(row['status'], 'started')
+        self.assertIn('warning', err.lower())
+        self.assertIn('plan-pick', err)
+        self.assertIn('missing', err)
+        self.assertEqual(len(err.splitlines()), 1)
+        launches[0].assert_called_once()
+
+    def test_installed_but_old_or_broken_plan_pick_does_not_fail_open(self):
+        for gate_code in (1, 2, 124, 126):
+            with self.subTest(gate_code=gate_code):
+                self.gate_script(gate_code, 'eligibility check failed')
+                code, row, err, preflight, launches = self.invoke('codex')
+                self.assertEqual(code, 1)
+                self.assertEqual(row['status'], 'failed')
+                self.assertIn('plan-pick', row['error'])
+                self.assertIn(str(gate_code), row['error'])
+                preflight.assert_not_called()
+                for launch in launches:
+                    launch.assert_not_called()
+
+    def test_gate_timeout_refuses_without_launching(self):
+        self.gate_script(0)
+        with patch.object(self.m, 'run', return_value=subprocess.CompletedProcess([], 124, '', 'timed out')):
+            code, row, err, preflight, launches = self.invoke('codex')
+        self.assertEqual(code, 1)
+        self.assertIn('124', row['error'])
+        preflight.assert_not_called()
+        for launch in launches:
+            launch.assert_not_called()
+
+
+
 class CliTests(unittest.TestCase):
     def test_cursor_is_refused_without_running_any_external_command(self):
         module = load_script()

@@ -35,6 +35,7 @@ Each feature file starts with an H1 title and one paragraph. It then uses exactl
 | [install-update.md](install-update.md) | `install`, `skill-links`, `drive-skill` | The install that reaches a chat records the commit it came from and links a whole skill tree |
 | [hook-wiring.md](hook-wiring.md) | `settings`, `base-wiring`, `wiring`, `hook-links`, `bin-links`, `frontmatter` | Every hook a chat calls resolves, and a change never orphans one |
 | [board-drain.md](board-drain.md) | verify-board-drain | A restarted chat re-arms its own drain loop |
+| [cloud-agent.md](cloud-agent.md) | `tests/test_cloud_agent.py` | Direct cloud workers refuse a skipped or ahead-of-pace lane before any vendor runs |
 | [hypertask.md](hypertask.md) | verify-hypertask | A fresh chat sets itself up on a board and works a task |
 | [reconcile.md](reconcile.md) | verify-reconcile | Board sync reads a real board and plans the right moves |
 | [repo-tidy.md](repo-tidy.md) | verify-repo-tidy | Worktree and branch cleanup keeps exactly the right ones |
