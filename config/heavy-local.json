@@ -1,0 +1,40 @@
+{
+  "_readme": [
+    "One source of truth for what may not run on this shared server (VSTA-165).",
+    "hooks/heavy-local-guard.py reads it for every chat, and scripts/worker-shims builds",
+    "the pacer worker shims from the same file, so the two can never drift apart.",
+    "Exceptions live in config/heavy-local-allow.txt, one line each with its reason."
+  ],
+  "message": "BLOCKED by heavy-local-guard: {runner} belongs on GitHub free runners, not this host; push and let CI run, or use `gh workflow run <workflow> --ref <branch>`.",
+  "always": [
+    "gradle", "gradlew", "gradle.bat", "gradlew.bat",
+    "wine", "wine64", "wineserver", "wineserver64", "wine-preloader", "wine64-preloader",
+    "wineboot", "winecfg", "winetricks", "xvfb-run", "xcodebuild"
+  ],
+  "verbs": {
+    "zig": ["build", "test", "build-exe", "run"],
+    "cargo": ["build", "test", "bench"],
+    "go": ["build", "test"],
+    "dotnet": ["build", "publish", "test"],
+    "flutter": ["build", "test"],
+    "next": ["build"],
+    "vite": ["build"],
+    "ng": ["build", "test"],
+    "cmake": ["--build"],
+    "node": ["--test"],
+    "make": ["", "all", "build", "test", "check"]
+  },
+  "package_managers": ["npm", "pnpm", "yarn", "bun"],
+  "package_verbs": ["test", "t", "build"],
+  "python_modules": ["unittest", "pytest", "py.test"],
+  "standalone": ["pytest", "py.test"],
+  "scripts": ["tools/test-windows-wine.sh", "tools/chat-bench/run.mjs", "premerge-local.sh"],
+  "suffixes": [".exe"],
+  "shims": [
+    "gradle", "gradlew", "zig", "cargo", "go", "dotnet", "flutter", "next", "vite", "ng",
+    "make", "cmake", "node", "npm", "npx", "pnpm", "yarn", "bun", "pytest", "py.test",
+    "vitest", "jest", "playwright", "tsc", "xcodebuild",
+    "wine", "wine64", "wineserver", "wineboot", "winetricks", "xvfb-run",
+    "python3", "python"
+  ]
+}

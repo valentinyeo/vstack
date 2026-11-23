@@ -27,7 +27,7 @@ Nobody pushes to main.
 | Responsive mode's rules reach the chat without the chat choosing to fetch them | `skills/valentin-mode/context.py`, `.claude/skills/verify-valentin-mode/grade.py`, `tests/test_valentin_mode_context.py` |
 | Billing failures go once on the ticket | `hooks/billing-quiet.py` |
 | No bare ticket ids to Valentin | `hooks/no-bare-ids.py`, `tests/test_no_bare_ids.py` |
-| Each chat refuses heavy local builds and tests before they start | `hooks/heavy-local-guard.py`, `tests/test_heavy_local_guard.py` |
+| Each chat and every pacer worker refuses heavy local builds and tests before they start | `hooks/heavy-local-guard.py`, `config/heavy-local.json`, `scripts/worker-shims`, `tests/test_heavy_local_guard.py`, `tests/test_worker_shims.py` |
 | Every hook passes its self-test on GitHub | `advisor-checks` workflow on PRs |
 | A vstack change keeps chats working | `.claude/skills/verify-vstack/run` (Doctor in CI, Drive by the PR owner), `tests/test_verify_vstack.py` |
 | A hook never points at a missing script | `hooks/run-hook` (fail open), `scripts/check-hook-paths`, `tests/test_hook_paths.py` |
