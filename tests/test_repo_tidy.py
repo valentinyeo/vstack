@@ -240,6 +240,32 @@ class TestMine(SandboxCase):
         self.assertIn("wip", result.stdout)
         self.assertIn("wip-edit", sandbox.snapshot(self.world.root)["branches"])
 
+    def test_mine_removes_only_its_missing_registration(self):
+        own = self.world.projects / "mine-missing"
+        sibling = self.world.projects / "sibling-missing"
+        for path in (own, sibling):
+            self.world.git(["worktree", "add", "-q", "-b", path.name, str(path), "main"], cwd=self.world.repo)
+            shutil.rmtree(path)
+        result = tidy(self.world, "--apply", "--mine", str(self.world.repo),
+                      "--branch", own.name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        registered = self.world.git(["worktree", "list", "--porcelain"], cwd=self.world.repo).stdout
+        self.assertNotIn(str(own), registered)
+        self.assertIn(str(sibling), registered)
+        self.assertNotIn(own.name, sandbox.snapshot(self.world.root)["branches"])
+        self.assertIn(sibling.name, sandbox.snapshot(self.world.root)["branches"])
+
+    def test_mine_does_not_override_a_locked_missing_registration(self):
+        own = self.world.projects / "mine-locked-missing"
+        self.world.git(["worktree", "add", "-q", "-b", own.name, str(own), "main"], cwd=self.world.repo)
+        self.world.git(["worktree", "lock", str(own)], cwd=self.world.repo)
+        shutil.rmtree(own)
+        result = tidy(self.world, "--apply", "--mine", str(self.world.repo),
+                      "--branch", own.name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(own), self.world.git(["worktree", "list", "--porcelain"], cwd=self.world.repo).stdout)
+        self.assertIn(own.name, sandbox.snapshot(self.world.root)["branches"])
+
     def test_branch_without_mine_is_rejected(self):
         result = tidy(self.world, "--apply", "--all", "--branch", "clean-merged")
         self.assertEqual(result.returncode, 2, result.stdout)

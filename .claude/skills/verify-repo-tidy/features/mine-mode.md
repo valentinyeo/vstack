@@ -5,6 +5,7 @@
 - `--mine SESSION_CWD --branch BRANCH` resolves that path's repo and selects only the named branch and its worktree.
 - A path outside any git repo exits 0 without output.
 - Every gate still applies. Mine mode skips no check.
+- A missing named worktree loses only its own registration through normal `git worktree remove`. No shared prune or force is used. Locked registrations stay.
 
 ## How to get to it (user POV)
 

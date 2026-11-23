@@ -635,9 +635,15 @@ class RepoRun:
         missing = [e for e in candidates if not Path(e["path"]).exists()]
         for entry in missing:
             if self.opts.mine:
-                self.note("HOLD", "registration", entry["path"], "directory gone; no shared prune in mine mode")
-                continue
-            if self.opts.apply:
+                if not under(entry["path"], self.opts.projects_root) or self.live.in_use(entry["path"]):
+                    self.note("HOLD", "registration", entry["path"], "outside root or in use")
+                    continue
+                if self.opts.apply:
+                    code, _, err = git(["-C", str(self.repo), "worktree", "remove", entry["path"]])
+                    if code != 0:
+                        self.note("HOLD", "registration", entry["path"], err.strip())
+                        continue
+            elif self.opts.apply:
                 git(["-C", str(self.repo), "worktree", "prune"])
             self.result["worktrees"]["pruned"].append(entry["path"])
             self.note("PRUNE", "worktree", entry["path"], "directory is gone")
