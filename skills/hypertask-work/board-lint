@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -186,13 +186,14 @@ def seed_fixture_pulls(pulls):
             number = int(row.get('number') or re.search(r'/pull/(\d+)', row.get('url') or '').group(1))
             reconcile.PULLS[(repo, number)] = reconcile.Pull(
                 row.get('url') or '', (row.get('state') or 'OPEN').upper(),
-                row.get('checks') or '', bool(row.get('passed')))
+                row.get('checks') or '', bool(row.get('passed')), reconcile.moment(row.get('mergedAt')))
 
 
 def rows_for(args):
     if args.fixture:
         data, tasks = load_fixture(args.fixture)
-        board = reconcile.BOARDS.get(args.board) or owners.fixture_board(args.board, [{'task': t} for t in tasks])
+        prefix = str(tasks[0].get('ticketNumber') or '').split('-')[0] if tasks else ''
+        board = reconcile.BOARDS.get(args.board) or replace(reconcile.DEFAULT, id=args.board, prefix=prefix)
         return data, board, tasks, pull_map_from_fixture(data)
     board = reconcile.board_config(args.board)
     tasks = reconcile.tickets(board=board)
@@ -670,6 +671,8 @@ def lint(args):
     pulls = load_pulls(board, tasks, fixture_pulls)
     if fixture_pulls is not None:
         seed_fixture_pulls(pulls)
+    else:
+        reconcile.fill_section_changed(tasks, pulls, board)
     sections = {t['section'] for t in tasks}
     if board.columns:
         sections |= board.columns
@@ -699,9 +702,7 @@ def lint(args):
             continue
         if args.fixture and isinstance(data.get('workers'), dict):
             # One fixture fact for both the column rule and the Doing worker rule.
-            facts = reconcile.Facts(facts.column, facts.age,
-                                    bool(data['workers'].get(task['ticketNumber'])),
-                                    facts.pulls, facts.waiting, facts.blocked, facts.verification)
+            facts = replace(facts, alive=bool(data['workers'].get(task['ticketNumber'])))
         check_agent_assignee(task, facts, live, known, members, data, args, breaks)
         check_true_column(task, facts, board, names, breaks)
         check_done_proof(task, pulls, comments, board, breaks)

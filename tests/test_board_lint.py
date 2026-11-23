@@ -46,6 +46,24 @@ class BoardLintTests(unittest.TestCase):
         hit = any(f'| {rule} |' in line for line in output.splitlines())
         self.assertEqual(hit, present, output)
 
+    def test_true_column_uses_merge_time_and_section_entry(self):
+        data = json.loads((FIXTURES / 'clean.json').read_text())
+        card = data['tasks'][0]
+        key = card['ticketNumber']
+        data['workers'] = {key: False}
+        data['pulls'] = {key: [{'url': 'https://github.com/example/x/pull/1',
+                               'state': 'MERGED', 'number': 1, 'passed': True,
+                               'repository': {'nameWithOwner': 'example/x'}}]}
+        for merged_at, should_move in (('2025-11-20T10:00:00Z', False),
+                                       ('2025-11-21T11:00:00Z', True)):
+            data['pulls'][key][0]['mergedAt'] = merged_at
+            with self.subTest(merged_at=merged_at), tempfile.TemporaryDirectory() as temp:
+                fixture = Path(temp) / 'merged.json'
+                fixture.write_text(json.dumps(data))
+                result = self.run_lint(fixture)
+                self.assertNotEqual(result.returncode, 2, result.stderr)
+                self.assert_rule(result.stdout, 'true-column', present=should_move)
+
     def test_clean_fixture_exits_zero(self):
         result = self.run_lint('clean.json')
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)

@@ -13,6 +13,7 @@ a live chat name matches it, or when an armed loop-state file records the same b
 and label. loop-state owns that record and its liveness rules; nothing is copied.
 """
 import argparse
+from dataclasses import replace
 import importlib.machinery
 import importlib.util
 import json
@@ -121,8 +122,7 @@ def fixture_board(board_id, rows):
     prefix = ''
     if rows:
         prefix = str(rows[0]['task'].get('ticketNumber') or '').split('-')[0]
-    return reconcile.BoardConfig(board_id, prefix, reconcile.DEFAULT.managed,
-                                 reconcile.DEFAULT.protected, reconcile.DEFAULT.rules)
+    return replace(reconcile.DEFAULT, id=board_id, prefix=prefix)
 
 
 def rows_for(args):

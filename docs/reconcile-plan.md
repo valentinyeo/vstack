@@ -100,6 +100,7 @@ Each becomes a unit test from the real card, then a fix, in PR 4 or later.
 - A PR counts as merged only when its base is the release branch. HTPR-9387: stacked #3646 merged into #3594's branch, and the card moved as if shipped.
 - A PR is a ticket's evidence only when its title or branch carries the key. SOFT-2919: a plan PR that only mentions the key moved the card to review.
 - A ticket can have two automatic writers. Hypertask's GitHub integration moves board 15 cards on PR events. Reconcile must agree with it or leave that move to it.
+- A merged PR is evidence only if it merged after the card entered its column. HTPR-7807 was reopened into Backlog on 2026-11-20 behind hypertask-ai/hypertask#3180, merged 2026-11-10, and the plan pulled it back out. Eighteen board-15 cards had that shape on 2026-11-20.
 
 ## After every PR
 
