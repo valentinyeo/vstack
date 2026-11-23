@@ -16,35 +16,34 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
-session_loader = importlib.machinery.SourceFileLoader('fleet_session', str(HERE / 'session_login.py'))
-session_spec = importlib.util.spec_from_loader(session_loader.name, session_loader)
-session_login = importlib.util.module_from_spec(session_spec)
-sys.modules[session_loader.name] = session_login
-session_loader.exec_module(session_login)
 
-reconcile_loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(HERE / 'reconcile'))
-reconcile_spec = importlib.util.spec_from_loader(reconcile_loader.name, reconcile_loader)
-reconcile = importlib.util.module_from_spec(reconcile_spec)
-sys.modules[reconcile_loader.name] = reconcile
-reconcile_loader.exec_module(reconcile)
+def sibling(name, path):
+    """A sibling script as a module, loaded once: a caller that read it first keeps one copy.
 
-owners_loader = importlib.machinery.SourceFileLoader('board_drain_owners', str(ROOT / 'skills/board-drain/owners'))
-owners_spec = importlib.util.spec_from_loader(owners_loader.name, owners_loader)
-owners = importlib.util.module_from_spec(owners_spec)
-sys.modules[owners_loader.name] = owners
-owners_loader.exec_module(owners)
+    drain-check calls this lint in the same process, so both must share `reconcile`:
+    one board read, one GitHub count, and a test patches the module either caller holds.
+    """
+    path = str(path)
+    module = sys.modules.get(name)
+    if module is not None and getattr(module, '__file__', None) == path:
+        return module
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
 
-drain_loader = importlib.machinery.SourceFileLoader('board_drain_check', str(ROOT / 'skills/board-drain/drain-check'))
-drain_spec = importlib.util.spec_from_loader(drain_loader.name, drain_loader)
-drain_check = importlib.util.module_from_spec(drain_spec)
-sys.modules[drain_loader.name] = drain_check
-drain_loader.exec_module(drain_check)
 
-loop_loader = importlib.machinery.SourceFileLoader('board_drain_loop_state', str(ROOT / 'skills/board-drain/loop-state'))
-loop_spec = importlib.util.spec_from_loader(loop_loader.name, loop_loader)
-loop_state = importlib.util.module_from_spec(loop_spec)
-sys.modules[loop_loader.name] = loop_state
-loop_loader.exec_module(loop_state)
+session_login = sibling('fleet_session', HERE / 'session_login.py')
+reconcile = sibling('fleet_reconcile', HERE / 'reconcile')
+owners = sibling('board_drain_owners', ROOT / 'skills/board-drain/owners')
+drain_check = sibling('board_drain_check', ROOT / 'skills/board-drain/drain-check')
+loop_state = sibling('board_drain_loop_state', ROOT / 'skills/board-drain/loop-state')
+# A sibling that loads its own copy of a shared script leaves a second one behind;
+# put back the copies every rule here reads, so a board and its columns stay one object.
+sys.modules['fleet_reconcile'] = reconcile
+sys.modules['board_drain_loop_state'] = loop_state
 
 OPEN = frozenset({'Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier', 'Verification Backlog'})
 DONE = 'Done'
@@ -202,43 +201,61 @@ def rows_for(args):
     return {}, board, tasks, None
 
 
-def load_pulls(board, tasks, fixture_pulls=None):
+def load_pulls(board, tasks, fixture_pulls=None, probe_only=False):
+    """PR facts for the rules. None means this tick cannot know them, and they stay quiet.
+
+    `probe_only` is the drain-check path: one GitHub call at most, from the change
+    probe, so a per-tick check never pays for a whole board read. Facts it cannot
+    reach stay unknown rather than read as "no PR".
+    """
     if fixture_pulls is not None:
         return fixture_pulls
     reconcile.reset_github_count()
     candidates = [t for t in tasks if t.get('section') in board.managed]
     keys = [t['ticketNumber'] for t in candidates]
-    created = {t['ticketNumber']: t.get('createdAt') for t in candidates}
     saved = reconcile.read_board_facts(board.id)
+    known = (saved or {}).get('tickets') or {}
+    usable = bool(saved and keys and reconcile.saved_facts_usable(saved))
     options = {} if board.id == reconcile.BOARD else {'board': board}
-    now = time.time()
+    if probe_only:
+        if not usable:
+            return None
+        # Only the tickets whose facts are saved: the rest stay unknown for this tick
+        # rather than cost a read each, and the caller keeps their rules quiet.
+        keys = [key for key in keys if key in known]
+        if not keys:
+            return {}
+        items = reconcile.probe_items(board, saved) or ()
+        return reconcile.discover_quiet(keys, saved=saved, probe_items=items, **options)
     try:
-        if saved and reconcile.saved_facts_fresh(saved, now) and keys:
-            items = reconcile.probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
-            known = saved.get('tickets') or {}
+        if usable:
+            items = reconcile.probe_items(board, saved) or ()
             new_keys = {key for key in keys if key not in known}
             board_changed = reconcile.board_task_changes(saved, candidates, keys)
             pr_changed = (reconcile.tickets_from_probe(items, keys, board, saved)
                           | new_keys | board_changed)
-            pulls = reconcile.discover_quiet(keys, created=created, saved=saved, probe_items=items,
-                                             github_refresh=pr_changed, **options)
+            pulls = reconcile.discover_quiet(keys, saved=saved, probe_items=items,
+                                             refresh=pr_changed, **options)
             if pr_changed:
                 reconcile.prefetch({key: pulls[key] for key in pr_changed if key in pulls},
                                    clear=False, **options)
         else:
-            pulls = reconcile.discover(keys, created=created, **options)
+            pulls = reconcile.discover(keys, **options)
             reconcile.prefetch(pulls, **options)
     except (reconcile.BudgetRefused, reconcile.RateLimit):
         if saved:
-            known = saved.get('tickets') or {}
             pulls = {key: list(known.get(key, {}).get('pulls', [])) for key in keys}
             reconcile.restore_pull_facts(saved)
         else:
-            pulls = {key: [] for key in keys}
+            return None
     return pulls
 
 
-def live_names(args):
+def live_names(args, data=None):
+    """Live chat names: the roster, or the roster text a fixture carries."""
+    text = (data or {}).get('roster')
+    if args.fixture and isinstance(text, str):
+        return owners.names_from_text(text)
     roster_args = argparse.Namespace(roster=args.roster)
     return owners.live_names(roster_args)
 
@@ -317,7 +334,7 @@ def known_chats(args, data):
     A closed chat is not an abandoned ticket, so a name in this set never counts as
     stale. Only a name that matches no chat at all does.
     """
-    names = live_names(args)
+    names = live_names(args, data)
     if args.fixture:
         if 'chats' in data:
             names |= {slug_agent(name) for name in data.get('chats') or ()
@@ -428,7 +445,9 @@ def check_agent_assignee(task, facts, live, known, members, data, args, breaks):
                          if (row.get('displayName') or '').strip() == name), '')
         if members is not None and agent_id and agent_id not in members:
             breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
-                                f'assignee {name!r} is revoked or no longer a board member; reassign a live agent'))
+                                f'assignee {name!r} is revoked or no longer a board member; only a '
+                                'board owner can re-invite it, so ask Valentin, or reassign your own '
+                                'chat agent'))
             return
         if slug_agent(name) not in known:
             breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
@@ -475,9 +494,9 @@ def check_view_owner(label, view, breaks):
                             'recreate the view as the agent login'))
 
 
-def chat_naming_labels(args, board_id):
+def chat_naming_labels(args, board_id, data=None):
     """Labels that name a chat: live roster names, or a loop label only when it equals the chat name."""
-    names = set(live_names(args))
+    names = set(live_names(args, data))
     try:
         paths = sorted(loop_state.state_dir().glob('*.json'))
     except OSError:
@@ -664,15 +683,52 @@ def collect_comments(tasks, data, args, board_id):
     return out
 
 
-def lint(args):
+def adopt(shared):
+    """The caller's own copies of the scripts this lint shares with it.
+
+    A sibling script loads a copy of its own, so sys.modules can hold a second one.
+    The caller read the board, so the same copy must judge its columns, its leases
+    and its GitHub count; anything else reads a board it never saw.
+    """
+    global reconcile, loop_state, drain_check
+    reconcile = shared.get('reconcile') or reconcile
+    loop_state = shared.get('loop_state') or loop_state
+    drain_check = shared.get('drain_check') or drain_check
+
+
+def lint(args, shared=None):
+    """Every rule break on this board, or on the label when one is given.
+
+    `shared` is for a caller that already read the board this tick: it carries
+    {'board', 'tasks', 'data', 'fixture_pulls', 'now', 'probe_only', 'pull_rules'}
+    plus its own `reconcile`, `loop_state` and `drain_check`, and no second board
+    read happens. drain-check is the caller, on its own label.
+    """
+    if shared is not None:
+        adopt(shared)
     reconcile.reset_github_count()
-    data, board, tasks, fixture_pulls = rows_for(args)
-    now = float(data.get('now') or time.time())
-    pulls = load_pulls(board, tasks, fixture_pulls)
+    if shared is None:
+        data, board, tasks, fixture_pulls = rows_for(args)
+        shared = {'board': board, 'tasks': tasks, 'data': data,
+                  'fixture_pulls': fixture_pulls, 'probe_only': False}
+    board, tasks = shared['board'], shared['tasks']
+    data = shared.get('data') or {}
+    probe_only = bool(shared.get('probe_only'))
+    fixture_pulls = shared.get('fixture_pulls')
+    now = float(shared.get('now') or data.get('now') or time.time())
+    pulls = load_pulls(board, tasks, fixture_pulls, probe_only=probe_only)
+    # Unknown PR facts are quiet, never "no PR": a tick that cannot read them
+    # would otherwise read a merged card as abandoned and flag its own chat.
+    # A fixture that carries no pulls models none, and its caller may say so too.
+    pull_rules = pulls is not None and bool(shared.get('pull_rules', True))
+    # A per-tick probe reaches only the tickets whose facts are cached; the rest
+    # stay unknown, so their PR rules wait for a run that reads them.
+    known_pulls = set(pulls or ()) if probe_only else None
     if fixture_pulls is not None:
-        seed_fixture_pulls(pulls)
-    else:
+        seed_fixture_pulls(fixture_pulls)
+    elif pull_rules:
         reconcile.fill_section_changed(tasks, pulls, board)
+    pulls = pulls or {}
     sections = {t['section'] for t in tasks}
     if board.columns:
         sections |= board.columns
@@ -680,14 +736,14 @@ def lint(args):
         sections |= reconcile.read_sections(board)
     names = {} if reconcile.product_board(board) else reconcile.stage_names(sections=sections)
     options = {} if board.id == reconcile.BOARD else {'board': board}
-    live = live_names(args) | owners.owned_labels(args.board) | loop_armed_chat_names(args.board)
+    live = live_names(args, data) | owners.owned_labels(args.board) | loop_armed_chat_names(args.board)
     known = known_chats(args, data)
     members = member_agents(board.id, data, args)
     # A fixture that models no views cannot judge them; a live run always can.
     view_rules = not args.fixture or 'views' in data
     views = fixture_views(data) if args.fixture else read_views(board.id)
     label_ids = fixture_label_ids(data) if args.fixture else read_label_ids(board.id)
-    chat_names = chat_naming_labels(args, args.board)
+    chat_names = chat_naming_labels(args, args.board, data)
     comments = collect_comments(tasks, data, args, board.id)
     breaks = []
     for task in tasks:
@@ -704,14 +760,15 @@ def lint(args):
             # One fixture fact for both the column rule and the Doing worker rule.
             facts = replace(facts, alive=bool(data['workers'].get(task['ticketNumber'])))
         check_agent_assignee(task, facts, live, known, members, data, args, breaks)
-        check_true_column(task, facts, board, names, breaks)
-        check_done_proof(task, pulls, comments, board, breaks)
+        if pull_rules and (known_pulls is None or task['ticketNumber'] in known_pulls):
+            check_true_column(task, facts, board, names, breaks)
+            check_done_proof(task, pulls, comments, board, breaks)
         check_label_assignee(task, chat_names, breaks)
         check_no_owner_label(task, breaks)
         check_unnamed_identity(task, breaks)
         check_stale(task, now, breaks)
     check_duplicates(tasks, breaks)
-    if pulls and args.fixture:
+    if pull_rules and args.fixture:
         check_unlinked_prs(board, tasks, pulls, breaks)
     for label, view in (board_chat_views(tasks, known, views) if view_rules else ()):
         detail = view_detail(view) if view else None

@@ -486,6 +486,118 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
 
+class RuleBreakTest(CheckTest):
+    """Board-rule breaks reach the chat that owns them, in its own drain check."""
+
+    def run_payload(self, payload, *extra, alive=False, board=2060, label='Poteto',
+                    probe=(0, ADD_LINE), fail_rules=frozenset()):
+        fixture = self.directory / 'fixture.json'
+        fixture.write_text(json.dumps(payload))
+        argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
+                '--now', iso(NOW), *extra]
+        out = io.StringIO()
+        with patch.object(drain, 'probe_load', return_value=probe), \
+                patch.object(drain, 'FAIL_RULES', fail_rules), \
+                patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
+                contextlib.redirect_stdout(out):
+            code = drain.main(argv)
+        return code, out.getvalue()
+
+    def worker_card(self, assignees=None):
+        task = {'ticketNumber': 'SOFT-2931', 'projectId': 2060, 'section': 'Doing',
+                'labels': [{'name': 'Poteto'}], 'updatedAt': iso(NOW - 300),
+                'assignees': [agent_assignee()] if assignees is None else assignees}
+        return {'task': task, 'comments': []}
+
+    CHAT = 'Poteto (live-p, claude, /tmp)\n'
+
+    def payload(self, rows, **facts):
+        """Rows plus the board facts a drain-check fixture does not carry."""
+        return {'rows': rows, 'roster': self.CHAT, 'chats': ['Poteto'], **facts}
+
+    def test_one_break_prints_one_warning_line_and_still_passes(self):
+        row = todo('SOFT-2930')
+        row['task']['assignees'] = [{'id': 6, 'email': 'valentin.yeo@gmail.com',
+                                     'displayName': 'Valentin Yeo', 'type': 'user'}]
+        code, out = self.run_payload(self.payload([row, self.worker_card()],
+                                                  workers={'SOFT-2931': True}), alive=True)
+        breaks = [line for line in out.splitlines() if line.startswith('rule-break: ')]
+        self.assertEqual(len(breaks), 1, out)
+        self.assertEqual(breaks[0], "rule-break: SOFT-2930 agent-assignee: assignee "
+                                    "'Valentin Yeo' is a person, not an agent; assign the chat agent")
+        self.assertIn('drain-check: PASS', out)
+        self.assertEqual(code, 0, out)
+
+    def test_a_promoted_rule_fails_the_check(self):
+        row = todo('SOFT-2932')
+        row['task']['assignees'] = [{'id': 6, 'displayName': 'Valentin Yeo', 'type': 'user'}]
+        code, out = self.run_payload(self.payload([row, self.worker_card()],
+                                                  workers={'SOFT-2931': True}), alive=True,
+                                     fail_rules=frozenset({'agent-assignee'}))
+        self.assertEqual(code, 1, out)
+        self.assertIn('rule-break: SOFT-2932 agent-assignee:', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_another_chats_view_break_is_not_this_chats_finding(self):
+        # Both labels are on this ticket, but the broken view belongs to another chat.
+        row = todo('SOFT-2933', waiting_on=6)
+        row['task']['labels'] = [{'name': 'Poteto'}, {'name': 'Multi Bot Bugs'}]
+        payload = self.payload([row], chats=['Poteto', 'Multi Bot Bugs'], views=[
+            {'slug': 'poteto', 'id': 'v-1', 'owner': {'displayName': 'Poteto'}},
+            {'slug': 'multi-bot-bugs', 'id': 'v-2', 'owner': {'displayName': 'Valentin Yeo'}},
+        ])
+        code, out = self.run_payload(payload)
+        self.assertEqual(code, 0, out)
+        self.assertIn('drain-check: PASS', out)
+        self.assertNotIn('Multi Bot Bugs', out)
+        self.assertNotIn('rule-break:', out)
+
+    def test_a_revoked_agent_still_prints_and_names_who_can_fix_it(self):
+        row = self.worker_card(assignees=[agent_assignee() | {'agentId': 'gone-agent'}])
+        payload = self.payload([row], workers={'SOFT-2931': True}, agents=[])
+        code, out = self.run_payload(payload, alive=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn('rule-break: SOFT-2931 agent-assignee:', out)
+        self.assertIn('revoked', out)
+        self.assertIn('ask Valentin', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_the_tick_reads_the_board_once_and_adds_one_github_call(self):
+        task = self.worker_card()['task']
+        saved = {'at': NOW - 60, 'probe_since': '2027-01-01T00:00:00Z', 'repos': [],
+                 'tickets': {'SOFT-2931': {'at': NOW - 60, 'updated_at': task['updatedAt'],
+                                           'pulls': [], 'facts': {}}}}
+        board = drain.reconcile.BOARDS[2060]
+        lint = drain.lint_module()
+        gh_calls, board_reads = [], []
+
+        def fake_run(*args, **kwargs):
+            gh_calls.append(args)
+            return json.dumps({'items': [], 'total_count': 0})
+
+        def fake_tickets(**kwargs):
+            board_reads.append(kwargs)
+            return [task]
+
+        out = io.StringIO()
+        with patch.object(drain.reconcile, 'board_config', return_value=board), \
+                patch.object(drain.reconcile, 'tickets', side_effect=fake_tickets), \
+                patch.object(drain.reconcile, 'api', return_value={}), \
+                patch.object(drain.reconcile, 'read_board_facts', return_value=saved), \
+                patch.object(drain.reconcile, 'run', side_effect=fake_run), \
+                patch.object(drain.reconcile, 'worker_alive', return_value=True), \
+                patch.object(drain, 'probe_load', return_value=(0, ADD_LINE)), \
+                patch.object(lint, 'mp_session_names', return_value=set()), \
+                patch.object(lint, 'published_names', return_value=set()), \
+                patch.object(lint.owners, 'live_names', return_value=set()), \
+                contextlib.redirect_stdout(out):
+            code = drain.main(['--board', '2060', '--label', 'Poteto', '--now', iso(NOW)])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(len(board_reads), 1, 'one board read per tick')
+        self.assertEqual(len(gh_calls), 1, gh_calls)
+        self.assertIn('search/issues', gh_calls[0])
+
+
 def write_tool(path, body):
     path.write_text(f'#!{sys.executable}\n' + body)
     path.chmod(0o755)

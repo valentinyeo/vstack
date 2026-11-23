@@ -57,6 +57,16 @@ def is_generic(label):
     return not name or name in GENERIC or name.startswith(GENERIC_PREFIX)
 
 
+def names_from_text(text):
+    """Roster lines to chat names: one line reads "Name (session, harness, cwd)"."""
+    names = set()
+    for line in (text or '').splitlines():
+        match = LINE.match(line.strip())
+        if match:
+            names.add(match.group('name').strip().casefold())
+    return names
+
+
 def live_names(args):
     """Every live chat name, trimmed and case-insensitive; repeated lines collapse."""
     if args.roster:
@@ -66,12 +76,7 @@ def live_names(args):
         if result.returncode:
             raise RuntimeError(f'roster-live failed: {result.stderr.strip()[-200:]}')
         text = result.stdout
-    names = set()
-    for line in text.splitlines():
-        match = LINE.match(line.strip())
-        if match:
-            names.add(match.group('name').strip().casefold())
-    return names
+    return names_from_text(text)
 
 
 def owned_labels(board_id):

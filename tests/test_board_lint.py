@@ -315,5 +315,54 @@ class BoardLintTests(unittest.TestCase):
             self.assert_rule(result.stdout, 'human-board-write')
 
 
+class PullFactsTest(unittest.TestCase):
+    """A live run reuses saved board facts and never pays for a whole board read."""
+
+    NOW = 1800000000
+    TASK = {'ticketNumber': 'FACT-9', 'projectId': 99001, 'section': 'Checks',
+            'updatedAt': 1700000000, 'labels': [{'name': 'Board Drain Loop'}]}
+
+    def saved(self):
+        return {'at': self.NOW - 60, 'probe_since': '2027-01-01T00:00:00Z', 'repos': [],
+                'tickets': {'FACT-9': {'at': self.NOW - 60, 'updated_at': self.TASK['updatedAt'],
+                                       'pulls': [{'url': 'https://github.com/org/repo/pull/1',
+                                                  'state': 'MERGED', 'number': 1,
+                                                  'mergedAt': '2027-01-01T00:00:00Z',
+                                                  'repository': {'nameWithOwner': 'org/repo'}}],
+                                       'facts': {}}}}
+
+    def load(self, saved, probe_only):
+        module = load_board_lint()
+        board = module.reconcile.BOARDS[99001] if 99001 in module.reconcile.BOARDS else \
+            module.reconcile.DEFAULT
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append(args)
+            return json.dumps({'items': [], 'total_count': 0})
+
+        with mock.patch.object(module.reconcile, 'read_board_facts', return_value=saved), \
+                mock.patch.object(module.reconcile, 'run', side_effect=fake_run):
+            pulls = module.load_pulls(board, [self.TASK], probe_only=probe_only)
+        return pulls, calls
+
+    def test_a_quiet_run_reuses_saved_facts_behind_one_probe(self):
+        pulls, calls = self.load(self.saved(), probe_only=False)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertEqual([pull['url'] for pull in pulls['FACT-9']],
+                         ['https://github.com/org/repo/pull/1'])
+
+    def test_probe_only_reads_one_call_and_keeps_saved_facts(self):
+        pulls, calls = self.load(self.saved(), probe_only=True)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn('FACT-9', pulls)
+
+    def test_probe_only_is_quiet_when_no_facts_are_saved(self):
+        # A cold cache is unknown, not "no PR": the caller keeps its pull rules quiet.
+        pulls, calls = self.load(None, probe_only=True)
+        self.assertIsNone(pulls)
+        self.assertEqual(calls, [])
+
+
 if __name__ == '__main__':
     unittest.main()
