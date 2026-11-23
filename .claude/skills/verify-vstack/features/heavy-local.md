@@ -7,11 +7,11 @@
 - `block` refuses Gradle, Zig build/test and Wine, including timeout wrappers.
 - `allow` passes light tests, git, grep and GitHub workflow commands.
 - `wiring` drives the registered command through installed symlinks in a temporary HOME.
-- `rule` keeps the Working rule and per-chat setup discoverable.
+- `rule` keeps the per-chat setup in test-timeout discoverable.
 
 ## How to get to it (user POV)
 
-Load valentin-mode and register the hook in your project's `.claude/settings.json`, following `skills/test-timeout/SKILL.md#heavy-work-stays-on-github`. A heavy Bash command is refused with the GitHub workflow route. No central process killer is needed.
+Register the hook in your project's `.claude/settings.json`, following `skills/test-timeout/SKILL.md#heavy-work-stays-on-github`. A heavy Bash command is refused with the GitHub workflow route. No central process killer is needed.
 
 ## Driving it with verify-vstack
 

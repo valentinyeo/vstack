@@ -97,10 +97,10 @@ class HeavyLocalGuard(unittest.TestCase):
                 self.assertEqual((result.returncode, result.stderr), (0, ''))
 
     def test_rule_requires_each_chat_to_register_its_guard(self):
-        text = (ROOT / 'skills/valentin-mode/SKILL.md').read_text().split('## Working')[1]
+        text = (ROOT / 'skills/test-timeout/SKILL.md').read_text().split('## Heavy work stays on GitHub')[1]
         text = text.split('\n## ')[0]
-        for phrase in ('GitHub free runners', 'Gradle', 'Zig', 'Wine', 'light unit tests',
-                       'own', 'test-timeout/SKILL.md'):
+        for phrase in ('Each chat', "own project's", 'PreToolUse', 'heavy-local-guard.py',
+                       'Light tests still pass', 'gh workflow run'):
             self.assertIn(phrase, text)
         self.assertIn('link_one heavy-local-guard.py "$ROOT/hooks/heavy-local-guard.py"',
                       (ROOT / 'install').read_text())
