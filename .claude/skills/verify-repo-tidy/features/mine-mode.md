@@ -2,15 +2,14 @@
 
 ## Sub-features
 
-- `--mine SESSION_CWD` resolves the repo that holds that path, including when
-  the path is inside one of its worktrees, and reads only that repo.
-- A path outside any git repo makes the command exit 0 and print nothing. That
-  is what the Stop hook relies on.
-- Every gate still applies. Mine mode scopes the repo, it does not skip a check.
+- `--mine SESSION_CWD --branch BRANCH` resolves that path's repo and selects only the named branch and its worktree.
+- A path outside any git repo exits 0 without output.
+- Every gate still applies. Mine mode skips no check.
+- A missing named worktree loses only its own registration through normal `git worktree remove`. No shared prune or force is used. Locked registrations stay.
 
 ## How to get to it (user POV)
 
-- After your own merge: `repo-tidy --apply --mine $PWD`. Only your repo is read.
+- After your own merge: `repo-tidy --apply --mine "$PWD" --branch "<your merged branch>"`. Only your repo is read.
 
 ## Driving it with run
 
@@ -21,6 +20,7 @@
 
 ## Gotchas
 
+- A sibling worktree in the same repo also survives. `--mine` requires `--branch`; an unscoped old call fails before doing anything.
 - The neighbour repo's origin is a local path, so it has no GitHub slug. That is
   on purpose: mine mode must not need gh at all to be safe.
-- `--mine` prints no log line, because the hook redirects it to a file.
+- `--mine` prints no log-path line. It still saves the gate results.
