@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Block until this chat's own board view changes, print why, and exit so the chat wakes.
+"""Poll this chat's own board view, report changes, and keep running across cycles.
 
-The watcher pulses into this chat's loop state on every poll. Whatever kills it, a kill with
-the chat process, the two-hour harness limit, or a hang, the last pulse is the marker the
-chat's own hook reads to say "your watcher is dead: re-arm" (VSTA-151).
+The watcher pulses into this chat's loop state on every poll and survives its own normal
+cycle (view changes, sync failures, and quiet heartbeats) instead of exiting and waiting
+for the chat to restart it by hand. Whatever kills it, a crash, a chat restart, or a hang,
+the last pulse is the marker the chat's own hook reads to say "your watcher is dead: re-arm"
+and push Valentin after 10 minutes (VSTA-151).
 """
 import argparse
 import contextlib
@@ -139,10 +141,12 @@ def sync_reason(args):
 
 
 def follow(args, clock=time.time, sleep=time.sleep):
-    """Poll the view; print why the chat is wanted again. 0 to wake, 1 when the API is gone."""
+    """Poll the view; report changes and keep running. 0 when --cycles finishes, 1 on API loss."""
     heartbeat, baseline, started, failures = heartbeat_seconds(args), None, clock(), 0
     every_sync = 0 if args.no_sync else args.sync_every
     synced = None
+    reported = 0
+    max_cycles = getattr(args, 'cycles', 0) or 0
     while True:
         # The pulse comes first: a watcher that stops here is dead, and its last pulse says when.
         try:
@@ -155,16 +159,18 @@ def follow(args, clock=time.time, sleep=time.sleep):
             reason, skipped = sync_reason(args)
             if skipped:
                 # Over the gh budget: one line, then keep watching this tick.
-                print(skipped)
+                print(skipped, flush=True)
             elif reason:
-                print(f'changed: sync failed: {reason}')
-                return 0
+                print(f'changed: sync failed: {reason}', flush=True)
+                reported += 1
+                if max_cycles and reported >= max_cycles:
+                    return 0
         try:
             current = snapshot(args, clock())
         except drain.ERRORS as error:
             failures += 1
             if failures >= FAILURES:
-                print(f'watch: FAIL {error}')
+                print(f'watch: FAIL {error}', flush=True)
                 return 1
         else:
             failures = 0
@@ -172,12 +178,18 @@ def follow(args, clock=time.time, sleep=time.sleep):
                 baseline, started = current, clock()
             elif current != baseline:
                 for line in changes(baseline, current):
-                    print(line)
-                return 0
-            if clock() - started >= heartbeat:
-                print(f'heartbeat: no change in {window(heartbeat)}')
-                return 0
-        # Sleep one poll, but never past the heartbeat: the chat wakes on time.
+                    print(line, flush=True)
+                baseline, started = current, clock()
+                reported += 1
+                if max_cycles and reported >= max_cycles:
+                    return 0
+            elif clock() - started >= heartbeat:
+                print(f'heartbeat: no change in {window(heartbeat)}', flush=True)
+                started = clock()
+                reported += 1
+                if max_cycles and reported >= max_cycles:
+                    return 0
+        # Sleep one poll, but never past the next heartbeat.
         left = heartbeat - (clock() - started)
         sleep(max(1, min(args.every, left)))
 
@@ -195,7 +207,9 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
     parser.add_argument('--name', required=True, help="This chat's Multibot name")
     parser.add_argument('--every', type=int, default=180, help='Seconds between polls; default 180')
     parser.add_argument('--heartbeat', type=int,
-                        help='Seconds without a change before exiting; default 2h minus one poll')
+                        help='Seconds without a change before printing a heartbeat; default 2h minus one poll')
+    parser.add_argument('--cycles', type=int, default=0,
+                        help='Reported cycles before exiting; 0 (default) keeps polling until stopped')
     parser.add_argument('--sync-every', type=int, default=900,
                         help='Seconds between board syncs; default 900')
     parser.add_argument('--no-sync', action='store_true',
@@ -211,6 +225,8 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
         parser.error('--every must be at least one second')
     if heartbeat_seconds(args) < 1:
         parser.error('--heartbeat must be at least one second')
+    if args.cycles < 0:
+        parser.error('--cycles must be zero or positive')
     if args.sync_every < 1:
         parser.error('--sync-every must be at least one second')
     try:

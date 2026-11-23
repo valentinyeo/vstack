@@ -1472,8 +1472,9 @@ class WatchTest(unittest.TestCase):
         self.rows(rows)
         clock = clock or Clock()
         clock.on_sleep = on_sleep
+        cycles = () if ('--cycles' in extra or '--once' in extra) else ('--cycles', '1')
         argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
-                '--fixture', str(self.fixture), '--no-sync', *extra]
+                '--fixture', str(self.fixture), '--no-sync', *cycles, *extra]
         out, err = io.StringIO(), io.StringIO()
         with patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -1747,8 +1748,10 @@ class WatchSyncTest(unittest.TestCase):
                 patch.object(watch.sync, 'main', side_effect=fake_sync), \
                 patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
                 contextlib.redirect_stdout(out):
+            cycles = () if ('--cycles' in extra or '--once' in extra) else ('--cycles', '1')
             code = watch.main(['--board', '13556', '--label', 'Board Drain Loop',
-                               '--name', 'Watch Test', '--fixture', str(self.fixture), *extra],
+                               '--name', 'Watch Test', '--fixture', str(self.fixture),
+                               *cycles, *extra],
                               clock=clock.time, sleep=clock.sleep)
         return code, out.getvalue(), calls
 

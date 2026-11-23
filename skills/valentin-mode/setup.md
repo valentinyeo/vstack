@@ -12,7 +12,7 @@ Use the launcher for every hook command. A missing or non-executable script prod
 |---|---|---|---|
 | `skill-update.py` | UserPromptSubmit | Moves `~/.local/share/vstack` to `origin/main` and runs its `./install`, at most once per ten minutes for the whole server, and tells a chat when valentin-mode changed so it re-reads it. | global, once |
 | `long-chat.py` | UserPromptSubmit, Stop, PreCompact (`auto`) | Hands a valentin-mode chat over before autocompact. Soft at 300k / hard at 400k on 1M chats (110k / 140k on 200k). Warn-only without a Multibot host. | global, once |
-| `board-drain-guard.py` | UserPromptSubmit, Stop | Reads the chat's own loop state and its watcher's pulse. A watcher dead past three polls, or an unarmed loop, is named with the time and the exact re-arm command; a Stop is held until a watcher runs, at most three times. Silent in a chat that never armed a loop. | global, once |
+| `board-drain-guard.py` | UserPromptSubmit, Stop | Reads the chat's own loop state and its watcher's pulse. A watcher dead past three polls, or an unarmed loop, is named with the time and the exact re-arm command; a Stop is held until a watcher runs, at most three times. When dead over 10 minutes, sends Valentin one push notice per dead spell (ntfy or poteto session-mail) and records it in loop-state. Silent in a chat that never armed a loop. | global, once |
 
 Keep existing hook entries. Remove per-project copies of the global hook so it runs once.
 

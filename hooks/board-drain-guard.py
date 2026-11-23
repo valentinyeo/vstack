@@ -26,9 +26,12 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -36,7 +39,9 @@ LOOP_STATE = ROOT / 'skills' / 'board-drain' / 'loop-state'
 TAB_KEYS = ('MULTIPROMPT_TAB', 'ZSB_SESSION', 'MULTIBOT_SESSION')
 SKILL = '~/.claude/skills/board-drain'
 MAX_BLOCKS = 3
+NOTIFY_TIMEOUT = 5
 DEAD = re.compile(r'^watcher dead since (.+)$')
+NTFY_DEFAULT = re.compile(r'NTFY_TOPIC:-([^}"\'\s]+)')
 WHAT = ('Your board drain watcher is dead since {since}. Nothing is polling your view, so nothing '
         'will wake this chat.')
 OFF = ('Your board drain loop is not armed: this chat restarted or the loop expired. Nothing will '
@@ -148,10 +153,90 @@ def own_loop(env, home, now=None):
     return name, state, code, line
 
 
+def ntfy_url(home, env):
+    """Discover Valentin's ntfy endpoint from env or existing Claude notify hooks, never hardcoded."""
+    for key in ('BOARD_DRAIN_NOTIFY_URL', 'NTFY_URL'):
+        explicit = str(env.get(key) or '').strip()
+        if explicit:
+            return explicit
+    topic = str(env.get('NTFY_TOPIC') or '').strip()
+    if topic:
+        return f'https://ntfy.sh/{topic}'
+    hooks_dir = home / '.claude' / 'hooks'
+    for filename in ('notify-on-stop.sh', 'notify-on-notification.sh'):
+        try:
+            match = NTFY_DEFAULT.search((hooks_dir / filename).read_text(errors='replace'))
+        except OSError:
+            continue
+        if match and match.group(1):
+            return f'https://ntfy.sh/{match.group(1)}'
+    return ''
+
+
+def send_notice(name, since_iso, home, env, dead_minutes):
+    """Push one notice to Valentin via ntfy (or poteto session-mail fallback). Returns via or ''."""
+    message = (f'{name}: board loop dead since {since_iso} ({dead_minutes}m). '
+               f'Re-arm in that chat.')
+    url = ntfy_url(home, env)
+    if url:
+        headers = {
+            'Title': f'Board loop dead: {name}',
+            'Priority': 'high',
+            'Tags': 'warning',
+        }
+        token = str(env.get('NTFY_TOKEN') or '').strip()
+        if token:
+            headers['Authorization'] = f'Bearer {token}'
+        req = urllib.request.Request(
+            url, data=message.encode('utf-8'), method='POST', headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=NOTIFY_TIMEOUT) as response:
+                if 200 <= response.status < 300:
+                    return 'ntfy'
+        except (OSError, urllib.error.URLError, ValueError):
+            return ''
+        return ''
+    session_say = Path(str(env.get('BOARD_DRAIN_SESSION_SAY') or (home / '.local/bin/session-say')))
+    if session_say.is_file() and os.access(session_say, os.X_OK):
+        try:
+            done = subprocess.run(
+                [str(session_say), 'poteto', message, '--from', name],
+                capture_output=True, text=True, timeout=NOTIFY_TIMEOUT, check=False)
+            if done.returncode == 0:
+                return 'session-mail'
+        except (OSError, subprocess.SubprocessError):
+            return ''
+    return ''
+
+
+def maybe_notify(name, state, home, env, now):
+    """If this chat's loop has been dead over 10 minutes, push Valentin once per dead spell."""
+    loop = loop_state()
+    try:
+        since_at, since_iso = loop.dead_since(name, now=now)
+    except Exception:  # noqa: BLE001 - fail open
+        return False
+    if since_at is None or not since_iso:
+        return False
+    if now - since_at <= loop.DEAD_NOTICE_AFTER:
+        return False
+    if loop.notice_sent_for(state, since_iso):
+        return False
+    via = send_notice(name, since_iso, home, env, dead_minutes=int((now - since_at) // 60))
+    if not via:
+        return False
+    try:
+        loop.record_dead_notice(name, since_iso, via, now=now)
+    except Exception:  # noqa: BLE001 - fail open
+        pass
+    return True
+
+
 def answer(payload, env, home=None, now=None):
     """This hook's one answer for one event: context on a prompt, a block on a Stop."""
     home = home or home_dir(env)
-    found = own_loop(env, home, now=now)
+    moment = time.time() if now is None else now
+    found = own_loop(env, home, now=moment)
     if found is None:
         return {}
     name, state, code, line = found
@@ -159,6 +244,8 @@ def answer(payload, env, home=None, now=None):
     if not text:
         return {}
     event = payload.get('hook_event_name') or ''
+    if event in ('UserPromptSubmit', 'Stop'):
+        maybe_notify(name, state, home, env, now=moment)
     if event == 'UserPromptSubmit':
         return {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit',
                                        'additionalContext': text}}
@@ -251,6 +338,40 @@ def self_test():
             assert answer(prompt, {}, home, now) == {}, 'no tab, no verdict'
             assert answer(prompt, {'MULTIBOT_SESSION': 'live-gone'}, home, now) == {}, (
                 'an unknown tab has no record')
+
+            # Dead over 10m pushes Valentin once per dead spell, via a local loopback endpoint.
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+            import threading
+            pushes = []
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    length = int(self.headers.get('Content-Length') or 0)
+                    pushes.append(self.rfile.read(length).decode('utf-8', errors='replace'))
+                    self.send_response(200)
+                    self.end_headers()
+
+                def log_message(self, fmt, *args):
+                    pass
+
+            server = HTTPServer(('127.0.0.1', 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                push_env = {'MULTIBOT_SESSION': 'live-guard',
+                            'BOARD_DRAIN_NOTIFY_URL': f'http://127.0.0.1:{server.server_address[1]}/t'}
+                loop.arm('Guard Test', every='6h', job='cron-1', now=now, board=2060,
+                         label='Board Drain Loop')
+                loop.record_watch('Guard Test', 2_000_000_000, now=now, every=180)
+                answer(prompt, push_env, home, now + 300)
+                assert len(pushes) == 0, 'under 10m must not push'
+                answer(prompt, push_env, home, now + 660)
+                assert len(pushes) == 1 and 'Guard Test' in pushes[0], pushes
+                answer(stop, push_env, home, now + 720)
+                assert len(pushes) == 1, 'at most one push per dead spell'
+            finally:
+                server.shutdown()
+                server.server_close()
         finally:
             if previous is None:
                 os.environ.pop('BOARD_DRAIN_STATE_DIR', None)

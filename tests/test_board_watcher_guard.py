@@ -65,7 +65,9 @@ class GuardTest(unittest.TestCase):
         # All three tab keys are set, so an ambient one in the test runner never wins.
         self.env = {'HOME': str(self.home), 'MULTIBOT_SESSION': TAB,
                     'ZSB_SESSION': TAB, 'MULTIPROMPT_TAB': TAB,
-                    'BOARD_DRAIN_STATE_DIR': str(self.state)}
+                    'BOARD_DRAIN_STATE_DIR': str(self.state),
+                    'BOARD_DRAIN_NOTIFY_URL': '', 'NTFY_URL': '', 'NTFY_TOPIC': '',
+                    'NTFY_TOKEN': ''}
         patched = patch.dict(os.environ, self.env)
         patched.start()
         self.addCleanup(patched.stop)
