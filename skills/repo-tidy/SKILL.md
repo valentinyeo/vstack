@@ -6,8 +6,8 @@ description: >-
 
 # repo-tidy
 
-Prior art: pstack `poteto-mode` was checked. Its worktree-cleanup playbook is a
-read-only audit for one repo. The clean-up skill covers one session in hypertask
+Prior art: pstack `poteto-mode` was checked. Its `worktree-cleanup` playbook
+cleans one repo interactively with user confirmation. The clean-up skill covers one session in hypertask
 only. Neither is the multi-repo, gated, repeated apply. That gap is this skill.
 
 Dry run by default. `--apply` removes.

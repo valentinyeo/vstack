@@ -24,10 +24,10 @@ These hold in every phase.
 2. **Every value has a source.** A colour, radius, size or timing you mention comes with the file and line it lives in, on the branch that is actually deployed. If you can't trace it, write "not traced".
 3. **Never cite a rule you didn't read.** Audit rules come from a digest of sources you fetched yourself in this project. Quote the rule and give its id.
 4. **Problems go in tickets. Solutions go to the owner.** File one problem-report ticket per case, with no fix in it. Options and wireframes go in a comment on that ticket that mentions the owner. The owner picks.
-5. **Subtract before you add.** Deletions, trims and copy changes come first. A new visible element (button, badge, banner, toggle, panel) needs an approved mockup before anyone builds it.
+5. **Subtract before you add** (pstack `principle-subtract-before-you-add`). A new visible element (button, badge, banner, toggle, panel) needs an approved mockup before anyone builds it.
 6. **Nothing ships without a yes on a mockup.** No pull request, merge, deploy or feature-flag change until the owner has approved the specific image. Then it is one small ticket and one small pull request per fix.
 7. **Read the repo, don't clone it.** Use your source-control tool's file, search and commit APIs. Check which branch is live first. A stale default branch gives wrong file:line references.
-8. **Prove it with the real thing.** Before you say something is done, look at the actual screenshot, the actual Figma node, or the actual ticket. Never report from memory of what you meant to do.
+8. **Prove it works** (pstack `principle-prove-it-works`). Verify the real screenshot, Figma node, or ticket.
 9. **Keep secrets out.** Never paste tokens, keys or credential paths into tickets, docs, commits or chat.
 
 ## Phase 0: Set up (once per product)
@@ -86,7 +86,7 @@ Make the design system something a machine can check, so the same mistakes stop 
 3. **Lint.** A design lint flags raw hex, off-scale radius and banned utilities in changed files. Existing debt goes in a baseline or suppression file. **Never raise the baseline.** It only goes down.
 4. **Check the lint for loopholes.** For example, a rule that auto-approves every hex found in any theme file makes any new hex in a theme file legal everywhere.
 5. **Visual regression.** Screenshot tests on the core screens per theme catch drift the lint can't.
-6. When the owner corrects the same thing twice, encode it as a lint rule, a check or a line in the setup notes, not as another paragraph of advice.
+6. Encode repeated corrections in lint rules, checks, or setup notes per pstack `principle-encode-lessons-in-structure`.
 
 ## Phase 3: Problem reports
 
@@ -190,10 +190,6 @@ This is how the real app and its tokens get into Figma. It needs the Figma MCP s
 - Raising the lint baseline to make a change pass.
 - Raw hex or off-scale radius in a Figma proposal. If a token is missing, flag it; don't invent one.
 - Shipping, merging, deploying or flipping a flag because the change "seemed approved".
-
-## Learn as you go
-
-When the owner corrects you twice on the same thing, add it to the setup notes or to this skill. Prefer a structural fix (a lint rule, a template, a check) over a new sentence.
 
 ## Sources
 

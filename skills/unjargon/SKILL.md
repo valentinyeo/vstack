@@ -110,46 +110,7 @@ If the user asks for code, produce correct code. Apply Unjargon to the prose aro
 
 ## Remove AI tells
 
-### Content and language
-
-- Cut puffery, promotional adjectives, name-dropping, vague attribution, and generic conclusions.
-- Replace AI vocabulary such as "crucial," "delve," "enhance," "intricate," "landscape," "pivotal," "showcase," "tapestry," "testament," and "underscore" with plain words.
-- Replace "serves as," "stands as," "boasts," and "features" with "is," "has," or a concrete verb.
-- Remove formulaic contrasts such as "not just X, but Y."
-- Do not force ideas into groups of three, false ranges, or repeated synonyms.
-- Replace vague claims with a source, mechanism, example, number, or delete them.
-- Replace vague engineering adjectives such as "robust," "scalable," "resilient," "extensible," "flexible," and "production-ready" with the behavior, limit, or evidence they refer to.
-- Replace abstract metaphors such as "surface," "substrate," "wedge," "vector," "scaffolding," "primitive," "north star," "flywheel," and "endgame" with the actual component, action, or phase. Keep a term when it has a precise domain meaning, then explain it.
-- Do not replace engineering jargon with management jargon such as "streamline," "unlock," "alignment," or "visibility." State the practical change.
-- Cut filler. "In order to" becomes "to." "Due to the fact that" becomes "because." Delete "it is important to note that."
-- Cut unsupported adverbs. Replace "significantly faster" with the measured change or say "faster."
-- Prefer the plain word: "use," not "utilize" or "leverage"; "help," not "facilitate"; "if," not "in the event that."
-
-### Voice and rhythm
-
-- Use active voice when the actor matters.
-- Keep one main idea per sentence. Split any sentence the reader must backtrack to parse.
-- Vary sentence length naturally. Do not make every paragraph symmetrical.
-- Use "I" when it fits the context.
-- Give a clear recommendation when asked. Label judgment as judgment and explain the reason.
-- Acknowledge real trade-offs without manufacturing balance or opinions.
-- Be specific. "Two saves can overwrite each other" is better than "there may be data consistency concerns."
-
-### Formatting
-
-- Use sentence case for headings.
-- Avoid em dashes in generated prose. Use a full stop or comma. Never change punctuation inside exact technical text.
-- Use colons for lists or examples, not as a crutch between ordinary sentences.
-- Avoid decorative emojis, excessive bold text, and repeated inline headers.
-- Use bullets only when they make separate facts easier to scan.
-- Do not add a summary that merely repeats the answer.
-
-### Communication artifacts
-
-- Remove chatbot phrases such as "Of course," "Certainly," "Great question," "I hope this helps," and "Let me know if."
-- Remove sycophantic agreement and fake enthusiasm.
-- Do not announce that the answer has been simplified or translated unless the distinction matters.
-- Do not repeat the user's request before answering it.
+Apply pstack `unslop`. Never change punctuation inside exact technical text, and do not replace engineering jargon with management jargon ("streamline," "unlock," "alignment," "visibility").
 
 ## Examples
 
