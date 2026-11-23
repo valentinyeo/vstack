@@ -1,0 +1,13 @@
+# The only commands hooks/heavy-local-guard.py lets through, one regex per line.
+# Each line is `^<regex over the simple command's words>$ | <reason>`, and the reason
+# says why the command starts no build, no suite and no desktop app. Every line runs on
+# a GitHub runner instead. A command that matches none of these is refused (VSTA-165).
+^(timeout [0-9.]+[smhd]? )?python3? -m py_compile \S+$ | compiles one file to a temporary .pyc and runs none of it
+^(timeout [0-9.]+[smhd]? )?node --check \S+$ | parses one file and runs none of it
+^(timeout [0-9.]+[smhd]? )?(bash|sh) -n \S+$ | parses one script and runs none of it
+^(timeout [0-9.]+[smhd]? )?zig fmt( --check)? \S+( \S+)*$ | formats or checks formatting, compiles nothing
+^(timeout [0-9.]+[smhd]? )?zig version$ | prints the compiler version
+^(timeout [0-9.]+[smhd]? )?\S+ --(help|version)$ | prints usage and exits
+^timeout ((90|[1-8][0-9]|[1-9])s?|1m) python3? -m unittest discover( (-[vfcb]|--(verbose|failfast|catch|buffer)|(-[stk] |--(start-directory|top-level-directory)[ =])\S+))* (-p |--pattern[ =])[A-Za-z0-9_.-]+\.py( (-[vfcb]|--(verbose|failfast|catch|buffer)|(-[stk] |--(start-directory|top-level-directory)[ =])\S+))*$ | one named unittest file via discover with no wildcard under a timeout of 90 seconds or less
+^timeout ((90|[1-8][0-9]|[1-9])s?|1m) python3? -m unittest ([A-Za-z0-9_]+\.)*test_[A-Za-z0-9_.]+( -{1,2}[A-Za-z-]+)*$ | one named unittest module under a timeout of 90 seconds or less
+^timeout ((90|[1-8][0-9]|[1-9])s?|1m) (python3? -m (pytest|py\.test)|pytest|py\.test) [A-Za-z0-9_./-]+\.py(::[A-Za-z0-9_.:-]+)?( -{1,2}[A-Za-z-]+)*$ | one named pytest file under a timeout of 90 seconds or less

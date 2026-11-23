@@ -33,6 +33,7 @@ scripts/skill-check.py | pstack: principle-guard-the-context-window | why: https
 scripts/up-to-date | pstack: principle-prove-it-works | why: enforces principle-prove-it-works (each PR is verified against current main, not the base it was written on)
 scripts/verdict.py | pstack: create-verification-skill | why: https://app.hypertask.ai/detail/project-2060/2802
 scripts/uncovered_gate.py | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/145
+scripts/worker-shims | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-13556/165
 skills/board-drain/drain-check | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/4
 skills/board-drain/loop-state | pstack: poteto-mode | why: enforces poteto-mode autonomous-run step 2 (record this chat's watcher and its pulse, so a dead watcher has a time and one owner reads it)
 skills/board-drain/owners | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/44
