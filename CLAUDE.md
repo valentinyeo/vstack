@@ -41,7 +41,6 @@ Nobody pushes to main.
 | Worker tasks can run on vendor cloud agents | `skills/cloud-agent/cloud-agent`, `tests/test_cloud_agent.py` |
 | Direct cloud worker launches check lane eligibility before any vendor runs | `skills/cloud-agent/cloud-agent` calls `plan-pick --lane-ok`, `tests/test_cloud_agent.py` |
 | Poteto ticket writes use one helper | `hooks/ticket-way.py`, `bin/poteto-ticket` |
-| Board 2060 aliases preserve live-proof stages | `tests/test_board_columns.py`, `Column contract` workflow |
 | Reconcile keeps boards 15 and 2060 truthful | `skills/hypertask-work/reconcile`, `tests/test_hypertask_work.py` |
 | Boards stay true without anyone asking | lease start/end sync, `skills/board-drain/watch`, `bin/hand-moves` |
 | Skills pass pstack authoring validation (pstack `skills/poteto-mode/playbooks/authoring-a-skill.md`: "Validate the skill: frontmatter has `name` and `description`, referenced files exist, cross-skill links resolve.") | `scripts/skill-validate.py`, `.github/workflows/skill-lint.yml`, `tests/test_skill_validate.py` |
