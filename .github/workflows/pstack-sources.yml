@@ -117,6 +117,7 @@ jobs:
           BRIEF
           printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
       - name: Verifier drives the changed files
+        id: drive
         env:
           OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
           AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
@@ -135,11 +136,39 @@ jobs:
             git diff --exit-code
             exit 0
           fi
+          set -o pipefail
+          exec 3>&1
           python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/run-verifier" \
             --out verifier.jsonl --prompt-file /tmp/verify.md --attempt-timeout 540 \
             -- --thinking low --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
-            --tools read,bash
+            --tools read,bash 2>&1 1>&3 | tee run-verifier.err >&2
+          exec 3>&-
           git diff --exit-code
+      - name: Post no-verdict notice
+        if: failure() && steps.drive.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -f run-verifier.err ]; then
+            line=$(grep -m1 '^NO VERDICT:' run-verifier.err || true)
+            if [ -z "$line" ] && grep -q 'run-verifier: no lane gave a verdict' run-verifier.err; then
+              line=$(python3 - <<'PYTHON'
+          import re
+          from pathlib import Path
+          failures = re.findall(r'^run-verifier: (\S+) gave no verdict \((.+)\), trying next$',
+                                Path('run-verifier.err').read_text(errors='replace'), re.M)
+          detail = ', '.join(f'{lane}: {reason}' for lane, reason in failures) or 'no API key set'
+          print(f'NO VERDICT: every model lane failed: {detail}. This is not a code failure.')
+          PYTHON
+              )
+            fi
+            if [ -n "$line" ]; then
+              printf '%s\n\nHead `%s`.\n' "$line" "$PR_HEAD" > verdict.md
+              gh pr comment "$PR_NUMBER" --body-file verdict.md
+            fi
+          fi
       - name: Read verifier answer
         env:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -168,3 +197,4 @@ jobs:
           path: |
             verifier.jsonl
             verdict.md
+            run-verifier.err
