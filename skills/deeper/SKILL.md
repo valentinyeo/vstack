@@ -19,14 +19,9 @@ Prior art: pstack `sharpen` and `poteto-mode/playbooks/authoring-a-skill.md` wer
 ## Added on top of sharpen
 
 - Technical, app-building or coding task only: say what Lauren Tan (@poteto, https://x.com/poteto, author of pstack) would do here and how she would approach it. Skip this point for other fields.
-- Name the field first, in a few words, so the professional is concrete.
-- Raw material is a primary source: logs, files, git history, provider dashboards, the live system, real users, original documents. Not summaries, docs about the thing, or earlier agent output.
-- Methods and tools are named and specific: the actual tool, command, test or technique.
-- Proof must come from outside this conversation: a scanner, a test, a provider's own record, a live measurement, a third party. Never "I checked" or "you confirm".
 - Before writing, look at the real context for the task (files, tickets, systems) so the answer fits this case, not a generic one.
 
 ## Rules
 
-- Deeper means sharper method, rawer sources and outside proof. Do not add scope, features or extra deliverables.
 - Answer in four short parts (five for technical tasks), then the rewritten prompt in one code block that can be pasted.
 - Do not start the deeper task. End by asking whether to run the rewritten prompt.

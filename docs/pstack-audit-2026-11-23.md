@@ -9,6 +9,21 @@ Fates:
 - `DELTA`: deliberate house change. Cites the commit, PR, and ticket.
 - `KEEP`: true gap pstack does not cover. Names the pstack sections checked.
 
+## Summary counts
+
+Total rows: 83 (22 skills, linked `.md` files, `CLAUDE.md` rule table, and `AGENTS.md` absence check; `skills/valentin-mode/` excluded).
+
+By kind:
+- `contradicts`: 21
+- `stricter`: 20
+- `restates-in-own-words`: 17
+- `true gap pstack does not cover`: 25
+
+By fate:
+- `DELETE`: 22 (applied in this PR across 10 files)
+- `DELTA`: 37
+- `KEEP`: 24
+
 ## Findings
 
 | File:line | House text | Pstack text and path | Kind | Fate | Basis |
@@ -78,7 +93,7 @@ Fates:
 | `skills/unjargon/SKILL.md:111-151` | "`## Remove AI tells`" (AI vocabulary, serves as, not just X but Y, groups of three, abstract metaphors, filler, plain words, active voice, one idea per sentence, sentence case, em dashes, colons, emojis, chatbot phrases). | `skills/unslop/SKILL.md:13-39` (rules 5, 7-18, 20, 22-23, 25-31) | restates-in-own-words | DELETE | Restates almost the entire pstack `unslop` checklist despite line 15 saying `unslop` already owns AI tells. Replace section with a one-line link to pstack `unslop`. |
 | `skills/unjargon/SKILL.md:152` | "Do not repeat the user's request before answering it." | "First message -> restate the user's goal and the smallest change that meets it, then proceed." (`skills/poteto-mode/SKILL.md:21`) | contradicts | DELETE | Contradicts `poteto-mode` Non-negotiables first bullet. Delete along with the duplicated AI-tells section. |
 | `skills/vps-state/SKILL.md:1-46,48-54,56-72` | Live `/proc` host-capacity probe (`vps-state`), `SessionStart` hook, own-session housekeeping report. | None. Checked `skills/create-verification-skill/SKILL.md`, `skills/poteto-mode/playbooks/worktree-cleanup.md`, `autopilot-full.md`. | true gap pstack does not cover | KEEP | Pstack assumes dedicated machines and has no shared-VPS capacity monitor. |
-| `skills/vps-state/SKILL.md:47,55` | "`HOLD` | Start nothing." and "Start nothing new. Say you are holding, and why." | "Run owners in parallel off trunk" (`skills/poteto-mode/playbooks/autopilot-full.md:13`) and "Spawn all N workers in one message" (`skills/swarm/SKILL.md:29`) | stricter | DELTA | Deliberate shared-VPS launch throttle preventing host overload (`dc42723`, PR #175, SOFT-2935; `3cc9e2c`, PR #189, VSTA-39). |
+| `skills/vps-state/SKILL.md:47,55` | "`HOLD`: Start nothing." and "Start nothing new. Say you are holding, and why." | "Run owners in parallel off trunk" (`skills/poteto-mode/playbooks/autopilot-full.md:13`) and "Spawn all N workers in one message" (`skills/swarm/SKILL.md:29`) | stricter | DELTA | Deliberate shared-VPS launch throttle preventing host overload (`dc42723`, PR #175, SOFT-2935; `3cc9e2c`, PR #189, VSTA-39). |
 | `skills/web-writing/SKILL.md:1-34,36-63` | Jakob Nielsen NN/g scan-first web copy rules (inverted pyramid, half the words, bold keywords, literal subheadings, objective claims, outbound links). | None. Checked `skills/technical-writing/SKILL.md`, `skills/unslop/SKILL.md`. | true gap pstack does not cover | KEEP | Pstack covers engineering docs and AI tells, not Nielsen's scan-first web copy study. |
 | `skills/web-writing/SKILL.md:35` | "**Bulleted lists** for any series of three or more items, numbers or steps." | "Numbered lists for sequences, bullets for everything else." (`skills/technical-writing/SKILL.md:43`) | contradicts | DELTA | Deliberate NN/g web-copy rule for scannable marketing and web pages (`72d520e`). |
 | `skills/zinsser-english-style/SKILL.md:1-39,41-48,50-52,54-65,67-69,71-82,84-108` | Plain-English prose method after Zinsser and Orwell (attitude, nominalizations, weak verb-noun pairs, nested clauses, noun stacks, chains of "of", positive framing, vivid numbers, reading aloud). | None. Checked `skills/unslop/SKILL.md`, `skills/technical-writing/SKILL.md`. | true gap pstack does not cover | KEEP | Pstack `unslop` is an AI-tell checklist; it does not cover Zinsser's and Orwell's general editorial craft. |
