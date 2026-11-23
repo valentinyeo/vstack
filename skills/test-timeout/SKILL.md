@@ -39,7 +39,7 @@ A rule in a document is not a check. The hook file is already there; registering
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'f=\"$HOME/.claude/hooks/test-timeout-guard.py\"; [ -f \"$f\" ] || exit 0; exec /usr/bin/python3 \"$f\"'",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/test-timeout-guard.py\"",
             "timeout": 5
           }
         ]
@@ -49,7 +49,7 @@ A rule in a document is not a check. The hook file is already there; registering
 }
 ```
 
-The `[ -f "$f" ] || exit 0` is not noise. A missing or broken link makes python exit 2, and Claude Code reads exit 2 as a block, so a bare `python3 $HOME/.claude/hooks/test-timeout-guard.py` entry stops the chat running any Bash at all. This form exits 0 when the file is gone and still blocks at 2 when the guard says so.
+`run-hook` exits 0 and logs a warning when the script is missing or not executable. A bare Python call would exit 2, which Claude Code reads as a block. An existing guard still blocks at 2 when it rejects an unbounded test.
 
 Then prove it in your own chat: run `pytest` and get the block, run `timeout 600 pytest` and watch it start. If the second command is also blocked, your settings file has the old copy of the hook.
 
@@ -68,7 +68,7 @@ Each chat merges this entry into its own project's Bash `PreToolUse` hooks in `.
 ```json
 {
   "type": "command",
-  "command": "sh -c 'f=\"$HOME/.claude/hooks/heavy-local-guard.py\"; [ -f \"$f\" ] || exit 0; exec /usr/bin/python3 \"$f\"'",
+  "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/heavy-local-guard.py\"",
   "timeout": 5
 }
 ```

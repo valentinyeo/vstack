@@ -108,8 +108,8 @@ def seed(checkout, scratch, commit, wiring_file):
     seen = set()
     for source in sources:
         for event, matcher, command in hook_commands(parse_settings(tree(source))):
-            match = HOOK_FILE.search(command)
-            if not match or match.group(1) not in owned or command in seen:
+            targets = set(HOOK_FILE.findall(command)) - {'run-hook'}
+            if not targets.intersection(owned) or command in seen:
                 continue
             seen.add(command)
             group = {'hooks': [{'type': 'command', 'command': rewrite(command, scratch)}]}
@@ -118,8 +118,8 @@ def seed(checkout, scratch, commit, wiring_file):
             settings['hooks'].setdefault(event, []).append(group)
     project = base_settings(checkout, commit)
     for event, matcher, command in hook_commands(project):
-        match = HOOK_FILE.search(command)
-        if not match or match.group(1) not in owned or command in seen:
+        targets = set(HOOK_FILE.findall(command)) - {'run-hook'}
+        if not targets.intersection(owned) or command in seen:
             continue
         seen.add(command)
         group = {'hooks': [{'type': 'command', 'command': rewrite(command, scratch)}]}

@@ -2,7 +2,6 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -102,8 +101,6 @@ class HeavyLocalGuard(unittest.TestCase):
         for phrase in ('Each chat', "own project's", 'PreToolUse', 'heavy-local-guard.py',
                        'Light tests still pass', 'gh workflow run'):
             self.assertIn(phrase, text)
-        self.assertIn('link_one heavy-local-guard.py "$ROOT/hooks/heavy-local-guard.py"',
-                      (ROOT / 'install').read_text())
 
 
 class HeavyLocalWiring(unittest.TestCase):
@@ -119,13 +116,12 @@ class HeavyLocalWiring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
             hooks = home / '.claude/hooks'
-            hooks.mkdir(parents=True)
-            checkout = home / 'checkout/hooks'
-            checkout.mkdir(parents=True)
-            for name in ('heavy-local-guard.py', 'test-timeout-guard.py'):
-                shutil.copyfile(ROOT / 'hooks' / name, checkout / name)
-                (hooks / name).symlink_to(checkout / name)
-            env = dict(os.environ, HOME=temp, PYTHONDONTWRITEBYTECODE='1')
+            env = dict(os.environ, HOME=temp, PYTHONDONTWRITEBYTECODE='1',
+                       VSTACK_INSTALL_ANYWHERE='1', VSTACK_DIR=str(home / '.local/share/vstack'))
+            install = subprocess.run([str(ROOT / 'install')], env=env, capture_output=True,
+                                     text=True, timeout=60)
+            self.assertEqual(install.returncode, 0, install.stderr)
+            self.assertTrue((hooks / 'heavy-local-guard.py').samefile(ROOT / 'hooks/heavy-local-guard.py'))
             for command, expected in (('./gradlew test', 2), ('zig test app.zig', 2),
                                       ('wine64 app.exe', 2), ('npm test', 0),
                                       ('gh workflow run build.yml', 0)):
@@ -136,7 +132,9 @@ class HeavyLocalWiring(unittest.TestCase):
             (hooks / 'heavy-local-guard.py').unlink()
             result = subprocess.run(['sh', '-c', commands[0]], input=payload, text=True,
                                     capture_output=True, timeout=5, env=env, cwd=temp)
-            self.assertEqual((result.returncode, result.stderr), (0, ''))
+            self.assertEqual(result.returncode, 0)
+            self.assertIn('hook missing or not executable', result.stderr)
+            self.assertEqual((home / '.local/state/vstack/hook-missing.log').read_text(), result.stderr)
         print('PASS heavy-local: installed hook blocks heavy jobs; light commands and missing links pass')
 
 

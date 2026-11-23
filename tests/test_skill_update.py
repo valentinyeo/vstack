@@ -211,8 +211,12 @@ class SkillUpdate(unittest.TestCase):
         self.assertIn('valentin-mode changed', self.notice(answer))
 
     def test_install_links_the_hook_into_claude(self):
-        self.assertIn('link_one skill-update.py "$ROOT/hooks/skill-update.py" '
-                      '"$HOME/.claude/hooks"', INSTALL.read_text())
+        env = {**os.environ, 'HOME': str(self.home), 'VSTACK_INSTALL_ANYWHERE': '1',
+               'VSTACK_DIR': str(self.share)}
+        result = subprocess.run([str(INSTALL)], env=env, capture_output=True,
+                                text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.home / '.claude/hooks/skill-update.py').samefile(HOOK))
 
     def test_the_self_test_passes(self):
         done = subprocess.run([sys.executable, str(HOOK), '--self-test'],

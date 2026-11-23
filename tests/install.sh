@@ -24,8 +24,9 @@ for run in 1 2; do
   for dest in "${dests[@]}"; do
     skill="$TEST_HOME/$dest/valentin-mode"
     [ -L "$skill" ]
-    [ "$(cd "$skill" && pwd -P)" = "$ROOT/skills/valentin-mode" ]
-    cmp "$skill/SKILL.md" "$ROOT/skills/valentin-mode/SKILL.md"
+    [ "$(cd "$skill" && pwd -P)" = "$TEST_HOME/.local/state/vstack/skills/valentin-mode" ]
+    [ "$(readlink -f "$skill/context.py")" = "$ROOT/skills/valentin-mode/context.py" ]
+    grep -q 'hooks/run-hook' "$skill/SKILL.md"
     printf 'PASS run %s: %s/valentin-mode\n' "$run" "$dest"
   done
 done
@@ -63,7 +64,7 @@ env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/sh
 for dest in "${dests[@]}"; do
   skill="$TEST_HOME/$dest/valentin-mode"
   [ -L "$skill" ]
-  [ "$(cd "$skill" && pwd -P)" = "$ROOT/skills/valentin-mode" ]
+  [ "$(cd "$skill" && pwd -P)" = "$TEST_HOME/.local/state/vstack/skills/valentin-mode" ]
 done
 printf 'PASS stale Pi symlink replaced\n'
 
