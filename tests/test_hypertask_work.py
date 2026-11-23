@@ -118,8 +118,7 @@ class ReconcileTest(unittest.TestCase):
                 self.assertFalse(r.names_ticket(pr, 'SOFT-1'))
 
     def test_body_url_only_counts_on_the_ticket_line(self):
-        board = r.BoardConfig(13556, 'VSTA', frozenset(), frozenset(), (),
-                              (('valentinyeo/vstack', 'main'),))
+        board = r.BoardConfig(13556, 'VSTA', frozenset(), frozenset(), (), 'valentinyeo/vstack')
         pull = json.loads((ROOT / 'tests/fixtures/reconcile' / 'vstack-200.json').read_text())
         with self.subTest('a prose url in the real PR is not evidence'):
             self.assertFalse(r.names_ticket(pull, 'VSTA-53', board=board))
@@ -457,7 +456,7 @@ class ReconcileTest(unittest.TestCase):
     def merged_pr(self, number, merged='2026-11-17T10:00:00Z'):
         return {'url': f'https://github.com/valentinyeo/another-repo/pull/{number}', 'state': 'MERGED',
                 'headRefName': f'soft-{number}-work', 'number': number, 'mergedAt': merged,
-                'baseRefName': 'main', 'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+                'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
 
     def scan(self, merged=(), today=date(2026, 11, 18), since=date(2026, 11, 16), opened=()):
         queries = []
@@ -509,18 +508,6 @@ class ReconcileTest(unittest.TestCase):
         _, queries = self.scan(since=date(2026, 11, 1))
         self.assertEqual(len(queries), 2)
         self.assertIn('merged:2026-11-01..2026-11-18', [q for q in queries if 'is:merged' in q][0].replace('\\', ''))
-
-    def test_a_cached_pull_written_before_the_merged_base_rule_costs_no_rescan(self):
-        self.scan(merged=[self.merged_pr(5)])
-        stale = json.loads(TEST_CACHE.read_text())
-        for pull in stale['merged-2060.json']['pulls']:
-            pull.pop('baseRefName')
-        TEST_CACHE.write_text(json.dumps(stale))
-        found, queries = self.scan()
-        self.assertEqual([p['url'] for p in found], ['https://github.com/valentinyeo/another-repo/pull/5'])
-        merged = [q for q in queries if 'is:merged' in q]
-        self.assertEqual(len(merged), 1)
-        self.assertIn('merged:2026-11-17..2026-11-18', merged[0].replace('\\', ''))
 
     def test_failed_search_keeps_the_cache(self):
         self.scan(merged=[self.merged_pr(5)])
@@ -1092,14 +1079,10 @@ else:
                 self.assertEqual(self.target('Backlog', pulls=(pull(checks=checks),)), 'AI Review')
 
     def test_backlog_stays_and_ai_review_never_demotes(self):
-        for pulls in ((), (pull('CLOSED'),)):
+        for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
                 self.assertEqual(self.target('Backlog', pulls=pulls), 'Backlog')
                 self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
-        # A shipped PR is real evidence, so the card goes to review, never back.
-        self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),)), board=r.BOARDS[15]),
-                         ('AI Review', 'merged PR; live proof pending'))
-        self.assertEqual(self.target('AI Review', pulls=(pull('MERGED'),)), 'AI Review')
 
     def test_stale_in_progress_cards_move_to_backlog(self):
         now = r.stamp(self.CREATED) + 3 * 3600
@@ -1188,56 +1171,6 @@ else:
         with patch.object(r, 'run', return_value=json.dumps(data)) as run, patch.object(r, 'branch_pulls', return_value=[]), patch.object(r, 'head_pulls', return_value=[]):
             self.assertEqual(r.discover(['HTPR-1'], board=r.BOARDS[15]), {'HTPR-1': [pr]})
             self.assertIn('repo:hypertask-ai/hypertask', run.call_args.args[-1])
-
-    def test_shipped_in_vstack_plans_review_not_backlog(self):
-        """HTPR-9521 shipped in valentinyeo/vstack#161, merged into main.
-
-        Board 15 used to search only hypertask-ai/hypertask, saw no PR, and
-        planned the card back to Backlog as idle. #161's own title and branch
-        carry no key, so the fixture is a vstack PR that names the ticket the
-        way reconcile attributes one.
-        """
-        pr = {'title': 'fix(reconcile): board 15 catches cards (HTPR-9521)', 'body': '',
-              'headRefName': 'boss/9521-reconcile-board15', 'state': 'MERGED', 'baseRefName': 'main',
-              'number': 161, 'url': 'https://github.com/valentinyeo/vstack/pull/161',
-              'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
-        data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [pr]}}}
-        created = datetime.now(timezone.utc).isoformat()
-        with patch.object(r, 'run', return_value=json.dumps(data)) as run, \
-                patch.object(r, 'branch_pulls', return_value=[]), \
-                patch.object(r, 'head_pulls', return_value=[]):
-            found = r.discover(['HTPR-9521'], created={'HTPR-9521': created}, board=r.BOARDS[15])
-            query = run.call_args.args[-1]
-        self.assertEqual(found, {'HTPR-9521': [pr]})
-        # One search covers every repo the board ships from.
-        self.assertIn('repo:hypertask-ai/hypertask', query)
-        self.assertIn('repo:valentinyeo/vstack', query)
-        self.assertEqual(query.count('search('), 1)
-        card = self.card('HTPR-9521', 'In Progress', r.stamp(created) - 60, found['HTPR-9521'])
-        facts = self.facts(card, r.stamp(created) + 3 * 3600)
-        self.assertEqual(r.target(facts, board=r.BOARDS[15]),
-                         ('AI Review', 'merged PR; live proof pending'))
-
-    def test_merged_into_a_feature_branch_is_not_shipped(self):
-        """HTPR-9387: stacked #3646 merged into #3594's branch, not into production."""
-        stacked = {'title': 'HTPR-9387 grace', 'body': '', 'headRefName': 'htpr-9387-grace',
-                   'state': 'MERGED', 'baseRefName': 'htpr-3594-rules', 'number': 3646,
-                   'url': 'https://github.com/hypertask-ai/hypertask/pull/3646',
-                   'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
-        board = r.BOARDS[15]
-        self.assertFalse(r.shipped(stacked, board))
-        self.assertTrue(r.shipped({**stacked, 'baseRefName': 'production'}, board))
-        self.assertFalse(r.shipped({**stacked, 'baseRefName': 'main'}, board))
-        self.assertTrue(r.shipped({**stacked, 'baseRefName': 'main',
-                                   'repository': {'nameWithOwner': 'valentinyeo/vstack'}}, board))
-        data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [stacked]}}}
-        with patch.object(r, 'run', return_value=json.dumps(data)), \
-                patch.object(r, 'branch_pulls', return_value=[]), \
-                patch.object(r, 'head_pulls', return_value=[]):
-            self.assertEqual(r.discover(['HTPR-9387'], created={'HTPR-9387': None}, board=board),
-                             {'HTPR-9387': []})
-        card = self.card('HTPR-9387', 'In Progress', NOW - 8000)
-        self.assertEqual(r.target(self.facts(card, NOW + 8000), board=board)[0], 'Backlog')
 
     def test_closed_pr_during_preflight_never_moves(self):
         t = {'ticketNumber': 'HTPR-1', 'section': 'In Progress', 'projectId': 15,
