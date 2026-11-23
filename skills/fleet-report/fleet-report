@@ -845,7 +845,7 @@ tr.behind td {{ background: #fff6dd; }}
 </head>
 <body>
 <h1>Fleet report</h1>
-<p>Read-only snapshot. Message each failing chat; it fixes itself.</p>
+<p>Read-only snapshot. Do not message other chats. Each failing chat fixes itself on its next load.</p>
 <table>
 <thead><tr>{"".join(f"<th>{html.escape(h)}</th>" for h in headers)}</tr></thead>
 <tbody>
