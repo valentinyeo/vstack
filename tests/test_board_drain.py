@@ -168,6 +168,20 @@ class CheckTest(unittest.TestCase):
             code = drain.main(argv)
         return code, out.getvalue()
 
+    def run_payload(self, payload, *extra, alive=False, board=2060, label='Poteto',
+                    probe=(0, ADD_LINE), fail_rules=frozenset()):
+        fixture = self.directory / 'fixture.json'
+        fixture.write_text(json.dumps(payload))
+        argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
+                '--now', iso(NOW), *extra]
+        out = io.StringIO()
+        with patch.object(drain, 'probe_load', return_value=probe), \
+                patch.object(drain, 'FAIL_RULES', fail_rules), \
+                patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
+                contextlib.redirect_stdout(out):
+            code = drain.main(argv)
+        return code, out.getvalue()
+
     def test_real_case_all_four_unmarked(self):
         # Board 2060 label Poteto this morning, unedited: four real tickets sat
         # unmarked in Todo for hours and nothing was in Doing.
@@ -567,20 +581,6 @@ class CheckTest(unittest.TestCase):
 
 class RuleBreakTest(CheckTest):
     """Board-rule breaks reach the chat that owns them, in its own drain check."""
-
-    def run_payload(self, payload, *extra, alive=False, board=2060, label='Poteto',
-                    probe=(0, ADD_LINE), fail_rules=frozenset()):
-        fixture = self.directory / 'fixture.json'
-        fixture.write_text(json.dumps(payload))
-        argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
-                '--now', iso(NOW), *extra]
-        out = io.StringIO()
-        with patch.object(drain, 'probe_load', return_value=probe), \
-                patch.object(drain, 'FAIL_RULES', fail_rules), \
-                patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
-                contextlib.redirect_stdout(out):
-            code = drain.main(argv)
-        return code, out.getvalue()
 
     def worker_card(self, assignees=None):
         task = {'ticketNumber': 'SOFT-2931', 'projectId': 2060, 'section': 'Doing',
