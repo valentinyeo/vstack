@@ -541,6 +541,28 @@ class CursorBriefPasteTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_cursor_is_refused_without_running_any_external_command(self):
+        module = load_script()
+        for options in ([], ['--model', 'claude-opus-5-high'], ['--env', 'unused'],
+                        ['--timeout', '0']):
+            with self.subTest(options=options):
+                out = io.StringIO()
+                err = io.StringIO()
+                with patch.object(module.subprocess, 'run') as command, \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = module.main(['cursor', '--repo', '/nowhere',
+                                        '--brief', '/nowhere/brief.txt', '--no-wait', *options])
+                command.assert_not_called()
+                self.assertEqual(code, 1)
+                lines = out.getvalue().splitlines()
+                self.assertEqual(len(lines), 1, out.getvalue())
+                self.assertEqual(json.loads(lines[0]), {
+                    'vendor': 'cursor', 'status': 'failed', 'agent_url': None,
+                    'task_id': None, 'branch': None, 'pr_url': None,
+                    'error': 'Cursor is off since 2026-11-23 (plan downgraded); use codex',
+                })
+                self.assertEqual(err.getvalue(), '')
+
     def cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True,
                               env=dict(os.environ, HOME=tempfile.gettempdir()))
