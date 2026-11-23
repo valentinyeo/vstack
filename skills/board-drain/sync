@@ -32,17 +32,17 @@ def token_path(name):
     return credentials_dir() / (loop_state.slug(name) + '-agent-token')
 
 
-def environment(name):
+def environment(name, own_token=False):
     """The reconcile runs as this chat: its token, and its own name in SHIP_SESSION_NAME."""
     env = dict(os.environ)
-    if not env.get('HT_TOKEN'):
+    if own_token or not env.get('HT_TOKEN'):
         try:
             env['HT_TOKEN'] = token_path(name).read_text().strip()
         except OSError as error:
             raise ValueError(f'no HT_TOKEN and no token file at {token_path(name)}') from error
         if not env['HT_TOKEN']:
             raise ValueError(f'the token file at {token_path(name)} is empty')
-    if not env.get('SHIP_SESSION_NAME'):
+    if own_token or not env.get('SHIP_SESSION_NAME'):
         env['SHIP_SESSION_NAME'] = name
     return env
 
@@ -79,12 +79,14 @@ def main(argv=None):
     parser.add_argument('--label', required=True)
     parser.add_argument('--name', required=True, help="This chat's Multibot name")
     parser.add_argument('--limit', type=int, default=5, help='Maximum moves per apply run; default 5')
+    parser.add_argument('--own-token', action='store_true',
+                        help='Use only this named chat token file, ignoring inherited identity')
     args = parser.parse_args(argv)
     if args.board < 1:
         parser.error('--board must be a positive board id')
     reason = None
     try:
-        env = environment(args.name)
+        env = environment(args.name, args.own_token)
         for step, step_args in steps(args.board, args.label, args.limit):
             reason = run(step, step_args, env)
             if reason:
