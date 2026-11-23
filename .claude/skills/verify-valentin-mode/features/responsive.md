@@ -8,7 +8,7 @@ Valentin mode's body used to carry a shell line that printed responsive mode's b
 
 ## What replaced it
 
-`skills/valentin-mode/context.py` is a PreToolUse hook declared in the skill's frontmatter. At the chat's first tool call it hands the model the version line and responsive mode's body as `hookSpecificOutput.additionalContext`, then prints `{}` on every later call in that chat. The harness delivers it whether or not the chat runs anything, and Claude Code 2.1.330 delivers it even beside a `deny`.
+`skills/valentin-mode/context.py` is a PreToolUse hook declared in the skill's frontmatter. At the chat's first tool call it hands the model the version line and responsive mode's body as `hookSpecificOutput.additionalContext`. Each tool call also adds a reminder there if Valentin's newest message has no reply. No reply check sets `permissionDecision` or denies a tool call. Later calls print `{}` once his newest message has a reply. The harness delivers the context without the chat choosing to fetch it.
 
 ## What the check reads
 
@@ -18,4 +18,4 @@ Valentin mode's body used to carry a shell line that printed responsive mode's b
 
 `checks loaded` lists every hook the frontmatter declares, so a hook that never ran fails there too. Claude Code registers only one command per hook event from a skill's frontmatter, so `context.py` is the skill's one PreToolUse hook and it also runs responsive mode's reply guard.
 
-Proof: `tests/fixtures/verify-valentin-mode/hook-injected` grades PASS on the hook alone, and `paste-in-tool-result` (the 22 Nov shape) grades FAIL. `tests/test_valentin_mode_context.py` proves the hook injects once per chat and fails open.
+Proof: `tests/fixtures/verify-valentin-mode/hook-injected` grades PASS on the hook alone, and `paste-in-tool-result` (the 22 Nov shape) grades FAIL. `tests/test_valentin_mode_context.py` proves the rules arrive once per chat, unanswered messages get reminders without a permission decision, replies stop the reminders, and the hook fails open.
