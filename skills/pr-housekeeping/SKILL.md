@@ -6,7 +6,7 @@ description: >-
 
 # PR housekeeping
 
-Prior art: pstack Babysit and Autopilot-full own PR follow-up. This adds per-chat listing through `Owner chat:` in the body.
+Prior art: pstack `poteto-mode` Babysit and Autopilot-full own PR follow-up. This adds per-chat listing through `Owner chat:` in the body.
 
 Carry each PR to merge or close it with a reason. Never open a second PR for one ticket.
 

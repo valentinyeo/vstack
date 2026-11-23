@@ -260,6 +260,14 @@ def cleanup_rows(rows, mine, repo=None):
             row = record['row']
             if f'{row["repo"]}#{row["number"]}' in current or (repo and row['repo'] != repo):
                 continue
+            if not Path(record['checkout']).exists():
+                if any(Path(p).exists() for p in record['worktrees']):
+                    pending.append(dict(row, cleanup=True, next_action=
+                                        'cleanup: checkout missing; recorded worktrees remain. '
+                                        'Restore it or inspect ownership; do not delete them.'))
+                else:
+                    del saved[identity]
+                continue
             if not record['merged']:
                 pr = gh_json(['api', f'repos/{row["repo"]}/pulls/{row["number"]}'])
                 if not isinstance(pr, dict):

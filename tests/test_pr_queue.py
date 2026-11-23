@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -271,6 +272,28 @@ class CleanupLifecycleTests(unittest.TestCase):
                 'merged_at': hours_ago(1), 'body': 'Owner chat: Other'}):
             self.assertEqual(self.m.cleanup_rows([], 'Owner', 'o/r'), [])
         self.assertIn('my-branch', self.git('branch', '--list'))
+
+    def test_vanished_clone_does_not_hide_other_open_prs(self):
+        self.tick([self.row])
+        self.tick()
+        self.repo.rename(self.root / 'moved-away')
+        with mock.patch.object(self.m, 'bulk_prs', return_value=[node(2, 'Owner')]), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(self.m.main(['--mine', 'Owner', '--repo', 'o/r']), 0)
+        self.assertIn('o/r#2', output.getvalue())
+        self.assertEqual(self.tick()[0], [])
+
+    def test_missing_clone_keeps_orphaned_worktree_visible_without_delete(self):
+        tree = self.root / 'worker-tree'
+        self.git('worktree', 'add', '-q', str(tree), 'my-branch')
+        self.tick([self.row])
+        self.tick()
+        shutil.rmtree(self.repo)
+        rows, _ = self.tick()
+        self.assertTrue(rows[0]['cleanup'])
+        self.assertIn('checkout missing', rows[0]['next_action'])
+        self.assertNotIn('--apply', rows[0]['next_action'])
+        self.assertTrue(tree.exists())
 
     def test_reused_branch_does_not_get_a_delete_command(self):
         self.tick([self.row])
