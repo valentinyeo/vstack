@@ -79,7 +79,6 @@ CODEX_TASK_URL = re.compile(r'https://chatgpt\.com/codex/tasks/(task_e_[0-9a-z]+
 PR_URL = re.compile(r'https://github\.com/\S+/pull/\d+')
 GITHUB_REMOTE = re.compile(r'github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$')
 UPSTREAM = re.compile(r'^[^/]+/(.+)$')
-
 WORKER_KICKOFF = re.compile(r'(?m)^Read (\S+)/worker\.md before anything else\.$')
 
 
@@ -563,7 +562,6 @@ def main(argv=None):
         return emit(failed(args.vendor, f'cannot read --brief {args.brief}'))
     if not brief.strip():
         return emit(failed(args.vendor, f'--brief {args.brief} is empty'))
-
     brief = inline_worker_brief(brief)
 
     why = preflight(args.repo)
