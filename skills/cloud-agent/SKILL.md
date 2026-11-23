@@ -36,7 +36,7 @@ Run it as a tracked background job. It prints one JSON line: `status`, `agent_ur
 
 Before preflight or any vendor runs, the launcher calls `~/.local/bin/plan-pick --lane-ok <vendor> --cloud` in the checkout. Exit 3 refuses with the reason, exit 75 and a suggestion to use `plan-pick --run`. A missing `plan-pick` warns and allows the launch. An installed but old or broken picker refuses; install token-ladder's `--lane-ok` support first.
 
-The result is a claim. Check the PR diff and its checks before calling the work done, as pstack's Prove It Works says.
+Verify the PR diff and checks per pstack `principle-prove-it-works`.
 
 ## Traps
 

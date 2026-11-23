@@ -26,7 +26,7 @@ Finish all of Phase A before any work. Keep it to about ten minutes of the owner
 
 ### A1. Goal
 
-Restate the goal, the problem and the smallest change that meets it, in plain words.
+Follow the first-message goal restatement in pstack `poteto-mode` Non-negotiables.
 
 ### A2. Verification first
 
@@ -64,15 +64,9 @@ Then say: "Going quiet now. Report in about N minutes." Start Phase B without wa
 
 ## Phase B: run alone
 
-Run `/pstack:poteto-mode full autopilot` on the task, with the contract as input. The A2 checks are its pass/fail, one per outcome. Add these rules on top:
+Run `/pstack:poteto-mode full autopilot` on the task, with the contract as input. The A2 checks are its pass/fail, one per outcome. Follow pstack `poteto-mode` (`autonomous-run` playbook) for loop execution, watchers, unit checks, and dead ends, and pstack `show-me-your-work` for the decision trail. Add these two rules on top:
 
-- **No questions.** Never end a turn with a question, an offer, "say go" or a pick-A-or-B. Pick your recommendation, log it, do it. Asking permission for reversible work is the most common avoidable stop.
 - **Check before asking for a hand.** About to ask the owner to sign in, restart or install? First test that it is really needed. Then park it and keep working.
-- **Waiting is not stopping.** CI or a deploy running: keep one slow watcher (5 minutes or more), work other parts meanwhile, act on the result.
-- **Verify every unit before the next.** Run its check, read the real output, and only then move on. A unit counts as done only with check output, never on your own word.
-- **Verify like a user.** For anything a person sees, open it in the browser as that person and look. For anything that ships, check the live system, not only the branch.
-- **Log decisions.** Each call you made for the owner gets one line: what, why, how to undo.
-- **Park, never wait.** Stuck after two different attempts (pstack Attack the Premise), a must-stop call, or a tool failure past one workaround: blocked state on that ticket, one line why, what would unblock it. Then keep working the other parts.
 - **Running out of context or time.** pstack pause-safely, then Phase C.
 
 ## Phase C: two minute report
