@@ -475,8 +475,8 @@ def selection_repo(test: unittest.TestCase, finalize: str) -> Path:
     root = Path(holder.name)
     write(root, ".github/workflows/pr-verifier.yml", SELECTION_VERIFIER)
     write(root, "tools/pr-verifier.cjs", finalize)
-    write(root, ".claude/skills/verify-app/SKILL.md", "# x\n")
-    write(root, ".claude/skills/verify-app/features/README.md", "x\n")
+    write(root, ".claude/skills/verify-app/SKILL.md", VERIFY_SKILL)
+    write(root, ".claude/skills/verify-app/features/README.md", FEATURES)
     return root
 
 
