@@ -1,0 +1,38 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "chats": [
+    "Multi Bot Features",
+    "Board Drain Loop"
+  ],
+  "agents": [
+    "a-stale"
+  ],
+  "tasks": [
+    {
+      "ticketNumber": "FACT-62",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Name no chat ever had",
+      "updatedAt": "2025-11-22T02:00:00.000Z",
+      "staleness": {
+        "sectionChangedAt": "2025-11-22T01:00:00.000Z"
+      },
+      "labels": [
+        {
+          "name": "Board Drain Loop"
+        },
+        {
+          "name": "brain-medium"
+        }
+      ],
+      "assignees": [
+        {
+          "type": "agent",
+          "displayName": "Multiprompt Android Dev",
+          "agentId": "a-stale"
+        }
+      ]
+    }
+  ]
+}

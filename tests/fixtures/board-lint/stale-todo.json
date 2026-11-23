@@ -1,0 +1,15 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-50",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Old backlog item",
+      "updatedAt": "2025-11-22T08:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-10-01T08:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}]
+    }
+  ]
+}

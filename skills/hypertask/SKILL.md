@@ -33,6 +33,7 @@ Prior art: pstack `poteto-mode` was checked for task workflow rules; it covers s
 | `references/views.md` | Setting up your own view and label, or reading a board line. |
 | `references/sync.md` | Setting up or debugging board sync: lease events, the board watcher, status records, reconcile flags, reporting a miss. |
 | `references/checkup.md` | Running the checkup: the checks and what each one fixes. |
+| `references/board-lint-rules.md` | Board rule ids, what enforces each, and the read-only lint command. |
 
 ## Three commands
 

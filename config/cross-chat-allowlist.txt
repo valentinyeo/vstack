@@ -2,6 +2,7 @@
 # Format: <path> | <what it reaches> | <reason> | <expiry YYYY-MM-DD or never> | reviewed-by: <chat name>
 
 skills/board-drain/owners | roster-live (read) | Read-only: lists live chat names so orphan board labels fail this check; does not message or act for other chats | never | reviewed-by: Vstack Maintainer
+skills/hypertask-work/board-lint | roster-live (read), mp-sessions (read), chat names (read), reconcile board facts cache (read), caller login token (read), Hypertask Reconciler token (read, only when the caller has no login) | Read-only lint: chat names and saved PR facts, reads as the caller's own login; never writes to any board or other chat | never | reviewed-by: Vstack Maintainer
 skills/pr-housekeeping/pr-queue | roster-live (read) | Read-only: maps live checkouts to PR ownership; each chat filters with --mine; script writes nothing to GitHub or other chats | never | reviewed-by: Vstack Maintainer
 skills/cloud-agent/cloud-agent | tmux send-keys (ephemeral session) | Types into a cloud-agent tmux session this script creates; never targets another live chat on the fleet | never | reviewed-by: Vstack Maintainer
 skills/fleet-report/fleet-report | mp-sessions, roster-live, agent-host state (read) | Read-only report Valentin asked for; reads live chat list and checkouts, never messages or acts for other chats | never | reviewed-by: Vstack Maintainer

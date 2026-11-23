@@ -1,0 +1,29 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-20",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Idle ticket should stay",
+      "updatedAt": "2025-11-22T01:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-22T01:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}],
+      "assignees": []
+    },
+    {
+      "ticketNumber": "FACT-21",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Open PR should be in Checks",
+      "updatedAt": "2025-11-22T02:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-22T02:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}],
+      "assignees": [{"type": "agent", "displayName": "Board Drain Loop"}]
+    }
+  ],
+  "pulls": {
+    "FACT-21": [{"url": "https://github.com/org/repo/pull/1", "number": 1, "state": "OPEN", "checks": "red", "passed": false, "title": "FACT-21: fix", "body": "Ticket: FACT-21", "headRefName": "fact-21-fix", "repository": {"nameWithOwner": "org/repo"}}]
+  }
+}

@@ -34,6 +34,7 @@ skills/board-drain/sync | pstack: poteto-mode | why: https://app.hypertask.ai/de
 skills/board-drain/watch | pstack: poteto-mode | why: enforces poteto-mode autonomous-run step 2 (wait outside the model for board changes, with a heartbeat fallback)
 skills/cloud-agent/cloud-agent | pstack: swarm | why: https://app.hypertask.ai/detail/project-13556/48
 skills/fleet-report/fleet-report | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/92
+skills/hypertask-work/board-lint | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/105
 skills/hypertask-work/lease | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/8
 skills/hypertask-work/reconcile | pstack: principle-make-operations-idempotent | why: https://app.hypertask.ai/detail/project-13556/85
 skills/hypertask/scripts/ticket-lint | pstack: correct | why: enforces correct (reject repeated design-pick, secret-paste and unanswerable asks at the ticket-writing boundary)
