@@ -428,18 +428,21 @@ class ReconcileTest(unittest.TestCase):
         p = {'title': 'SOFT-1 fix', 'body': '', 'url': pull().url, 'state': 'OPEN',
              'repository': {'nameWithOwner': 'valentinyeo/another-repo'}, 'number': 1}
         result = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [p, {**p, 'state': 'CLOSED'}, {**p, 'title': 'SOFT-10 fix'}]}}}
-        with patch.object(r, 'run', return_value=json.dumps(result)) as run, patch.object(r, 'branch_pulls', return_value=[]), patch.object(r, 'head_pulls', return_value=[]):
+        with patch.object(r, 'run', return_value=json.dumps(result)) as run, \
+                patch.object(r, 'branch_pulls', return_value=[]):
             self.assertEqual(r.discover(['SOFT-1']), {'SOFT-1': [p]})
             self.assertIn('user:hypertask-ai', run.call_args.args[-1])
         result['data']['q0']['pageInfo']['hasNextPage'] = True
-        with patch.object(r, 'run', return_value=json.dumps(result)), self.assertRaisesRegex(ValueError, 'truncated'):
-            r.discover(['SOFT-1'])
+        with patch.object(r, 'run', return_value=json.dumps(result)), \
+                patch.object(r, 'branch_pulls', return_value=[]):
+            self.assertRaisesRegex(ValueError, 'truncated', r.discover, ['SOFT-1'])
 
     def test_branch_only_pr_is_discovered(self):
         pr = {'url': pull().url, 'state': 'OPEN', 'headRefName': 'feature/soft-1-work',
               'number': 1, 'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
         result = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': []}}}
-        with patch.object(r, 'run', return_value=json.dumps(result)), patch.object(r, 'branch_pulls', return_value=[pr]):
+        with patch.object(r, 'run', return_value=json.dumps(result)), \
+                patch.object(r, 'branch_pulls', return_value=[pr]):
             self.assertEqual(r.discover(['SOFT-1']), {'SOFT-1': [pr]})
 
     def test_branch_search_splits_over_limit_and_paginates(self):
@@ -459,76 +462,80 @@ class ReconcileTest(unittest.TestCase):
                 'headRefName': f'soft-{number}-work', 'number': number, 'mergedAt': merged,
                 'baseRefName': 'main', 'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
 
-    def scan(self, merged=(), today=date(2026, 11, 18), since=date(2026, 11, 16), opened=()):
+    def searches(self, answers):
+        """A fake gh: every aliased search answers from `answers`, no sweeps anywhere."""
         queries = []
 
-        def search(*args):
-            query = next(a for a in args if 'search(query' in a)
+        def call(*args):
+            query = next(a for a in args if a.startswith('query=query{'))
             queries.append(query)
-            nodes = list(opened) if 'is:open' in query else list(merged)
-            return json.dumps({'data': {'search': {'issueCount': len(nodes), 'nodes': nodes,
-                                                    'pageInfo': {'hasNextPage': False, 'endCursor': None}}}})
-        with patch.object(r, 'run', side_effect=search), patch.object(r, 'today', return_value=today):
-            return r.branch_pulls(r.DEFAULT, since), queries
+            fields = re.findall(r'(q\d+):search\(query:"([^"]*)"', query)
+            data = {alias: {'pageInfo': {'hasNextPage': False},
+                            'nodes': answers(alias, text.replace('\\', ''))}
+                    for alias, text in fields}
+            return json.dumps({'data': data})
+        return call, queries
 
-    def test_branch_scan_is_one_open_search_and_one_merged_search(self):
-        found, queries = self.scan(since=date(2026, 10, 20))
-        self.assertEqual(found, [])
-        self.assertEqual(len(queries), 2)
-        self.assertEqual(sum('is:open' in q for q in queries), 1)
-        self.assertEqual(sum('merged:2026-10-20..2026-11-18' in q.replace('\\', '') for q in queries), 1)
+    def test_merged_pull_is_found_by_its_branch_never_by_a_merge_sweep(self):
+        """A merge from any date costs one head: lookup, not the fleet's merge history."""
+        pr = self.merged_pr(5, merged='2024-01-02T10:00:00Z')
+        call, queries = self.searches(lambda alias, query: [pr] if 'head:SOFT-5' in query else [])
+        with patch.object(r, 'run', side_effect=call):
+            found = r.discover(['SOFT-5'])
+        self.assertEqual(found['SOFT-5'], [pr])
+        self.assertEqual(len(queries), 2, 'one ticket search and one branch lookup')
+        self.assertNotIn('is:merged', ' '.join(queries))
+        self.assertIn('head:SOFT-5', queries[1])
 
-    def test_merged_prs_are_cached_between_runs(self):
-        pr = self.merged_pr(5)
-        found, first = self.scan(merged=[pr])
-        self.assertEqual([p['url'] for p in found], [pr['url']])
-        self.assertEqual(len(first), 2)
-        found, second = self.scan(today=date(2026, 11, 18))
-        self.assertEqual([p['url'] for p in found], [pr['url']])
-        self.assertEqual(len(second), 2)
-        merged_queries = [q for q in second if 'is:merged' in q]
-        self.assertEqual(len(merged_queries), 1)
-        self.assertIn('merged:2026-11-17..2026-11-18', merged_queries[0].replace('\\', ''))
+    def test_a_ticket_search_and_its_branch_lookup_are_batched_not_per_ticket(self):
+        keys = [f'SOFT-{n}' for n in range(1, 31)]
+        call, queries = self.searches(lambda alias, query: [])
+        with patch.object(r, 'run', side_effect=call), \
+                patch.object(r, 'open_pulls', return_value=[]):
+            r.discover(keys)
+        # Thirty tickets: three ticket searches per dozen, then two branch lookups per 25.
+        self.assertEqual(len(queries), 5)
 
-    def test_cache_reaches_back_only_when_an_older_ticket_needs_it(self):
-        self.scan(since=date(2026, 11, 10))
-        found, queries = self.scan(since=date(2026, 11, 5), today=date(2026, 11, 19))
-        merged = sorted(q.split('merged:')[1].split(',')[0].split(')')[0].replace('\\', '').strip('"')
-                        for q in queries if 'is:merged' in q)
-        self.assertEqual(merged, ['2026-11-05..2026-11-10', '2026-11-17..2026-11-19'])
+    def test_a_refused_search_batch_costs_one_call_and_keeps_the_rest(self):
+        calls = []
 
-    def test_cache_forgets_prs_that_left_the_window(self):
-        old = self.merged_pr(1, '2026-09-01T00:00:00Z')
-        self.scan(merged=[old], since=date(2026, 8, 1), today=date(2026, 11, 18))
-        found, _ = self.scan(since=date(2026, 10, 25), today=date(2026, 11, 18))
-        self.assertEqual(found, [])
+        def call(*args):
+            query = next(a for a in args if a.startswith('query=query{'))
+            calls.append(query)
+            aliases = re.findall(r'(q\d+):search', query)
+            if len(aliases) > 1:
+                raise RuntimeError('gh api graphql failed: something about this batch')
+            return json.dumps({'data': {aliases[0]: {'pageInfo': {'hasNextPage': False}, 'nodes': []}}})
+        with patch.object(r, 'run', side_effect=call), \
+                patch.object(r, 'open_pulls', return_value=[]), \
+                patch.object(r, 'branch_pulls', return_value=[]):
+            self.assertEqual(r.discover(['SOFT-1', 'SOFT-2']), {'SOFT-1': [], 'SOFT-2': []})
+        self.assertEqual(len(calls), 3, 'the refused pair, then each half on its own')
 
-    def test_unreadable_cache_means_one_full_search(self):
-        self.scan()
-        TEST_CACHE.write_text('{not json')
-        _, queries = self.scan(since=date(2026, 11, 1))
-        self.assertEqual(len(queries), 2)
-        self.assertIn('merged:2026-11-01..2026-11-18', [q for q in queries if 'is:merged' in q][0].replace('\\', ''))
+    def test_the_open_sweep_is_one_paged_search_of_open_pulls(self):
+        opened = [{'url': f'https://github.com/valentinyeo/another-repo/pull/{n}',
+                   'state': 'OPEN', 'headRefName': f'feature/soft-{n}-work', 'number': n,
+                   'repository': {'nameWithOwner': 'valentinyeo/another-repo'}} for n in (1, 2)]
+        page = {'issueCount': 2, 'nodes': opened,
+                'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+        with patch.object(r, 'run', return_value=json.dumps({'data': {'search': page}})) as run, \
+                patch.object(r, 'today', return_value=date(2026, 11, 18)):
+            found = r.open_pulls()
+        self.assertEqual([p['number'] for p in found], [1, 2])
+        self.assertEqual(run.call_count, 1)
+        self.assertIn('is:open', run.call_args.args[-1])
+        self.assertNotIn('is:merged', run.call_args.args[-1])
 
-    def test_a_cached_pull_written_before_the_merged_base_rule_costs_no_rescan(self):
-        self.scan(merged=[self.merged_pr(5)])
-        stale = json.loads(TEST_CACHE.read_text())
-        for pull in stale['merged-2060.json']['pulls']:
-            pull.pop('baseRefName')
-        TEST_CACHE.write_text(json.dumps(stale))
-        found, queries = self.scan()
-        self.assertEqual([p['url'] for p in found], ['https://github.com/valentinyeo/another-repo/pull/5'])
-        merged = [q for q in queries if 'is:merged' in q]
-        self.assertEqual(len(merged), 1)
-        self.assertIn('merged:2026-11-17..2026-11-18', merged[0].replace('\\', ''))
-
-    def test_failed_search_keeps_the_cache(self):
-        self.scan(merged=[self.merged_pr(5)])
-        before = TEST_CACHE.read_text()
-        with patch.object(r, 'run', side_effect=RuntimeError('rate limited')), \
-                patch.object(r, 'today', return_value=date(2026, 11, 19)), self.assertRaises(RuntimeError):
-            r.branch_pulls(r.DEFAULT, date(2026, 11, 16))
-        self.assertEqual(TEST_CACHE.read_text(), before)
+    def test_a_board_sized_run_sweeps_open_pulls_once_and_a_single_ticket_does_not(self):
+        sweeps = []
+        call, _ = self.searches(lambda alias, query: [])
+        with patch.object(r, 'run', side_effect=call), \
+                patch.object(r, 'open_pulls', side_effect=lambda *a: sweeps.append(1) or []), \
+                patch.object(r, 'branch_pulls', return_value=[]):
+            r.discover([f'SOFT-{n}' for n in range(1, 16)])
+            self.assertEqual(len(sweeps), 1)
+            r.discover(['SOFT-1'])
+        self.assertEqual(len(sweeps), 1, 'one ticket pays a lookup, not the whole fleet')
 
     def test_github_reads_run_one_after_another(self):
         active, most, threads = [0], [0], set()
@@ -546,59 +553,10 @@ class ReconcileTest(unittest.TestCase):
             data = {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': []} for n in range(len(fields))}
             return json.dumps({'data': data})
         keys = [f'SOFT-{n}' for n in range(1, 60)]
-        with patch.object(r, 'run', side_effect=search), patch.object(r, 'branch_pulls', return_value=[]), \
-                patch.object(r, 'head_pulls', return_value=[]):
+        with patch.object(r, 'run', side_effect=search), patch.object(r, 'open_pulls', return_value=[]):
             r.discover(keys)
         self.assertEqual(most[0], 1)
         self.assertEqual(threads, {threading.get_ident()})
-
-    def test_scan_window_starts_at_oldest_ticket_or_thirty_days(self):
-        today = date(2026, 11, 18)
-        since, old = r.scan_plan({'SOFT-1': '2026-05-01T00:00:00Z', 'SOFT-2': '2026-11-10T00:00:00Z',
-                                  'SOFT-3': None}, today=today)
-        self.assertEqual(since, date(2026, 10, 19))
-        self.assertEqual(old, ['SOFT-1', 'SOFT-3'])
-        since, old = r.scan_plan({'SOFT-2': '2026-11-10T08:00:00Z'}, today=today)
-        self.assertEqual((since, old), (date(2026, 11, 10), []))
-
-    def test_unparsable_created_at_keeps_full_history_for_that_ticket(self):
-        today = date(2026, 11, 18)
-        since, old = r.scan_plan({'SOFT-1': 'not a date', 'SOFT-2': '2026-11-10T00:00:00Z',
-                                  'SOFT-3': '2026-10-02T09:00:00', 'SOFT-4': 0}, today=today)
-        self.assertEqual(since, date(2026, 10, 19))
-        self.assertEqual(sorted(old), ['SOFT-1', 'SOFT-3', 'SOFT-4'])
-
-    def test_bad_created_at_costs_only_its_own_ticket(self):
-        broken = {**task(), 'ticketNumber': 'SOFT-2', 'createdAt': 'yesterday'}
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(r.Path, 'home', return_value=Path(directory)), \
-                patch.object(sys, 'argv', ['reconcile']), \
-                patch.object(r.time, 'time', return_value=NOW), \
-                patch.object(r, 'tickets', return_value=[broken, task()]), \
-                patch.object(r, 'discover', return_value={'SOFT-2': [], 'SOFT-1': []}) as discover, \
-                patch.object(r, 'read_sections', return_value=set()), \
-                patch.object(r, 'live_lease', return_value=False), \
-                patch.object(r, 'process_tickets', return_value=set()), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(r.main(), 0)
-            discover.assert_called_once_with(['SOFT-2', 'SOFT-1'], created={'SOFT-2': None, 'SOFT-1': None})
-            self.assertIn("NOTE SOFT-2 | unparsable createdAt 'yesterday'", out.getvalue())
-            self.assertIn('PLAN SOFT-1 Doing -> Todo', out.getvalue())
-
-    def test_ticket_with_pr_merged_long_ago_still_owned(self):
-        merged = {'url': 'https://github.com/valentinyeo/another-repo/pull/7', 'state': 'MERGED',
-                  'title': 'SOFT-1 old fix', 'body': '', 'headRefName': 'feat/old', 'number': 7,
-                  'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
-        prefixed = {'url': 'https://github.com/valentinyeo/another-repo/pull/8', 'state': 'MERGED',
-                    'headRefName': 'soft-1-branch-only', 'number': 8,
-                    'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
-        def search(*args):
-            query = next(a for a in args if 'search(query' in a)
-            nodes = [prefixed] if 'head:SOFT-1' in query else [merged]
-            return json.dumps({'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': nodes}}})
-        with patch.object(r, 'run', side_effect=search), patch.object(r, 'branch_pulls', return_value=[]):
-            found = r.discover(['SOFT-1'], created={'SOFT-1': '2026-05-01T00:00:00Z'})
-        self.assertEqual({p['url'] for p in found['SOFT-1']}, {merged['url'], prefixed['url']})
 
     def test_failed_pr_read_in_prefetch_leaves_the_error_to_its_ticket(self):
         pulls = {'SOFT-1': [{'repository': {'nameWithOwner': 'valentinyeo/another-repo'}, 'number': 1, 'state': 'MERGED'}]}
@@ -615,7 +573,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r, 'discover', return_value={}) as discover, \
                 patch.object(r, 'collect') as collect, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
-            discover.assert_called_once_with([], created={})
+            discover.assert_called_once_with([])
             collect.assert_not_called()
             self.assertIn('KEEP SOFT-1 Future -> Future | unknown column; kept', out.getvalue())
 
@@ -736,8 +694,9 @@ class ReconcileTest(unittest.TestCase):
                     'statusCheckRollup': {'contexts': {'pageInfo': {'hasNextPage': False}, 'nodes': [
                         {'__typename': 'CheckRun', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}},
                     'comments': {'totalCount': 0, 'nodes': []}}} for n in keys}}
-            elif '/contents/.verify/policy.json' in call:
-                body = {'content': base64.b64encode(b'{}').decode()}
+            elif 'object(expression:' in call:
+                aliases = list(dict.fromkeys(re.findall(r'p(\d+):repository', call)))
+                body = {'data': {f'p{n}': {'object': {'text': '{}'}} for n in aliases}}
             else:
                 keys = list(dict.fromkeys(re.findall(r'SOFT-\d+', call)))
                 body = {'data': {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': [pulls[key]]}
@@ -770,9 +729,9 @@ class ReconcileTest(unittest.TestCase):
                  {**t, 'createdAt': created, 'labels': [{'id': '9', 'name': 'Bug'}]} for t in templates]
         whole = self.github_calls_for(tasks, [])
         labelled = self.github_calls_for(tasks, ['--label', 'SOFT-2807'])
-        self.assertEqual((whole, labelled), (8, 5),
-                         'whole board: 3 searches + 2 branch scans + 2 pull batches + 1 policy; '
-                         '2 labelled tickets: 1 + 2 + 1 + 1')
+        self.assertEqual((whole, labelled), (5, 2),
+                         'whole board: 3 ticket searches + 1 open sweep + 1 pull batch, and an '
+                         'open PR reads no policy; 2 labelled tickets: 1 + 1, and no fleet sweep')
 
     def test_a_label_nobody_carries_costs_no_github_calls(self):
         tasks = [{**t, 'createdAt': '2026-11-18T10:00:00Z'} for t in self.labelled_board()]
@@ -1262,7 +1221,8 @@ else:
               'state': 'OPEN', 'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}, 'number': 1}
         wrong = {**pr, 'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
         data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [pr, wrong]}}}
-        with patch.object(r, 'run', return_value=json.dumps(data)) as run, patch.object(r, 'branch_pulls', return_value=[]), patch.object(r, 'head_pulls', return_value=[]):
+        with patch.object(r, 'run', return_value=json.dumps(data)) as run, \
+                patch.object(r, 'branch_pulls', return_value=[]):
             self.assertEqual(r.discover(['HTPR-1'], board=r.BOARDS[15]), {'HTPR-1': [pr]})
             self.assertIn('repo:hypertask-ai/hypertask', run.call_args.args[-1])
 
@@ -1281,9 +1241,8 @@ else:
         data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [pr]}}}
         created = datetime.now(timezone.utc).isoformat()
         with patch.object(r, 'run', return_value=json.dumps(data)) as run, \
-                patch.object(r, 'branch_pulls', return_value=[]), \
-                patch.object(r, 'head_pulls', return_value=[]):
-            found = r.discover(['HTPR-9521'], created={'HTPR-9521': created}, board=r.BOARDS[15])
+                patch.object(r, 'branch_pulls', return_value=[]):
+            found = r.discover(['HTPR-9521'], board=r.BOARDS[15])
             query = run.call_args.args[-1]
         self.assertEqual(found, {'HTPR-9521': [pr]})
         # One search covers every repo the board ships from.
@@ -1309,10 +1268,8 @@ else:
                                    'repository': {'nameWithOwner': 'valentinyeo/vstack'}}, board))
         data = {'data': {'q0': {'pageInfo': {'hasNextPage': False}, 'nodes': [stacked]}}}
         with patch.object(r, 'run', return_value=json.dumps(data)), \
-                patch.object(r, 'branch_pulls', return_value=[]), \
-                patch.object(r, 'head_pulls', return_value=[]):
-            self.assertEqual(r.discover(['HTPR-9387'], created={'HTPR-9387': None}, board=board),
-                             {'HTPR-9387': []})
+                patch.object(r, 'branch_pulls', return_value=[]):
+            self.assertEqual(r.discover(['HTPR-9387'], board=board), {'HTPR-9387': []})
         card = self.card('HTPR-9387', 'In Progress', NOW - 8000)
         self.assertEqual(r.target(self.facts(card, NOW + 8000), board=board)[0], 'Backlog')
 
@@ -2051,11 +2008,11 @@ class CallBudgetTest(unittest.TestCase):
 
     def test_prefetch_reads_prs_in_batches(self):
         pulls = {f'SOFT-{n}': [{'repository': {'nameWithOwner': 'valentinyeo/another-repo'},
-                                'number': n, 'state': 'OPEN'}] for n in range(30)}
+                                'number': n, 'state': 'OPEN'}] for n in range(120)}
         with patch.object(r, 'read_pull_batch', return_value={}) as batch:
             r.prefetch(pulls)
-        self.assertEqual(batch.call_count, 2)
-        self.assertEqual(sorted(len(c.args[0]) for c in batch.call_args_list), [5, 25])
+        self.assertEqual(batch.call_count, 3)
+        self.assertEqual([len(c.args[0]) for c in batch.call_args_list], [50, 50, 20])
 
     def test_one_graphql_call_reads_many_prs(self):
         data = {'data': {'p0': {'pullRequest': self.node(1)}, 'p1': {'pullRequest': self.node(2)}}}
@@ -2068,8 +2025,9 @@ class CallBudgetTest(unittest.TestCase):
             'https://github.com/valentinyeo/another-repo/pull/2', 'OPEN', 'green', False))
 
     def test_graphql_comments_reach_the_verdict_reader_in_the_same_shape(self):
-        data = {'data': {'p0': {'pullRequest': self.node(comments=[
-            self.graphql_comment(self.verdict(), number=9), self.graphql_comment(number=10)])}}}
+        merged = {**self.node(comments=[self.graphql_comment(self.verdict(), number=9),
+                                        self.graphql_comment(number=10)]), 'state': 'MERGED'}
+        data = {'data': {'p0': {'pullRequest': merged}}}
         with patch.object(r, 'run', return_value=json.dumps(data)), \
                 patch.object(r, 'verifier_policy', return_value=POLICY), \
                 patch.object(r, 'pass_on_head', return_value=True) as verdict:
@@ -2085,7 +2043,8 @@ class CallBudgetTest(unittest.TestCase):
     def test_verdict_older_than_the_newest_hundred_is_still_found(self):
         older = [{'user': {'login': 'verifier'}, 'body': '```verify-verdict\n' + json.dumps(self.verdict()) + '\n```',
                   'updated_at': '2025-06-01T00:00:00Z', 'id': 4}]
-        data = {'data': {'p0': {'pullRequest': self.node(comments=[self.graphql_comment(number=8)], total=150)}}}
+        data = {'data': {'p0': {'pullRequest': {**self.node(
+            comments=[self.graphql_comment(number=8)], total=150), 'state': 'MERGED'}}}}
         with patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps([older])]) as run, \
                 patch.object(r, 'verifier_policy', return_value=POLICY), \
                 patch.object(r, 'pass_on_head', side_effect=[False, True]) as verdict:
@@ -2172,6 +2131,33 @@ class CallBudgetTest(unittest.TestCase):
             self.assertFalse(result[('valentinyeo/another-repo', 1)].passed)
             self.assertEqual(run.call_count, 1)
 
+    def test_an_open_pull_reads_no_policy_and_no_verifier_run(self):
+        """An open PR's card comes from its checks; nothing reads a verdict for it."""
+        node = {**self.node(checks=[self.pstack_check()]), 'state': 'OPEN'}
+        with patch.object(r, 'run', return_value=json.dumps({'data': {'p0': {'pullRequest': node}}})) as run:
+            found = r.read_pull_batch([('valentinyeo/another-repo', 1)])
+        self.assertFalse(found[('valentinyeo/another-repo', 1)].passed)
+        self.assertEqual(run.call_count, 1, 'one pull read and nothing else')
+
+    def test_a_merged_pull_reads_its_verifier_run_once_ever(self):
+        node = {**self.node(checks=[self.pstack_check()]), 'state': 'MERGED'}
+        jobs = [{'jobs': [{'runner_name': 'GitHub Actions 7', 'labels': ['ubuntu-latest']}]}]
+
+        def call(*args):
+            if '/jobs' in args[-1]:
+                return json.dumps(jobs)
+            if 'object(expression' in args[-1]:
+                return json.dumps({'data': {'p0': {'object': None}}})
+            return json.dumps({'data': {'p0': {'pullRequest': node}}})
+        with patch.object(r, 'run', side_effect=call) as run:
+            for _ in range(3):
+                r.PULLS.clear()
+                r.PSTACK_JOBS.clear()
+                self.assertTrue(r.read_pull_batch([('valentinyeo/another-repo', 1)])[
+                    ('valentinyeo/another-repo', 1)].passed)
+        job_reads = [c for c in run.call_args_list if '/jobs' in c.args[-1]]
+        self.assertEqual(len(job_reads), 1, 'a finished run does not change, so one read is enough')
+
     def test_policy_repositories_ignore_pstack_check_runs(self):
         data = {'data': {'p0': {'pullRequest': self.node(checks=[self.pstack_check()])}}}
         for policy in (POLICY, {}):
@@ -2234,8 +2220,8 @@ class CallBudgetTest(unittest.TestCase):
 
     def test_pstack_verifier_reads_one_run_once_for_many_checks(self):
         # Two candidates in the same run share one jobs read, even when it rejects them.
-        data = {'data': {'p0': {'pullRequest': self.node(
-            checks=[self.pstack_check(), self.pstack_check()])}}}
+        data = {'data': {'p0': {'pullRequest': {**self.node(
+            checks=[self.pstack_check(), self.pstack_check()]), 'state': 'MERGED'}}}}
         pages = [{'jobs': [{'runner_name': 'my-server', 'labels': ['self-hosted']}]}]
         with patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps(pages)]) as run, \
                 patch.object(r, 'verifier_policy', return_value=None):
@@ -2244,32 +2230,52 @@ class CallBudgetTest(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
 
     def test_policy_is_cached_on_disk_and_counted(self):
-        payload = json.dumps({'content': base64.b64encode(json.dumps(POLICY).encode()).decode()})
+        payload = json.dumps({'data': {'p0': {'object': {'text': json.dumps(POLICY)}}}})
         with tempfile.TemporaryDirectory() as home, \
                 patch.object(r.Path, 'home', return_value=Path(home)), \
                 patch.object(r, 'run', return_value=payload) as run:
             self.assertEqual(r.verifier_policy('valentinyeo/another-repo', HEAD), POLICY)
             self.assertEqual(r.verifier_policy('valentinyeo/another-repo', HEAD), POLICY)
         self.assertEqual(run.call_count, 1)
-        self.assertIn('repos/valentinyeo/another-repo/contents/.verify/policy.json?ref=' + HEAD,
+        self.assertIn('object(expression:"' + HEAD + ':.verify/policy.json")',
                       run.call_args.args[-1])
 
     def test_empty_policy_is_distinct_from_missing_and_legacy_cache(self):
         repo = 'valentinyeo/another-repo'
         r.cache_write(f'policy:{repo}@{HEAD}', {'policy': {}})
-        payload = json.dumps({'content': base64.b64encode(b'{}').decode()})
+        payload = json.dumps({'data': {'p0': {'object': {'text': '{}'}}}})
         with patch.object(r, 'run', return_value=payload) as run:
             self.assertEqual(r.verifier_policy(repo, HEAD), {})
             self.assertEqual(r.verifier_policy(repo, HEAD), {})
         self.assertEqual(run.call_count, 1)
 
     def test_missing_policy_is_cached_too(self):
+        payload = json.dumps({'data': {'p0': {'object': None}}})
         with tempfile.TemporaryDirectory() as home, \
                 patch.object(r.Path, 'home', return_value=Path(home)), \
-                patch.object(r, 'run', side_effect=RuntimeError('gh api failed: gh: Not Found (HTTP 404)')) as run:
+                patch.object(r, 'run', return_value=payload) as run:
             self.assertIsNone(r.verifier_policy('valentinyeo/another-repo', HEAD))
             self.assertIsNone(r.verifier_policy('valentinyeo/another-repo', HEAD))
         self.assertEqual(run.call_count, 1)
+
+    def test_one_policy_call_reads_every_commit_a_pull_batch_needs(self):
+        """Fifty PRs on fifty base commits cost one policy read, not fifty."""
+        oids = [f'{n:040x}' for n in range(1, 51)]
+        nodes = {f'p{n}': {'pullRequest': {**self.node(n), 'baseRefOid': oid}}
+                 for n, oid in enumerate(oids)}
+        policy = {'data': {f'p{n}': {'object': {'text': json.dumps(POLICY)}}
+                           for n in range(len(oids))}}
+
+        def call(*args):
+            return json.dumps(policy if 'object(expression' in args[-1]
+                              else {'data': nodes})
+        with tempfile.TemporaryDirectory() as home, \
+                patch.object(r.Path, 'home', return_value=Path(home)), \
+                patch.object(r, 'run', side_effect=call) as run:
+            found = r.read_pull_batch([('valentinyeo/another-repo', n) for n in range(1, 51)])
+        self.assertEqual(len(found), 50)
+        self.assertTrue(all(p.passed is False for p in found.values()))
+        self.assertEqual(run.call_count, 2, 'one pull batch and one policy batch')
 
     def test_quiet_cache_preserves_merge_time_and_reopen_guard(self):
         card = task('Todo')
@@ -2293,7 +2299,10 @@ class CallBudgetTest(unittest.TestCase):
         for entry in ({'pulls': [{'state': 'MERGED'}]},
                       {'facts': {'example/x#1': {'state': 'MERGED'}}}):
             saved = {'at': NOW, 'tickets': {task()['ticketNumber']: entry}}
-            self.assertFalse(r.saved_facts_fresh(saved, NOW))
+            self.assertFalse(r.saved_facts_usable(saved))
+        self.assertTrue(r.saved_facts_usable({'at': NOW - 10 * 3600, 'tickets': {
+            task()['ticketNumber']: {'at': NOW - 10 * 3600, 'pulls': [], 'facts': {}}}}),
+            'an old board is still readable: age is a per-ticket question')
 
     def test_quiet_probe_preserves_product_merge_time(self):
         merged_at = '2026-01-02T00:00:00Z'
@@ -2450,7 +2459,7 @@ class CallBudgetTest(unittest.TestCase):
                 patch.object(r, 'live_lease', return_value=False), \
                 patch.object(r, 'process_tickets', return_value=set()), \
                 patch.object(r, 'read_board_facts', return_value=saved), \
-                patch.object(r, 'github_search_batch', return_value={key: [repo_pull]}), \
+                patch.object(r, 'ticket_pulls', return_value={key: [repo_pull]}), \
                 patch.object(r, 'read_pull_batch', side_effect=lambda refs: (
                     r.PULLS.update(found := {('valentinyeo/another-repo', 1): fresh_pull}) or found)), \
                 patch.object(r, 'run', return_value=json.dumps({'items': [item]})), \
@@ -2488,22 +2497,71 @@ class CallBudgetTest(unittest.TestCase):
         self.assertNotIn('UNKNOWN', text)
         self.assertNotIn('PLAN ', text)
 
-    def test_stale_saved_facts_force_a_full_sync(self):
-        saved = {'at': NOW - r.FACTS_MAX_AGE - 1, 'probe_since': '2020-01-01T00:00:00Z', 'tickets': {}}
+    def test_stale_saved_facts_keep_the_quiet_path_and_read_only_what_expired(self):
+        """Three hours away is not a reason to re-read the whole board."""
+        key = 'SOFT-1'
+        t1 = {**task('Doing'), 'ticketNumber': key, 'updatedAt': NOW - 8000}
+        saved = {'at': NOW - r.FACTS_STALE - 60, 'probe_since': '2020-01-01T00:00:00Z',
+                 'repos': [], 'tickets': {
+                     key: {'at': NOW - r.FACTS_STALE - 60, 'updated_at': t1['updatedAt'],
+                           'pulls': [], 'facts': {}}}}
+        searched = []
+
+        def pulls(keys, board=r.DEFAULT, sweep=None):
+            searched.append(list(keys))
+            return {key: [] for key in keys}
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
                 patch.object(sys, 'argv', ['reconcile']), \
                 patch.object(r.time, 'time', return_value=NOW), \
-                patch.object(r, 'tickets', return_value=[task()]), \
+                patch.object(r, 'tickets', return_value=[t1]), \
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
                 patch.object(r, 'read_board_facts', return_value=saved), \
                 patch.object(r, 'probe_changed_prs') as probe, \
-                patch.object(r, 'discover', return_value={'SOFT-1': []}) as discover, \
-                patch.object(r, 'prefetch'), contextlib.redirect_stdout(io.StringIO()):
-            r.main()
-        discover.assert_called_once()
-        probe.assert_not_called()
+                patch.object(r, 'ticket_pulls', side_effect=pulls), \
+                patch.object(r, 'discover') as discover, \
+                patch.object(r, 'prefetch'), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        probe.assert_called_once()
+        discover.assert_not_called()
+        self.assertEqual(searched, [[key]], 'the ticket whose facts expired is re-read')
+
+    def test_a_two_hour_old_board_reads_a_quarter_and_no_more(self):
+        """Back after two hours: a quarter of the rest, plus what changed."""
+        keys = [f'SOFT-{n}' for n in range(1, 41)]
+        saved = {'at': NOW - 7200, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
+                 'tickets': {key: {'at': NOW - 7200, 'pulls': [], 'facts': {}} for key in keys}}
+        changed = {'SOFT-3'}
+        refresh = r.rolling_refresh(saved, keys, changed, NOW)
+        self.assertIn('SOFT-3', refresh)
+        self.assertEqual(len(refresh), 1 + 10, 'one changed ticket and a quarter of the rest')
+
+    def test_no_saved_fact_is_ever_left_older_than_four_hours(self):
+        """Six hours of half-hourly runs: the slice and the stale rule keep ages down."""
+        keys = [f'SOFT-{n}' for n in range(1, 41)]
+        saved = {'at': NOW, 'repos': [],
+                 'tickets': {key: {'at': NOW, 'pulls': [], 'facts': {}} for key in keys}}
+        now = NOW
+        for _ in range(12):
+            now += 1800
+            refresh = r.rolling_refresh(saved, keys, set(), now)
+            for key in refresh:
+                saved['tickets'][key]['at'] = now
+            saved['at'] = now
+            self.assertLess(max(now - r.saved_ticket_at(saved, key) for key in keys),
+                            r.FACTS_MAX_AGE)
+
+    def test_nothing_rolls_while_the_oldest_fact_is_under_an_hour(self):
+        keys = [f'SOFT-{n}' for n in range(1, 41)]
+        saved = {'at': NOW - 900, 'repos': [],
+                 'tickets': {key: {'at': NOW - 900, 'pulls': [], 'facts': {}} for key in keys}}
+        self.assertEqual(r.rolling_refresh(saved, keys, set(), NOW), set())
+        self.assertEqual(r.rolling_refresh(saved, keys, {'SOFT-1'}, NOW), {'SOFT-1'})
 
     def test_probe_matches_branch_only_prs_by_saved_url(self):
         key = 'SOFT-1'
@@ -2589,36 +2647,43 @@ class CallBudgetTest(unittest.TestCase):
             r.PULLS.clear()
             self.assertEqual(r.main(), 0)
         self.assertEqual(written['probe_since'], r.format_reset(probe_at))
-        self.assertEqual(written['at'], saved['at'])
+        self.assertEqual(written['at'], write_at)
+        self.assertEqual(written['tickets'][key]['at'], saved['at'],
+                         'a ticket nobody re-read keeps the run that did read it')
 
     def test_probe_search_uses_explicit_get(self):
         with patch.object(r, 'run', return_value=json.dumps({'items': []})) as run:
             r.probe_changed_prs(r.DEFAULT, '2026-01-01T00:00:00Z')
         self.assertEqual(run.call_args.args[:5], ('gh', 'api', '--method', 'GET', 'search/issues'))
 
-    def test_quiet_sync_preserves_saved_at_without_refresh(self):
-        key = 'SOFT-1'
-        t = {**task('Doing'), 'ticketNumber': key, 'updatedAt': NOW - 8000}
-        saved_at = NOW - 3600
+    def test_quiet_sync_keeps_the_fact_time_of_tickets_it_did_not_read(self):
+        keys = [f'SOFT-{n}' for n in range(1, 5)]
+        saved_at = NOW - 900
+        tickets = [{**task('Doing'), 'ticketNumber': key, 'updatedAt': NOW - 8000} for key in keys]
         saved = {'at': saved_at, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
-                 'tickets': {key: {'updated_at': t['updatedAt'], 'pulls': [], 'facts': {}}}}
+                 'tickets': {key: {'at': saved_at, 'updated_at': NOW - 8000, 'pulls': [], 'facts': {}}
+                             for key in keys}}
         written = {}
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
                 patch.object(sys, 'argv', ['reconcile']), \
                 patch.object(r.time, 'time', return_value=NOW), \
-                patch.object(r, 'tickets', return_value=[t]), \
+                patch.object(r, 'tickets', return_value=tickets), \
                 patch.object(r, 'read_sections', return_value=set()), \
                 patch.object(r, 'live_lease', return_value=False), \
                 patch.object(r, 'process_tickets', return_value=set()), \
                 patch.object(r, 'read_board_facts', return_value=saved), \
                 patch.object(r, 'run', return_value=json.dumps({'items': []})), \
+                patch.object(r, 'ticket_pulls') as searched, \
                 patch.object(r, 'write_board_facts', side_effect=lambda board_id, payload: written.update(payload)), \
                 contextlib.redirect_stderr(io.StringIO()), \
                 contextlib.redirect_stdout(io.StringIO()):
             r.PULLS.clear()
             self.assertEqual(r.main(), 0)
-        self.assertEqual(written['at'], saved_at)
+        searched.assert_not_called()
+        self.assertEqual(written['at'], NOW, 'the run itself is stamped')
+        self.assertEqual({entry['at'] for entry in written['tickets'].values()}, {saved_at},
+                         'facts under an hour old are kept, not re-read')
 
     def test_apply_refused_budget_exits_before_apply_plan(self):
         with tempfile.TemporaryDirectory() as directory, \

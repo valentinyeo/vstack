@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Reconcile configured boards from worker and GitHub facts. Default: read-only."""
 import argparse
-import base64
 import contextlib
 from contextlib import closing
 from enum import Enum
@@ -41,9 +40,16 @@ PROTECTED = {'Valentin Review', 'Done', 'Not now'}
 MANAGED = {'Todo', 'Verification Backlog', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'}
 VERIFICATION = 'verification'
 VERIFICATION_BACKLOG = 'Verification Backlog'
-WINDOW_DAYS = 30
-# PR reads per GitHub GraphQL call.
-PULL_BATCH = 25
+# Ticket searches and branch lookups per GitHub GraphQL call. A batch GitHub
+# refuses is split in half, so a wide batch costs one call where it is answered.
+SEARCH_BATCH = 12
+BRANCH_BATCH = 25
+# A sweep of every open PR in scope costs a call per hundred PRs, so a run pays
+# for it only when it stands in for more branch lookups than that.
+SWEEP_MIN_TICKETS = 15
+# PR reads and policy reads per GitHub GraphQL call.
+PULL_BATCH = 50
+POLICY_BATCH = 50
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
 PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
 WRAPPERS = {'sudo', 'env', 'nohup', 'timeout', 'exec', 'command', 'stdbuf', 'ionice', 'nice',
@@ -61,7 +67,15 @@ VALUE_FLAGS = {
 }
 AGENTS = {'hax', 'pi', 'codex', 'cursor-agent', 'claude', 'opencode', 'gemini'}
 LEASE_TOOL = 'lease'
-FACTS_MAX_AGE = 3600
+# Saved facts are read per ticket, not for the whole board at once. A ticket the
+# probe or the board flagged is read at once, a ticket this stale is always read,
+# and one run in ROLLING_SLICE of the rest keeps every fact inside FACTS_MAX_AGE.
+FACTS_STALE = 3 * 3600
+FACTS_MAX_AGE = 4 * 3600
+ROLLING_SLICE = 4
+# A fact this old starts the rolling read, so a board read every quarter hour does
+# not refresh a slice it does not need yet.
+FACTS_QUIET = 3600
 BUDGET_REFUSED = re.compile(r'gh budget:', re.I)
 # These read a ticket; they never work one, however their arguments spell it.
 NON_WORKERS = {'grep', 'rg', 'ps', 'pgrep', 'pkill', 'sed', 'awk', 'cat', 'less', 'tail',
@@ -403,14 +417,6 @@ def fill_section_changed(candidates, pulls, board):
             SECTION_CHANGED[key] = moment((row.get('staleness') or {}).get('sectionChangedAt'))
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
             SECTION_CHANGED[key] = None
-
-
-def ticket_date(value):
-    """Ticket creation date, or None when the board sent nothing usable."""
-    try:
-        return datetime.fromtimestamp(stamp(value), timezone.utc).date() if value else None
-    except (TypeError, ValueError):
-        return None
 
 
 def pid_alive(pid):
@@ -816,7 +822,12 @@ def write_board_facts(board_id, payload):
     cache_write(board_facts_key(board_id), payload)
 
 
-def saved_facts_fresh(saved, now):
+def saved_facts_usable(saved):
+    """Can these saved facts serve a run at all? Age is a per-ticket question now.
+
+    An entry written before a field existed cannot answer the rules: a merged pull
+    with no merge time would read as a ship on every run and flap the card.
+    """
     for entry in (saved.get('tickets') or {}).values():
         if any(p.get('state') == 'MERGED' and 'mergedAt' not in p
                for p in entry.get('pulls') or ()):
@@ -824,10 +835,37 @@ def saved_facts_fresh(saved, now):
         if any(f.get('state') == 'MERGED' and 'merged_at' not in f
                for f in (entry.get('facts') or {}).values()):
             return False
-    try:
-        return now - float(saved['at']) <= FACTS_MAX_AGE
-    except (KeyError, TypeError, ValueError):
-        return False
+    return True
+
+
+def saved_ticket_at(saved, key):
+    """When one ticket's facts were last read. Older caches saved one time for all."""
+    entry = (saved.get('tickets') or {}).get(key) or {}
+    for value in (entry.get('at'), saved.get('at')):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def rolling_refresh(saved, keys, changed, now):
+    """The tickets this run reads GitHub for, when saved facts already exist.
+
+    A run never re-reads the whole board. What the probe or the board flagged is
+    read at once; a ticket whose facts have reached FACTS_STALE is read whatever the
+    slice says, so nothing left behind is older than FACTS_MAX_AGE; and once the
+    oldest facts pass FACTS_QUIET, the oldest ROLLING_SLICE'th of the rest is read
+    too, so a chat back after hours catches up in a few short runs instead of one
+    long one. New tickets arrive in `changed` and are read whole.
+    """
+    known = saved.get('tickets') or {}
+    ages = {key: now - saved_ticket_at(saved, key) for key in keys if key in known}
+    forced = {key for key, age in ages.items() if age >= FACTS_STALE}
+    rest = sorted((key for key in ages if key not in forced and key not in changed),
+                  key=lambda key: ages[key], reverse=True)
+    rolling = -(-len(rest) // ROLLING_SLICE) if ages and max(ages.values()) >= FACTS_QUIET else 0
+    return set(changed) | forced | set(rest[:rolling])
 
 
 def probe_scope(board, repos=()):
@@ -889,7 +927,14 @@ def probe_changed_prs(board, since_iso, repos=()):
     query = f'is:pr {probe_scope(board, repos)} updated:>={since_iso}'
     page = json.loads(run('gh', 'api', '--method', 'GET', 'search/issues',
                           '-f', f'q={query}', '-f', 'per_page=100'))
-    return [item for item in page.get('items') or [] if item.get('html_url')]
+    items = [item for item in page.get('items') or [] if item.get('html_url')]
+    total = int(page.get('total_count') or 0)
+    if total > len(items):
+        # A longer gap than one page covers: the rolling read still refreshes a
+        # quarter of the rest, so say so rather than look like a full probe.
+        print(f'reconcile: probe truncated: {len(items)} of {total} changed PRs; '
+              f'refreshing a rolling slice too', file=sys.stderr, flush=True)
+    return items
 
 
 def board_task_changes(saved, tasks, keys):
@@ -965,14 +1010,17 @@ def restore_pull_facts(saved):
                                              fact.get('merged_at'))
 
 
-def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved_at=None):
+def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved=None, refreshed=()):
+    """One board's facts, each ticket stamped with the run that read it."""
     tickets = {}
+    kept = saved if isinstance(saved, dict) else None
     for task in tasks:
         key = task['ticketNumber']
         plist = pulls.get(key)
         if plist is None:
             continue
-        entry = {'updated_at': task.get('updatedAt'), 'pulls': plist, 'facts': {}}
+        facts_at = now if key in refreshed or not kept else saved_ticket_at(kept, key)
+        entry = {'at': facts_at, 'updated_at': task.get('updatedAt'), 'pulls': plist, 'facts': {}}
         if not product_board(board):
             for pull in plist:
                 repo = pull['repository']['nameWithOwner']
@@ -984,70 +1032,142 @@ def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved_at=N
                         'merged_at': got.merged_at}
         tickets[key] = entry
     repos = sorted({pull['repository']['nameWithOwner'] for plist in pulls.values() for pull in plist})
-    return {'at': saved_at if saved_at is not None else now,
-            'probe_since': probe_since or format_reset(now), 'repos': repos, 'tickets': tickets}
+    return {'at': now, 'probe_since': probe_since or format_reset(now),
+            'repos': repos, 'tickets': tickets}
 
 
-def github_search_batch(keys, board=DEFAULT):
-    """GraphQL ticket search only, without branch scans."""
-    found = {key: [] for key in keys}
-    valid = []
-    for key in keys:
-        try:
-            ticket_index(key, board)
-            valid.append(key)
-        except ValueError:
-            continue
-    if not valid:
+SEARCH_FIELDS = ('url title body headRefName state mergedAt number baseRefName '
+                 'repository{nameWithOwner}')
+
+
+def search_data(queries):
+    """The data of one aliased GraphQL search call, splitting a refused call in half.
+
+    Each half keeps its aliases, so the answers merge under the names they arrived
+    with. One alias GitHub will not answer costs one call, never the ones beside it.
+    """
+    body = ' '.join(f'{alias}:search(query:{json.dumps(query)},type:ISSUE,first:100)'
+                    '{pageInfo{hasNextPage} nodes{... on PullRequest{' + SEARCH_FIELDS + '}}}'
+                    for alias, query in queries.items())
+    try:
+        result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + body + '}'))
+        if result.get('errors') or not result.get('data'):
+            raise ValueError('GitHub search errors')
+        return result['data']
+    except RateLimit:
+        raise
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+        if len(queries) == 1:
+            raise
+        pairs = list(queries.items())
+        middle = len(pairs) // 2
+        found = {}
+        for half in (pairs[:middle], pairs[middle:]):
+            found.update(search_data(dict(half)))
         return found
 
-    def search(batch):
-        fields = []
-        for n, key in enumerate(batch):
-            query = f'is:pr {search_scope(board)} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
-            fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
-                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state mergedAt number repository{nameWithOwner}}}}')
-        result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
-        if result.get('errors'):
-            raise ValueError('GitHub search errors')
-        for n, key in enumerate(batch):
-            page = result['data'][f'q{n}']
-            if page['pageInfo']['hasNextPage']:
-                raise ValueError(f'{key}: GitHub search truncated')
-            found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board)
-                          and names_ticket(p, key, board) and p['state'] != 'CLOSED']
+
+def search_pages(pairs, size=SEARCH_BATCH):
+    """One page per (key, query) pair, a batch of them per GitHub call."""
+    pages = {}
+    for offset in range(0, len(pairs), size):
+        batch = pairs[offset:offset + size]
+        data = search_data({f'q{n}': query for n, (_, query) in enumerate(batch)})
+        for n, (key, _) in enumerate(batch):
+            pages[key] = data.get(f'q{n}')
+    return pages
+
+
+def text_pulls(keys, board=DEFAULT):
+    """Every PR whose title or body names its ticket, one aliased search per ticket."""
+    pairs = [(key, f'is:pr {search_scope(board)} "{key}" OR '
+                   f'"project-{board.id}/{ticket_index(key, board)}"')
+             for key in keys]
     with phase('search'):
-        for offset in range(0, len(valid), 12):
-            search(valid[offset:offset + 12])
+        pages = search_pages(pairs)
+    found = {}
+    for key, page in pages.items():
+        if page['pageInfo']['hasNextPage']:
+            raise ValueError(f'{key}: GitHub search truncated')
+        found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board)
+                      and shipped(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
     return found
 
 
-def discover_quiet(keys, board=DEFAULT, created=None, saved=None, probe_items=(), github_refresh=()):
-    """Reuse saved PR links; read GitHub only for tickets the probe or board flagged."""
+def branch_pulls(keys, board=DEFAULT):
+    """PRs whose head branch starts with a ticket key, one aliased search per key.
+
+    GitHub search does not index branch substrings and head: matches only a branch's
+    start. This replaces the fleet-wide merged sweep, which read thousands of other
+    tickets' PRs to match a handful, and finds a merge from any date.
+    """
+    if not keys:
+        return []
+    pairs = [(key, f'is:pr {search_scope(board)} head:{key}') for key in keys]
+    pages = search_pages(pairs, BRANCH_BATCH)
+    pulls = []
+    for key, page in pages.items():
+        if page['pageInfo']['hasNextPage']:
+            raise ValueError(f'{key}: GitHub branch search truncated')
+        pulls += [p for p in page['nodes'] if p and p.get('url') and p['state'] != 'CLOSED'
+                  and allowed_repository(p, board) and shipped(p, board)]
+    return pulls
+
+
+def open_pulls(board=DEFAULT):
+    """Every open PR in the board's scope: the ones that move a card today."""
+    return scan_window(board, 'is:open', 'created', date(2008, 1, 1), today())
+
+
+def ticket_pulls(keys, board=DEFAULT, sweep=None):
+    """Every PR that names each ticket in its title, its body, or its branch.
+
+    The ticket search is one aliased query per key. A board-sized run also sweeps
+    every open PR once, because a branch that carries its key past the start of the
+    name shows up nowhere else and that sweep replaces many lookups. A ticket the
+    searches found nothing for gets one branch lookup, which is how a merge from
+    years ago is found without reading the whole merge history.
+    """
+    if not keys:
+        return {}
+    sweep = len(keys) >= SWEEP_MIN_TICKETS if sweep is None else sweep
+    found = text_pulls(keys, board)
+    silent = [key for key in keys if not found[key]]
+    with phase('branches'):
+        scanned = (open_pulls(board) if sweep else []) + branch_pulls(silent, board)
+    by_key = {key.upper(): key for key in keys}
+    for pull in scanned:
+        for match in re.finditer(r'(?<![a-z0-9])' + re.escape(board.prefix) + r'-[1-9]\d*(?![a-z0-9])',
+                                 pull.get('headRefName') or '', re.I):
+            key = by_key.get(match[0].upper())
+            if key and all(p['url'] != pull['url'] for p in found[key]):
+                found[key].append(pull)
+    return undone(found, scanned)
+
+
+def discover_quiet(keys, board=DEFAULT, saved=None, probe_items=(), refresh=()):
+    """Reuse saved PR links; read GitHub only for tickets this run refreshes."""
+    saved = saved or {}
     found = {key: list((saved.get('tickets') or {}).get(key, {}).get('pulls', [])) for key in keys}
     merge_probe_pulls(found, probe_items, keys, board, saved)
     missing = [key for key in keys if key not in (saved.get('tickets') or {})]
-    if missing:
-        discovered = discover(missing, created={key: (created or {}).get(key) for key in missing}, board=board)
-        found.update(discovered)
-    refresh = [key for key in github_refresh if key not in missing]
-    searched = {}
-    if refresh:
-        with phase('search'):
-            searched = github_search_batch(refresh, board)
-        for key, pulls in searched.items():
+    read = [key for key in refresh if key not in missing]
+    batches = [batch for batch in ((missing, None), (read, False)) if batch[0]]
+    searched = []
+    for batch, sweep in batches:
+        # A new ticket is read whole, with the sweep. A refreshed one keeps the links
+        # and facts it already had and adds what its own searches find.
+        for key, pulls in ticket_pulls(batch, board, sweep=sweep).items():
             urls = {p['url'] for p in found[key]}
-            for pull in pulls:
-                if pull['url'] not in urls:
-                    found[key].append(pull)
+            found[key] += [pull for pull in pulls if pull['url'] not in urls]
+            searched += pulls
     restore_pull_facts(saved)
     # Saved facts and the probe's own rows carry the revert, so a quiet sync cannot
     # keep counting a merge another merge took back.
     saved_pulls = [pull for key in keys for pull in
                    ((saved.get('tickets') or {}).get(key, {}).get('pulls') or [])]
     probed = [search_item_to_pull(item, saved_pull_index(saved)) for item in probe_items]
-    searched_pulls = [pull for pulls in searched.values() for pull in pulls]
-    return undone(found, [p for p in saved_pulls + probed + searched_pulls if p.get('url')])
+    return undone(found, [p for p in saved_pulls + probed + searched if p.get('url')])
 
 
 def api(*args):
@@ -1250,74 +1370,6 @@ def scan_window(board, kind, field, start, end):
     return found
 
 
-def merged_day(pull):
-    try:
-        return date.fromisoformat((pull.get('mergedAt') or '')[:10])
-    except ValueError:
-        return None
-
-
-def branch_pulls(board=DEFAULT, since=None):
-    """Search does not index branch substrings, so read branch metadata."""
-    now = today()
-    floor = now - timedelta(days=WINDOW_DAYS)
-    since = since or floor
-    pulls = scan_window(board, 'is:open', 'created', date(2008, 1, 1), now)
-    name = f'merged-{board.id}.json'
-    cached = cache_read(name)
-    try:
-        have_from, have_through = date.fromisoformat(cached['from']), date.fromisoformat(cached['through'])
-        kept = {p['url']: p for p in cached['pulls']}
-        if not have_from <= have_through <= now:
-            raise ValueError('cache dates out of order')
-    except (KeyError, TypeError, ValueError):
-        have_from, have_through, kept = None, None, {}
-    if have_from is None:
-        ranges, start = [(since, now)], since
-    else:
-        # Re-read the last cached day too: search can lag a merge by a few minutes.
-        ranges, start = [(have_through - timedelta(days=1), now)], have_from
-        if since < have_from:
-            ranges.insert(0, (since, have_from))
-            start = since
-    for first, last in ranges:
-        for pull in scan_window(board, 'is:merged', 'merged', first, min(last, now)):
-            kept[pull['url']] = pull
-    if start < floor <= since:
-        start = floor
-    kept = {url: p for url, p in kept.items() if (merged_day(p) or start) >= start}
-    cache_write(name, {'from': str(start), 'through': str(now), 'pulls': list(kept.values())})
-    seen = {pull['url']: pull for pull in pulls}
-    for pull in kept.values():
-        if (merged_day(pull) or since) >= since:
-            seen.setdefault(pull['url'], pull)
-    return list(seen.values())
-
-
-def head_pulls(keys, board=DEFAULT):
-    """Targeted lookup for tickets older than the scan window: branches that
-    start with the ticket key. GitHub matches only the start of a branch name.
-    """
-    scope = search_scope(board)
-
-    def lookup(batch):
-        fields = [f'q{n}:search(query:{json.dumps(f"is:pr {scope} head:{key}")},type:ISSUE,first:100)'
-                  '{pageInfo{hasNextPage} nodes{... on PullRequest{url headRefName state mergedAt number baseRefName repository{nameWithOwner}}}}'
-                  for n, key in enumerate(batch)]
-        result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
-        if result.get('errors'):
-            raise ValueError('GitHub branch search errors')
-        pulls = []
-        for n, key in enumerate(batch):
-            page = result['data'][f'q{n}']
-            if page['pageInfo']['hasNextPage']:
-                raise ValueError(f'{key}: GitHub branch search truncated')
-            pulls += [p for p in page['nodes'] if p and p['state'] != 'CLOSED' and allowed_repository(p, board)
-                      and shipped(p, board)]
-        return pulls
-    return [pull for i in range(0, len(keys), 12) for pull in lookup(keys[i:i + 12])]
-
-
 def allowed_repository(pull, board):
     repo = pull['repository']['nameWithOwner']
     if board.repos:
@@ -1325,20 +1377,12 @@ def allowed_repository(pull, board):
     return repo.split('/')[0] in ('valentinyeo', 'hypertask-ai')
 
 
-def scan_plan(created, days=WINDOW_DAYS, today=None):
-    """Branch scan start, and the tickets older than it. A PR cannot name a ticket
-    before it exists, so newer tickets need nothing before their own start.
+def discover(keys, board=DEFAULT):
+    """Every PR that ships each ticket, for a run that has no saved facts.
+
+    One batched ticket search, one open sweep for the board, one branch lookup per
+    silent ticket. Nothing here reads another board's PRs one ticket at a time.
     """
-    today = today or datetime.now(timezone.utc).date()
-    dates = {key: ticket_date(value) for key, value in created.items()}
-    known = [d for d in dates.values() if d]
-    since = max(today - timedelta(days=days), min(known)) if known else today - timedelta(days=days)
-    return since, [key for key, d in dates.items() if d is None or d < since]
-
-
-def discover(keys, board=DEFAULT, created=None):
-    """Batch independent searches; all repositories under both fleet owners."""
-    found = {key: [] for key in keys}
     valid = []
     for key in keys:
         try:
@@ -1346,39 +1390,9 @@ def discover(keys, board=DEFAULT, created=None):
             valid.append(key)
         except ValueError:
             continue
-    keys = valid
-
-    def search(batch):
-        fields = []
-        for n, key in enumerate(batch):
-            query = f'is:pr {search_scope(board)} "{key}" OR "project-{board.id}/{ticket_index(key, board)}"'
-            fields.append(f'q{n}:search(query:{json.dumps(query)},type:ISSUE,first:100)' +
-                          '{pageInfo{hasNextPage} nodes{... on PullRequest{url title body headRefName state mergedAt number baseRefName repository{nameWithOwner}}}}')
-        result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{' + ' '.join(fields) + '}'))
-        if result.get('errors'):
-            raise ValueError('GitHub search errors')
-        for n, key in enumerate(batch):
-            page = result['data'][f'q{n}']
-            if page['pageInfo']['hasNextPage']:
-                raise ValueError(f'{key}: GitHub search truncated')
-            found[key] = [p for p in page['nodes'] if p and p.get('url') and allowed_repository(p, board)
-                          and shipped(p, board) and names_ticket(p, key, board) and p['state'] != 'CLOSED']
-    with phase('search'):
-        for offset in range(0, len(keys), 12):
-            search(keys[offset:offset + 12])
-    by_key, scanned = {key.upper(): key for key in keys}, []
-    if by_key:
-        since, old = scan_plan({key: (created or {}).get(key) for key in keys})
-        with phase('branches'):
-            scanned = branch_pulls(board, since)
-        with phase('old-heads'):
-            scanned += head_pulls(old, board)
-        for pull in scanned:
-            for match in re.finditer(r'(?<![a-z0-9])' + re.escape(board.prefix) + r'-[1-9]\d*(?![a-z0-9])', pull['headRefName'], re.I):
-                key = by_key.get(match[0].upper())
-                if key and all(p['url'] != pull['url'] for p in found[key]):
-                    found[key].append(pull)
-    return undone(found, scanned)
+    found = {key: [] for key in keys}
+    found.update(ticket_pulls(valid, board))
+    return found
 
 
 def check_state(checks):
@@ -1390,22 +1404,73 @@ def check_state(checks):
     return 'green' if all((c.get('conclusion') in ('SUCCESS', 'NEUTRAL', 'SKIPPED') if c.get('__typename') == 'CheckRun' or 'conclusion' in c else c.get('state') == 'SUCCESS') for c in checks) else 'red'
 
 
+POLICY_FIELDS = '... on Blob{text}'
+# The cache answers for a commit once, so this is only a miss marker.
+UNREAD = object()
+
+
+def cached_policy(repo, ref):
+    """The policy saved for one commit, or UNREAD when this run must ask GitHub."""
+    # Old entries used {} for both a missing policy and an existing empty one.
+    cached = cache_read(f'policy-v2:{repo}@{ref}')
+    if isinstance(cached, dict) and 'policy' in cached:
+        return cached['policy']
+    return UNREAD
+
+
+def policy_query(refs):
+    """One GraphQL query for many commits' policy files, whatever repo each is in.
+
+    The file is read at the PR's base commit, because that is the policy the merge
+    has to satisfy, and a commit's policy never changes.
+    """
+    fields = []
+    for n, (repo, ref) in enumerate(refs):
+        owner, name = repo.split('/')
+        fields.append(f'p{n}:repository(owner:{json.dumps(owner)},name:{json.dumps(name)})'
+                      f'{{object(expression:{json.dumps(f"{ref}:.verify/policy.json")}){{{POLICY_FIELDS}}}}}')
+    return 'query{' + ' '.join(fields) + '}'
+
+
+def read_policies(refs):
+    """Cache the policy at many commits, one call per batch, and save what it finds.
+
+    Best effort: an alias GitHub refuses is left uncached, so verifier_policy reads
+    that one commit itself and fails on it alone instead of on its whole group.
+    """
+    pending = [ref for ref in dict.fromkeys(refs) if cached_policy(*ref) is UNREAD]
+    for offset in range(0, len(pending), POLICY_BATCH):
+        batch = pending[offset:offset + POLICY_BATCH]
+        try:
+            result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=' + policy_query(batch)))
+        except (RateLimit, BudgetRefused):
+            raise
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+            continue
+        data = result.get('data') or {}
+        for n, (repo, ref) in enumerate(batch):
+            node = data.get(f'p{n}')
+            if node is None:
+                continue
+            # No file, or not a blob at that path: this repo has no policy.
+            text = (node.get('object') or {}).get('text')
+            try:
+                policy = None if text is None else json.loads(text)
+            except ValueError:
+                continue
+            cache_write(f'policy-v2:{repo}@{ref}', {'policy': policy})
+
+
 def verifier_policy(repo, ref):
     """The trusted base policy at one commit. A commit's policy never changes, so
     the answer, including a repo that has no policy, is cached on disk."""
-    # Old entries used {} for both a missing policy and an existing empty one.
-    key = f'policy-v2:{repo}@{ref}'
-    cached = cache_read(key)
-    if isinstance(cached, dict) and 'policy' in cached:
-        return cached['policy']
-    try:
-        result = run('gh', 'api', f'repos/{repo}/contents/.verify/policy.json?ref={ref}')
-    except RuntimeError as error:
-        if '(HTTP 404)' not in str(error):
-            raise
-        result = None
-    policy = None if result is None else json.loads(base64.b64decode(json.loads(result)['content']))
-    cache_write(key, {'policy': policy})
+    policy = cached_policy(repo, ref)
+    if policy is not UNREAD:
+        return policy
+    read_policies([(repo, ref)])
+    policy = cached_policy(repo, ref)
+    if policy is UNREAD:
+        raise ValueError(f'{repo}@{ref} policy unreadable')
     return policy
 
 
@@ -1466,6 +1531,22 @@ def self_hosted(job):
     return 'self-hosted' in (job.get('labels') or []) or bool(runner) and not runner.startswith('GitHub Actions')
 
 
+def jobs_evidence(repo, run_id):
+    """Where one finished workflow run's jobs ran, cached on disk for good.
+
+    GitHub answers this only per run, so a merged PR's verifier evidence cost one
+    call per sync. A finished run's jobs never change, so one call ever is enough.
+    """
+    key = f'jobs-v2:{repo}@{run_id}'
+    cached = cache_read(key)
+    if isinstance(cached, dict) and 'jobs' in cached and 'self_hosted' in cached:
+        return cached
+    jobs = pstack_jobs(repo, run_id)
+    evidence = {'jobs': bool(jobs), 'self_hosted': any(self_hosted(job) for job in jobs)}
+    cache_write(key, evidence)
+    return evidence
+
+
 def pstack_pass_on_head(checks, head, repo):
     for check in checks:
         suite = check.get('checkSuite') or {}
@@ -1474,8 +1555,8 @@ def pstack_pass_on_head(checks, head, repo):
                 check.get('status') != 'COMPLETED' or check.get('conclusion') != 'SUCCESS' or
                 (suite.get('commit') or {}).get('oid') != head or not workflow.get('databaseId')):
             continue
-        jobs = pstack_jobs(repo, workflow['databaseId'])
-        if jobs and not any(self_hosted(job) for job in jobs):
+        evidence = jobs_evidence(repo, workflow['databaseId'])
+        if evidence['jobs'] and not evidence['self_hosted']:
             return True
     return False
 
@@ -1534,6 +1615,10 @@ def pull_from_node(repo, number, node):
     comments, total = graphql_comments(node)
     head = node['headRefOid']
     author = (node.get('author') or {}).get('login') or ''
+    if node['state'] != 'MERGED':
+        # No rule reads a verdict on an open PR: its checks alone decide the card, so
+        # an open PR never pays for its policy or its verifier run.
+        return Pull(node['url'], node['state'], checks, False, moment(node.get('mergedAt')))
     policy = verifier_policy(repo, node['baseRefOid'])
     if policy is None:
         passed = pstack_pass_on_head(contexts.get('nodes') or [], head, repo)
@@ -1557,12 +1642,19 @@ def read_pull_group(refs):
             found[(repo, number)] = node
     if len(refs) == 1 and not found:
         raise ValueError(f'{refs[0][0]}#{refs[0][1]} unreadable')
+    # Every policy these PRs need, in one call per fifty commits. One PR pays the
+    # same either way, so only a group shares the read. A miss here is filled in by
+    # pull_from_node, so a repo the token cannot read still fails alone.
+    policies = list(dict.fromkeys((repo, node['baseRefOid']) for (repo, _), node in found.items()
+                                 if node.get('baseRefOid')))
+    if len(policies) > 1:
+        read_policies(policies)
     return found
 
 
 def read_pull_batch(refs):
     """Read many PRs per call. A batch GitHub refuses is split, so one repository
-    the token cannot see never hides the twenty-four PRs beside it."""
+    the token cannot see never hides the forty-nine PRs beside it."""
     refs = [ref for ref in dict.fromkeys(refs) if ref not in FAILED and ref[0] not in FAILED_REPOS]
     if not refs:
         return {}
@@ -1961,19 +2053,12 @@ def board_run():
             tasks = kept
         names = {} if product_board(board) else stage_names(sections=sections)
         candidates = [t for t in tasks if t['section'] in board.managed]
-        created = {}
-        for candidate in candidates:
-            value = candidate.get('createdAt')
-            if value and ticket_date(value) is None:
-                print(f'NOTE {candidate["ticketNumber"]} | unparsable createdAt {value!r}; searched full history', flush=True)
-                value = None
-            created[candidate['ticketNumber']] = value
         keys = [t['ticketNumber'] for t in candidates]
         saved = None if args.ticket else read_board_facts(board.id)
         budget_skip = False
         probe_since = None
-        facts_refreshed = True
-        quiet = bool(saved and saved_facts_fresh(saved, time.time()) and not args.ticket and keys)
+        refreshed = set(keys)
+        quiet = bool(saved and saved_facts_usable(saved) and not args.ticket and keys)
         try:
             if quiet:
                 probe_since = format_reset(time.time())
@@ -1981,23 +2066,21 @@ def board_run():
                 if items is None:
                     quiet, probe_since = False, None
             if not quiet:
-                pulls = discover(keys, created=created, **options)
+                pulls = discover(keys, **options)
                 with phase('pulls'):
                     prefetch(pulls, **options)
             else:
-                known = saved.get('tickets') or {}
-                new_keys = {key for key in keys if key not in known}
                 board_changed = board_task_changes(saved, candidates, keys)
-                pr_changed = tickets_from_probe(items, keys, board, saved) | new_keys
-                facts_refreshed = bool(pr_changed or board_changed)
-                pulls = discover_quiet(keys, created=created, saved=saved, probe_items=items,
-                                       github_refresh=pr_changed, **options)
-                if pr_changed:
+                probed = tickets_from_probe(items, keys, board, saved)
+                refreshed = rolling_refresh(saved, keys, board_changed | probed, time.time())
+                pulls = discover_quiet(keys, saved=saved, probe_items=items,
+                                       refresh=refreshed, **options)
+                reading = {key: pulls[key] for key in refreshed if pulls.get(key)}
+                if reading:
                     with phase('pulls'):
-                        prefetch({key: pulls[key] for key in pr_changed if key in pulls},
-                                 clear=False, **options)
+                        prefetch(reading, clear=False, **options)
                 print(f'reconcile: quiet sync; probe={len(items)} PR updates, '
-                      f'refresh={len(pr_changed)} tickets', file=sys.stderr, flush=True)
+                      f'refresh={len(refreshed)} tickets', file=sys.stderr, flush=True)
         except BudgetRefused as refused:
             budget_skip = True
             if saved:
@@ -2050,9 +2133,9 @@ def board_run():
             print(timing_table(), file=sys.stderr, flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
         if not budget_skip and not args.ticket and not errors and candidates:
-            saved_at = (saved or {}).get('at') if saved and not facts_refreshed else None
             write_board_facts(board.id, serialize_board_facts(board, candidates, pulls, time.time(),
-                                                              probe_since=probe_since, saved_at=saved_at))
+                                                              probe_since=probe_since, saved=saved,
+                                                              refreshed=refreshed))
         if args.apply and not errors and not budget_skip:
             try:
                 return apply_plan(plans, args.limit, pulls, names=names, **options)
