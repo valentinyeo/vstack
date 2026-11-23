@@ -13,7 +13,8 @@ tests are not product code, so an uncovered one never fails a pass.
 
 Exit 0 when the verdict stands, 1 when it was demoted to FAIL, 2 on a usage or file error.
 Every vstack verifier reads its verdict through scripts/verdict.py, which runs this gate
-before it lets a PASS or PASS+NOTES stand.
+before it lets a PASS or PASS+NOTES stand. A selection that records no coverage at all fails
+closed: an unreadable record is not evidence that everything was covered.
 pstack: skills/correct/SKILL.md step 2, a check whose error names the fix.
 Root cause: https://app.hypertask.ai/detail/project-13556/145
 """
@@ -44,7 +45,28 @@ NOT_PRODUCT = (
 )
 
 # A selection's own prose, kept because some verifiers write only this line.
-UNMAPPED_PROSE = re.compile(r'^Unmapped files:\s*(.+)$', re.M)
+UNMAPPED_PROSE = re.compile(r'^Unmapped files:[ \t]*(.*)$', re.M)
+UNREADABLE_FIX = ('Write the changed files no journey exercises in the selection\'s unmapped list, '
+                  'or as "Unmapped files: a, b", then re-run the verifier.')
+
+
+def unreadable(selection):
+    """Why this selection says nothing a gate can trust, or None when its coverage is readable.
+
+    A selection is a verifier's own record of what it planned and what it could not map. One
+    that records neither is not evidence of full coverage, so a pass built on it fails closed."""
+    if isinstance(selection.get('unmapped'), list):
+        return None
+    if 'unmapped' in selection:
+        return 'the unmapped field is not a list of paths'
+    if 'uncovered' in selection and not str(selection.get('uncovered') or '').strip():
+        return None
+    prose = str(selection.get('uncovered') or '')
+    if not prose.strip():
+        return 'the selection records no coverage at all: no unmapped list and no uncovered text'
+    if UNMAPPED_PROSE.search(prose):
+        return None
+    return 'the uncovered text is not in the form "Unmapped files: a, b"'
 
 
 def product_files(selection):
@@ -79,6 +101,9 @@ def gate(selection, verdict):
     """(the verdict that stands, why it was demoted or ''). FAIL and BLOCKED always stand."""
     if verdict not in PASSING:
         return verdict, ''
+    unread = unreadable(selection)
+    if unread:
+        return DEMOTED, f'{DEMOTED}: {unread}. {UNREADABLE_FIX}'
     paths = product_files(selection)
     return (DEMOTED, reason(paths)) if paths else (verdict, '')
 

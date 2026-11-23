@@ -87,8 +87,29 @@ class Gate(unittest.TestCase):
         for token in ('FAIL', 'BLOCKED'):
             self.assertEqual(self.gate.gate(selection(REAL), token), (token, ''))
 
-    def test_empty_selection_keeps_the_pass(self):
-        self.assertEqual(self.gate.gate({}, 'PASS'), ('PASS', ''))
+    def test_a_selection_with_no_coverage_record_fails_closed(self):
+        # The verifier on the first run of this PR: a selection with no readable coverage
+        # record is not evidence that everything was covered, so the pass cannot stand.
+        for broken in ({}, {'features': ['appearance'], 'unmapped ': ['src/a.py']}):
+            with self.subTest(selection=broken):
+                standing, why = self.gate.gate(broken, 'PASS')
+                self.assertEqual(standing, 'FAIL')
+                self.assertIn('then re-run the verifier', why)
+
+    def test_uncovered_text_the_gate_cannot_read_fails_closed(self):
+        selection = {'features': ['appearance'], 'uncovered': 'the session command is not covered'}
+        standing, why = self.gate.gate(selection, 'PASS+NOTES')
+        self.assertEqual(standing, 'FAIL')
+        self.assertIn('Unmapped files: a, b', why)
+
+    def test_an_empty_uncovered_field_still_keeps_the_pass(self):
+        self.assertEqual(self.gate.gate({'features': ['appearance'], 'uncovered': ''}, 'PASS'),
+                         ('PASS', ''))
+        self.assertEqual(self.gate.gate({'features': ['x'], 'unmapped': []}, 'PASS'), ('PASS', ''))
+
+    def test_reading_no_coverage_leaves_fail_and_blocked_alone(self):
+        self.assertEqual(self.gate.gate({}, 'FAIL'), ('FAIL', ''))
+        self.assertEqual(self.gate.gate({}, 'BLOCKED'), ('BLOCKED', ''))
 
 
 class CommandLine(unittest.TestCase):
