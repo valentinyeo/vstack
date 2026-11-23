@@ -133,10 +133,10 @@ def record_watch(name, pid, now=None):
     return store(name, state)
 
 
-def clear_watch(name):
-    """The watcher exited; keep the rest of the record and drop its pid."""
+def clear_watch(name, pid=None):
+    """Drop only this watcher's pid, or clear unconditionally when no pid is given."""
     state = stored(name)
-    if 'watch_pid' not in state:
+    if 'watch_pid' not in state or (pid is not None and state['watch_pid'] != pid):
         return state
     state['watch_pid'] = None
     return store(name, state)
