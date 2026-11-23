@@ -34,6 +34,7 @@ Nobody pushes to main.
 | Every chat reads one true server facts file | `docs/servers.md`, `config/servers.json`, `tests/test_server_facts.py` |
 | A merged rule reaches a running chat without anyone asking | `hooks/skill-update.py`, `tests/test_skill_update.py` |
 | vstack builds tools each chat runs on its own work; the builder never runs them for other chats | `skills/pr-housekeeping/pr-queue` (`--mine` required), `tests/test_pr_queue.py`, `scripts/skill-check-retired.txt`, `tests/test_skill_check.py` |
+| A chat retains its merged PR until its own local copies are gone | `skills/pr-housekeeping/pr-queue`, `tests/test_pr_queue.py`; branch-only cleanup in `skills/repo-tidy/repo-tidy`, `tests/test_repo_tidy.py` |
 | A vstack tool acts only on the chat that runs it; the building chat is never its operator | `tests/test_own_chat_only.py` |
 | A PR never collides with an older open PR on a guarded file or ticket | `scripts/pr-overlap`, `.github/workflows/pr-overlap.yml`, `tests/test_pr_overlap.py` |
 | Worker briefs name both fault destinations | `hooks/book-check.py` |

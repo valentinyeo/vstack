@@ -4,6 +4,7 @@ Every fixture is a plain gh JSON shape and a roster line. No test touches the ne
 
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'skills/pr-housekeeping/pr-queue'
@@ -739,6 +741,126 @@ class CliTests(unittest.TestCase):
                   billing='The job was not started because recent account payments have failed')
         result = self.cli([pr])
         self.assertIn('BILLING', result.stdout, result.stdout + result.stderr)
+
+
+class CleanupLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='pr-cleanup-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.patch = mock.patch.dict(os.environ, HOME=str(self.root))
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.m = load_script()
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        self.git('init', '-q', '-b', 'main')
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@invalid',
+                 'commit', '-qm', 'base', '--allow-empty')
+        self.git('branch', 'my-branch')
+        self.git('branch', 'other-branch')
+        self.chats = [dict(chat('Owner', repo='o/r'), cwd=str(self.repo))]
+        self.row = self.m.build_rows([view(branch='my-branch', body=BODY + 'Owner chat: Owner')],
+                                     self.chats)[0]
+        self.row['head_sha'] = self.git('rev-parse', 'HEAD').strip()
+
+    def git(self, *args):
+        return subprocess.run(['git', '-C', str(self.repo), *args], check=True,
+                              capture_output=True, text=True).stdout
+
+    def tick(self, rows=(), mine='Owner', merged=True):
+        with mock.patch.object(self.m, 'gh_json', return_value={
+                'state': 'closed', 'merged_at': hours_ago(1) if merged else None}) as gh:
+            result = self.m.cleanup_rows(list(rows), self.chats, mine, 'o')
+        return result, gh
+
+    def test_merged_pr_stays_visible_until_own_branch_is_gone(self):
+        self.assertEqual(self.tick([self.row])[0], [])
+        rows, gh = self.tick()
+        self.assertEqual([r['state'] for r in rows], ['CLEANUP'])
+        self.assertIn('--branch my-branch', rows[0]['next_action'])
+        gh.assert_called_once_with(['api', 'repos/o/r/pulls/1'])
+        self.assertEqual(self.tick()[0][0]['state'], 'CLEANUP', 'holds survive later ticks')
+        self.git('branch', '-D', 'my-branch')
+        self.assertEqual(self.tick()[0], [], 'another chat branch must not keep mine pending')
+
+    def test_loop_exit_stays_nonzero_after_merge_until_cleaned(self):
+        own = view(branch='my-branch', body=BODY + 'Owner chat: Owner',
+                   head=self.row['head_sha'])
+        with mock.patch.object(self.m, 'bulk_prs', side_effect=[[own], [], []]), \
+                mock.patch.object(self.m, 'read_roster', return_value=self.chats), \
+                mock.patch.object(self.m, 'board_token', return_value=''), \
+                mock.patch.object(self.m, 'gh_json', return_value={'merged_at': hours_ago(1)}), \
+                mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.m.main(['--owner', 'o', '--mine', 'Owner'])
+            self.assertEqual(self.m.main(['--owner', 'o', '--mine', 'Owner']), 1)
+            self.assertIn('CLEANUP', output.getvalue())
+            self.assertIn('--branch my-branch', output.getvalue())
+            self.git('branch', '-D', 'my-branch')
+            self.assertEqual(self.m.main(['--owner', 'o', '--mine', 'Owner']), 0)
+
+    def test_other_chat_cannot_see_or_retire_our_cleanup(self):
+        self.tick([self.row])
+        self.assertEqual(self.tick(mine='Other')[0], [])
+        self.assertEqual(self.tick()[0][0]['state'], 'CLEANUP')
+
+    def test_closed_unmerged_is_not_cleanup(self):
+        self.tick([self.row])
+        self.assertEqual(self.tick(merged=False)[0], [])
+        self.assertIn('my-branch', self.git('branch', '--list'))
+
+    def test_worker_repo_is_tracked_when_chat_is_elsewhere(self):
+        self.git('remote', 'add', 'origin', 'https://github.com/o/r.git')
+        (self.root / 'projects').mkdir()
+        (self.root / 'projects/r').symlink_to(self.repo, target_is_directory=True)
+        self.chats = [dict(chat('Owner', repo='o/different'), cwd=str(self.root))]
+        self.tick([self.row])
+        self.assertEqual(self.tick()[0][0]['state'], 'CLEANUP')
+
+    def test_detached_worktree_is_not_mistaken_for_cleaned(self):
+        tree = self.root / 'worker-tree'
+        self.git('worktree', 'add', '-q', str(tree), 'my-branch')
+        self.tick([self.row])
+        subprocess.run(['git', '-C', str(tree), 'checkout', '--detach', '-q'], check=True)
+        self.git('branch', '-D', 'my-branch')
+        rows, _ = self.tick()
+        self.assertEqual(rows[0]['state'], 'CLEANUP')
+        self.assertIn('do not delete', rows[0]['next_action'])
+        self.assertTrue(tree.exists())
+
+    def test_worker_push_after_last_tick_uses_merged_head(self):
+        self.tick([self.row])
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@invalid',
+                 'commit', '-qm', 'worker fix', '--allow-empty')
+        self.git('branch', '-f', 'my-branch', 'HEAD')
+        with mock.patch.object(self.m, 'gh_json', return_value={
+                'merged_at': hours_ago(1), 'head': {'sha': self.git('rev-parse', 'HEAD').strip()}}):
+            rows = self.m.cleanup_rows([], self.chats, 'Owner', 'o')
+        self.assertIn('--branch my-branch', rows[0]['next_action'])
+
+    def test_transferred_pr_is_not_our_cleanup(self):
+        self.tick([self.row])
+        with mock.patch.object(self.m, 'gh_json', return_value={
+                'merged_at': hours_ago(1), 'body': 'Owner chat: Other'}):
+            self.assertEqual(self.m.cleanup_rows([], self.chats, 'Owner', 'o'), [])
+        self.assertIn('my-branch', self.git('branch', '--list'))
+
+    def test_reused_branch_does_not_get_a_delete_command(self):
+        self.tick([self.row])
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@invalid',
+                 'commit', '-qm', 'new work', '--allow-empty')
+        self.git('branch', '-f', 'my-branch', 'HEAD')
+        rows, _ = self.tick()
+        self.assertEqual(rows[0]['state'], 'CLEANUP')
+        self.assertNotIn('--apply', rows[0]['next_action'])
+        self.assertIn('do not delete', rows[0]['next_action'])
+
+    def test_failed_github_read_keeps_pending_record(self):
+        self.tick([self.row])
+        with mock.patch.object(self.m, 'gh_json', side_effect=self.m.GhError('offline')):
+            with self.assertRaises(self.m.GhError):
+                self.m.cleanup_rows([], self.chats, 'Owner', 'o')
+        self.assertEqual(self.tick()[0][0]['state'], 'CLEANUP')
 
 
 if __name__ == '__main__':

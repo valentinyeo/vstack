@@ -32,20 +32,24 @@ live roster: the checkout's branch, the chat name in the branch slug, the ticket
 board, then the only checkout of the repo. The board read runs only with a token, from --token-file
 or HT_TOKEN, and it only reads the ticket.
 
-Read only: it reads gh, the live roster and one ticket, and writes nothing to GitHub or a board.
+Read only on services and git. Records this chat's observed PRs in local state until merged
+branches are cleaned; a CLEANUP row survives the open-PR search and returns exit 1.
 
-Exit: 0 when nothing yours is STALE or still needs work, 1 when one is, 2 on usage error or gh failure.
+Exit: 1 for NO-OWNER, STALE or CLEANUP; 2 on usage or read failure; otherwise 0.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 import datetime
+import fcntl
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -110,7 +114,7 @@ REMOTE = re.compile(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$')
 OWNER_CHAT = re.compile(r'^Owner chat:\s*(.+?)\s*$', re.M | re.I)
 
 STATES = ('BOT', 'DUPLICATE', 'NO-OWNER', 'CONFLICT', 'BILLING', 'RED', 'VERIFIER-FAIL',
-          'MISSING-LINES', 'NO-VERDICT', 'STALE', 'READY', 'OK')
+          'MISSING-LINES', 'NO-VERDICT', 'STALE', 'READY', 'CLEANUP', 'OK')
 NEXT_ACTION = {
     'BOT': 'A bot wrote this one, so CI Boss looks after it and no chat has to act.',
     'CONFLICT': 'Rebase your own branch on its base, push it with force with lease, and let the checks run again.',
@@ -671,6 +675,105 @@ def read_roster():
     return chats
 
 
+def worktree_branches(checkout):
+    result = subprocess.run(['git', '-C', checkout, 'worktree', 'list', '--porcelain'],
+                            capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    if result.returncode != 0:
+        raise GhError(f'cannot inspect cleanup worktrees: {result.stderr.strip()}')
+    trees, path = {}, None
+    for line in result.stdout.splitlines():
+        if line.startswith('worktree '):
+            path = line[len('worktree '):]
+            trees[path] = None
+        elif path and line.startswith('branch refs/heads/'):
+            trees[path] = line[len('branch refs/heads/'):]
+    return trees
+
+
+def cleanup_rows(rows, chats, mine, owner, repo=None):
+    """Keep this chat's observed PRs after merge until its local copies are gone."""
+    directory = Path.home() / '.local/state/pr-housekeeping'
+    directory.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(mine.casefold().encode()).hexdigest()
+    path = directory / f'cleanup-{key}.json'
+    with (directory / f'cleanup-{key}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = json.loads(path.read_text()) if path.exists() else {}
+        current = set()
+        for row in rows:
+            if (row.get('owner_chat') or '').casefold() != mine.casefold():
+                continue
+            identity = f'{row["repo"]}#{row["number"]}'
+            current.add(identity)
+            if identity in saved:
+                saved[identity]['row'] = row
+                continue
+            candidates = [chat['cwd'] for chat in chats
+                          if chat['name'].casefold() == mine.casefold() and chat.get('repo') == row['repo']]
+            name = row['repo'].split('/')[-1]
+            for candidate in (Path.home() / 'projects' / name, Path.home() / '.local/share' / name):
+                if candidate.is_dir() and checkout(str(candidate))[0] == row['repo']:
+                    candidates.append(str(candidate))
+            for candidate in dict.fromkeys(candidates):
+                result = subprocess.run(['git', '-C', candidate, 'rev-parse',
+                                         '--path-format=absolute', '--git-common-dir'],
+                                        capture_output=True, text=True, timeout=GIT_TIMEOUT)
+                common = Path(result.stdout.strip())
+                if result.returncode == 0 and common.name == '.git':
+                    trees = worktree_branches(str(common.parent))
+                    saved[identity] = {'row': row, 'checkout': str(common.parent), 'merged': False,
+                                       'worktrees': [p for p, b in trees.items() if b == row['branch']]}
+                    break
+        pending = []
+        for identity, record in list(saved.items()):
+            row = record['row']
+            if identity in current or (repo and row['repo'] != repo):
+                continue
+            if not repo and row['repo'].split('/')[0] != owner:
+                continue
+            if not record['merged']:
+                pr = gh_json(['api', f'repos/{row["repo"]}/pulls/{row["number"]}'])
+                if not isinstance(pr, dict):
+                    raise GhError(f'cannot read cleanup PR {identity}')
+                claimed = OWNER_CHAT.search(pr.get('body') or '')
+                if claimed and claimed[1].casefold() != mine.casefold():
+                    del saved[identity]
+                    continue
+                if pr.get('merged_at'):
+                    record['merged'] = True
+                    row['head_sha'] = (pr.get('head') or {}).get('sha') or row['head_sha']
+                elif pr.get('state') == 'closed':
+                    del saved[identity]
+                    continue
+                else:
+                    continue
+            result = subprocess.run(['git', '-C', record['checkout'], 'for-each-ref',
+                                     '--format=%(refname) %(objectname)', 'refs/heads', 'refs/remotes/origin'],
+                                    capture_output=True, text=True, timeout=GIT_TIMEOUT)
+            if result.returncode != 0:
+                raise GhError(f'cannot inspect cleanup for {identity}: {result.stderr.strip()}')
+            branch = row['branch']
+            refs = dict(line.split() for line in result.stdout.splitlines())
+            tips = [refs[ref] for ref in (f'refs/heads/{branch}', f'refs/remotes/origin/{branch}')
+                    if ref in refs]
+            trees = worktree_branches(record['checkout'])
+            copies = set(record['worktrees']) & trees.keys()
+            if not tips and not copies:
+                del saved[identity]
+                continue
+            if any(tip != row['head_sha'] for tip in tips) or any(trees[p] != branch for p in copies):
+                action = 'Branch or worktree changed. Inspect ownership before cleanup; do not delete it.'
+            else:
+                command = shlex.join([str(Path.home() / '.local/bin/repo-tidy'), '--apply',
+                                      '--mine', record['checkout'], '--branch', branch])
+                action = f'Run {command}. Keep every gate; retry holds next tick.'
+            pending.append(dict(row, state='CLEANUP', next_action=action))
+        tmp = path.with_suffix(f'.{os.getpid()}.tmp')
+        tmp.write_text(json.dumps(saved, indent=2) + '\n')
+        tmp.replace(path)
+        return pending
+
+
 def table(rows):
     """A plain table: one line per PR, then the counts, then one summary line."""
     header = ('STATE', 'OWNER', 'PR', 'TICKET', 'CHECKS', 'VERDICT', 'AGE H', 'PUSH H', 'TITLE')
@@ -690,9 +793,13 @@ def render(rows, scoped_by, stale_hours):
     tally = counts(rows)
     waiting = [row for row in rows if row['state'] in ('NO-OWNER', 'STALE')]
     lines = table(rows)
+    for row in rows:
+        if row['state'] == 'CLEANUP':
+            lines.append(f'{row["url"]}: {row["next_action"]}')
     lines.append('')
     lines.append('counts: ' + (', '.join(f'{state} {tally[state]}' for state in STATES if state in tally) or 'none'))
-    lines.append(f'pr-queue: {len(rows)} open PR{"" if len(rows) == 1 else "s"} {scoped_by}, '
+    opened = sum(row['state'] != 'CLEANUP' for row in rows)
+    lines.append(f'pr-queue: {opened} open PR{"" if opened == 1 else "s"} {scoped_by}, '
                  f'{len(waiting)} waiting on an owner or a push, stale after {stale_hours}h')
     return lines
 
@@ -741,6 +848,11 @@ def main(argv):
                       billing_probe=lambda repo, sha: probes.get((repo, sha), []),
                       board_lookup=tickets.get if token else None)
     rows = [row for row in rows if (row['owner_chat'] or '').lower() == args.mine.lower()]
+    try:
+        rows += cleanup_rows(rows, chats, args.mine, args.owner, args.repo)
+    except (GhError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+        print(f'pr-queue: cleanup tracking failed: {error}', file=sys.stderr)
+        return 2
     if not rows:
         named = [chat for chat in chats if chat['name'].lower() == args.mine.lower()]
         if named and not named[0].get('repo'):
@@ -754,7 +866,7 @@ def main(argv):
     if args.json_path:
         Path(args.json_path).write_text(json.dumps({'owner': args.owner, 'mine': args.mine,
                                                     'rows': rows, 'counts': counts(rows)}, indent=2) + '\n')
-    return 1 if [row for row in rows if row['state'] in ('NO-OWNER', 'STALE')] else 0
+    return 1 if [row for row in rows if row['state'] in ('NO-OWNER', 'STALE', 'CLEANUP')] else 0
 
 
 if __name__ == '__main__':

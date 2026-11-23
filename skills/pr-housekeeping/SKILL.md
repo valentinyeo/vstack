@@ -22,7 +22,7 @@ The skill installs there, so that path works from any repo. A tick whose run exi
 
 ## Every tick
 
-A nonzero exit is the enforcement: one of your own PRs has gone quiet or needs action. Deal with it before you pick new work. The script only reads `gh`, the live roster and, with a token, one ticket.
+A nonzero exit is the enforcement: one of your own PRs has gone quiet or needs action. Deal with it before you pick new work. The script only reads `gh`, local refs, the live roster and, with a token, one ticket. It keeps a per-chat cleanup record in local state. It never deletes a worktree or branch.
 
 ## Ladder of states
 
@@ -36,8 +36,11 @@ A nonzero exit is the enforcement: one of your own PRs has gone quiet or needs a
 - MISSING-LINES: add the `Author model:` and `Pacer launch:` lines to the PR body.
 - NO-VERDICT: run Babysit in check mode, then get a verdict at the current head before merging.
 - STALE: finish it, or close it with a reason and note that on the ticket.
-- READY: merge per pstack Shipping once the one verifier's PASS or PASS+NOTES covers the current head. Never skip a required check or approval.
+- READY: this tick records your PR before the merge. Merge per pstack Shipping once the verifier's PASS or PASS+NOTES covers the current head. Never skip a required check or approval.
+- CLEANUP: your recorded PR merged, but local copies remain. Run the printed branch-scoped repo-tidy command from outside its worktree. Never bypass a hold. Retry next tick until the refs are gone. A changed tip needs an ownership check, not deletion.
 - OK: nothing to do this tick.
+
+A worker merging for your chat does not end this duty. Run this queue before handing it the merge, then keep your own loop alive for held cleanup. Already merged PRs never observed by this queue need an explicit repo-tidy audit.
 
 ## Who owns a PR
 
