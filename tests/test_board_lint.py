@@ -108,6 +108,18 @@ class BoardLintTests(unittest.TestCase):
         self.assert_rule(result.stdout, 'agent-assignee')
         self.assert_rule(result.stdout, 'label-assignee')
 
+    def test_own_agent_under_another_name_still_breaks_when_revoked(self):
+        # Its own login does not make a revoked agent a live board member.
+        data = json.loads((FIXTURES / 'agent-own-login.json').read_text())
+        data['agents'] = []
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Path(temp) / 'revoked-own.json'
+            fixture.write_text(json.dumps(data))
+            result = self.run_lint(fixture, label='Multi Bot Android Features')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assert_rule(result.stdout, 'agent-assignee')
+        self.assertIn('revoked', result.stdout)
+
     def test_another_agent_with_the_same_name_mismatch_still_breaks(self):
         result = self.run_lint('agent-other-login.json', label='Multi Bot Android Features')
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

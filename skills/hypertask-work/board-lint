@@ -463,15 +463,15 @@ def check_agent_assignee(task, facts, live, known, members, data, args, breaks, 
         if slug_agent(name) in FALLBACK_AGENT:
             continue
         agent_id = agent_id_of(task, name)
-        # This chat's own agent under another name: its login settles it, not the name.
-        if own and agent_id == own:
-            continue
         if members is not None and agent_id and agent_id not in members:
             breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
                                 f'assignee {name!r} is revoked or no longer a board member; only a '
                                 'board owner can re-invite it, so ask Valentin, or reassign your own '
                                 'chat agent'))
             return
+        # This chat's own agent under another name: its login settles it, not the name.
+        if own and agent_id == own:
+            continue
         if slug_agent(name) not in known:
             breaks.append(Break(task['ticketNumber'], 'agent-assignee', name,
                                 f'assignee {name!r} matches no Multibot chat ever; fix the name or reassign'))

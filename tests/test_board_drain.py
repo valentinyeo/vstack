@@ -695,6 +695,17 @@ class RuleBreakTest(CheckTest):
         self.assertEqual(code, 0, out)
         self.assertNotIn('rule-break:', out)
 
+    def test_the_chats_own_agent_still_breaks_when_it_is_revoked(self):
+        own = '7e61b4e1-c796-4dd9-a851-62bb1ff32341'
+        task = {'ticketNumber': 'SOFT-2936', 'projectId': 2060, 'section': 'Todo',
+                'labels': [{'name': 'Poteto'}], 'updatedAt': iso(NOW - 300),
+                'assignees': [agent_assignee('Multiprompt Android Dev') | {'agentId': own}]}
+        payload = self.payload([{'task': task, 'comments': []}, self.worker_card()],
+                               own_agent_id=own, agents=[], workers={'SOFT-2931': True})
+        code, out = self.run_payload(payload, alive=True)
+        self.assertIn('rule-break: SOFT-2936 agent-assignee:', out)
+        self.assertIn('revoked', out)
+
     def test_another_agent_on_the_same_name_mismatch_still_breaks(self):
         own = '7e61b4e1-c796-4dd9-a851-62bb1ff32341'
         task = {'ticketNumber': 'SOFT-2935', 'projectId': 2060, 'section': 'Todo',
