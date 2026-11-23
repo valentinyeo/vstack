@@ -32,7 +32,7 @@ Rules that follow from the pyramid:
 1. **Find the bottom line.** Write the one-sentence answer and the one action before anything else. If you can't, the research isn't done.
 2. **Build the pyramid.** Pick 2 to 4 key points that prove it. Give at most 3 top items section headings. Put other items in one short table or omit them. Method and evidence go last.
 3. **Write with `../web-writing/SKILL.md`** (read it, the Skill tool refuses a hidden skill). Conclusion first, about half the words of a normal draft, one idea per paragraph, bold keywords, plain headings, no hype.
-4. **Clean with `unslop`** (if installed), then **`../zinsser-english-style/SKILL.md`**, read with the Read tool. Cut AI phrasing, clutter and stale phrases. Short sentences, active verbs, concrete words. Use `../schneider-deutsch-stil/SKILL.md` instead for a German page.
+4. **Clean with pstack `unslop`**, then **`../zinsser-english-style/SKILL.md`**, read with the Read tool. Use `../schneider-deutsch-stil/SKILL.md` instead for a German page.
 5. **Build from `template.html`** in this folder. Match [yeoux.net](https://yeoux.net) explorations (Rat Stack): inline rat-site.css in `<style>` (never link hashed /assets/ CSS), keep the Software Factory Companion header, then one `<main>`.
    - BLUF in a div.callout at the top (accent left border).
    - Sections use `h2` / `h3` / `p` / `ul`; proof lines use p.meta.
@@ -47,7 +47,6 @@ Rules that follow from the pyramid:
 - **Evidence is a link, not a paragraph.** One number plus a source link beats three sentences of caveats. Keep caveats that change the decision; cut the rest.
 - **No internal notes for the writer.** Leave out quota counts, file paths, tool names, "nothing was posted" disclaimers and process logs unless the reader needs them to act.
 - **Links are full URLs** on the visible text that names the thing ("See it", the video title, the ticket title), never bare ids.
-- **No em dashes, no emoji headings, sentence case headings.**
 - **No secrets, tokens or private customer data** on the page.
 - **Phone first:** Rat grid side margins, horizontal scroll inside .table-wrapper, stacked rows via `data-label` on `td` (not `hide-mobile`).
 

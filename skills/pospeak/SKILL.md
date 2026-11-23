@@ -50,7 +50,7 @@ Keep exact commands, error text, and URLs unchanged. Those are things he pastes 
 
 ### Pass 2: unslop
 
-Apply ~/.claude/skills/unslop/SKILL.md verbatim. No em dashes, no AI vocabulary, no "serves as", no rule of three, no chatbot phrases, no hedging, active voice, plain words. Have a view.
+Apply pstack `unslop` verbatim.
 
 ### Pass 3: i-have-adhd
 
@@ -79,8 +79,7 @@ For a proposal: verdict first, then 2 to 4 ranked options with a one-line trade-
 2. Is there any file path, function name, or library name he does not have to click or paste? Delete it.
 3. Is the first line the outcome or the next action? If it is context, move it.
 4. Is it under half the length of the original? If not, cut.
-5. Any em dash, "that" filler, or "let me know"? Remove.
-6. Any PR number, ticket id, or thing he might click without a full `https://` URL next to it? Add the URL.
+5. Any PR number, ticket id, or thing he might click without a full `https://` URL next to it? Add the URL.
 
 ## Examples
 
