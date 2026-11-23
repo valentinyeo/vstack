@@ -2029,6 +2029,7 @@ class CallBudgetTest(unittest.TestCase):
     def setUp(self):
         TEST_CACHE.unlink(missing_ok=True)
         r.PULLS.clear()
+        r.PSTACK_JOBS.clear()
         r.FAILED.clear()
         r.FAILED_REPOS.clear()
 
@@ -2183,8 +2184,7 @@ class CallBudgetTest(unittest.TestCase):
 
     def test_pstack_verifier_requires_github_hosted_jobs(self):
         data = {'data': {'p0': {'pullRequest': self.node(checks=[self.pstack_check()])}}}
-        for jobs in ([], [{'runner_name': None, 'labels': []}],
-                     [{'runner_name': 'my-server', 'labels': ['ubuntu-latest']}],
+        for jobs in ([], [{'runner_name': 'my-server', 'labels': ['ubuntu-latest']}],
                      [{'runner_name': 'GitHub Actions 7', 'labels': ['self-hosted']}],
                      [{'runner_name': 'GitHub Actions 7', 'labels': ['ubuntu-latest']},
                       {'runner_name': 'my-server', 'labels': ['self-hosted']}]):
@@ -2194,6 +2194,54 @@ class CallBudgetTest(unittest.TestCase):
                     patch.object(r, 'verifier_policy', return_value=None):
                 result = r.read_pull_batch([('valentinyeo/another-repo', 1)])
             self.assertFalse(result[('valentinyeo/another-repo', 1)].passed)
+
+    def test_pstack_verifier_passes_when_github_lists_no_runner_for_its_own_check(self):
+        # The real shape of a passing verifier in a repository without a policy: the
+        # workflow creates the verifier checks through the checks API, so GitHub lists
+        # them beside the run's real job with no runner and no labels at all.
+        node = self.node(checks=[self.pstack_check()])
+        node['state'] = 'MERGED'
+        data = {'data': {'p0': {'pullRequest': node}}}
+        jobs = [{'jobs': [
+            {'name': 'secret-scan', 'status': 'completed', 'conclusion': 'success',
+             'runner_name': 'GitHub Actions 1000322940', 'labels': ['ubuntu-latest']},
+            {'name': 'pstack-verifier (BLOCKED)', 'status': 'completed', 'conclusion': 'neutral',
+             'runner_name': None, 'labels': []},
+            {'name': 'pstack-verifier', 'status': 'completed', 'conclusion': 'success',
+             'runner_name': None, 'labels': []}]}]
+        with patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps(jobs)]) as run, \
+                patch.object(r, 'verifier_policy', return_value=None):
+            result = r.read_pull_batch([('valentinyeo/another-repo', 1)])[('valentinyeo/another-repo', 1)]
+        self.assertTrue(result.passed)
+        self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(result,))),
+                         ('AI Review', 'merged PR with PASS; live proof pending'))
+        self.assertEqual(run.call_count, 2)
+
+    def test_pstack_verifier_rejects_a_run_with_positive_evidence_of_a_self_hosted_job(self):
+        data = {'data': {'p0': {'pullRequest': self.node(checks=[self.pstack_check()])}}}
+        hosted = {'name': 'secret-scan', 'runner_name': 'GitHub Actions 1000322940',
+                  'labels': ['ubuntu-latest']}
+        for jobs in ([{'runner_name': 'my-server', 'labels': ['ubuntu-latest']}],
+                     [{'runner_name': 'GitHub Actions 7', 'labels': ['self-hosted']}],
+                     [{'runner_name': None, 'labels': ['self-hosted']}],
+                     [hosted, {'runner_name': 'my-server', 'labels': ['self-hosted']}]):
+            pages = [{'jobs': jobs}]
+            with self.subTest(jobs=jobs), \
+                    patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps(pages)]), \
+                    patch.object(r, 'verifier_policy', return_value=None):
+                result = r.read_pull_batch([('valentinyeo/another-repo', 1)])
+            self.assertFalse(result[('valentinyeo/another-repo', 1)].passed)
+
+    def test_pstack_verifier_reads_one_run_once_for_many_checks(self):
+        # Two candidates in the same run share one jobs read, even when it rejects them.
+        data = {'data': {'p0': {'pullRequest': self.node(
+            checks=[self.pstack_check(), self.pstack_check()])}}}
+        pages = [{'jobs': [{'runner_name': 'my-server', 'labels': ['self-hosted']}]}]
+        with patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps(pages)]) as run, \
+                patch.object(r, 'verifier_policy', return_value=None):
+            result = r.read_pull_batch([('valentinyeo/another-repo', 1)])
+        self.assertFalse(result[('valentinyeo/another-repo', 1)].passed)
+        self.assertEqual(run.call_count, 2)
 
     def test_policy_is_cached_on_disk_and_counted(self):
         payload = json.dumps({'content': base64.b64encode(json.dumps(POLICY).encode()).decode()})

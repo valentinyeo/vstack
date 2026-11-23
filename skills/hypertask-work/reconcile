@@ -1441,6 +1441,31 @@ def pass_on_head(comments, head, author, repo, policy):
                               'self-hosted' not in job.get('labels', []) for job in jobs)
 
 
+# A workflow run's jobs, read once however many of its checks are candidates.
+PSTACK_JOBS = {}
+
+
+def pstack_jobs(repo, run_id):
+    """The jobs GitHub lists for one workflow run.
+
+    A check run a workflow creates through the checks API is listed among that run's
+    jobs with no runner and no labels at all, so a job only proves where it ran when
+    GitHub reports a runner for it.
+    """
+    key = (repo, run_id)
+    if key not in PSTACK_JOBS:
+        pages = json.loads(run('gh', 'api', '--paginate', '--slurp',
+                               f'repos/{repo}/actions/runs/{run_id}/jobs?per_page=100'))
+        PSTACK_JOBS[key] = [job for page in pages for job in page['jobs']]
+    return PSTACK_JOBS[key]
+
+
+def self_hosted(job):
+    """Positive evidence that this job ran on somebody's own machine."""
+    runner = job.get('runner_name')
+    return 'self-hosted' in (job.get('labels') or []) or bool(runner) and not runner.startswith('GitHub Actions')
+
+
 def pstack_pass_on_head(checks, head, repo):
     for check in checks:
         suite = check.get('checkSuite') or {}
@@ -1449,11 +1474,8 @@ def pstack_pass_on_head(checks, head, repo):
                 check.get('status') != 'COMPLETED' or check.get('conclusion') != 'SUCCESS' or
                 (suite.get('commit') or {}).get('oid') != head or not workflow.get('databaseId')):
             continue
-        pages = json.loads(run('gh', 'api', '--paginate', '--slurp',
-                               f'repos/{repo}/actions/runs/{workflow["databaseId"]}/jobs?per_page=100'))
-        jobs = [job for page in pages for job in page['jobs']]
-        if jobs and all((job.get('runner_name') or '').startswith('GitHub Actions') and
-                        'self-hosted' not in job.get('labels', []) for job in jobs):
+        jobs = pstack_jobs(repo, workflow['databaseId'])
+        if jobs and not any(self_hosted(job) for job in jobs):
             return True
     return False
 
@@ -1616,6 +1638,7 @@ def prefetch(pulls, board=DEFAULT, clear=True):
             pass
     if clear:
         PULLS.clear()
+        PSTACK_JOBS.clear()
     refs = sorted({(p['repository']['nameWithOwner'], p['number'])
                    for found in pulls.values() for p in found})
     for n in range(0, len(refs), PULL_BATCH):
@@ -1686,6 +1709,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
             raise ValueError('ticket no longer eligible')
         fresh_tasks.append((fresh, facts))
     PULLS.clear()
+    PSTACK_JOBS.clear()
     ready = []
     for fresh, facts in fresh_tasks:
         latest = collect(fresh, refreshed(pulls[fresh['ticketNumber']], board), time.time(), **options)
