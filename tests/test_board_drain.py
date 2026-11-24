@@ -507,6 +507,24 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn('sync stale: last sync 60 min ago.', out)
 
+    def test_a_budget_skip_is_not_a_failed_sync(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_sync('HT Test', True, '', now=NOW - 600)
+        loop.record_sync('HT Test', True, 'sync skipped: gh budget (wait until 14:20 UTC)',
+                         now=NOW, skipped=True)
+        code, out = self.run_check([todo('SOFT-2917', waiting_on=6)], '--state-name', 'HT Test')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('sync failed', out)
+
+    def test_skips_that_outlast_the_window_still_read_stale(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_sync('HT Test', True, '', now=NOW - 3600)
+        loop.record_sync('HT Test', True, 'sync skipped: gh budget (wait until 14:20 UTC)',
+                         now=NOW, skipped=True)
+        code, out = self.run_check([todo('SOFT-2918', waiting_on=6)], '--state-name', 'HT Test')
+        self.assertEqual(code, 1, out)
+        self.assertIn('sync stale: last sync 60 min ago.', out)
+
     def test_a_missing_sync_fails_the_check(self):
         loop.arm('HT Test', every='15m', now=NOW)
         code, out = self.run_check([todo('SOFT-2916', waiting_on=6)], '--state-name', 'HT Test')
@@ -935,6 +953,14 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(loop.status('HT Test', now=NOW), (0, 'armed, expires in 7d0h'))
         self.assertEqual(loop.sync_state('HT Test'), {'at': iso(NOW), 'ok': True, 'reason': ''})
 
+    def test_a_skipped_sync_keeps_the_last_real_sync_time(self):
+        loop.record_sync('HT Test', True, '', now=NOW)
+        line = 'sync skipped: gh budget (wait until 14:20 UTC)'
+        record = loop.record_sync('HT Test', True, line, now=NOW + 900, skipped=True)
+        self.assertEqual(record['at'], iso(NOW), 'a skip does not refresh the clock')
+        self.assertTrue(record['ok'], 'a skip is not a failure')
+        self.assertEqual(record['skipped'], {'at': iso(NOW + 900), 'reason': line})
+
     def test_arm_keeps_last_sync_and_watch_fields(self):
         loop.record_sync('HT Test', True, 'ok', now=NOW)
         loop.record_watch('HT Test', os.getpid(), now=NOW)
@@ -1273,6 +1299,12 @@ class WatchSyncTest(unittest.TestCase):
         def fake_sync(argv):
             calls.append({'argv': list(argv), 'at': clock.now - NOW})
             code, reason = queue.pop(0) if queue else (0, '')
+            if code == 'skip':
+                # A tick skipped over the gh budget: not failed, not fresh either.
+                loop.record_sync('Watch Test', True, reason, now=clock.now, skipped=True)
+                if on_sync:
+                    on_sync(clock.now - NOW)
+                return 0
             loop.record_sync('Watch Test', not code, reason, now=clock.now)
             if on_sync:
                 on_sync(clock.now - NOW)
@@ -1344,6 +1376,17 @@ class WatchSyncTest(unittest.TestCase):
         record = loop.sync_state('Watch Test')
         self.assertFalse(record['ok'])
         self.assertEqual(record['reason'], 'preview printed: usage')
+
+    def test_a_budget_skip_keeps_the_watcher_watching(self):
+        line = 'sync skipped: gh budget (wait until 14:20 UTC)'
+        code, out, calls = self.run_watch('--every', '60', '--heartbeat', '1000',
+                                          '--sync-every', '300', syncs=[('skip', line)])
+        self.assertEqual(code, 0, out)
+        self.assertEqual([call['at'] for call in calls], [0, 300, 600, 900],
+                         'the watcher never stops on a skip')
+        self.assertIn(line, out)
+        self.assertNotIn('sync failed', out)
+        self.assertTrue(loop.sync_state('Watch Test')['ok'])
 
 
 class RelationsCliTest(unittest.TestCase):
@@ -1455,6 +1498,27 @@ class SyncTest(unittest.TestCase):
         self.assertIn('sync: FAIL', out)
         self.assertIn('board 2060 unreachable', out)
         self.assertFalse(loop.sync_state('HT Test')['ok'])
+
+    def test_a_budget_skip_prints_one_line_and_exits_clean(self):
+        self.write_token()
+        line = 'sync skipped: gh budget (wait until 14:20 UTC)'
+        code, out, calls = self.run_sync([(0, line + '\n', 'reconcile: budget done in 0.1s\n')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip().splitlines(), [line])
+        self.assertEqual(len(calls), 1, 'the apply step never runs after a skip')
+        record = loop.sync_state('HT Test')
+        self.assertTrue(record['ok'])
+        self.assertEqual(record['skipped']['reason'], line)
+
+    def test_a_skip_on_the_apply_step_prints_one_line_and_cleans_up(self):
+        self.write_token()
+        line = 'sync skipped: gh budget (wait until 14:20 UTC)'
+        code, out, calls = self.run_sync([(0, 'preview: nothing to move\n', ''),
+                                          (0, line + '\n', '')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(out.strip().splitlines()[-1], line)
+        self.assertTrue(loop.sync_state('HT Test')['ok'])
 
     def test_a_clean_preview_then_apply_succeeds(self):
         self.write_token()
