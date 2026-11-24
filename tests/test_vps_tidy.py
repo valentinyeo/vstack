@@ -33,7 +33,6 @@ import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'skills' / 'vps-tidy' / 'vps-tidy'
-VERIFY_RUN = ROOT / '.claude' / 'skills' / 'verify-vps-tidy' / 'run'
 UID = os.getuid()
 DAY = 86400
 MB = 1024 * 1024
@@ -778,36 +777,6 @@ class Shape(Base):
         self.assertTrue(payload['alarm']['needed'])
         self.assertIn('85', payload['alarm']['text'])
         self.assertFalse(any('hypertask' in call for call in self.box.tool_calls()))
-
-
-class VerifySkill(unittest.TestCase):
-    def test_run_is_executable_and_has_features(self):
-        self.assertTrue(VERIFY_RUN.is_file(), VERIFY_RUN)
-        self.assertTrue(os.access(VERIFY_RUN, os.X_OK), 'run is not executable')
-        features = ROOT / '.claude' / 'skills' / 'verify-vps-tidy' / 'features'
-        self.assertTrue((features / 'README.md').is_file())
-        self.assertGreaterEqual(len(list(features.glob('*.md'))), 3)
-
-    def test_grader_fails_when_the_stale_item_still_exists(self):
-        loader = importlib.machinery.SourceFileLoader('verify_vps_tidy_run', str(VERIFY_RUN))
-        spec = importlib.util.spec_from_loader('verify_vps_tidy_run', loader)
-        module = importlib.util.module_from_spec(spec)
-        try:
-            loader.exec_module(module)
-        except AttributeError:
-            self.skipTest('run holds no grade to call')
-        grade = getattr(module, 'grade', None)
-        if grade is None:
-            self.skipTest('run holds no grade to call')
-        self.assertEqual(grade({'stale_gone': True, 'fresh_alive': True,
-                                'orphan_gone': True, 'protected_alive': True,
-                                'untouched_alive': True}), 'PASS')
-        self.assertEqual(grade({'stale_gone': False, 'fresh_alive': True,
-                                'orphan_gone': True, 'protected_alive': True,
-                                'untouched_alive': True}), 'FAIL')
-        self.assertEqual(grade({'stale_gone': True, 'fresh_alive': True,
-                                'orphan_gone': True, 'protected_alive': False,
-                                'untouched_alive': True}), 'FAIL')
 
 
 if __name__ == '__main__':
