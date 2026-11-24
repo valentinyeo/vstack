@@ -99,6 +99,9 @@ class Pull:
     # The newest moment this PR showed work: a push, a finished check run, or a
     # comment. None when the read did not carry it.
     activity: float | None = None
+    # When the PR was opened. A redo PR opened after a merged one is the newer work
+    # on the card (VSTA-205). None when the read did not carry it.
+    created_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +247,13 @@ PLAN_SOURCES = (
     {'stage': Stage.DONE, 'reason': 'merged with PASS',
      'pstack': f'{PLAYBOOKS}/shipping.md',
      'quote': 'Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.'},
+    # The `{}` is the open PR's url, filled in by `newer_open_reason` (VSTA-205).
+    {'stage': Stage.CHECKS, 'reason': 'newer open PR {} than the merged PASS; card follows it',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'One owner carries each PR from build to merge, and nothing merges until your swarm, which never wrote the code, has proven the code that lands.'},
+    {'stage': Stage.REVIEW, 'reason': 'newer open PR {} than the merged PASS; card follows it',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'One owner carries each PR from build to merge, and nothing merges until your swarm, which never wrote the code, has proven the code that lands.'},
     {'stage': Stage.VERIFICATION, 'reason': 'verification ticket',
      'pstack': f'{PLAYBOOKS}/investigation.md',
      'quote': 'Investigation requests are read-only. They produce a cited explanation or a recommendation, not a code change.'},
@@ -326,10 +336,41 @@ def merged_with_pass(pulls):
     return False
 
 
+def newly_opened(pulls):
+    """The open PRs this card's newest merged PASS cannot speak for.
+
+    A redo PR is opened after the merge it redoes, so its creation date is the one
+    fact that tells the two apart. A merge or an open PR whose creation time the
+    read did not carry keeps the old reading: an unknown is never newer.
+    """
+    shots = [pull.created_at for pull in pulls or ()
+             if pull.state == 'MERGED' and pull.passed and pull.created_at is not None]
+    if not shots:
+        return []
+    return sorted((pull for pull in pulls
+                   if pull.state == 'OPEN' and pull.created_at is not None
+                   and pull.created_at > max(shots)),
+                  key=lambda pull: pull.created_at, reverse=True)
+
+
+def newer_open_reason(pull):
+    """Why a card follows its newer open PR instead of its merged PASS (VSTA-205)."""
+    return f'newer open PR {pull.url} than the merged PASS; card follows it'
+
+
 def plan_stage(facts, here, board):
-    """One evidence order for every board: PR, worker, verification routing, grace, idle."""
+    """One evidence order for every board: newest PR, worker, verification routing, grace, idle."""
     if facts.waiting or facts.blocked:
         return None, 'waiting or blocked; kept'
+    # A PR opened after the newest merged PASS is the work in flight, not the merge
+    # (VSTA-205): a reverted merge shipped nothing, and the redo is what ships.
+    newer = newly_opened(facts.pulls)
+    if newer:
+        if any(open_pr_in_checks(p, board) for p in newer):
+            if facts.pr_idle and not facts.alive:
+                return Stage.BACKLOG, 'red PR idle 24h; owner must fix or close'
+            return Stage.CHECKS, newer_open_reason(newer[0])
+        return Stage.REVIEW, newer_open_reason(newer[0])
     if any(open_pr_in_checks(p, board) for p in facts.pulls):
         if facts.pr_idle and not facts.alive:
             # The PR has not moved for a day and nobody runs it. The card holds Todo
@@ -1032,8 +1073,18 @@ def saved_facts_usable(saved):
         if any(p.get('state') == 'MERGED' and 'mergedAt' not in p
                for p in entry.get('pulls') or ()):
             return False
+        if any(p.get('state') == 'MERGED' and 'createdAt' not in p
+               for p in entry.get('pulls') or ()):
+            # Same rule for the search rows: a merge with no opening date cannot be
+            # compared with a redo PR (VSTA-205).
+            return False
         if any(f.get('state') == 'MERGED' and 'merged_at' not in f
                for f in (entry.get('facts') or {}).values()):
+            return False
+        if any(f.get('state') == 'MERGED' and f.get('passed') and 'created_at' not in f
+               for f in (entry.get('facts') or {}).values()):
+            # A saved PASS with no opening date cannot tell a redo PR from the merge
+            # it redoes, so it is read again instead of read as Done (VSTA-205).
             return False
         # An open PR whose checks are not green is the idle rule's whole input, so a
         # fact read before this field existed is re-read instead of read as active.
@@ -1124,6 +1175,7 @@ def search_item_to_pull(item, saved_index=()):
     return {'url': url, 'title': item.get('title') or '', 'body': item.get('body') or '',
             'headRefName': head, 'state': state, 'number': number,
             'mergedAt': (item.get('pull_request') or {}).get('merged_at') or (saved or {}).get('mergedAt'),
+            'createdAt': item.get('created_at') or (saved or {}).get('createdAt'),
             'repository': {'nameWithOwner': repo or (saved or {}).get('repository', {}).get('nameWithOwner', '')}}
 
 
@@ -1225,7 +1277,8 @@ def restore_pull_facts(saved):
         for ref, fact in (entry.get('facts') or {}).items():
             repo, number = ref.rsplit('#', 1)
             PULLS[(repo, int(number))] = Pull(fact['url'], fact['state'], fact['checks'], fact['passed'],
-                                             fact.get('merged_at'), activity=fact.get('activity'))
+                                             fact.get('merged_at'), activity=fact.get('activity'),
+                                             created_at=fact.get('created_at'))
 
 
 def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved=None, refreshed=()):
@@ -1248,14 +1301,15 @@ def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved=None
                     got = PULLS[ref]
                     entry['facts'][f'{repo}#{pull["number"]}'] = {
                         'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed,
-                        'merged_at': got.merged_at, 'activity': got.activity}
+                        'merged_at': got.merged_at, 'activity': got.activity,
+                        'created_at': got.created_at}
         tickets[key] = entry
     repos = sorted({pull['repository']['nameWithOwner'] for plist in pulls.values() for pull in plist})
     return {'at': now, 'probe_since': probe_since or format_reset(now),
             'repos': repos, 'tickets': tickets}
 
 
-SEARCH_FIELDS = ('url title body headRefName state mergedAt number baseRefName '
+SEARCH_FIELDS = ('url title body headRefName state mergedAt createdAt number baseRefName '
                  'repository{nameWithOwner}')
 
 
@@ -1861,7 +1915,7 @@ def scan_window(board, kind, field, start, end):
             after = ',after:' + json.dumps(cursor) if cursor else ''
             result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=query{search(query:' + json.dumps(query) +
                                     ',type:ISSUE,first:100' + after + '){issueCount pageInfo{hasNextPage endCursor} '
-                                    'nodes{... on PullRequest{url title body headRefName state number mergedAt baseRefName '
+                                    'nodes{... on PullRequest{url title body headRefName state number mergedAt createdAt baseRefName '
                                     'mergeCommit{oid} repository{nameWithOwner}}}}}'))
             if result.get('errors'):
                 raise ValueError('GitHub branch search errors')
@@ -2103,11 +2157,12 @@ def pull_facts(pull, board=DEFAULT):
     board reads checks, base and verifier verdicts in batches of its own.
     """
     if product_board(board):
-        return Pull(pull['url'], pull['state'], '', False, moment(pull.get('mergedAt')))
+        return Pull(pull['url'], pull['state'], '', False, moment(pull.get('mergedAt')),
+                    created_at=moment(pull.get('createdAt')))
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
-PULL_FIELDS = '''url state mergedAt updatedAt headRefOid baseRefOid mergeable author{login}
+PULL_FIELDS = '''url state mergedAt createdAt updatedAt headRefOid baseRefOid mergeable author{login}
  commits(last:1){nodes{commit{committedDate}}}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
  ... on CheckRun{name status conclusion completedAt checkSuite{commit{oid} workflowRun{databaseId}}}
@@ -2115,7 +2170,7 @@ PULL_FIELDS = '''url state mergedAt updatedAt headRefOid baseRefOid mergeable au
  comments(last:100){totalCount nodes{databaseId body updatedAt author{login}}}'''
 # Open PRs never read verdicts, comments, or workflow runs; skipping checkSuite
 # joins and comments lets a 50-PR GraphQL batch finish without timing out.
-OPEN_PULL_FIELDS = '''url state mergedAt updatedAt headRefOid baseRefOid mergeable
+OPEN_PULL_FIELDS = '''url state mergedAt createdAt updatedAt headRefOid baseRefOid mergeable
  commits(last:1){nodes{commit{committedDate}}}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
  ... on CheckRun{name status conclusion completedAt}
@@ -2194,7 +2249,7 @@ def pull_from_node(repo, number, node):
         # No rule reads a verdict on an open PR: its checks alone decide the card, so
         # an open PR never pays for its policy or its verifier run.
         return Pull(node['url'], node['state'], checks, False, moment(node.get('mergedAt')),
-                    pull_mergeable(node), activity)
+                    pull_mergeable(node), activity, moment(node.get('createdAt')))
     policy = verifier_policy(repo, node['baseRefOid'])
     if policy is None:
         passed = pstack_pass_on_head(contexts.get('nodes') or [], head, repo)
@@ -2204,7 +2259,7 @@ def pull_from_node(repo, number, node):
             # A verdict older than the newest hundred still counts; read them all.
             passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
     return Pull(node['url'], node['state'], checks, passed, moment(node.get('mergedAt')),
-                pull_mergeable(node), activity)
+                pull_mergeable(node), activity, moment(node.get('createdAt')))
 
 
 def read_pull_group(refs, slim=False):
@@ -2314,8 +2369,9 @@ def read_product_pull(pull):
     second repo is read from that repo and not from the product one.
     """
     detail = json.loads(run('gh', 'pr', 'view', str(pull['number']), '--repo',
-                            pull['repository']['nameWithOwner'], '--json', 'url,state'))
-    return Pull(detail['url'], detail['state'], '', False)
+                            pull['repository']['nameWithOwner'], '--json', 'url,state,createdAt'))
+    return Pull(detail['url'], detail['state'], '', False,
+                created_at=moment(detail.get('createdAt')))
 
 
 def refreshed(pulls, board=DEFAULT):
