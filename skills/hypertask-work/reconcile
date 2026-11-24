@@ -387,6 +387,83 @@ def merged_with_pass(pulls):
     return False
 
 
+def pull_repo(pull):
+    """Repository `owner/name` for a Pull or pull dict, else ''."""
+    if isinstance(pull, dict):
+        repo = (pull.get('repository') or {}).get('nameWithOwner') or ''
+        if repo:
+            return repo
+        url = pull.get('url') or ''
+    else:
+        url = getattr(pull, 'url', '') or ''
+    match = PULL_REPO_RE.search(url)
+    return match.group(1) if match else ''
+
+
+def _pull_time(pull, *names):
+    for name in names:
+        raw = pull.get(name) if isinstance(pull, dict) else getattr(pull, name, None)
+        if raw is None or raw == '' or isinstance(raw, bool):
+            continue
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        parsed = moment(raw)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def merged_after_cutoff(pull):
+    """False when a merged PR predates its repo's verifier cutoff; True otherwise."""
+    cutoff = verifier_cutoff(pull_repo(pull))
+    if cutoff is None:
+        return True
+    merged_at = _pull_time(pull, 'mergedAt', 'merged_at')
+    if merged_at is None:
+        return True
+    return merged_at >= cutoff
+
+
+def newest_pr_unmerged(pulls):
+    """True when the ticket's newest PR (by createdAt) is open or closed-unmerged."""
+    rows = tuple(pulls or ())
+    dated = []
+    for pull in rows:
+        state = pull_state(pull)
+        when = _pull_time(pull, 'createdAt', 'created_at')
+        if when is None and state == 'MERGED':
+            when = _pull_time(pull, 'mergedAt', 'merged_at')
+        if when is None:
+            if state == 'MERGED':
+                return False
+            continue
+        dated.append((when, state))
+    if not dated:
+        return False
+    newest = max(when for when, _ in dated)
+    return any(state in ('OPEN', 'CLOSED') for when, state in dated if when == newest)
+
+
+def merged_without_pass(pulls, merged=None):
+    """True when a card has a post-cutoff merge without PASS and no newer unmerged PR.
+
+    Shared by reconcile's `plan_stage` and board-lint's `check_merged_no_pass` so
+    both agree on pre-verifier history and open/parked follow-up PRs (VSTA-255).
+    """
+    all_pulls = tuple(pulls or ())
+    checked = all_pulls if merged is None else tuple(merged)
+    merged_pulls = [p for p in checked if pull_state(p) == 'MERGED']
+    if not merged_pulls:
+        return False
+    if merged_with_pass(merged_pulls):
+        return False
+    if not any(merged_after_cutoff(p) for p in merged_pulls):
+        return False
+    if newest_pr_unmerged(all_pulls):
+        return False
+    return True
+
+
 def newly_opened(pulls):
     """The open PRs this card's newest merged PASS cannot speak for.
 
@@ -441,7 +518,7 @@ def plan_stage(facts, here, board):
         # that only names the key, or one merged before the gate existed, never had a
         # PASS of its own. A PASS runs before the merge, so merged with PASS is proven: Done.
         return Stage.DONE, 'merged with PASS'
-    if fresh:
+    if fresh and merged_without_pass(facts.pulls, merged=fresh):
         if facts.alive:
             # A live owner still on the card keeps it in work while they verify the
             # merge. Sending it to Todo now and back to work next run would flap it.
@@ -461,7 +538,7 @@ def plan_stage(facts, here, board):
         return None, 'verification backlog; kept'
     if here == Stage.BACKLOG and facts.verification and Stage.VERIFICATION in stage_column_map(board):
         return Stage.VERIFICATION, 'verification ticket'
-    if merged and here == Stage.BACKLOG:
+    if merged and not fresh and here == Stage.BACKLOG:
         # Older than the backlog entry: history on a reopened card, not evidence.
         return None, 'merged PR older than column entry; kept'
     if facts.age < GRACE_SECONDS:
@@ -2281,12 +2358,29 @@ def jobs_evidence(repo, run_id):
 VERIFIER_CHECKS = {'valentinyeo/vstack': ('verifier',),
                    'valentinyeo/postbox': ('verify-verdict',),
                    'valentinyeo/house-rules': ('skill-lint / pstack-verifier',)}
+# Earliest UTC timestamp when a repo's outside verifier became active on PRs.
+# Merges before a repo's cutoff are pre-verifier history, not merged-no-pass
+# breaks (VSTA-255). Repos with no entry keep today's behaviour.
+VERIFIER_REQUIRED_SINCE = {
+    'hypertask-ai/hypertask': '2026-11-17T09:21:12Z',
+}
+PULL_REPO_RE = re.compile(r'github\.com/([^/]+/[^/]+)/pull/')
 PSTACK_VERIFIER_CHECK = 'pstack-verifier'
 
 
 def verifier_check_names(repo):
     """The check run names that count as this repo's verifier, and no others."""
     return VERIFIER_CHECKS.get(repo, (PSTACK_VERIFIER_CHECK,))
+
+
+def verifier_cutoff(repo):
+    """Epoch seconds when `repo` began requiring the outside verifier, or None."""
+    raw = VERIFIER_REQUIRED_SINCE.get(repo)
+    if not raw:
+        return None
+    if isinstance(raw, str) and 'T' not in raw and ' ' not in raw:
+        raw = f'{raw}T00:00:00Z'
+    return moment(raw)
 
 
 def pstack_status_run_id(target_url, repo):

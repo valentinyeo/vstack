@@ -1714,6 +1714,54 @@ else:
         self.assertEqual(r.target(self.facts(flagged, now), board=r.BOARDS[15]),
                          ('Flag: Only Me + QA', 'protected column'))
 
+    def test_pre_cutoff_merges_and_newer_closed_prs_skip_merged_without_pass(self):
+        """VSTA-255: reconcile shares the verifier cutoff and newer-unmerged rules with board-lint."""
+        self.assertIn('hypertask-ai/hypertask', r.VERIFIER_REQUIRED_SINCE)
+        now = r.stamp('2026-11-24T22:30:00Z')
+        entry = '2026-10-20T00:00:00Z'
+
+        def card_with(key, section, pulls):
+            card = {**self.card(key, section, now - 8000, pulls),
+                    'staleness': {'sectionChangedAt': entry}}
+            return self.facts(card, now)
+
+        old_7742 = [
+            self.product_pull(2086, 'MERGED', passed=False,
+                              created_at='2026-10-24T15:47:24Z', merged_at='2026-10-24T16:11:07Z'),
+            self.product_pull(3352, 'MERGED', passed=False,
+                              created_at='2026-11-11T09:10:26Z', merged_at='2026-11-11T09:45:11Z'),
+            self.product_pull(3357, 'MERGED', passed=False,
+                              created_at='2026-11-11T10:14:07Z', merged_at='2026-11-11T10:24:28Z'),
+        ]
+        for section in ('Backlog', 'QA'):
+            col, reason = r.target(card_with('HTPR-7742', section, old_7742), board=r.BOARDS[15])
+            self.assertEqual(col, section)
+            self.assertNotIn('merged without PASS', reason)
+
+        old_7799 = [
+            self.product_pull(2078, 'MERGED', passed=False,
+                              created_at='2026-10-24T14:33:34Z', merged_at='2026-10-25T02:15:40Z'),
+            self.product_pull(3325, 'MERGED', passed=False,
+                              created_at='2026-11-11T05:46:58Z', merged_at='2026-11-11T08:07:40Z'),
+            self.product_pull(3736, 'CLOSED', passed=False,
+                              created_at='2026-11-20T10:58:07Z'),
+        ]
+        col, reason = r.target(card_with('HTPR-7799', 'Backlog', old_7799), board=r.BOARDS[15])
+        self.assertEqual(col, 'Backlog')
+        self.assertNotIn('merged without PASS', reason)
+
+        post_cutoff = self.product_pull(3800, 'MERGED', passed=False,
+                                        created_at='2026-11-20T09:00:00Z',
+                                        merged_at='2026-11-20T10:00:00Z')
+        self.assertEqual(r.target(card_with('HTPR-9901', 'QA', [post_cutoff]), board=r.BOARDS[15]),
+                         ('Backlog', 'merged without PASS: rule break; owner must verify'))
+
+        parked_after = self.product_pull(3811, 'CLOSED', passed=False,
+                                         created_at='2026-11-21T09:00:00Z')
+        col, reason = r.target(card_with('HTPR-9903', 'QA', [post_cutoff, parked_after]),
+                               board=r.BOARDS[15])
+        self.assertNotIn('merged without PASS', reason)
+
     def test_two_hour_grace_only_protects_idle_demotion(self):
         self.assertEqual(self.target('In Progress', age=7199), 'In Progress')
         self.assertEqual(self.target('Backlog', age=7199, alive=True), 'In Progress')

@@ -106,10 +106,11 @@ class MuboShapes(unittest.TestCase):
 
     def test_board_15_follows_default_stage_rules_including_qa(self):
         board = r.BOARDS[15]
+        merged_at = r.stamp('2026-11-24T21:02:00Z')
         merged_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/3835',
-                             'MERGED', 'green', True, 2000.0)
+                             'MERGED', 'green', True, merged_at)
         merged_no_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/3836',
-                                'MERGED', 'green', False, 2000.0)
+                                'MERGED', 'green', False, merged_at)
         self.assertEqual(r.target(r.Facts('QA', 8000, False, (merged_pass,)), board=board),
                          ('Done', 'merged with PASS'))
         self.assertEqual(r.target(r.Facts('QA', 8000, False, (merged_no_pass,)), board=board),
