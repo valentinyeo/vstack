@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""wording-only: say whether a pull request changes prose alone.
+
+pstack autopilot-full step 4: "a wording-only change gets none" (no verifier).
+Exit 0 prints why it is wording-only. Exit 1 prints the first reason it is not.
+"""
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import NamedTuple
+
+TESTS = Path('tests')
+ROOTS = ('skills/', 'docs/')
+HUNK = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@')
+
+
+class HunkLine(NamedTuple):
+    op: str
+    number: int
+    content: str
+
+
+def git(*args):
+    return subprocess.run(['git', *args], text=True, capture_output=True, check=True).stdout
+
+
+def parse_diff(diff_text):
+    out, path, line_no, in_hunk = {}, None, 0, False
+    for raw in diff_text.splitlines():
+        if raw.startswith('diff --git '):
+            path, in_hunk = None, False
+            continue
+        if raw.startswith('+++ '):
+            target = raw[4:].strip()
+            path = target[2:] if target.startswith('b/') else target
+            out.setdefault(path, [])
+            in_hunk = False
+            continue
+        if raw.startswith('--- '):
+            continue
+        match = HUNK.match(raw)
+        if match and path:
+            line_no, in_hunk = int(match.group(1)), True
+            continue
+        if not in_hunk or path is None:
+            continue
+        if raw.startswith('+'):
+            out[path].append(HunkLine('+', line_no, raw[1:]))
+            line_no += 1
+        elif raw.startswith('-'):
+            out[path].append(HunkLine('-', line_no, raw[1:]))
+        elif raw.startswith(' '):
+            line_no += 1
+    return out
+
+
+def frontmatter_lines(lines):
+    if not lines or lines[0].strip() != '---':
+        return set()
+    for number, line in enumerate(lines[1:], start=2):
+        if line.strip() == '---':
+            return set(range(1, number + 1))
+    return set()
+
+
+def fenced_lines(lines):
+    out, opened = set(), None
+    for number, line in enumerate(lines, start=1):
+        if line.lstrip().startswith(('```', '~~~')):
+            out.add(number)
+            if opened is None:
+                opened = number
+            else:
+                out.update(range(opened, number))
+                opened = None
+    if opened is not None:
+        out.update(range(opened, len(lines) + 1))
+    return out
+
+
+def test_walks_every_skill_md(text):
+    return 'SKILL.md' in text and 'skills' in text.lower()
+
+
+def parsed_by_tests(path, tests):
+    for text in tests.values():
+        if path in text:
+            return True
+        if (path.startswith('skills/') and path.endswith('/SKILL.md')
+                and test_walks_every_skill_md(text)):
+            return True
+    return False
+
+
+def classify(paths, changes, read, tests):
+    for path in paths:
+        if not (path.startswith(ROOTS) and path.endswith('.md')):
+            return False, f'{path} is not markdown under skills/ or docs/'
+        if parsed_by_tests(path, tests):
+            return False, f'tests/ parses {path}'
+        text = read(path)
+        if text is None:
+            return False, f'{path} was deleted'
+        lines = text.splitlines()
+        inside = fenced_lines(lines) | frontmatter_lines(lines)
+        for _op, number, content in changes.get(path, ()):
+            stripped = content.lstrip()
+            if stripped.startswith(('```', '~~~')):
+                return False, f'{path} touches fenced code'
+            if number in inside:
+                return False, f'{path} touches frontmatter or fenced code'
+            if stripped.startswith('|'):
+                return False, f'{path} touches a rule table'
+    return True, 'every changed file is prose under skills/ or docs/'
+
+
+def test_texts(root=TESTS):
+    root = Path(root)
+    if not root.is_dir():
+        return {}
+    return {path.name: path.read_text(errors='replace')
+            for path in sorted(root.glob('*.py'))}
+
+
+def head_text(ref, path):
+    result = subprocess.run(['git', 'show', f'{ref}:{path}'], text=True, capture_output=True)
+    return result.stdout if result.returncode == 0 else None
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('--base', required=True, help='Ref the merge base is taken from')
+    parser.add_argument('--head', default='HEAD', help='Ref that holds the change; default HEAD')
+    parser.add_argument('--dir', default='.', help='Checkout to read tests/ from; default .')
+    args = parser.parse_args(argv)
+    base = f'{args.base}...{args.head}'
+    paths = [line for line in git('diff', '--name-only', base).splitlines() if line]
+    changes = parse_diff(git('diff', '--no-color', '--unified=0', base))
+    read = lambda path: head_text(args.head, path)
+    wording, reason = classify(paths, changes, read, test_texts(Path(args.dir) / TESTS))
+    if wording:
+        print(f'wording-only: {reason}')
+        return 0
+    print(f'wording-only: no, {reason}')
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
