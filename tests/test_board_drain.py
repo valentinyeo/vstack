@@ -1535,6 +1535,20 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertGreater(clock.now - NOW, 10, 'must keep polling after the change')
 
+    def test_shell_sender_first_on_path_wakes_the_own_chat(self):
+        wrapper = self.directory / 'shell-bin/mp-send'
+        wrapper.parent.mkdir()
+        wrapper.write_text('#!/bin/sh\nexec "$HOME/bin/mp-send" "$@"\n')
+        wrapper.chmod(0o755)
+        out = io.StringIO()
+        with patch.dict(os.environ, {'PATH': f'{wrapper.parent}{os.pathsep}{self.sender.parent}'}), \
+                patch.object(watch.time, 'sleep'), contextlib.redirect_stdout(out):
+            self.assertTrue(watch.wake(['changed: VSTA-80 new in Todo']), out.getvalue())
+        self.assertEqual(out.getvalue(), '')
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes, [['--tmux', 'own-tab', 'claude', 'own-sid',
+                                 'changed: VSTA-80 new in Todo; run drain-check']])
+
     def test_missing_sender_prints_change_and_exits_zero(self):
         self.sender.unlink()
         code, out, clock = self.run_watch(
