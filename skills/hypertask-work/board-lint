@@ -69,6 +69,7 @@ RULE_ROWS = (
     {'id': 'agent-assignee', 'ref': 'skills/hypertask/references/identity.md', 'enforcer': 'board-lint'},
     {'id': 'true-column', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
     {'id': 'done-proof', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
+    {'id': 'merged-no-pass', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
     {'id': 'unlinked-work', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'written only'},
     {'id': 'duplicate-title', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'written only'},
     {'id': 'stale-idle', 'ref': 'skills/hypertask/references/board.md', 'enforcer': 'board-lint'},
@@ -583,8 +584,29 @@ def check_done_proof(task, pulls, comments, board, breaks):
     ticket_pulls = pulls.get(task['ticketNumber'], ())
     if reconcile.product_board(board) and merged_proof(ticket_pulls):
         return
+    if reconcile.merged_with_pass(ticket_pulls):
+        return
     breaks.append(Break(task['ticketNumber'], 'done-proof', owner_chat(task),
-                        'add live Done proof (Done comment with evidence); merged PR alone is not Done'))
+                        'add live Done proof (Done comment with evidence) or a PASS verdict on the merged head'))
+
+
+def check_merged_no_pass(task, pulls, board, breaks):
+    """A merge with no PASS on its head is a rule break its owner must verify.
+
+    A PASS verdict runs before the merge, so a merge without one proves nothing and
+    the card goes back to Todo. Board 15 keeps its own model: it runs no verifier
+    gate, so a merge is review evidence there and this rule stays quiet.
+    """
+    if reconcile.product_board(board) or task.get('section') == DONE:
+        return
+    ticket_pulls = pulls.get(task['ticketNumber'], ())
+    if not any(((p.get('state') if isinstance(p, dict) else p.state) or '').upper() == 'MERGED'
+               for p in ticket_pulls):
+        return
+    if reconcile.merged_with_pass(ticket_pulls):
+        return
+    breaks.append(Break(task['ticketNumber'], 'merged-no-pass', owner_chat(task),
+                        'merged without PASS on the head; verify the merged head and record PASS, or reopen'))
 
 
 def check_label_assignee(task, chat_names, breaks, own='', own_label=''):
@@ -817,6 +839,7 @@ def lint(args, shared=None):
         if pull_rules and (known_pulls is None or task['ticketNumber'] in known_pulls):
             check_true_column(task, facts, board, names, breaks)
             check_done_proof(task, pulls, comments, board, breaks)
+            check_merged_no_pass(task, pulls, board, breaks)
         check_label_assignee(task, chat_names, breaks, own=own,
                              own_label=getattr(args, 'label', '') or '')
         check_no_owner_label(task, breaks)

@@ -142,8 +142,8 @@ class VerifyReconcileModel(unittest.TestCase):
             (r.Facts('Doing', 8000, pulls=(pull(checks='running'),)), 'Checks'),
             (r.Facts('Doing', 8000, pulls=(pull(checks='missing'),)), 'Checks'),
             (r.Facts('Checks', 8000, pulls=(pull(passed=True),)), 'AI Review'),
-            (r.Facts('Doing', 7199, pulls=(pull('MERGED', passed=True),)), 'AI Review'),
-            (r.Facts('Doing', 8000, pulls=(pull('MERGED'),)), 'AI Review'),
+            (r.Facts('Doing', 7199, pulls=(pull('MERGED', passed=True),)), 'Done'),
+            (r.Facts('Doing', 8000, pulls=(pull('MERGED'),)), 'Todo'),
             (r.Facts('Doing', 8000, pulls=(pull('MERGED'), pull(checks='red'))), 'Checks'),
             (r.Facts('Doing', 7199), 'Doing'),
             (r.Facts('Doing', 7200), 'Todo'),
@@ -154,7 +154,7 @@ class VerifyReconcileModel(unittest.TestCase):
             (r.Facts('Todo', 60, verification=True), 'Verification Backlog'),
             (r.Facts('Verification Backlog', 60), 'Todo'),
             (r.Facts('Verification Backlog', 8000, pulls=(pull(),), verification=True), 'AI Review'),
-            (r.Facts('Verification Backlog', 8000, pulls=(pull('MERGED'),), verification=True), 'AI Review'),
+            (r.Facts('Verification Backlog', 8000, pulls=(pull('MERGED'),), verification=True), 'Todo'),
             (r.Facts('Verification Backlog', 8000, True, verification=True), 'Doing'),
             (r.Facts('Verification Backlog', 8000, verification=True), 'Verification Backlog'),
         )
@@ -194,21 +194,25 @@ class VerifyReconcileModel(unittest.TestCase):
                         # The same PR merged after the entry still promotes, so the
                         # merge time is what decides, not the merge itself.
                         fresh = (pull('MERGED', passed=passed, merged_at=NEWER),)
+                        # A PASS runs before the merge, so it is proven: Done. A merge
+                        # with no PASS proves nothing, so the card goes back to Todo.
+                        proven = review if board.id == 15 else ('Done' if passed else backlog)
                         self.assertEqual(r.target(r.Facts(backlog, age, False, fresh, column_entered=ENTRY),
-                                                  board, names)[0], review)
+                                                  board, names)[0], proven)
                         # A live worker and an open PR are unaffected by the merge time.
                         self.assertEqual(r.target(r.Facts(backlog, age, True, stale, column_entered=ENTRY),
                                                   board, names)[0], work)
                         self.assertEqual(r.target(r.Facts(work, age, False, (pull(),), column_entered=ENTRY),
                                                   board, names)[0], review)
-                        # Review holds: the merge is now older than the column, and an
-                        # old merge never demotes the card it once moved.
+                        # Review holds on board 15, whose own model waits for live
+                        # proof. A factory board reads any merge in review as evidence
+                        # and moves the card on: Done with a PASS, Todo without one.
                         held = r.Facts(review, r.GRACE_SECONDS + 1, False, stale, column_entered=LATER)
-                        self.assertEqual(r.target(held, board, names)[0], review)
+                        self.assertEqual(r.target(held, board, names)[0], proven)
                         # An unknown merge time keeps the old reading: evidence.
-                        unknown = (pull('MERGED', merged_at=None),)
+                        unknown = (pull('MERGED', passed=passed, merged_at=None),)
                         self.assertEqual(r.target(r.Facts(backlog, age, False, unknown, column_entered=ENTRY),
-                                                  board, names)[0], review)
+                                                  board, names)[0], proven)
 
 
 if __name__ == '__main__':

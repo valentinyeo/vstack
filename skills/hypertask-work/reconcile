@@ -96,6 +96,9 @@ class Pull:
     # None is unknown (saved facts and searches carry no merge state); only a
     # conflicting PR is a no.
     mergeable: bool | None = None
+    # The newest moment this PR showed work: a push, a finished check run, or a
+    # comment. None when the read did not carry it.
+    activity: float | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,8 @@ class Facts:
     verification: bool = False
     # When this card entered its column (`staleness.sectionChangedAt`), or None when unknown.
     column_entered: float | None = None
+    # This card's open PR showed no push, check run or comment for RED_PR_IDLE_SECONDS.
+    pr_idle: bool = False
 
 
 class Stage(Enum):
@@ -116,12 +121,18 @@ class Stage(Enum):
     IN_PROGRESS = 'in_progress'
     CHECKS = 'checks'
     REVIEW = 'review'
+    DONE = 'done'
     VERIFICATION = 'verification'
     PROTECTED = 'protected'
     UNMANAGED = 'unmanaged'
 
 
 GRACE_SECONDS = 7200
+# An open PR with no push, no finished check run and no comment for this long has no
+# owner working it, so its card goes back to Todo until the PR itself moves.
+RED_PR_IDLE_SECONDS = 24 * 3600
+# plan-pick's exit-75 report: every worker lane was spent, so no worker ran (VSTA-182).
+NOTHING_RAN = 'nothing ran, waiting for a lane'
 
 
 @dataclass(frozen=True)
@@ -159,6 +170,7 @@ FACTORY_STAGE_COLUMN = {
     Stage.IN_PROGRESS: 'Doing',
     Stage.CHECKS: 'Checks',
     Stage.REVIEW: 'AI Review',
+    Stage.DONE: 'Done',
 }
 FACTORY_COLUMN_STAGE = {name: stage for stage, name in FACTORY_STAGE_COLUMN.items()}
 FACTORY_COLUMN_STAGE['Building'] = Stage.IN_PROGRESS
@@ -186,6 +198,85 @@ BOARDS = {
 # Release branches for boards that name no repos, so the shipped rule still holds.
 FLEET_RELEASES = {'hypertask-ai/hypertask': 'production', 'valentinyeo/vstack': 'main'}
 DEFAULT = BOARDS[2060]
+
+# One row per stage and per plan reason this file can emit, in one table so the next
+# change cannot land without saying where it came from. Each row cites a pstack
+# playbook line verbatim, or the house.txt id of a delta Valentin approved. House
+# delta gone from `plan_stage`? Drop or rewrite its row here in the same change.
+# tests/test_board_stages.py fails when a Stage or a planned reason has no row, or a
+# quote has drifted out of the pinned pstack.
+PLAYBOOKS = 'skills/poteto-mode/playbooks'
+PLAN_SOURCES = (
+    {'stage': Stage.BACKLOG, 'reason': 'merged without PASS: rule break; owner must verify',
+     'pstack': f'{PLAYBOOKS}/shipping.md',
+     'quote': 'Walk up from the lowest unmerged PR and stop at the first one without `PASS` or `PASS+NOTES`.'},
+    {'stage': Stage.BACKLOG, 'reason': 'red PR idle 24h; owner must fix or close',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'An agent is stuck when it errors, cannot start turns, or shows nothing new past its stuck-after runtime, and so is an owner that has neither pushed nor written a trail row by the first tick.'},
+    {'stage': Stage.BACKLOG, 'reason': 'no live worker and no PR',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'Replace a stuck agent at once, without waiting for its stop to land.'},
+    {'stage': Stage.BACKLOG, 'reason': 'merged PR older than column entry; kept',
+     'pstack': f'{PLAYBOOKS}/shipping.md',
+     'quote': 'Re-check that the verdicts still describe the code.'},
+    {'stage': Stage.BACKLOG, 'reason': 'column entry unreadable; kept',
+     'pstack': 'skills/principle-boundary-discipline/SKILL.md',
+     'quote': 'Validate, narrow types, and handle errors where data crosses a system boundary'},
+    {'stage': Stage.IN_PROGRESS, 'reason': 'live worker: lease or process',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'Spawn one owner per PR, and keep its work where a replacement can find it.'},
+    {'stage': Stage.IN_PROGRESS, 'reason': 'live worker',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'Spawn one owner per PR, and keep its work where a replacement can find it.'},
+    {'stage': Stage.IN_PROGRESS, 'reason': 'nothing ran, waiting for a lane',
+     'house': 'board-drain-plan-pick-owners'},
+    {'stage': Stage.CHECKS, 'reason': 'open PR checks running, red, or missing',
+     'pstack': f'{PLAYBOOKS}/babysit.md',
+     'quote': 'Order: conflicts, threads, CI.'},
+    {'stage': Stage.REVIEW, 'reason': 'open PR checks green; verifier or merge pending',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'Green CI alone never authorizes a merge.'},
+    {'stage': Stage.REVIEW, 'reason': 'open PR',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'The owner merges only what you verified, tested on the trunk it lands on.'},
+    {'stage': Stage.REVIEW, 'reason': 'merged PR; live proof pending',
+     'house': 'board-15-live-proof-stage'},
+    {'stage': Stage.DONE, 'reason': 'merged with PASS',
+     'pstack': f'{PLAYBOOKS}/shipping.md',
+     'quote': 'Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.'},
+    {'stage': Stage.VERIFICATION, 'reason': 'verification ticket',
+     'pstack': f'{PLAYBOOKS}/investigation.md',
+     'quote': 'Investigation requests are read-only. They produce a cited explanation or a recommendation, not a code change.'},
+    {'stage': Stage.VERIFICATION, 'reason': 'not a verification ticket',
+     'pstack': f'{PLAYBOOKS}/investigation.md',
+     'quote': 'Investigation requests are read-only. They produce a cited explanation or a recommendation, not a code change.'},
+    {'stage': Stage.VERIFICATION, 'reason': 'verification backlog; kept',
+     'pstack': f'{PLAYBOOKS}/investigation.md',
+     'quote': 'Investigation requests are read-only. They produce a cited explanation or a recommendation, not a code change.'},
+    {'stage': Stage.PROTECTED, 'reason': 'protected column',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': "The grant covers only the queue's items, so items the operator names as theirs and PRs outside the queue stop at merge-ready."},
+    {'stage': Stage.UNMANAGED, 'reason': 'unknown column; kept',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'Block a PR only for a problem you can show, with a failing run at the head or a doc line the PR made wrong.'},
+    {'stage': Stage.UNMANAGED, 'reason': 'target column missing; kept',
+     'pstack': 'skills/principle-boundary-discipline/SKILL.md',
+     'quote': 'Parse raw data into domain types at the boundary, and keep transport and framework types out of the public surface.'},
+    {'stage': None, 'reason': 'waiting or blocked; kept',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'One waiting on you or the operator is not stuck, so answer it.'},
+    {'stage': None, 'reason': 'touched within 2h',
+     'pstack': 'skills/principle-encode-lessons-in-structure/SKILL.md',
+     'quote': 'Encode the rule as a lint, metadata flag, runtime check, or script instead of more text.'},
+    {'stage': None, 'reason': 'idle In Progress; no live worker or open PR',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'Replace a stuck agent at once, without waiting for its stop to land.'},
+    {'stage': None, 'reason': 'no live worker or open PR; kept',
+     'pstack': f'{PLAYBOOKS}/babysit.md',
+     'quote': 'Owner approval is a wait. Babysitting never authorizes merging.'},
+)
+PLAN_REASONS = {row['reason']: row for row in PLAN_SOURCES}
+PLAN_STAGES = {row['stage'] for row in PLAN_SOURCES if row['stage'] is not None}
 
 
 def _open_pr_reason(board):
@@ -221,11 +312,29 @@ def merged_since_entry(pull, facts, here):
     return pull.merged_at > facts.column_entered
 
 
+def merged_with_pass(pulls):
+    """A merged PR with a PASS verdict on its head, and only that counts as proof.
+
+    Reads the same `passed` fact the plan reads, so board-lint and `plan_stage`
+    cannot disagree about what makes a merge proven.
+    """
+    for pull in pulls or ():
+        state = pull.get('state') if isinstance(pull, dict) else pull.state
+        passed = pull.get('passed') if isinstance(pull, dict) else pull.passed
+        if (state or '').upper() == 'MERGED' and passed is True:
+            return True
+    return False
+
+
 def plan_stage(facts, here, board):
     """One evidence order for every board: PR, worker, verification routing, grace, idle."""
     if facts.waiting or facts.blocked:
         return None, 'waiting or blocked; kept'
     if any(open_pr_in_checks(p, board) for p in facts.pulls):
+        if facts.pr_idle and not facts.alive:
+            # The PR has not moved for a day and nobody runs it. The card holds Todo
+            # until the PR itself moves, so a red PR cannot bounce it back to Checks.
+            return Stage.BACKLOG, 'red PR idle 24h; owner must fix or close'
         return Stage.CHECKS, 'open PR checks running, red, or missing'
     if any(p.state == 'OPEN' for p in facts.pulls):
         return Stage.REVIEW, _open_pr_reason(board)
@@ -236,13 +345,14 @@ def plan_stage(facts, here, board):
     if fresh and product_board(board):
         # The product board runs no verifier gate, so a merge is review evidence alone.
         return Stage.REVIEW, 'merged PR; live proof pending'
-    if any(p.passed for p in fresh):
-        # One merged PR carrying the verifier's PASS settles the card. A PR that only
-        # names the key, or one merged before the gate existed, never had a PASS of
-        # its own and must not report the card as missing one (VSTA-189).
-        return Stage.REVIEW, 'merged PR with PASS; live proof pending'
+    if fresh and merged_with_pass(fresh):
+        # One merged PR carrying the verifier's PASS settles the card (VSTA-189): a PR
+        # that only names the key, or one merged before the gate existed, never had a
+        # PASS of its own. A PASS runs before the merge, so merged with PASS is proven: Done.
+        return Stage.DONE, 'merged with PASS'
     if fresh:
-        return Stage.REVIEW, 'merged PR missing PASS on current head'
+        # Merging without a verdict breaks the one rule that makes Done mean proven.
+        return Stage.BACKLOG, 'merged without PASS: rule break; owner must verify'
     if here == Stage.IN_PROGRESS and not facts.alive and nothing_ran():
         # plan-pick exited 75: every lane was used up and no worker ran (VSTA-182).
         # Say so and wait, instead of leaving the card reading as started for 2h.
@@ -333,6 +443,9 @@ def dynamic_stage_maps(columns, names):
     if 'Checks' not in columns:
         stage_column.pop(Stage.CHECKS, None)
         column_stage.pop('Checks', None)
+    if 'Done' not in columns:
+        stage_column.pop(Stage.DONE, None)
+        column_stage.pop('Done', None)
     if VERIFICATION_BACKLOG not in columns:
         stage_column.pop(Stage.VERIFICATION, None)
         column_stage.pop(VERIFICATION_BACKLOG, None)
@@ -374,6 +487,8 @@ def target(facts, board=DEFAULT, names=None):
     planned, reason = plan_stage(facts, here, board)
     if planned is None:
         return facts.column, reason
+    if planned not in stage_column_map(board):
+        return facts.column, 'target column missing; kept'
     column = resolve_column(planned, board, names)
     if board.columns is not None and column not in board.columns:
         return facts.column, 'target column missing; kept'
@@ -887,6 +1002,11 @@ def saved_facts_usable(saved):
         if any(f.get('state') == 'MERGED' and 'merged_at' not in f
                for f in (entry.get('facts') or {}).values()):
             return False
+        # An open PR whose checks are not green is the idle rule's whole input, so a
+        # fact read before this field existed is re-read instead of read as active.
+        if any(f.get('state') == 'OPEN' and f.get('checks') != 'green' and 'activity' not in f
+               for f in (entry.get('facts') or {}).values()):
+            return False
     return True
 
 
@@ -1072,7 +1192,7 @@ def restore_pull_facts(saved):
         for ref, fact in (entry.get('facts') or {}).items():
             repo, number = ref.rsplit('#', 1)
             PULLS[(repo, int(number))] = Pull(fact['url'], fact['state'], fact['checks'], fact['passed'],
-                                             fact.get('merged_at'))
+                                             fact.get('merged_at'), activity=fact.get('activity'))
 
 
 def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved=None, refreshed=()):
@@ -1095,7 +1215,7 @@ def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved=None
                     got = PULLS[ref]
                     entry['facts'][f'{repo}#{pull["number"]}'] = {
                         'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed,
-                        'merged_at': got.merged_at}
+                        'merged_at': got.merged_at, 'activity': got.activity}
         tickets[key] = entry
     repos = sorted({pull['repository']['nameWithOwner'] for plist in pulls.values() for pull in plist})
     return {'at': now, 'probe_since': probe_since or format_reset(now),
@@ -1938,16 +2058,18 @@ def pull_facts(pull, board=DEFAULT):
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
-PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid mergeable author{login}
+PULL_FIELDS = '''url state mergedAt updatedAt headRefOid baseRefOid mergeable author{login}
+ commits(last:1){nodes{commit{committedDate}}}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
- ... on CheckRun{name status conclusion checkSuite{commit{oid} workflowRun{databaseId}}}
+ ... on CheckRun{name status conclusion completedAt checkSuite{commit{oid} workflowRun{databaseId}}}
  ... on StatusContext{state}}}}
  comments(last:100){totalCount nodes{databaseId body updatedAt author{login}}}'''
 # Open PRs never read verdicts, comments, or workflow runs; skipping checkSuite
 # joins and comments lets a 50-PR GraphQL batch finish without timing out.
-OPEN_PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid mergeable
+OPEN_PULL_FIELDS = '''url state mergedAt updatedAt headRefOid baseRefOid mergeable
+ commits(last:1){nodes{commit{committedDate}}}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
- ... on CheckRun{name status conclusion}
+ ... on CheckRun{name status conclusion completedAt}
  ... on StatusContext{state}}}}'''
 # PR facts read once per run, and refilled by the batched read.
 PULLS = {}
@@ -1988,6 +2110,24 @@ def pull_mergeable(node):
     return None if mergeable in (None, 'UNKNOWN') else mergeable == 'MERGEABLE'
 
 
+def pull_activity(node):
+    """The newest moment one PR showed work: a push, a finished check, or a comment.
+
+    GitHub's own `updatedAt` moves on a push, a comment and a review. A check run
+    that finishes on an unchanged head moves no PR field we read, so its completion
+    time is read beside it. None means this read carried no usable time.
+    """
+    moments = [moment(node.get('updatedAt'))]
+    for row in ((node.get('commits') or {}).get('nodes') or ()):
+        moments.append(moment(((row or {}).get('commit') or {}).get('committedDate')))
+    rollup = node.get('statusCheckRollup') or {}
+    for check in ((rollup.get('contexts') or {}).get('nodes') or ()):
+        if isinstance(check, dict) and check.get('__typename') == 'CheckRun':
+            moments.append(moment(check.get('completedAt')))
+    found = [one for one in moments if one is not None]
+    return max(found) if found else None
+
+
 def pull_from_node(repo, number, node):
     """The same facts a PR read gives, from one GraphQL node."""
     rollup = node.get('statusCheckRollup') or {}
@@ -2000,11 +2140,12 @@ def pull_from_node(repo, number, node):
     comments, total = graphql_comments(node)
     head = node['headRefOid']
     author = (node.get('author') or {}).get('login') or ''
+    activity = pull_activity(node)
     if node['state'] != 'MERGED':
         # No rule reads a verdict on an open PR: its checks alone decide the card, so
         # an open PR never pays for its policy or its verifier run.
         return Pull(node['url'], node['state'], checks, False, moment(node.get('mergedAt')),
-                    pull_mergeable(node))
+                    pull_mergeable(node), activity)
     policy = verifier_policy(repo, node['baseRefOid'])
     if policy is None:
         passed = pstack_pass_on_head(contexts.get('nodes') or [], head, repo)
@@ -2014,7 +2155,7 @@ def pull_from_node(repo, number, node):
             # A verdict older than the newest hundred still counts; read them all.
             passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
     return Pull(node['url'], node['state'], checks, passed, moment(node.get('mergedAt')),
-                pull_mergeable(node))
+                pull_mergeable(node), activity)
 
 
 def read_pull_group(refs, slim=False):
@@ -2184,13 +2325,27 @@ def is_verification(task):
     return carries_label(task, VERIFICATION)
 
 
+def pr_idle(details, now):
+    """This card's open PR showed nothing new for RED_PR_IDLE_SECONDS.
+
+    A read that carried no activity time keeps the card where it is: an unknown is
+    never an idle PR, because that would demote work somebody is still doing.
+    """
+    open_pulls = [p for p in details if p.state == 'OPEN']
+    if not open_pulls:
+        return False
+    moments = [p.activity for p in open_pulls if p.activity is not None]
+    return bool(moments) and now - max(moments) > RED_PR_IDLE_SECONDS
+
+
 def collect(task, pulls, now, board=DEFAULT):
     ticket_index(task['ticketNumber'], board)
     alive = worker_alive(task['ticketNumber'], now, board)
     details = tuple(pull_facts(p, board) for p in pulls)
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
                  bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')),
-                 is_verification(task), column_entered(task))
+                 is_verification(task), column_entered(task),
+                 False if product_board(board) else pr_idle(details, now))
 
 
 def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
@@ -2379,9 +2534,6 @@ class Tee:
 
 def card_phase():
     return session.slug(os.environ.get('RECONCILE_CARD_PHASE') or '')
-
-
-NOTHING_RAN = 'nothing ran, waiting for a lane'
 
 
 def worker_exit():

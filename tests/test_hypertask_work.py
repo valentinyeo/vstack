@@ -102,7 +102,7 @@ class ReconcileTest(unittest.TestCase):
                 if owner == 'SOFT-1910':
                     self.assertTrue(r.names_ticket(pr, owner))
         self.assertEqual(r.target(r.Facts('Todo', 8000))[0], 'Todo')
-        self.assertEqual(r.target(r.Facts('AI Review', 8000, False, (pull('MERGED'),)))[0], 'AI Review')
+        self.assertEqual(r.target(r.Facts('AI Review', 8000, False, (pull('MERGED'),)))[0], 'Todo')
 
     def test_structural_ownership(self):
         for pr in ({'title': 'Fix SOFT-1'}, {'headRefName': 'fix/soft-1-reconcile'},
@@ -159,9 +159,14 @@ class ReconcileTest(unittest.TestCase):
             self.assertEqual(r.discover(['BROKEN']), {'BROKEN': []})
             run.assert_not_called()
 
-    def test_merged_pass_waits_for_live_proof(self):
+    def test_merged_pass_plans_done(self):
+        """A PASS verdict runs before the merge, so merged with PASS is proven."""
         self.assertEqual(r.target(r.Facts('Doing', 8000, False, (pull('MERGED', passed=True),))),
-                         ('AI Review', 'merged PR with PASS; live proof pending'))
+                         ('Done', 'merged with PASS'))
+
+    def test_merged_without_pass_plans_todo(self):
+        self.assertEqual(r.target(r.Facts('AI Review', 8000, False, (pull('MERGED'),))),
+                         ('Todo', 'merged without PASS: rule break; owner must verify'))
 
     def test_one_passing_merged_pr_settles_a_card_beside_a_mention_only_one(self):
         """MUBO-249: multiprompt#1328 passed; token-ladder#40 only names the key.
@@ -320,8 +325,8 @@ class ReconcileTest(unittest.TestCase):
             (r.Facts('Doing', 8000, False, (pull(checks='missing'),)), 'Checks'),
             (r.Facts('Doing', 8000, False, (pull(),)), 'AI Review'),
             (r.Facts('Checks', 8000, False, (pull(passed=True),)), 'AI Review'),
-            (r.Facts('Doing', 8000, False, (pull('MERGED', passed=True),)), 'AI Review'),
-            (r.Facts('Doing', 8000, False, (pull('MERGED'),)), 'AI Review'),
+            (r.Facts('Doing', 8000, False, (pull('MERGED', passed=True),)), 'Done'),
+            (r.Facts('Doing', 8000, False, (pull('MERGED'),)), 'Todo'),
             (r.Facts('Doing', 8000, False, (pull('MERGED', passed=True), pull(checks='red'))), 'Checks'),
             (r.Facts('Doing', 7199), 'Doing'),
             (r.Facts('Doing', 7200), 'Todo'),
@@ -350,7 +355,7 @@ class ReconcileTest(unittest.TestCase):
             (r.Facts('Todo', 8000, False, (pull(checks='red'),), verification=True), 'Checks'),
             (r.Facts('Todo', 8000, True, verification=True), 'Doing'),
             (r.Facts('Verification Backlog', 8000, False, (pull(),), verification=True), 'AI Review'),
-            (r.Facts('Verification Backlog', 8000, False, (pull('MERGED', passed=True),), verification=True), 'AI Review'),
+            (r.Facts('Verification Backlog', 8000, False, (pull('MERGED', passed=True),), verification=True), 'Done'),
             (r.Facts('Verification Backlog', 8000, True, verification=True), 'Doing'),
             (r.Facts('Todo', 8000, verification=True, waiting=True), 'Todo'),
             (r.Facts('Verification Backlog', 8000, verification=True), 'Verification Backlog'),
@@ -379,7 +384,7 @@ class ReconcileTest(unittest.TestCase):
     def test_pr_stage_wins_over_grace_and_live_worker(self):
         self.assertEqual(r.target(r.Facts('Doing', 100, True, (pull(),)))[0], 'AI Review')
         self.assertEqual(r.target(r.Facts('Doing', 100, True, (pull(checks='red'),)))[0], 'Checks')
-        self.assertEqual(r.target(r.Facts('Doing', 7199, False, (pull('MERGED', passed=True),)))[0], 'AI Review')
+        self.assertEqual(r.target(r.Facts('Doing', 7199, False, (pull('MERGED', passed=True),)))[0], 'Done')
 
     def test_waiting_or_blocked_ticket_stays_put(self):
         for facts in (r.Facts('Doing', 8000, True, waiting=True),
@@ -2516,7 +2521,7 @@ class CallBudgetTest(unittest.TestCase):
             result = r.read_pull_batch([('valentinyeo/another-repo', 1)])[('valentinyeo/another-repo', 1)]
         self.assertTrue(result.passed)
         self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(result,))),
-                         ('AI Review', 'merged PR with PASS; live proof pending'))
+                         ('Done', 'merged with PASS'))
         self.assertEqual(run.call_count, 2)
         self.assertIn('name', run.call_args_list[0].args[-1])
         self.assertIn('workflowRun', run.call_args_list[0].args[-1])
@@ -2610,7 +2615,7 @@ class CallBudgetTest(unittest.TestCase):
             result = r.read_pull_batch([('valentinyeo/another-repo', 1)])[('valentinyeo/another-repo', 1)]
         self.assertTrue(result.passed)
         self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(result,))),
-                         ('AI Review', 'merged PR with PASS; live proof pending'))
+                         ('Done', 'merged with PASS'))
         self.assertEqual(run.call_count, 2)
 
     def test_a_cross_repo_pr_that_only_names_the_key_never_hides_its_cards_pass(self):
@@ -2885,7 +2890,8 @@ class CallBudgetTest(unittest.TestCase):
                  'tickets': {key: {'updated_at': t['updatedAt'], 'pulls': [repo_pull],
                                    'facts': {'valentinyeo/another-repo#1': {
                                        'url': stale_pull.url, 'state': stale_pull.state,
-                                       'checks': stale_pull.checks, 'passed': stale_pull.passed}}}}}
+                                       'checks': stale_pull.checks, 'passed': stale_pull.passed,
+                                       'activity': NOW - 60}}}}}
         r.write_board_facts(2060, saved)
         item = {'html_url': stale_pull.url, 'title': repo_pull['title'], 'body': repo_pull['body'],
                 'number': 1, 'state': 'open'}
@@ -3042,7 +3048,8 @@ class CallBudgetTest(unittest.TestCase):
                      key: {'updated_at': NOW, 'pulls': [repo_pull],
                            'facts': {'valentinyeo/another-repo#1': {
                                'url': stale.url, 'state': stale.state,
-                               'checks': stale.checks, 'passed': stale.passed}}},
+                               'checks': stale.checks, 'passed': stale.passed,
+                               'activity': NOW - 60}}},
                      other: {'updated_at': NOW, 'pulls': [other_pull],
                              'facts': {'valentinyeo/another-repo#2': {
                                  'url': other_pull['url'], 'state': 'OPEN', 'checks': 'green', 'passed': False}}}}}
