@@ -84,7 +84,8 @@ No: <what happens>
 - The recommendation sits right under the question.
 - A blank line between lines, because single line breaks merge.
 - "What this is:" comes first and says what the thing is in the app, why it reached him, and what Yes and No change.
-- Only Chief Of Staff and the board's lead write a Question, or make Valentin the waiting person. A runner sets the waiting person to its lead, then to Chief Of Staff after 2 hours without a live lead.
+- Any agent writes a Question. Only Chief Of Staff and the board's lead make Valentin the waiting person. A runner sets the waiting person to its lead, then to Chief Of Staff after 2 hours without a live lead.
+- A Question may carry links: put the evidence URL where it helps him decide.
 - Money asks name the amount. Ask only when his answer can act today.
 - His 👍 on the Question accepts the recommendation. Act on it, then clear both the waiting person and the red comment border.
 - Before asking, check `skills/unblock/learned.md`. If the case is listed, decide it yourself.
