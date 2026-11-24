@@ -701,7 +701,7 @@ def rows_for(args):
     """Open tickets carrying the label, each Todo ticket with its comments and links.
 
     Also the whole loaded board by key, label or not, so a blocker's column is known,
-    and that whole board's cards, because the WIP cap counts every card on the board.
+    and that whole board's cards, because the WIP cap counts the ones this label owns.
     """
     extra = {}
     if args.fixture:
@@ -746,12 +746,13 @@ def read_view(args, now):
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
     workable, waiting_lines, blocked_lines, findings = [], [], [], []
-    # Valentin's order: finish before starting. A full board takes no new Todo work,
-    # so the findings that ask for a start stay quiet until it drains.
-    over, cards, cap = wip.over_cap(board_tasks, board.id)
+    # Valentin's rule: finish before starting. A label already holding its open
+    # tickets takes no new Todo work, so the findings that ask for a start stay
+    # quiet until it ships one.
+    over, cards, cap = wip.at_cap(board_tasks, args.label)
     if over:
-        findings.append(('over cap', f'over cap: {cards} cards in {wip.LABEL} '
-                                     f'(cap {cap}); finish before starting'))
+        findings.append(('over cap',
+                         f'over cap: {wip.held_line(args.label, cards, cap)}'))
     for row in todos:
         task = row['task']
         if waiting(task):
@@ -766,7 +767,7 @@ def read_view(args, now):
             blocked_lines.append(f'blocked: {task["ticketNumber"]} by {", ".join(stuck)}')
         else:
             workable.append(row)
-    # An urgent Todo card may start while the board is over cap, so its nudge stands.
+    # An urgent Todo card may start while its label is at cap, so its nudge stands.
     held_by_cap = over and not any(wip.urgent(row['task']) for row in workable)
     for row in doings:
         if row not in live:
