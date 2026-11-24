@@ -47,6 +47,15 @@ WORKING = frozenset({'Doing', 'Building', CHECKS, 'AI Review', 'Verifier'})
 STUCK_AFTER = 24 * 3600
 STUCK_FIX = 'Start a fresh plan-pick owner to fix or close it.'
 PR_URL = re.compile(r'github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)')
+# An idle Checks card often carries no PR link, and the board's saved facts cover
+# only recently changed tickets, so its PR comes from one open listing per board.
+# This rule asks about a day of idleness, so an hour-old listing answers it whole.
+LISTING_TTL = 3600
+LISTING_PAGE = 100
+# GitHub search shows 1,000 results at most, so a bigger fleet listing stays partial.
+LISTING_MAX = 1000
+LISTING_FIELDS = ('url title headRefName commits(last:1){nodes{commit{committedDate}}} '
+                  'statusCheckRollup{state}')
 # Hypertask user 6 is Valentin (valentin.yeo@gmail.com); every board's waitingOnUserId
 # uses it, and the boards spell his column "Valentin Review".
 VALENTIN_USER_ID = 6
@@ -347,16 +356,141 @@ def linked_pulls(task, pulls):
             if isinstance(item, dict) and item.get('url')]
 
 
-def stuck_finding(task, pulls, now, board):
+def listing_path(board):
+    return loop_state.state_dir() / f'open-pulls-{board.id}.json'
+
+
+def saved_listing(board, now):
+    """The board's open-PR listing when it is under an hour old, else None.
+
+    None means this board has to read GitHub again; an empty list is a real answer.
+    """
+    try:
+        data = json.loads(listing_path(board).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get('pulls'), list):
+        return None
+    at = stamp_of(data.get('at'))
+    if at is None or now < at or now - at > LISTING_TTL:
+        return None
+    return [row for row in data['pulls'] if isinstance(row, dict)]
+
+
+def save_listing(board, rows, now):
+    """Best effort: a listing that cannot be saved costs a read next tick, nothing else."""
+    path = listing_path(board)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'at': now, 'pulls': rows}))
+    except OSError:
+        pass
+
+
+def listing_page(scope, cursor=None):
+    """One page of open PRs in one search scope, with their checks and head push."""
+    after = f',after:{json.dumps(cursor)}' if cursor else ''
+    query = ('query{search(query:%s,type:ISSUE,first:%d%s){issueCount pageInfo{hasNextPage '
+             'endCursor} nodes{... on PullRequest{%s}}}}'
+             % (json.dumps('is:pr is:open ' + scope), LISTING_PAGE, after, LISTING_FIELDS))
+    result = json.loads(reconcile.run('gh', 'api', 'graphql', '-f', 'query=' + query))
+    if result.get('errors') or not result.get('data'):
+        raise ValueError('GitHub search errors')
+    return result['data']['search']
+
+
+def listing_rows(page):
+    """The rows one page of open PRs contributes: the facts a stuck card is judged on."""
+    rows = []
+    for node in page.get('nodes') or ():
+        if not isinstance(node, dict) or not node.get('url'):
+            continue
+        rollup = node.get('statusCheckRollup') or {}
+        commit = ((node.get('commits') or {}).get('nodes') or [{}])[0] or {}
+        # The search asked for open PRs only, so each row's state is already known.
+        rows.append({'url': node['url'], 'state': 'OPEN', 'title': node.get('title') or '',
+                     'headRefName': node.get('headRefName') or '',
+                     'checks': reconcile.ROLLUP_STATE.get(
+                         (rollup.get('state') or '').upper(), ''),
+                     'pushedAt': (commit.get('commit') or {}).get('committedDate') or ''})
+    return rows
+
+
+def open_pull_rows(board):
+    """Every open PR in the board's scope, paged as far as GitHub will answer.
+
+    One read covers every Checks card on the board, however many carry no PR link.
+    Past GitHub's 1,000-result cap the listing stays partial, which leaves a card
+    unflagged rather than guessed at.
+    """
+    scope = reconcile.probe_scope(board)
+    rows, cursor = [], None
+    while True:
+        page = listing_page(scope, cursor)
+        rows += listing_rows(page)
+        info = page.get('pageInfo') or {}
+        next_cursor = info.get('endCursor')
+        if (not info.get('hasNextPage') or not next_cursor or next_cursor == cursor
+                or len(rows) >= LISTING_MAX):
+            return rows
+        cursor = next_cursor
+
+
+def open_listing(board, now):
+    """The board's open-PR listing, read at most once an hour and shared by every card.
+
+    A card idle for a day is exactly the card the board's saved facts never cover,
+    so this is where its PR comes from. A read that fails comes back empty: every
+    card is then left alone instead of guessed at.
+    """
+    rows = saved_listing(board, now)
+    if rows is not None:
+        return rows
+    try:
+        rows = open_pull_rows(board)
+    except ERRORS + (AttributeError, reconcile.BudgetRefused, reconcile.RateLimit):
+        return []
+    save_listing(board, rows, now)
+    return rows
+
+
+def names_key(text, key):
+    """The card's key as a whole word: MUBO-13 must not match MUBO-130."""
+    pattern = r'(?<![A-Za-z0-9])' + re.escape(key or '') + r'(?![0-9])'
+    return bool(key) and re.search(pattern, text or '', re.IGNORECASE) is not None
+
+
+def card_keys(key, board):
+    """The keys this card's PRs can carry: its own, and the ones it moved from.
+
+    A card moved between boards keeps its PRs under the key they were written with.
+    """
+    try:
+        return (key,) + tuple(reconcile.aliases_of(key, board) or ())
+    except ERRORS + (AttributeError,):
+        return (key,)
+
+
+def card_pulls(key, listing, board):
+    """The open PRs whose title or branch name carries this card's key or an old one."""
+    keys = card_keys(key, board)
+    return [row for row in listing or ()
+            if any(names_key(row.get('title'), name) or names_key(row.get('headRefName'), name)
+                   for name in keys)]
+
+
+def stuck_finding(task, pulls, now, board, listing=()):
     """A Checks card on a red PR with no push and no owner for a day, or None.
 
-    Facts the tick already holds answer wherever they can: a green, running or
-    merged PR is answered for free, and one card pays for at most one read.
+    A PR link the tick already holds answers first; a card with no link is matched
+    to the board's open listing by its key. One card pays for at most one read, and
+    nothing here acts on a view other than this chat's own.
     """
     if task.get('section') != CHECKS or alive(task, now, board):
         return None
     read_used = False
-    for pull in linked_pulls(task, pulls):
+    for pull in (linked_pulls(task, pulls)
+                 or card_pulls(task.get('ticketNumber'), listing, board)):
         url = pull_field(pull, 'url') or ''
         state = (pull_field(pull, 'state') or '').upper()
         checks = pull_field(pull, 'checks') or ''
@@ -540,8 +674,13 @@ def read_view(args, now):
         if row not in live:
             findings.append(('stalled', f'stalled: {row["task"]["ticketNumber"]} in Doing with no '
                                         'live worker. Start a fresh plan-pick worker.'))
-    for row in rows:
-        finding = stuck_finding(row['task'], pulls, now, board)
+    idle_checks = [row for row in rows if row['task'].get('section') == CHECKS
+                   and not alive(row['task'], now, board)]
+    listing = ()
+    if any(not linked_pulls(row['task'], pulls) for row in idle_checks):
+        listing = open_listing(board, now)
+    for row in idle_checks:
+        finding = stuck_finding(row['task'], pulls, now, board, listing)
         if finding is not None:
             findings.append(finding)
     for row in rows:
