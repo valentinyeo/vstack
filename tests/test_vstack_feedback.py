@@ -44,6 +44,10 @@ def find(ref):
 
 key = ' '.join(a[:2])
 s['calls'].append(a)
+if key == 'task list' and os.environ.get('FAKE_REASON'):
+    print('the server rejected the command input', file=sys.stderr)
+    print(json.dumps({'success': False, 'error': os.environ['FAKE_REASON']}))
+    sys.exit(1)
 if key == 'task list':
     status = opt('--status')
     project = opt('--project')
@@ -179,6 +183,15 @@ class Feedback(unittest.TestCase):
         description = self.opt(self.create_call(), '--description')
         self.assertIn('<li>Filed for: Demo Chat</li>', description)
         self.assertIn('not a member of this board', description)
+        for token in (CHAT_TOKEN, MAINTAINER_TOKEN):
+            self.assertNotIn(token, r.stdout + r.stderr)
+
+    def test_shows_the_board_reason_not_the_generic_stderr_line(self):
+        r = self.run_env('Add a feedback command', '--why', 'x',
+                         FAKE_REASON=f'text: Keep each sentence within twelve words ({CHAT_TOKEN})')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('Keep each sentence within twelve words', r.stderr)
+        self.assertNotIn('the server rejected the command input', r.stderr)
         for token in (CHAT_TOKEN, MAINTAINER_TOKEN):
             self.assertNotIn(token, r.stdout + r.stderr)
 
