@@ -22,6 +22,7 @@ import re
 import shlex
 import subprocess
 import sys
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -177,11 +178,11 @@ def shim(argv):
 
 
 def self_test():
-    path = ROOT / 'tests/test_pr_cap.py'
-    spec = importlib.util.spec_from_file_location('test_pr_cap', path)
-    tests = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tests)
-    assert tests.HOOK == str(Path(__file__).resolve()), 'self-test must exercise this file'
+    tests = load('test_pr_cap', ROOT / 'tests/test_pr_cap.py')
+    assert Path(tests.HOOK).resolve() == Path(__file__).resolve(), 'self-test must exercise this file'
+    suite = unittest.defaultTestLoader.loadTestsFromModule(tests)
+    result = unittest.TextTestRunner(verbosity=0).run(suite)
+    assert result.wasSuccessful(), 'pr-cap-guard self-test failed'
     print('pr-cap-guard self-test ok')
 
 

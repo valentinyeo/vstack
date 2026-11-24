@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 
 CAP = 10
@@ -46,9 +47,9 @@ def warn_once(repo, detail):
           file=sys.stderr)
 
 
-def read_cache(repo, now):
+def read_cache(repo, now, directory=None):
     try:
-        saved = json.loads((state_dir() / (repo.replace('/', '-') + '.json')).read_text())
+        saved = json.loads(((directory or state_dir()) / (repo.replace('/', '-') + '.json')).read_text())
         count = int(saved['count'])
         at = float(saved['at'])
     except (OSError, ValueError, KeyError, TypeError):
@@ -58,8 +59,8 @@ def read_cache(repo, now):
     return count
 
 
-def write_cache(repo, count, now):
-    path = state_dir() / (repo.replace('/', '-') + '.json')
+def write_cache(repo, count, now, directory=None):
+    path = (directory or state_dir()) / (repo.replace('/', '-') + '.json')
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({'count': count, 'at': now}))
@@ -75,10 +76,10 @@ def one_call(repo):
         capture_output=True, text=True, timeout=TIMEOUT)
 
 
-def open_count(repo, now=None, run=None):
+def open_count(repo, now=None, run=None, directory=None):
     """Open pull requests on REPO, or None when the read failed (fail open)."""
     now = time.time() if now is None else now
-    cached = read_cache(repo, now)
+    cached = read_cache(repo, now, directory)
     if cached is not None:
         return cached
     run = run or one_call
@@ -99,30 +100,44 @@ def open_count(repo, now=None, run=None):
     if count < 0:
         warn_once(repo, f'unreadable count {count}')
         return None
-    write_cache(repo, count, now)
+    write_cache(repo, count, now, directory)
     return count
 
 
-def block(repo, now=None, run=None):
+def block(repo, now=None, run=None, directory=None):
     """The refusal for one repo above its cap, or None for another repo or a count at the cap."""
     if repo not in REPOS:
         return None
-    count = open_count(repo, now=now, run=run)
+    count = open_count(repo, now=now, run=run, directory=directory)
     if count is None or count <= REPOS[repo]:
         return None
     return MESSAGE.format(repo=repo, count=count, cap=REPOS[repo], fix=FIX)
 
 
+def self_test():
+    assert set(REPOS.values()) == {CAP}, 'every listed repo carries the one cap'
+    repo = sorted(REPOS)[0]
+    at_cap = subprocess.CompletedProcess([], 0, str(CAP), '')
+    over = subprocess.CompletedProcess([], 0, str(CAP + 1), '')
+    with tempfile.TemporaryDirectory() as scratch:
+        cache = Path(scratch)
+        now = time.time()
+        assert block(repo, now=now, run=lambda name: over, directory=cache) is not None, 'one over the cap blocks'
+        later = now + TTL + 1
+        assert block(repo, now=later, run=lambda name: at_cap, directory=cache) is None, 'the cap itself passes'
+        assert block('valentinyeo/other', now=now, run=lambda name: over, directory=cache) is None, 'another repo passes'
+        calls = []
+        assert open_count(repo, now=later + 1, run=lambda name: calls.append(name) or at_cap,
+                          directory=cache) is not None
+        assert calls == [], 'a cached count makes no second call'
+    print('pr-cap self-test ok')
+    return 0
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv == ['--self-test']:
-        path = Path(__file__).resolve().parents[1] / 'tests/test_pr_cap.py'
-        spec = importlib.util.spec_from_file_location('test_pr_cap', path)
-        tests = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(tests)
-        assert block('valentinyeo/other') is None, 'another repo must pass'
-        print('pr-cap self-test ok')
-        return 0
+        return self_test()
     if len(argv) == 2 and argv[0] == '--count':
         count = open_count(argv[1])
         print('unknown' if count is None else count)
