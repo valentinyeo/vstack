@@ -276,3 +276,11 @@ change: Each agent owns at most 5 open tickets at a time, one worker each, and s
 basis: VSTA-206; PR #370 (pr-cap) precedent
 approved: 2026-11-24
 expiry: 2027-02-24
+
+id: ui-video-proof-gate
+pstack: docs/guide/06-verify-and-ship.md
+quote: Ask for the proof as an artifact you can inspect yourself: the failing test and then the passing one, a before-and-after video, the trace, the screenshot.
+change: Verifiers run `scripts/video_proof_gate.py` (as a pre-check and behind `scripts/verdict.py`), refusing PASS on diffs touching user-visible UI without a before/after video link in the PR body.
+basis: VSTA-251
+approved: 2026-11-24
+expiry: 2027-02-24
