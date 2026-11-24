@@ -100,20 +100,21 @@ def probe_load():
 
 
 def launch_moments():
-    """Every lane plan-pick took, in epoch seconds; None when the log cannot be read.
+    """The log's two kinds of "at" moment; None when the log cannot be read.
 
     plan-pick mixes two rows in one log: a launch row with "at" and the lane it took,
     and a finish row with "finished_at" and no lane at all. It also logs one row with
-    a null lane at the moment it finds no lane free, so only a row that names a lane
-    is a launch that means a lane came back.
+    a null lane at the moment it finds no lane free. So a row with "at" and a lane is
+    a launch that means a lane came back, and a row with "at" and a null lane is a
+    miss. Returns (launched, misses), both in epoch seconds.
     """
     try:
         text = PLAN_PICK_LOG.read_text()
     except FileNotFoundError:
-        return []
+        return [], []
     except OSError:
         return None
-    moments = []
+    launched, misses = [], []
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -121,24 +122,26 @@ def launch_moments():
             row = json.loads(line)
         except ValueError:
             return None
-        if not isinstance(row, dict) or 'at' not in row or row.get('lane') is None:
+        if not isinstance(row, dict) or 'at' not in row:
             continue
         moment = stamp_of(row.get('at'))
         if moment is None:
             return None
-        moments.append(moment)
-    return moments
+        (launched if row.get('lane') is not None else misses).append(moment)
+    return launched, misses
 
 
 def probe_lane(now):
     """When plan-pick last found no free lane, in epoch seconds, or None.
 
-    plan-pick writes one rung attempt per job with failure "lane" and exit 75 when
-    every lane is spent, so the newest such row, any job, is the no-lane moment. A
-    worker that ran and then hit a rate limit also records "lane", but exits 0 or 1,
-    so only exit 75 is a miss. A lane taken strictly after that moment lifts it: the
-    launch right after the miss carries no lane and never counts. A probe that cannot
-    read never hides a finding.
+    plan-pick records a miss in two places. A rung attempt per job with failure
+    "lane" and exit 75 says every lane is spent; a worker that ran and then hit a
+    rate limit also records "lane", but exits 0 or 1, so only exit 75 is a miss. It
+    also logs a null-lane launch row at the moment it finds no lane free, and that
+    row exists even when the job carries no rung context. The newest of either is
+    the no-lane moment. A lane taken strictly after that moment lifts it: the launch
+    right after the miss carries no lane and never counts. A probe that cannot read
+    never hides a finding.
     """
     try:
         rows = json.loads(PLAN_PICK_STATE.read_text())
@@ -149,14 +152,16 @@ def probe_lane(now):
     moments = [stamp_of(row.get('finished_at')) for row in rows.values()
                if isinstance(row, dict) and row.get('failure') == 'lane'
                and row.get('exit_code') == 75]
+    log = launch_moments()
+    if log is not None:
+        moments.extend(log[1])
     moments = [moment for moment in moments if moment is not None]
     if not moments:
         return None
     moment = max(moments)
     if not 0 <= now - moment <= LANE_WINDOW:
         return None
-    launched = launch_moments()
-    if launched is None or any(at > moment for at in launched):
+    if log is None or any(at > moment for at in log[0]):
         return None
     return moment
 

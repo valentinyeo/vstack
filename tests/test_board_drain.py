@@ -865,6 +865,26 @@ class CheckTest(unittest.TestCase):
                                    'finished_at': moment + 120, 'exit_code': 0}])
         self.assertIsNone(drain.probe_lane(NOW))
 
+    def test_a_null_lane_launch_row_alone_holds(self):
+        # Most no-lane attempts never reach rung-attempts.json: the brief carried no
+        # rung job. The null-lane launch row is the only record of those.
+        self.lane_state(launches=[{'at': NOW - 300, 'lane': 'opus', 'event': 'start'},
+                                  {'at': NOW - 60, 'lane': None, 'session': None,
+                                   'cwd': '/tmp', 'not_vendor': None, 'caller': '/tmp'}])
+        self.assertEqual(drain.probe_lane(NOW), NOW - 60)
+
+    def test_a_real_launch_after_a_null_lane_row_lifts_the_hold(self):
+        self.lane_state(launches=[{'at': NOW - 600, 'lane': None, 'session': None,
+                                   'cwd': '/tmp', 'not_vendor': None, 'caller': '/tmp'},
+                                  {'at': NOW - 120, 'lane': 'sonnet', 'event': 'start',
+                                   'launch_id': 'c'}])
+        self.assertIsNone(drain.probe_lane(NOW))
+
+    def test_a_stale_null_lane_row_does_not_hold(self):
+        self.lane_state(launches=[{'at': NOW - 1801, 'lane': None, 'session': None,
+                                   'cwd': '/tmp', 'not_vendor': None, 'caller': '/tmp'}])
+        self.assertIsNone(drain.probe_lane(NOW))
+
     def test_a_worker_that_hit_a_lane_limit_mid_run_does_not_hold(self):
         # attempt_failure records "lane" for a run that then hit a rate limit; only
         # exit 75 means plan-pick never found a lane to start.
