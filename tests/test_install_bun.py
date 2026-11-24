@@ -60,12 +60,12 @@ class InstallBun(unittest.TestCase):
         return subprocess.run(["bash", str(SCRIPT)], env=self.env(), text=True,
                               capture_output=True, timeout=120)
 
-    def publish(self, payload="bun", sha=None):
+    def publish(self, payload=None, sha=None):
         archive = self.release / ASSET
         with zipfile.ZipFile(archive, "w") as bundle:
             info = zipfile.ZipInfo(f"{ASSET[:-4]}/bun")
             info.external_attr = 0o755 << 16
-            bundle.writestr(info, payload)
+            bundle.writestr(info, bun_binary() if payload is None else payload)
         digest = sha or hashlib.sha256(archive.read_bytes()).hexdigest()
         (self.release / "SHASUMS256.txt").write_text(
             f"{'0' * 64}  bun-darwin-x64.zip\n{digest}  {ASSET}\n")
