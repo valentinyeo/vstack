@@ -21,6 +21,9 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from bin_path import find
+
 
 def load_session():
     """The one login resolver and status store, from this skill folder."""
@@ -1635,7 +1638,7 @@ def discover_quiet(keys, board=DEFAULT, saved=None, probe_items=(), refresh=()):
 
 
 def api(*args):
-    value = json.loads(run('hypertask', '--json', *args))
+    value = json.loads(run(find('hypertask') or 'hypertask', '--json', *args))
     if value.get('success') is False:
         raise ValueError('Hypertask request failed')
     return value
@@ -2743,7 +2746,8 @@ def reconcile(task, facts, apply=False, board=DEFAULT, names=None, label=None):
         api('task', 'move', key, '--section', column)
         APPLIED[0] += 1
         # Only the column changes: owner and assignees are retained.
-        run('hypertask', 'activity', 'add', key, *(['--text'] if board.id == 15 else []),
+        run(find('hypertask') or 'hypertask', 'activity', 'add', key,
+            *(['--text'] if board.id == 15 else []),
             f'fleet/reconcile: {reason}; {task["section"]} -> {column}.')
     print(line, flush=True)
     return column

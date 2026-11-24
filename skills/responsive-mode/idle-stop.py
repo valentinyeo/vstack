@@ -36,6 +36,9 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from bin_path import find
+
 NOTES = ('CLAUDE.md', 'AGENTS.md')
 BOARD_LINE = re.compile(r'^Hypertask board:\s*(\d+)(?:,\s*label:\s*(.+?))?\s*$')
 OPEN_SECTIONS = frozenset({'Doing', 'In Progress', 'Checks', 'AI Review'})
@@ -272,8 +275,7 @@ def mine(task, name):
 
 
 def cli():
-    return (os.environ.get('IDLE_STOP_CLI') or shutil.which('hypertask')
-            or str(Path.home() / '.local/bin/hypertask'))
+    return os.environ.get('IDLE_STOP_CLI') or find('hypertask') or 'hypertask'
 
 
 def open_tickets(board, label, name, token):

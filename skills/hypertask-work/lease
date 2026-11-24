@@ -8,13 +8,15 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from bin_path import find
 
 
 def load(name, path):
@@ -78,7 +80,7 @@ def take_card(key, name, token, env=None):
         return False
     if not token_value:
         return False
-    cli = shutil.which('hypertask')
+    cli = find('hypertask')
     if cli is None:
         return False
     run_env = dict(env, HYPERTASKS_JWT_TOKEN=token_value, SHIP_SESSION_NAME=name)
