@@ -58,6 +58,7 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.
 - **not armed** or **watcher dead since <time>:** the chat restarted, the loop expired, or the watcher stopped pulsing. Arm it.
 - **sync failed** or **sync stale:** the last sync broke or is over 45 minutes old. Fix it, then `./sync --board <id> --label <label> --name "<name>"`.
+- **sync skipped:** the chat is over its gh budget. `./sync` prints one `sync skipped: gh budget (wait until HH:MM UTC)` line and exits 0, and the watcher keeps watching. Nothing to fix; a skip is never `sync failed`. If the skips outlast 45 minutes it reads as **sync stale** instead.
 
 A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:` line; `--no-load` skips the probe.
 
