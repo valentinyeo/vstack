@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# install-bun: give the server user bun in their own home, no sudo (VSTA-229).
+# pstack's watch-pr runs on bun, and a chat cannot install it on this shared host.
+set -uo pipefail
+
+BUN_VERSION=1.4.5
+BIN="$HOME/.bun/bin/bun"
+LINK="$HOME/.local/bin/bun"
+RELEASE="https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION"
+
+give_up() {
+  printf 'vstack install: %s\n' "$1" >&2
+  exit 0
+}
+
+place_link() {
+  mkdir -p "${LINK%/*}" 2>/dev/null || give_up "could not create ${LINK%/*}, so $LINK is not linked"
+  if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
+    give_up "bun $BUN_VERSION is at $BIN, and $LINK is a real file, so I left it alone"
+  fi
+  ln -sfn "$BIN" "$LINK" 2>/dev/null || give_up "could not link $LINK to $BIN"
+}
+
+if [ -x "$BIN" ] && [ "$("$BIN" --version 2>/dev/null)" = "$BUN_VERSION" ]; then
+  place_link
+  exit 0
+fi
+
+case $(uname -m) in
+  x86_64 | amd64) asset=bun-linux-x64.zip ;;
+  aarch64 | arm64) asset=bun-linux-aarch64.zip ;;
+  *) give_up "no bun $BUN_VERSION build for $(uname -m), so pstack watch-pr will not run" ;;
+esac
+
+work=$(mktemp -d) 2>/dev/null || give_up "no temp dir, so bun $BUN_VERSION is not installed and pstack watch-pr will not run"
+trap 'rm -rf "$work"' EXIT
+
+fetch() {
+  curl -fsSL --retry 2 --connect-timeout 20 --max-time 300 -o "$2" "$1" 2>/dev/null
+}
+
+if ! fetch "$RELEASE/$asset" "$work/$asset" || ! fetch "$RELEASE/SHASUMS256.txt" "$work/sums"; then
+  give_up "could not download bun $BUN_VERSION, so pstack watch-pr will not run; run ./install again when the network is back"
+fi
+
+want=$(awk -v name="$asset" '$2 == name { print $1 }' "$work/sums")
+if [ -z "$want" ]; then
+  give_up "$RELEASE/SHASUMS256.txt lists no checksum for $asset, so bun $BUN_VERSION was not installed"
+fi
+if ! printf '%s  %s\n' "$want" "$work/$asset" | sha256sum --check --status - 2>/dev/null; then
+  give_up "the bun $BUN_VERSION download does not match its published checksum, so nothing was installed"
+fi
+
+unzip -q -o "$work/$asset" -d "$work" 2>/dev/null || give_up "could not unpack bun $BUN_VERSION, so it was not installed"
+mkdir -p "${BIN%/*}" 2>/dev/null || give_up "could not create ${BIN%/*}, so bun $BUN_VERSION was not installed"
+install -m 0755 "$work/${asset%.zip}/bun" "$BIN" 2>/dev/null || give_up "could not write $BIN"
+
+place_link
+printf 'vstack install: bun %s at %s, linked from %s\n' "$BUN_VERSION" "$BIN" "$LINK"
