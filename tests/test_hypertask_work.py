@@ -702,12 +702,15 @@ class ReconcileTest(unittest.TestCase):
                 aliases = list(dict.fromkeys(re.findall(r'p(\d+):repository', call)))
                 body = {'data': {f'p{n}': {'object': {'text': '{}'}} for n in aliases}}
             else:
-                fields = re.findall(r'(q\d+):search\(query:"([^"]*)"', call)
+                # The query text is a JSON string, and a packed query quotes one term
+                # per card, so take the whole string and read the cards it names.
+                pairs = re.findall(r'(q\d+):search\(query:("(?:[^"\\]|\\.)*"),type:ISSUE', call)
                 body = {'data': {
                     alias: {'pageInfo': {'hasNextPage': False},
-                            'nodes': [pulls[k] for k in dict.fromkeys(re.findall(r'SOFT-\d+', text))
+                            'nodes': [pulls[k] for k in
+                                      dict.fromkeys(re.findall(r'SOFT-\d+', json.loads(query)))
                                       if k in pulls]}
-                    for alias, text in fields}}
+                    for alias, query in pairs}}
             return subprocess.CompletedProcess([], 0, json.dumps(body), '')
         return respond
 
