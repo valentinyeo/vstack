@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""excalidraw-share: put an .excalidraw drawing in Valentin's workspace and print its link.
+
+    excalidraw-share drawing.excalidraw --name "How a ticket ships"
+    excalidraw-share drawing.json --scene 2YaSpW57ZCO
+
+Creates the scene (or replaces it with --scene), fills any element `index` value
+that is missing, turns on view sharing, and prints only the https link.
+The API key comes from 1Password through yeo-key, once per run, and is never printed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+BASE = 'https://api.excalidraw.com/api/v1'
+COLLECTION = '8nmjwOyvh62'
+WORKSPACE = '1GorMHPWnnO'
+LINK = 'https://app.excalidraw.com/s/' + WORKSPACE + '/'
+TIMEOUT = 60
+ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+
+
+class ShareError(Exception):
+    pass
+
+
+def one_line(text: str, limit: int = 200) -> str:
+    flat = ' '.join(str(text).split())
+    return flat if len(flat) <= limit else flat[:limit] + '...'
+
+
+def fractional_index(position: int) -> str:
+    """Excalidraw index strings in order: a0..az, then b00..bzz, then c000.."""
+    offset = 0
+    while True:
+        width = offset + 1
+        capacity = len(ALPHABET) ** width
+        if position < capacity:
+            digits, rest = '', position
+            for _ in range(width):
+                digits = ALPHABET[rest % len(ALPHABET)] + digits
+                rest //= len(ALPHABET)
+            return chr(ord('a') + offset) + digits
+        position -= capacity
+        offset += 1
+
+
+def document(data) -> dict:
+    elements = data if isinstance(data, list) else None
+    if elements is None:
+        if not isinstance(data, dict):
+            raise ShareError('the file holds no Excalidraw elements')
+        elements = data.get('elements')
+    if not isinstance(elements, list) or not elements:
+        raise ShareError('the file holds no Excalidraw elements')
+    if not all(isinstance(element, dict) for element in elements):
+        raise ShareError('an element in the file is not an object')
+
+    scene = dict(data) if isinstance(data, dict) else {}
+    scene['elements'] = elements
+    scene['type'] = 'excalidraw'
+    scene['version'] = 2
+    scene.setdefault('source', 'https://excalidraw.com')
+    scene.setdefault('files', {})
+    app_state = scene.get('appState')
+    app_state = dict(app_state) if isinstance(app_state, dict) else {}
+    app_state.setdefault('viewBackgroundColor', '#ffffff')
+    scene['appState'] = app_state
+
+    if any(not isinstance(element.get('index'), str) or not element['index']
+           for element in elements):
+        for position, element in enumerate(elements):
+            element['index'] = fractional_index(position)
+    return scene
+
+
+def yeo_key_env() -> dict:
+    return dict(os.environ, XDG_RUNTIME_DIR=os.environ.get('XDG_RUNTIME_DIR')
+                or '/run/user/%d' % os.getuid())
+
+
+def read_key() -> str:
+    try:
+        done = subprocess.run(['yeo-key', 'Excalidraw', 'credential'],
+                              capture_output=True, text=True, timeout=120,
+                              env=yeo_key_env())
+    except FileNotFoundError:
+        raise ShareError('yeo-key is not on PATH; run ~/.local/share/vstack/install')
+    except (OSError, subprocess.TimeoutExpired):
+        raise ShareError('yeo-key could not reach 1Password')
+    key = done.stdout.strip()
+    if done.returncode != 0 or not key:
+        raise ShareError('yeo-key has no Excalidraw credential: '
+                         + one_line(done.stderr or done.stdout or 'no output'))
+    return key
+
+
+def api(method: str, path: str, key: str, body=None) -> dict:
+    payload = None if body is None else json.dumps(body).encode('utf-8')
+    request = Request(BASE + path, data=payload, method=method)
+    request.add_header('Authorization', 'Bearer ' + key)
+    request.add_header('Content-Type', 'application/json')
+    try:
+        with urlopen(request, timeout=TIMEOUT) as response:
+            raw = response.read()
+    except HTTPError as error:
+        try:
+            detail = error.read().decode('utf-8', 'replace')
+        finally:
+            error.close()
+        raise ShareError('%s %s failed with HTTP %d: %s'
+                         % (method, path, error.code, one_line(detail)))
+    except URLError as error:
+        raise ShareError('%s %s failed: %s' % (method, path, one_line(error.reason)))
+    except OSError as error:
+        raise ShareError('%s %s failed: %s' % (method, path, one_line(error)))
+    if not raw.strip():
+        return {}
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise ShareError('%s %s returned a body that is not JSON' % (method, path))
+
+
+def share(path: Path, name: str, scene_id: str | None, key: str) -> str:
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        raise ShareError('no file at ' + str(path))
+    except OSError as error:
+        raise ShareError('cannot read %s: %s' % (path, one_line(error)))
+    except ValueError:
+        raise ShareError(str(path) + ' is not JSON')
+    scene = document(data)
+
+    if scene_id is None:
+        created = api('POST', '/collections/%s/scenes' % COLLECTION, key,
+                      {'name': name})
+        metadata = created.get('metadata') if isinstance(created, dict) else None
+        scene_id = str(metadata.get('id') or '') if isinstance(metadata, dict) else ''
+        if not scene_id:
+            raise ShareError('creating the scene returned no scene id')
+    api('PUT', '/scenes/%s/content' % scene_id, key, scene)
+    api('PUT', '/scenes/%s/link-sharing' % scene_id, key, {'access': 'view'})
+    return LINK + scene_id
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog='excalidraw-share',
+        description='Put an Excalidraw file in the workspace and print its share link.')
+    parser.add_argument('file', help='.excalidraw or .json drawing')
+    parser.add_argument('--name', help='scene name; defaults to the file name')
+    parser.add_argument('--scene', help='replace this scene instead of creating one')
+    args = parser.parse_args(argv)
+    path = Path(args.file).expanduser()
+    name = args.name or path.stem
+    try:
+        print(share(path, name, args.scene, read_key()))
+    except ShareError as error:
+        print('excalidraw-share: ' + one_line(str(error)), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

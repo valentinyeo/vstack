@@ -89,6 +89,7 @@ Hidden skills: read the path shown; the Skill tool refuses them. Slash commands 
 - plain words for him, ticket comments and PR text -> read ../unjargon/SKILL.md
 - rewrite a reply for a product owner, he says "pospeak" or "too technical" -> read ../pospeak/SKILL.md
 - a report, plan or research page to scan -> read ../report-page/SKILL.md
+- a diagram or drawing for him -> read ../excalidraw/SKILL.md
 - text for the web, landing pages, docs, UI copy -> read ../web-writing/SKILL.md
 - any English writing or editing in plain style -> read ../zinsser-english-style/SKILL.md
 - German text -> read ../schneider-deutsch-stil/SKILL.md
