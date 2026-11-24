@@ -24,7 +24,7 @@
       {"path": "skills/board-drain/wip-cap", "name": "wip-cap"},
       {"path": "skills/hypertask-work/lease", "name": "lease exit 75"}
     ],
-    "status": "pending VSTA-206"
+    "status": "active"
   },
   {
     "id": "agent-pr-cap",
@@ -49,13 +49,13 @@
     "rule": "Within an hour, give a workerless PR a worker or park it and return its card to Todo.",
     "sentence": "A PR without a live worker gets one within the hour, or is parked with its card back in Todo.",
     "tools": [{"path": "skills/hypertask-work/reconcile", "name": "Hypertask Reconciler hourly tick (VSTA-208/VSTA-210)"}],
-    "status": "pending VSTA-210"
+    "status": "active"
   },
   {
     "id": "orphan-first",
     "rule": "An owned PR without a live worker blocks new work.",
     "sentence": "Never start new work while you own a PR with no live worker; restore its worker or park it first.",
     "tools": [{"path": "skills/board-drain/drain-check", "name": "drain-check orphan finding"}],
-    "status": "pending VSTA-210"
+    "status": "active"
   }
 ]
