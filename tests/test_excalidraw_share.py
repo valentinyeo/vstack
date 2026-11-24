@@ -202,15 +202,16 @@ class ShareTest(unittest.TestCase):
 class KeyCommandTest(unittest.TestCase):
     def test_reads_the_credential_with_xdg_runtime_dir(self):
         module = load_module()
-        module.os.environ.pop('XDG_RUNTIME_DIR', None)
         calls = []
 
         def fake_run(argv, **kwargs):
             calls.append((argv, kwargs))
             return subprocess.CompletedProcess(argv, 0, KEY + '\n', '')
 
-        module.subprocess.run = fake_run
-        self.assertEqual(module.read_key(), KEY)
+        with patch.object(subprocess, 'run', fake_run), \
+                patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('XDG_RUNTIME_DIR', None)
+            self.assertEqual(module.read_key(), KEY)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], ['yeo-key', 'Excalidraw', 'credential'])
         self.assertEqual(calls[0][1]['env']['XDG_RUNTIME_DIR'],
@@ -218,9 +219,9 @@ class KeyCommandTest(unittest.TestCase):
 
     def test_a_failing_yeo_key_exits_non_zero_with_one_plain_line(self):
         module = load_module()
-        module.subprocess.run = lambda argv, **kwargs: subprocess.CompletedProcess(
-            argv, 1, '', 'yeo-key: op-cache failed')
-        with patch('sys.stderr', io.StringIO()) as err, patch('sys.stdout', io.StringIO()):
+        with patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess(
+                ['yeo-key'], 1, '', 'yeo-key: op-cache failed')), \
+                patch('sys.stderr', io.StringIO()) as err, patch('sys.stdout', io.StringIO()):
             code = module.main([str(EXAMPLE)])
         self.assertEqual(code, 1)
         self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
