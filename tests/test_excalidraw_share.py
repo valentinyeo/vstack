@@ -167,7 +167,7 @@ class ShareTest(unittest.TestCase):
         code, out, err = self.run_main(str(self.dir / 'drawing.excalidraw'))
         self.assertEqual(code, 1)
         self.assertEqual(out, '')
-        self.assertEqual(len(err.strip().splitlines()), 1)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
         self.assertIn('HTTP 401', err)
         self.assertNotIn(KEY, err)
         self.assertNotIn('Traceback', err)
