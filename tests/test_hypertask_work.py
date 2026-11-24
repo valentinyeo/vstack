@@ -40,6 +40,9 @@ r = load('fleet_reconcile', ROOT / 'skills/hypertask-work/reconcile')
 lease = load('fleet_lease', ROOT / 'skills/hypertask-work/lease')
 NOW = 1800000000
 HEAD = 'a' * 40
+# The shared gh wrapper's refusal, verbatim: exit 75 and this first stderr line.
+BUDGET_LINE = ('gh budget: testchat is over 600 GitHub calls this hour; wait until 14:20 UTC. '
+               'Next: gh budget. Rules: ~/.local/share/vstack/tools/gh-wrapper/USING-GITHUB.md')
 
 
 def clear_cache():
@@ -2866,7 +2869,8 @@ class CallBudgetTest(unittest.TestCase):
         r.write_board_facts(2060, saved)
 
         def refuse(*args, **kwargs):
-            raise r.BudgetRefused('gh budget: testchat is over 600 GitHub calls this hour')
+            raise r.BudgetRefused(('gh budget: testchat is over 600 GitHub calls this hour; '
+                                   'wait until 14:20 UTC. Next: gh budget. Rules: x'))
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
@@ -2881,9 +2885,9 @@ class CallBudgetTest(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as out:
             r.PULLS.clear()
             self.assertEqual(r.main(), 0)
+            self.assertEqual(r.read_board_facts(2060), saved, 'the saved facts are untouched')
         text = out.getvalue()
-        self.assertIn('gh budget:', text)
-        self.assertIn('kept saved facts, planned nothing new', text)
+        self.assertIn('sync skipped: gh budget (wait until 14:20 UTC)', text)
         self.assertNotIn('UNKNOWN', text)
         self.assertNotIn('PLAN ', text)
 
@@ -3075,17 +3079,86 @@ class CallBudgetTest(unittest.TestCase):
         self.assertEqual({entry['at'] for entry in written['tickets'].values()}, {saved_at},
                          'facts under an hour old are kept, not re-read')
 
-    def test_apply_refused_budget_exits_before_apply_plan(self):
+    def test_the_skip_line_carries_the_wrappers_wait_text(self):
+        self.assertEqual(r.budget_skip_line(r.BudgetRefused(
+            'gh budget: testchat is over 600 GitHub calls this hour; wait until 14:20 UTC. '
+            'Next: gh budget. Rules: x')),
+            'sync skipped: gh budget (wait until 14:20 UTC)')
+        self.assertEqual(r.budget_skip_line(r.BudgetRefused('gh budget: refused')),
+                         'sync skipped: gh budget (reset time unknown)')
+
+    def test_a_refused_read_skips_the_tick_with_one_line(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[task('Doing')]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=None), \
+                patch.object(r, 'ticket_pulls', side_effect=r.BudgetRefused(BUDGET_LINE)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        self.assertEqual(out.getvalue().splitlines(),
+                         ['sync skipped: gh budget (wait until 14:20 UTC)'])
+
+    def test_a_refused_pull_read_late_in_the_run_does_not_crash(self):
+        t = {**task('Doing'), 'updatedAt': NOW - 8000}
+        pull = {'repository': {'nameWithOwner': 'valentinyeo/another-repo'}, 'number': 1,
+                'state': 'OPEN', 'url': 'https://github.com/valentinyeo/another-repo/pull/1'}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=None), \
+                patch.object(r, 'ticket_pulls', return_value={'SOFT-1': [pull]}), \
+                patch.object(r, 'read_pull', side_effect=r.BudgetRefused(BUDGET_LINE)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        text = out.getvalue()
+        self.assertIn('sync skipped: gh budget (wait until 14:20 UTC)', text)
+        self.assertNotIn('PLAN ', text)
+        self.assertNotIn('PREVIEW ', text)
+
+    def test_a_skip_writes_no_board_facts_and_keeps_the_saved_ones(self):
+        t = {**task('Doing'), 'updatedAt': NOW - 8000}
+        saved = {'at': NOW - 60, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
+                 'tickets': {'SOFT-1': {'at': NOW - 60, 'updated_at': t['updatedAt'],
+                                        'pulls': [], 'facts': {}}}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'tickets', return_value=[t]), \
+                patch.object(r, 'read_sections', return_value=set()), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()), \
+                patch.object(r, 'read_board_facts', return_value=saved), \
+                patch.object(r, 'probe_changed_prs', side_effect=r.BudgetRefused(BUDGET_LINE)), \
+                patch.object(r, 'write_board_facts') as written, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            r.PULLS.clear()
+            self.assertEqual(r.main(), 0)
+        written.assert_not_called()
+        self.assertIn('sync skipped: gh budget (wait until 14:20 UTC)', out.getvalue())
+
+    def test_apply_refused_budget_skips_with_one_line(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \
                 patch.object(sys, 'argv', ['reconcile', '--apply']), \
                 patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Poteto'}), \
-                patch.object(r, 'probe_budget', side_effect=r.BudgetRefused('gh budget: over limit')), \
+                patch.object(r, 'probe_budget', side_effect=r.BudgetRefused(BUDGET_LINE)), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.main(), 0)
-        text = out.getvalue()
-        self.assertIn('kept saved facts, planned nothing new', text)
-        self.assertNotIn('UNKNOWN', text)
+        self.assertEqual(out.getvalue().splitlines(),
+                         ['sync skipped: gh budget (wait until 14:20 UTC)'])
 
 
 class WholeSyncTest(unittest.TestCase):

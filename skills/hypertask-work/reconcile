@@ -686,6 +686,21 @@ class BudgetRefused(Exception):
         super().__init__(line)
 
 
+BUDGET_WAIT = re.compile(r'wait until [^.\n]+', re.I)
+
+
+def budget_skip_line(refused):
+    """The one line a tick over the gh budget prints: gh's own wait-until text.
+
+    A refused budget is a skipped tick, never a failed run: nothing moves, no saved
+    fact is rewritten, and the run exits 0. Sync, its watcher and drain-check all
+    read this line as skipped.
+    """
+    found = BUDGET_WAIT.search(getattr(refused, 'line', '') or '')
+    wait = found[0].strip() if found else 'reset time unknown'
+    return f'sync skipped: gh budget ({wait})'
+
+
 # Only an error surface counts. Prose that mentions a rate limit is not one, so a
 # ticket or PR body quoting this failure can never stop a run.
 RATE_LIMIT_TYPE = re.compile(r'"type"\s*:\s*"RATE_LIMITED"')
@@ -2410,6 +2425,11 @@ def main():
     try:
         try:
             code = board_run()
+        except BudgetRefused as refused:
+            # Over budget: skip this tick in one line. Nothing moved and no saved
+            # fact was rewritten, so the next tick inside the budget carries on.
+            print(budget_skip_line(refused), flush=True)
+            code = 0
         except RateLimit as stop:
             # One line and a clean exit: a spent budget is not a failed run, and no move
             # from it may land. The timer must not show a red unit for it.
@@ -2501,13 +2521,10 @@ def board_run():
             stack.enter_context(handle)
         if args.apply:
             # A spent budget can only fail slowly, one 403 per ticket. The rate_limit
-            # call is free, so an --apply run checks before it reads anything.
-            try:
-                with phase('budget'):
-                    probe_budget()
-            except BudgetRefused as refused:
-                print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
-                return 0
+            # call is free, so an --apply run checks before it reads anything. A
+            # refusal unwinds to main(), which prints the one skip line and exits 0.
+            with phase('budget'):
+                probe_budget()
         with phase('tickets'):
             tasks = [one] if args.ticket else tickets(args.section, **options)
         with phase('sections'):
@@ -2530,44 +2547,33 @@ def board_run():
         candidates = [t for t in tasks if t['section'] in board.managed]
         keys = [t['ticketNumber'] for t in candidates]
         saved = None if args.ticket else read_board_facts(board.id)
-        budget_skip = False
         probe_since = None
         refreshed = set(keys)
         quiet = bool(saved and saved_facts_usable(saved) and not args.ticket and keys)
-        try:
-            if quiet:
-                probe_since = format_reset(time.time())
-                items = probe_items(board, saved)
-                if items is None:
-                    quiet, probe_since = False, None
-            if not quiet:
-                pulls = discover(keys, **options)
+        if quiet:
+            probe_since = format_reset(time.time())
+            items = probe_items(board, saved)
+            if items is None:
+                quiet, probe_since = False, None
+        if not quiet:
+            pulls = discover(keys, **options)
+            with phase('pulls'):
+                prefetch(pulls, **options)
+        else:
+            board_changed = board_task_changes(saved, candidates, keys)
+            probed = tickets_from_probe(items, keys, board, saved)
+            refreshed = rolling_refresh(saved, keys, board_changed | probed |
+                                        alias_changed(saved, keys, board), time.time())
+            pulls = discover_quiet(keys, saved=saved, probe_items=items,
+                                   refresh=refreshed, **options)
+            reading = {key: pulls[key] for key in refreshed if pulls.get(key)}
+            if reading:
                 with phase('pulls'):
-                    prefetch(pulls, **options)
-            else:
-                board_changed = board_task_changes(saved, candidates, keys)
-                probed = tickets_from_probe(items, keys, board, saved)
-                refreshed = rolling_refresh(saved, keys, board_changed | probed |
-                                            alias_changed(saved, keys, board), time.time())
-                pulls = discover_quiet(keys, saved=saved, probe_items=items,
-                                       refresh=refreshed, **options)
-                reading = {key: pulls[key] for key in refreshed if pulls.get(key)}
-                if reading:
-                    with phase('pulls'):
-                        prefetch(reading, clear=False, **options)
-                print(f'reconcile: quiet sync; probe={len(items)} PR updates, '
-                      f'refresh={len(refreshed)} tickets', file=sys.stderr, flush=True)
-        except BudgetRefused as refused:
-            budget_skip = True
-            if saved:
-                pulls = {key: list((saved.get('tickets') or {}).get(key, {}).get('pulls', []))
-                         for key in keys}
-                restore_pull_facts(saved)
-            else:
-                pulls = {key: [] for key in keys}
-            print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
+                    prefetch(reading, clear=False, **options)
+            print(f'reconcile: quiet sync; probe={len(items)} PR updates, '
+                  f'refresh={len(refreshed)} tickets', file=sys.stderr, flush=True)
         with phase('column_entry'):
-            if candidates and not budget_skip:
+            if candidates:
                 fill_section_changed(candidates, pulls, board)
         now, errors = time.time(), 0
         if product_board(board) and candidates:
@@ -2584,16 +2590,6 @@ def board_run():
         with phase('facts'):
             for task in tasks:
                 try:
-                    if budget_skip:
-                        if task['section'] in board.managed:
-                            print(f'KEEP {task["ticketNumber"]} {task["section"]} -> {task["section"]} '
-                                  f'| kept saved facts; budget refused', flush=True)
-                        else:
-                            facts = Facts(task['section'], now - stamp(task['updatedAt']),
-                                          waiting=bool(task.get('waitingOnUserId')),
-                                          blocked=bool(task.get('blockerCommentId')))
-                            reconcile(task, facts, names=names, **options)
-                        continue
                     if task['section'] not in board.managed:
                         facts = Facts(task['section'], now - stamp(task['updatedAt']),
                                       waiting=bool(task.get('waitingOnUserId')),
@@ -2608,16 +2604,12 @@ def board_run():
         if os.environ.get('RECONCILE_TIMING'):
             print(timing_table(), file=sys.stderr, flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
-        if not budget_skip and not args.ticket and not errors and candidates:
+        if not args.ticket and not errors and candidates:
             write_board_facts(board.id, serialize_board_facts(board, candidates, pulls, time.time(),
                                                               probe_since=probe_since, saved=saved,
                                                               refreshed=refreshed))
-        if args.apply and not errors and not budget_skip:
-            try:
-                return apply_plan(plans, args.limit, pulls, names=names, **options)
-            except BudgetRefused as refused:
-                print(f'reconcile: {refused.line}; kept saved facts, planned nothing new', flush=True)
-                return 0
+        if args.apply and not errors:
+            return apply_plan(plans, args.limit, pulls, names=names, **options)
         return bool(errors)
 
 

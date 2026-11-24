@@ -314,15 +314,23 @@ def top_key(rows, now, board):
 
 
 def sync_findings(name, now):
-    """A broken or over-45-minute-old sync is a finding; a fresh ok one is not."""
+    """A broken or over-45-minute-old sync is a finding; a fresh ok one is not.
+
+    A sync skipped over the gh budget is not a failure: it is judged by the last
+    sync that really read the board, so skips that last over 45 minutes still read
+    as stale.
+    """
     record = loop_state.sync_state(name)
     if not record:
         return ['sync stale: no sync recorded yet.']
-    if not record.get('ok'):
+    skipped = bool(record.get('skipped'))
+    if not record.get('ok') and not skipped:
         reason = record.get('reason') or 'no reason recorded'
         return [f'sync failed: {reason}. Fix it, then run ./sync.']
     moment = stamp_of(record.get('at'))
     if moment is None:
+        if skipped:
+            return ['sync stale: no sync recorded yet.']
         return ['sync stale: no sync time recorded.']
     spent = now - moment
     if spent > loop_state.SYNC_STALE:
