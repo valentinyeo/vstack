@@ -85,7 +85,13 @@ def probe_load():
 
 
 def launch_moments():
-    """Every launch plan-pick logged, in epoch seconds; None when the log cannot be read."""
+    """Every lane plan-pick took, in epoch seconds; None when the log cannot be read.
+
+    plan-pick mixes two rows in one log: a launch row with "at" and the lane it took,
+    and a finish row with "finished_at" and no lane at all. It also logs one row with
+    a null lane at the moment it finds no lane free, so only a row that names a lane
+    is a launch that means a lane came back.
+    """
     try:
         text = PLAN_PICK_LOG.read_text()
     except FileNotFoundError:
@@ -100,7 +106,9 @@ def launch_moments():
             row = json.loads(line)
         except ValueError:
             return None
-        moment = stamp_of(row.get('at')) if isinstance(row, dict) else None
+        if not isinstance(row, dict) or 'at' not in row or row.get('lane') is None:
+            continue
+        moment = stamp_of(row.get('at'))
         if moment is None:
             return None
         moments.append(moment)
@@ -111,8 +119,10 @@ def probe_lane(now):
     """When plan-pick last found no free lane, in epoch seconds, or None.
 
     plan-pick writes one rung attempt per job with failure "lane" and exit 75 when
-    every lane is spent, so the newest such row, any job, is the no-lane moment.
-    A launch logged after it means a lane came free again. A probe that cannot
+    every lane is spent, so the newest such row, any job, is the no-lane moment. A
+    worker that ran and then hit a rate limit also records "lane", but exits 0 or 1,
+    so only exit 75 is a miss. A lane taken strictly after that moment lifts it: the
+    launch right after the miss carries no lane and never counts. A probe that cannot
     read never hides a finding.
     """
     try:
@@ -122,7 +132,8 @@ def probe_lane(now):
     if not isinstance(rows, dict):
         return None
     moments = [stamp_of(row.get('finished_at')) for row in rows.values()
-               if isinstance(row, dict) and row.get('failure') == 'lane']
+               if isinstance(row, dict) and row.get('failure') == 'lane'
+               and row.get('exit_code') == 75]
     moments = [moment for moment in moments if moment is not None]
     if not moments:
         return None
@@ -130,7 +141,7 @@ def probe_lane(now):
     if not 0 <= now - moment <= LANE_WINDOW:
         return None
     launched = launch_moments()
-    if launched is None or any(at >= moment for at in launched):
+    if launched is None or any(at > moment for at in launched):
         return None
     return moment
 

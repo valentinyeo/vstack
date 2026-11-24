@@ -648,6 +648,53 @@ class CheckTest(unittest.TestCase):
                         launches=[{'at': NOW - 300, 'lane': 'opus', 'event': 'start'}])
         self.assertIsNone(drain.probe_lane(NOW))
 
+    def test_a_real_launch_log_beside_the_no_lane_row_still_holds(self):
+        # The log mixes finish rows, a launch row and the null-lane row plan-pick
+        # writes at the moment it records the miss. Only a lane it took counts, and
+        # only a lane taken after the miss lifts it.
+        moment = NOW - 120
+        self.lane_state({'ticket:SOFT-1': {'event': 'finish', 'exit_code': 75,
+                                           'pr_url': None, 'failure': 'lane',
+                                           'rung': 'medium', 'finished_at': moment}},
+                        launches=[{'at': moment - 3600, 'lane': 'opus', 'event': 'start',
+                                   'launch_id': 'a'},
+                                  {'event': 'finish', 'launch_id': 'a',
+                                   'finished_at': moment - 3000, 'exit_code': 0},
+                                  {'at': moment, 'lane': None, 'session': None,
+                                   'cwd': '/tmp', 'not_vendor': None, 'caller': '/tmp'}])
+        self.assertEqual(drain.probe_lane(NOW), moment)
+
+    def test_a_lane_taken_after_the_no_lane_row_lifts_the_hold(self):
+        moment = NOW - 600
+        self.lane_state({'ticket:SOFT-2': {'event': 'finish', 'exit_code': 75,
+                                           'pr_url': None, 'failure': 'lane',
+                                           'rung': 'medium', 'finished_at': moment}},
+                        launches=[{'at': moment, 'lane': None, 'session': None,
+                                   'cwd': '/tmp', 'not_vendor': None, 'caller': '/tmp'},
+                                  {'at': moment + 60, 'lane': 'sonnet', 'event': 'start',
+                                   'launch_id': 'b'},
+                                  {'event': 'finish', 'launch_id': 'b',
+                                   'finished_at': moment + 120, 'exit_code': 0}])
+        self.assertIsNone(drain.probe_lane(NOW))
+
+    def test_a_worker_that_hit_a_lane_limit_mid_run_does_not_hold(self):
+        # attempt_failure records "lane" for a run that then hit a rate limit; only
+        # exit 75 means plan-pick never found a lane to start.
+        self.lane_state({'ticket:SOFT-3': {'failure': 'lane', 'exit_code': 1,
+                                           'finished_at': NOW - 60}})
+        self.assertIsNone(drain.probe_lane(NOW))
+
+    def test_an_unreadable_launch_log_does_not_hold(self):
+        state, log = self.lane_state({'ticket:SOFT-4': {'failure': 'lane', 'exit_code': 75,
+                                                        'finished_at': NOW - 60}})
+        log.write_text('not json\n')
+        self.assertIsNone(drain.probe_lane(NOW))
+        log.unlink()
+        log.mkdir()
+        self.assertIsNone(drain.probe_lane(NOW))
+        log.rmdir()
+        self.assertEqual(drain.probe_lane(NOW), NOW - 60)
+
     def test_an_unreadable_state_does_not_hold(self):
         state, _ = self.lane_state()
         state.write_text('not json')
