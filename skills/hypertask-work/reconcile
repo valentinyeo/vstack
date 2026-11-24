@@ -43,12 +43,14 @@ VERIFICATION_BACKLOG = 'Verification Backlog'
 # Ticket searches and branch lookups per GitHub GraphQL call. A batch GitHub
 # refuses is split in half, so a wide batch costs one call where it is answered.
 SEARCH_BATCH = 12
+SEARCH_MAX_TERMS = 6
 BRANCH_BATCH = 25
 # A sweep of every open PR in scope costs a call per hundred PRs, so a run pays
 # for it only when it stands in for more branch lookups than that.
 SWEEP_MIN_TICKETS = 15
 # PR reads and policy reads per GitHub GraphQL call.
 PULL_BATCH = 50
+MERGED_PULL_BATCH = 25
 POLICY_BATCH = 50
 LEASES = Path(os.environ.get('FLEET_LEASE_DIR', Path.home() / '.local/state/fleet/leases'))
 PROC = Path(os.environ.get('FLEET_PROC_DIR', '/proc'))
@@ -238,6 +240,11 @@ def plan_stage(facts, here, board):
         return Stage.REVIEW, 'merged PR with PASS; live proof pending'
     if fresh:
         return Stage.REVIEW, 'merged PR missing PASS on current head'
+    if here == Stage.IN_PROGRESS and not facts.alive and nothing_ran():
+        # plan-pick exited 75: every lane was used up and no worker ran (VSTA-182).
+        # Say so and wait, instead of leaving the card reading as started for 2h.
+        # A live worker from a later launch keeps its card where it is.
+        return Stage.BACKLOG, NOTHING_RAN
     if facts.alive:
         return Stage.IN_PROGRESS, _worker_reason(board)
     if here == Stage.VERIFICATION and not facts.verification:
@@ -783,15 +790,20 @@ def cache_file():
     return Path(os.environ.get('RECONCILE_CACHE') or Path.home() / '.cache/vstack/reconcile/cache.json')
 
 
-def cache_read(key):
+def cache_read_all():
     try:
-        return json.loads(cache_file().read_text()).get(key)
+        data = json.loads(cache_file().read_text())
+        return data if isinstance(data, dict) else {}
     except (OSError, TypeError, ValueError):
-        return None
+        return {}
 
 
-def cache_write(key, value):
-    """Best effort: a broken or racing cache costs calls, never correctness."""
+def cache_read(key):
+    return cache_read_all().get(key)
+
+
+def cache_update(updater):
+    """Best effort atomic read-modify-write on the shared cache file."""
     path = cache_file()
     with CACHE_LOCK:
         temporary = None
@@ -805,7 +817,7 @@ def cache_write(key, value):
                         data = {}
                 except (OSError, TypeError, ValueError):
                     data = {}
-                data[key] = value
+                updater(data)
                 if len(data) > 5000:
                     data = dict(list(data.items())[-2000:])
                 temporary = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
@@ -818,6 +830,17 @@ def cache_write(key, value):
                     temporary.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+
+def cache_write_many(updates):
+    """Write several cache keys in one locked read-modify-write."""
+    if updates:
+        cache_update(lambda data: data.update(updates))
+
+
+def cache_write(key, value):
+    """Best effort: a broken or racing cache costs calls, never correctness."""
+    cache_write_many({key: value})
 
 
 def board_facts_key(board_id):
@@ -972,11 +995,10 @@ def board_task_changes(saved, tasks, keys):
     return touched
 
 
-def probe_ticket_keys(pull, keys, board, url_keys):
+def probe_ticket_keys(pull, url_keys, lookup):
+    """The cards one probe row names: its saved links, plus what the row itself says."""
     matched = set(url_keys.get(pull['url'], ()))
-    for key in keys:
-        if names_ticket(pull, key, board):
-            matched.add(key)
+    matched |= matching_keys(pull, *lookup)
     return matched
 
 
@@ -984,6 +1006,7 @@ def tickets_from_probe(items, keys, board, saved=None):
     """Tickets whose PRs appeared in the change probe."""
     touched = set()
     saved_index = saved_pull_index(saved or {})
+    lookup = key_lookup(keys, board)
     url_keys = {}
     for key in keys:
         for pull in ((saved or {}).get('tickets') or {}).get(key, {}).get('pulls') or []:
@@ -994,12 +1017,13 @@ def tickets_from_probe(items, keys, board, saved=None):
         pull = search_item_to_pull(item, saved_index)
         if not pull['url'] or not allowed_repository(pull, board):
             continue
-        touched |= probe_ticket_keys(pull, keys, board, url_keys)
+        touched |= probe_ticket_keys(pull, url_keys, lookup)
     return touched
 
 
 def merge_probe_pulls(found, items, keys, board, saved=None):
     saved_index = saved_pull_index(saved or {})
+    lookup = key_lookup(keys, board)
     url_keys = {}
     for key in keys:
         for pull in ((saved or {}).get('tickets') or {}).get(key, {}).get('pulls') or []:
@@ -1010,7 +1034,7 @@ def merge_probe_pulls(found, items, keys, board, saved=None):
         pull = search_item_to_pull(item, saved_index)
         if not pull['url'] or not allowed_repository(pull, board):
             continue
-        matched = probe_ticket_keys(pull, keys, board, url_keys)
+        matched = probe_ticket_keys(pull, url_keys, lookup)
         if not matched:
             continue
         if pull['state'] == 'CLOSED':
@@ -1102,6 +1126,13 @@ def search_pages(pairs, size=SEARCH_BATCH):
     return pages
 
 
+def ticket_terms(key, board=DEFAULT):
+    """The quoted search terms one card's PRs answer to: its key, URL fragment, and old keys."""
+    terms = [f'"{key}"', f'"project-{board.id}/{ticket_index(key, board)}"']
+    terms += [f'"{old}"' for old in aliases_of(key, board)]
+    return terms
+
+
 def ticket_query(key, board=DEFAULT):
     """The one search query a card's PRs answer to: its key, and the keys it moved from.
 
@@ -1109,26 +1140,64 @@ def ticket_query(key, board=DEFAULT):
     against the card keep the key they were written with. The old key joins the same
     query, so an alias costs a term in a call the run already pays for, not a call.
     """
-    terms = [f'"{key}"', f'"project-{board.id}/{ticket_index(key, board)}"']
-    terms += [f'"{old}"' for old in aliases_of(key, board)]
-    return f'is:pr {search_scope(board)} ' + ' OR '.join(terms)
+    return f'is:pr {search_scope(board)} ' + ' OR '.join(ticket_terms(key, board))
+
+
+def pack_ticket_queries(keys, board=DEFAULT):
+    """Pack cards into OR-joined search queries within GitHub's 5-OR (6-term) limit."""
+    scope = search_scope(board)
+    groups, current_keys, current_terms = [], [], []
+    for key in keys:
+        terms = ticket_terms(key, board)
+        if current_keys and len(current_terms) + len(terms) > SEARCH_MAX_TERMS:
+            groups.append((tuple(current_keys), f'is:pr {scope} ' + ' OR '.join(current_terms)))
+            current_keys, current_terms = [], []
+        current_keys.append(key)
+        current_terms.extend(terms)
+    if current_keys:
+        groups.append((tuple(current_keys), f'is:pr {scope} ' + ' OR '.join(current_terms)))
+    return groups
 
 
 def text_pulls(keys, board=DEFAULT, seen=None):
-    """Every PR whose title or body names its ticket, one aliased search per ticket."""
-    pairs = [(key, ticket_query(key, board)) for key in keys]
+    """Every PR whose title or body names its ticket, packing cards within GitHub's OR limit."""
+    groups = pack_ticket_queries(keys, board)
     with phase('search'):
-        pages = search_pages(pairs)
+        pages = search_pages(groups)
+        overflow = [key for group, _ in groups if pages[group]['pageInfo']['hasNextPage']
+                    for key in group]
+        single_pages = {}
+        if overflow:
+            if len(groups) == 1 and len(groups[0][0]) == 1:
+                raise ValueError(f'{overflow[0]}: GitHub search truncated')
+            single_pages = search_pages([(key, ticket_query(key, board)) for key in overflow])
     found = {key: [] for key in keys}
-    for key, page in pages.items():
+
+    def collect_group(group_keys, nodes):
+        by_name, by_url = key_lookup(group_keys, board)
+        for pull in nodes:
+            if not pull or not pull.get('url'):
+                continue
+            if seen is not None:
+                seen.append(pull)
+            if (pull.get('state') == 'CLOSED' or not allowed_repository(pull, board)
+                    or not shipped(pull, board)):
+                continue
+            for key in matching_keys(pull, by_name, by_url):
+                if all(p['url'] != pull['url'] for p in found[key]):
+                    found[key].append(pull)
+
+    for group, _ in groups:
+        page = pages[group]
+        if page['pageInfo']['hasNextPage']:
+            if len(group) == 1:
+                raise ValueError(f'{group[0]}: GitHub search truncated')
+            continue
+        collect_group(group, page['nodes'])
+    for key, page in single_pages.items():
         if page['pageInfo']['hasNextPage']:
             raise ValueError(f'{key}: GitHub search truncated')
-        for pull in page['nodes']:
-            if seen is not None and pull and pull.get('url'):
-                seen.append(pull)
-            if (pull and picks_up(pull, key, board)
-                    and all(p['url'] != pull['url'] for p in found[key])):
-                found[key].append(pull)
+        collect_group((key,), page['nodes'])
     return found
 
 
@@ -1167,27 +1236,35 @@ def open_pulls(board=DEFAULT):
 def ticket_pulls(keys, board=DEFAULT, sweep=None):
     """Every PR that names each ticket in its title, its body, or its branch.
 
-    The ticket search is one aliased query per key. A board-sized run also sweeps
-    every open PR once, because a branch that carries its key past the start of the
-    name shows up nowhere else and that sweep replaces many lookups. A ticket the
-    searches found nothing for gets one branch lookup, which is how a merge from
-    years ago is found without reading the whole merge history.
+    The ticket search packs cards into OR-joined queries within GitHub's limit.
+    A board-sized run also sweeps every open PR once, because a branch that carries
+    its key past the start of the name shows up nowhere else and that sweep replaces
+    many lookups. A ticket still silent after text search and the open sweep gets
+    one branch lookup, which is how a merge from years ago is found without reading
+    the whole merge history.
     """
     if not keys:
         return {}
     sweep = len(keys) >= SWEEP_MIN_TICKETS if sweep is None else sweep
     seen = []
     found = text_pulls(keys, board, seen)
-    silent = [key for key in keys if not found[key]]
-    with phase('branches'):
-        scanned = (open_pulls(board) if sweep else []) + branch_pulls(silent, board, seen)
     by_key = {key.upper(): key for key in keys}
     by_key.update({old.upper(): key for key in keys for old in aliases_of(key, board)})
-    for pull in scanned:
-        for match in BRANCH_TOKEN.finditer(pull.get('headRefName') or ''):
-            key = by_key.get(match[0].upper())
-            if key and all(p['url'] != pull['url'] for p in found[key]):
-                found[key].append(pull)
+
+    def match_branches(pulls):
+        for pull in pulls:
+            for match in BRANCH_TOKEN.finditer(pull.get('headRefName') or ''):
+                key = by_key.get(match[0].upper())
+                if key and all(p['url'] != pull['url'] for p in found[key]):
+                    found[key].append(pull)
+
+    with phase('branches'):
+        opened = open_pulls(board) if sweep else []
+        match_branches(opened)
+        silent = [key for key in keys if not found[key]]
+        branched = branch_pulls(silent, board, seen)
+    match_branches(branched)
+    scanned = opened + branched
     attribute(found, seen + scanned, keys, board)
     return undone(found, scanned)
 
@@ -1203,12 +1280,13 @@ def discover_quiet(keys, board=DEFAULT, saved=None, probe_items=(), refresh=()):
     merge_probe_pulls(found, probe_items, keys, board, saved)
     missing = [key for key in keys if key not in (saved.get('tickets') or {})]
     read = [key for key in refresh if key not in missing]
-    batches = [batch for batch in ((missing, None), (read, False)) if batch[0]]
+    to_read = missing + read
     searched = []
-    for batch, sweep in batches:
-        # A new ticket is read whole, with the sweep. A refreshed one keeps the links
-        # and facts it already had and adds what its own searches find.
-        for key, pulls in ticket_pulls(batch, board, sweep=sweep).items():
+    if to_read:
+        # Only a large batch of unseen tickets pays for the open-PR sweep; a refreshed
+        # ticket already has its saved links and rides along in the same search batch.
+        sweep = len(missing) >= SWEEP_MIN_TICKETS
+        for key, pulls in ticket_pulls(to_read, board, sweep=sweep).items():
             urls = {p['url'] for p in found[key]}
             found[key] += [pull for pull in pulls if pull['url'] not in urls]
             searched += pulls
@@ -1271,8 +1349,21 @@ ALIAS_CACHE = {}
 ALIAS_RESOLVE_MAX = 10
 SEED_DIR = Path(__file__).resolve().parent / 'aliases'
 KEY_TOKEN = re.compile(r'(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]*-[1-9]\d*)(?![A-Za-z0-9_-])', re.I)
+EXACT_TOKEN = re.compile(r'(?<![\w-])([A-Z][A-Z0-9]*-[1-9]\d*)(?![\w-])', re.I)
 # A branch runs the key into the rest of its name, so only letters and digits end it.
 BRANCH_TOKEN = re.compile(r'(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*-[1-9]\d*)(?![A-Za-z0-9])', re.I)
+DETAIL_URL = re.compile(
+    r'https://app\.hypertask\.ai/detail/project-(\d+)/([1-9]\d*)(?=$|[\s?#)\]>,.])', re.I)
+TICKET_FIELD = re.compile(
+    r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Ticket:(?:\*\*)?[ \t]*\[?'
+    r'(?:(?<![\w-])([A-Z][A-Z0-9]*-[1-9]\d*)(?![\w-])'
+    r'|https://app\.hypertask\.ai/detail/project-(\d+)/([1-9]\d*)(?=$|[\s?#)\]>,.]))',
+    re.I | re.M)
+CLOSE_LINE = re.compile(
+    r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?'
+    r'(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)'
+    r'(?:\*\*)?[ \t]([^\n]*)',
+    re.I | re.M)
 # The lines a PR writes a ticket key on, never the prose that mentions one.
 STRUCT_LINE = re.compile(r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:Ticket:|(?:close|closes|closed|fix|'
                          r'fixes|fixed|resolve|resolves|resolved)[ \t])', re.I)
@@ -1354,8 +1445,16 @@ def learn_aliases(pulls, keys, board=DEFAULT):
     board_keys = {key.upper() for key in keys}
     own_prefix = re.compile(re.escape(board.prefix) + r'-[1-9]\d*$', re.I)
     unknown = []
+    seen_urls = set()
     for pull in pulls:
-        for key in named_keys(pull or {}):
+        if not pull:
+            continue
+        url = pull.get('url')
+        if url:
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+        for key in named_keys(pull):
             key = key.upper()
             # A board's prefix belongs to that one project, so a key carrying it is
             # this board's own ticket (or nobody's): it can never be a moved-in key.
@@ -1402,24 +1501,69 @@ def learn_aliases(pulls, keys, board=DEFAULT):
     return fresh
 
 
+def pull_refs(pull):
+    """All ticket keys and board detail URLs structurally named by one pull."""
+    keys = {match.upper() for match in EXACT_TOKEN.findall(pull.get('title') or '')}
+    keys.update(match.upper() for match in BRANCH_TOKEN.findall(pull.get('headRefName') or ''))
+    urls = set()
+    body = pull.get('body') or ''
+    if body:
+        for match in TICKET_FIELD.finditer(body):
+            if match[1]:
+                keys.add(match[1].upper())
+            else:
+                urls.add((match[2], match[3]))
+        for match in CLOSE_LINE.finditer(body):
+            rest = match[1]
+            keys.update(m.upper() for m in EXACT_TOKEN.findall(rest))
+            urls.update(DETAIL_URL.findall(rest))
+    return keys, urls
+
+
+def key_lookup(keys, board=DEFAULT):
+    """Map every current key, alias, and (board_id, index) back to the card's key."""
+    by_name = {}
+    by_url = {}
+    board_id = str(board.id)
+    for key in keys:
+        try:
+            index = ticket_index(key, board)
+        except ValueError:
+            continue
+        by_name[key.upper()] = key
+        by_url[(board_id, index)] = key
+        for old in aliases_of(key, board):
+            by_name[old.upper()] = key
+    return by_name, by_url
+
+
+def matching_keys(pull, by_name, by_url):
+    """Every board ticket this pull structurally names, in one pass over the pull."""
+    ref_keys, ref_urls = pull_refs(pull)
+    matched = {by_name[name] for name in ref_keys if name in by_name}
+    matched.update(by_url[ref] for ref in ref_urls if ref in by_url)
+    return matched
+
+
 def attribute(found, pulls, keys, board=DEFAULT):
     """Give a card the pulls that name an old key this run just learned."""
-    if not learn_aliases(pulls, keys, board):
+    fresh = learn_aliases(pulls, keys, board)
+    targets = [key for key in fresh if key in found]
+    if not targets:
         return
+    by_name, by_url = key_lookup(targets, board)
+    seen_urls = set()
     for pull in pulls:
-        if not pull or not pull.get('url'):
+        url = pull.get('url') if pull else None
+        if not url or url in seen_urls:
             continue
-        for key in found:
-            if (all(p['url'] != pull['url'] for p in found[key])
-                    and picks_up(pull, key, board)):
+        seen_urls.add(url)
+        if (pull.get('state') == 'CLOSED' or not allowed_repository(pull, board)
+                or not shipped(pull, board)):
+            continue
+        for key in matching_keys(pull, by_name, by_url):
+            if all(p['url'] != url for p in found[key]):
                 found[key].append(pull)
-
-
-def picks_up(pull, key, board=DEFAULT):
-    """Is this pull evidence for this card: it names it, and it may count as a ship."""
-    return (bool(pull.get('url')) and pull.get('state') != 'CLOSED'
-            and allowed_repository(pull, board) and shipped(pull, board)
-            and names_ticket(pull, key, board))
 
 
 def names_ticket(pull, key, board=DEFAULT):
@@ -1427,29 +1571,11 @@ def names_ticket(pull, key, board=DEFAULT):
         index = ticket_index(key, board)
     except ValueError:
         return False
-    if names_key(pull, key, str(board.id), index):
+    keys, urls = pull_refs(pull)
+    if key.upper() in keys or (str(board.id), index) in urls:
         return True
     # A moved card keeps the key its PRs, branches and ticket lines were written with.
-    return any(names_key(pull, old) for old in aliases_of(key, board))
-
-
-def names_key(pull, key, board_id=None, index=None):
-    """Does the pull carry this key in a title, branch, ticket line or closing line?"""
-    exact = r'(?<![\w-])' + re.escape(key) + r'(?![\w-])'
-    branch = r'(?<![a-z0-9])' + re.escape(key) + r'(?![a-z0-9])'
-    body = pull.get('body') or ''
-    named = exact
-    if index is not None:
-        url = (r'https://app\.hypertask\.ai/detail/project-' + re.escape(board_id) + '/' +
-               re.escape(index) + r'(?=$|[\s?#)\]>,.])')
-        named = exact + '|' + url
-    field = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Ticket:(?:\*\*)?[ \t]*\[?(?:' + named + ')')
-    close = r'close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved'
-    close_line = (r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:' + close + r')(?:\*\*)?[ \t].*?(?:' + named + ')')
-    return bool(re.search(exact, pull.get('title') or '', re.I) or
-                re.search(branch, pull.get('headRefName') or '', re.I) or
-                re.search(field, body, re.I | re.M) or
-                re.search(close_line, body, re.I | re.M))
+    return any(old.upper() in keys for old in aliases_of(key, board))
 
 
 def today():
@@ -1655,7 +1781,13 @@ def read_policies(refs):
     Best effort: an alias GitHub refuses is left uncached, so verifier_policy reads
     that one commit itself and fails on it alone instead of on its whole group.
     """
-    pending = [ref for ref in dict.fromkeys(refs) if cached_policy(*ref) is UNREAD]
+    cached = cache_read_all()
+    pending = []
+    for ref in dict.fromkeys(refs):
+        entry = cached.get(f'policy-v2:{ref[0]}@{ref[1]}')
+        if not (isinstance(entry, dict) and 'policy' in entry):
+            pending.append(ref)
+    updates = {}
     for offset in range(0, len(pending), POLICY_BATCH):
         batch = pending[offset:offset + POLICY_BATCH]
         try:
@@ -1675,7 +1807,8 @@ def read_policies(refs):
                 policy = None if text is None else json.loads(text)
             except ValueError:
                 continue
-            cache_write(f'policy-v2:{repo}@{ref}', {'policy': policy})
+            updates[f'policy-v2:{repo}@{ref}'] = {'policy': policy}
+    cache_write_many(updates)
 
 
 def verifier_policy(repo, ref):
@@ -1792,24 +1925,35 @@ PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid mergeable author{login
  ... on CheckRun{name status conclusion checkSuite{commit{oid} workflowRun{databaseId}}}
  ... on StatusContext{state}}}}
  comments(last:100){totalCount nodes{databaseId body updatedAt author{login}}}'''
+# Open PRs never read verdicts, comments, or workflow runs; skipping checkSuite
+# joins and comments lets a 50-PR GraphQL batch finish without timing out.
+OPEN_PULL_FIELDS = '''url state mergedAt headRefOid baseRefOid mergeable
+ statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
+ ... on CheckRun{name status conclusion}
+ ... on StatusContext{state}}}}'''
 # PR facts read once per run, and refilled by the batched read.
 PULLS = {}
 # A PR or repository GitHub will not describe, so it costs one call a run, not one
 # per ticket that points at it.
 FAILED = {}
 FAILED_REPOS = {}
+# Per-prefetch batch state: search states for slim open reads, and an adaptive batch
+# cap so a batch GitHub will not answer in time shrinks instead of failing.
+PULL_LIMIT = [PULL_BATCH]
+IN_PREFETCH = [False]
+PULL_STATES = {}
 ROLLUP_STATE = {'SUCCESS': 'green', 'PENDING': 'running', 'EXPECTED': 'running',
                 'FAILURE': 'red', 'ERROR': 'red'}
 
 
-def pull_query(refs):
+def pull_query(refs, fields=PULL_FIELDS):
     """One GraphQL query for many PRs, whatever repository each sits in."""
-    fields = []
+    fields_out = []
     for n, (repo, number) in enumerate(refs):
         owner, name = repo.split('/')
-        fields.append(f'p{n}:repository(owner:{json.dumps(owner)},name:{json.dumps(name)})'
-                      f'{{pullRequest(number:{int(number)}){{{PULL_FIELDS}}}}}')
-    return 'query{' + ' '.join(fields) + '}'
+        fields_out.append(f'p{n}:repository(owner:{json.dumps(owner)},name:{json.dumps(name)})'
+                          f'{{pullRequest(number:{int(number)}){{{fields}}}}}')
+    return 'query{' + ' '.join(fields_out) + '}'
 
 
 def graphql_comments(node):
@@ -1818,6 +1962,12 @@ def graphql_comments(node):
               'body': c.get('body') or '', 'updated_at': c.get('updatedAt') or '',
               'id': c.get('databaseId')} for c in comments.get('nodes') or []],
             int(comments.get('totalCount') or 0))
+
+
+def pull_mergeable(node):
+    """Tri-state from GitHub: True, False, or None when GitHub did not say."""
+    mergeable = node.get('mergeable')
+    return None if mergeable in (None, 'UNKNOWN') else mergeable == 'MERGEABLE'
 
 
 def pull_from_node(repo, number, node):
@@ -1835,7 +1985,8 @@ def pull_from_node(repo, number, node):
     if node['state'] != 'MERGED':
         # No rule reads a verdict on an open PR: its checks alone decide the card, so
         # an open PR never pays for its policy or its verifier run.
-        return Pull(node['url'], node['state'], checks, False, moment(node.get('mergedAt')))
+        return Pull(node['url'], node['state'], checks, False, moment(node.get('mergedAt')),
+                    pull_mergeable(node))
     policy = verifier_policy(repo, node['baseRefOid'])
     if policy is None:
         passed = pstack_pass_on_head(contexts.get('nodes') or [], head, repo)
@@ -1844,14 +1995,14 @@ def pull_from_node(repo, number, node):
         if not passed and total > len(comments):
             # A verdict older than the newest hundred still counts; read them all.
             passed = pass_on_head(all_comments(repo, number), head, author, repo, policy)
-    mergeable = node.get('mergeable')
     return Pull(node['url'], node['state'], checks, passed, moment(node.get('mergedAt')),
-                None if mergeable in (None, 'UNKNOWN') else mergeable == 'MERGEABLE')
+                pull_mergeable(node))
 
 
-def read_pull_group(refs):
+def read_pull_group(refs, slim=False):
     """The one call, for a group small enough that GitHub answers every alias."""
-    result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=' + pull_query(refs)))
+    fields = OPEN_PULL_FIELDS if slim else PULL_FIELDS
+    result = json.loads(run('gh', 'api', 'graphql', '-f', 'query=' + pull_query(refs, fields)))
     if result.get('errors') and not result.get('data'):
         raise ValueError('GitHub pull request errors')
     found = {}
@@ -1861,6 +2012,12 @@ def read_pull_group(refs):
             found[(repo, number)] = node
     if len(refs) == 1 and not found:
         raise ValueError(f'{refs[0][0]}#{refs[0][1]} unreadable')
+    if slim:
+        # If an open PR merged between search and read, re-read that PR with full fields.
+        merged_since = [ref for ref, node in found.items() if node.get('state') == 'MERGED']
+        if merged_since:
+            found.update(read_pull_group(merged_since, slim=False))
+        return found
     # Every policy these PRs need, in one call per fifty commits. One PR pays the
     # same either way, so only a group shares the read. A miss here is filled in by
     # pull_from_node, so a repo the token cannot read still fails alone.
@@ -1871,14 +2028,20 @@ def read_pull_group(refs):
     return found
 
 
-def read_pull_batch(refs):
-    """Read many PRs per call. A batch GitHub refuses is split, so one repository
-    the token cannot see never hides the forty-nine PRs beside it."""
-    refs = [ref for ref in dict.fromkeys(refs) if ref not in FAILED and ref[0] not in FAILED_REPOS]
+def _read_pull_chunk(refs, slim=False):
     if not refs:
         return {}
+    limit = PULL_LIMIT[0] if slim else min(PULL_LIMIT[0], MERGED_PULL_BATCH)
+    if IN_PREFETCH[0] and len(refs) > limit:
+        found = {}
+        for offset in range(0, len(refs), limit):
+            try:
+                found.update(_read_pull_chunk(refs[offset:offset + limit], slim=slim))
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
+                pass
+        return found
     try:
-        nodes = read_pull_group(refs)
+        nodes = read_pull_group(refs, slim=slim)
     except RateLimit:
         raise
     except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
@@ -1887,15 +2050,35 @@ def read_pull_batch(refs):
             FAILED_REPOS[refs[0][0]] = str(error)
             raise
         middle = len(refs) // 2
+        if IN_PREFETCH[0]:
+            PULL_LIMIT[0] = min(PULL_LIMIT[0], middle)
         found = {}
         for half in (refs[:middle], refs[middle:]):
             try:
-                found.update(read_pull_batch(half))
+                found.update(_read_pull_chunk(half, slim=slim))
             except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
                 pass
         return found
     found = {ref: pull_from_node(*ref, nodes[ref]) for ref in nodes}
     PULLS.update(found)
+    return found
+
+
+def read_pull_batch(refs):
+    """Read many PRs per call. A batch GitHub refuses is split, so one repository
+    the token cannot see never hides the forty-nine PRs beside it."""
+    refs = [ref for ref in dict.fromkeys(refs) if ref not in FAILED and ref[0] not in FAILED_REPOS]
+    if not refs:
+        return {}
+    if not IN_PREFETCH[0]:
+        return _read_pull_chunk(refs, slim=False)
+    open_refs = [ref for ref in refs if PULL_STATES.get(ref) == 'OPEN']
+    other_refs = [ref for ref in refs if PULL_STATES.get(ref) != 'OPEN']
+    found = {}
+    if open_refs:
+        found.update(_read_pull_chunk(open_refs, slim=True))
+    if other_refs:
+        found.update(_read_pull_chunk(other_refs, slim=False))
     return found
 
 
@@ -1950,10 +2133,25 @@ def prefetch(pulls, board=DEFAULT, clear=True):
     if clear:
         PULLS.clear()
         PSTACK_JOBS.clear()
-    refs = sorted({(p['repository']['nameWithOwner'], p['number'])
-                   for found in pulls.values() for p in found})
-    for n in range(0, len(refs), PULL_BATCH):
-        load(refs[n:n + PULL_BATCH])
+    states = {}
+    for found in pulls.values():
+        for p in found:
+            ref = (p['repository']['nameWithOwner'], p['number'])
+            # Preserve MERGED over OPEN if both ever appeared for the same PR.
+            if states.get(ref) != 'MERGED':
+                states[ref] = p.get('state')
+    refs = sorted(states)
+    PULL_LIMIT[0] = PULL_BATCH
+    IN_PREFETCH[0] = True
+    PULL_STATES.clear()
+    PULL_STATES.update(states)
+    try:
+        for n in range(0, len(refs), PULL_BATCH):
+            load(refs[n:n + PULL_BATCH])
+    finally:
+        PULL_STATES.clear()
+        IN_PREFETCH[0] = False
+        PULL_LIMIT[0] = PULL_BATCH
 
 
 def carries_label(task, name):
@@ -2165,6 +2363,23 @@ def card_phase():
     return session.slug(os.environ.get('RECONCILE_CARD_PHASE') or '')
 
 
+NOTHING_RAN = 'nothing ran, waiting for a lane'
+
+
+def worker_exit():
+    """The worker's own exit code, when a lease ran one and recorded it."""
+    raw = os.environ.get('RECONCILE_WORKER_EXIT')
+    try:
+        return int(raw) if raw is not None and raw.strip() else None
+    except ValueError:
+        return None
+
+
+def nothing_ran():
+    """A lease run that ended with plan-pick's 75 started no worker at all."""
+    return worker_exit() == 75
+
+
 def write_card_record(tee, code):
     """One status record per lease-synced card, in the hook's status store."""
     board, ticket, phase = CARD['board'], CARD['ticket'], card_phase()
@@ -2175,10 +2390,13 @@ def write_card_record(tee, code):
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(tee.text())
     moved, unknown, summary = session.parse_output(tee.text())
+    ran = worker_exit()
     session.write_record(session.card_record_path(where, board, ticket, phase), {
         'at': time.time(), 'session_name': os.environ.get('SHIP_SESSION_NAME') or '',
         'board': board, 'label': None, 'ticket': ticket, 'phase': phase,
-        'exit': int(code), 'moved': moved, 'unknown': unknown,
+        'exit': int(code), 'worker_exit': ran,
+        'worker_note': NOTHING_RAN if ran == 75 else None,
+        'moved': moved, 'unknown': unknown,
         'summary_line': summary, 'log': str(log)})
 
 
