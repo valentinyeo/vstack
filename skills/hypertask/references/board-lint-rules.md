@@ -20,3 +20,4 @@ Each chat also runs it inside its own drain check, on its own label, where each 
 | `view-filter` | A label that names a chat has no view, or its view does not filter on that label: missing filter shows the whole board (`views.md`) | board-lint; fix with `hypertask view update <view id> --label "<label>"` as the chat's own login |
 | `view-owner` | A chat's view is owned by a person, not the chat's agent (`views.md`) | board-lint; report only, recreate the view as the agent login |
 | `ticket-split` | One ticket hiding two units of work | written only |
+| `agent-lane-results` | `hypertask activity add` carrying results, verdicts, proof, done summaries, or screenshot/video links instead of coordination chatter (`tickets.md`) | `hooks/agent-lane-guard.py` (PreToolUse hook and worker shim) |

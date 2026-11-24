@@ -35,7 +35,7 @@ done
 [ "$(cat "$TEST_HOME/.claude/hooks/user-hook.py")" = 'user hook' ]
 printf 'PASS retired links removed and unrelated hooks preserved\n'
 
-for name in test-timeout-guard.py pstack-new-gates.py skill-update.py; do
+for name in test-timeout-guard.py pstack-new-gates.py skill-update.py agent-lane-guard.py; do
   hook="$TEST_HOME/.claude/hooks/$name"
   [ -L "$hook" ]
   [ "$(readlink -f "$hook")" = "$ROOT/hooks/$name" ]
@@ -66,14 +66,18 @@ copies=("$TEST_HOME"/.local/state/skill-dupes-*/.claude/skills/valentin-mode/SKI
 [ "$(cat "${copies[0]}")" = 'keep this copy' ]
 printf 'PASS existing Claude copy preserved\n'
 
-for path in "$TEST_HOME/.claude/skills/hypertask" "$TEST_HOME/.claude/skills/hypertask-work"; do
+for path in "$TEST_HOME/.claude/skills/hypertask" "$TEST_HOME/.codex/skills/hypertask" "$TEST_HOME/.claude/skills/hypertask-work"; do
   [ -L "$path" ]
 done
 [ "$(cd "$TEST_HOME/.claude/skills/hypertask" && pwd -P)" = "$ROOT/skills/hypertask" ]
+[ "$(cd "$TEST_HOME/.codex/skills/hypertask" && pwd -P)" = "$ROOT/skills/hypertask" ]
 cmp "$TEST_HOME/.claude/skills/hypertask/SKILL.md" "$ROOT/skills/hypertask/SKILL.md"
+cmp "$TEST_HOME/.codex/skills/hypertask/references/tickets.md" "$ROOT/skills/hypertask/references/tickets.md"
+cmp "$TEST_HOME/.codex/skills/hypertask/references/checkup.md" "$ROOT/skills/hypertask/references/checkup.md"
+cmp "$TEST_HOME/.codex/skills/hypertask/scripts/ticket-lint" "$ROOT/skills/hypertask/scripts/ticket-lint"
 [ "$(cd "$TEST_HOME/.claude/skills/hypertask-work" && pwd -P)" = "$ROOT/skills/hypertask-work" ]
 [ -x "$TEST_HOME/.claude/skills/hypertask-work/reconcile" ]
-printf 'PASS hypertask linked and hypertask-work scripts kept at their path\n'
+printf 'PASS hypertask linked for Claude and Codex and hypertask-work scripts kept at their path\n'
 
 [ ! -e "$TEST_HOME/.claude/skills/ticket" ] || [ -L "$TEST_HOME/.claude/skills/ticket" ]
 [ ! -e "$TEST_HOME/.claude/skills/hypertask-checkup" ] && [ ! -L "$TEST_HOME/.claude/skills/hypertask-checkup" ]
@@ -97,9 +101,11 @@ reload = [hook['command'] for group in data['hooks']['UserPromptSubmit']
 assert reload == ['"$HOME/.local/share/vstack/hooks/run-hook" '
                   '"$HOME/.claude/hooks/skill-update.py"'], reload
 guard = '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/pr-cap-guard.py"'
+lane = '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/agent-lane-guard.py"'
 assert [(group.get('matcher'), hook['command'], hook.get('timeout'))
         for group in data['hooks']['PreToolUse']
         for hook in group['hooks']] == [('Bash', guard, 30),
+                                        ('Bash', lane, 10),
                                         ('mcp__.*create_pull_request', guard, 30)], data
 assert set(data) >= {'hooks'}, data
 assert data['hooks']['Stop'] == [], 'unrelated settings stay put'
@@ -128,11 +134,14 @@ path = Path(sys.argv[1])
 guard = {'type': 'command',
          'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/pr-cap-guard.py"',
          'timeout': 30}
+lane = {'type': 'command',
+        'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/agent-lane-guard.py"',
+        'timeout': 10}
 assert json.loads(path.read_text()) == {'env': {'KEEP': 'yes'}, 'hooks': {
     'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/skill-update.py"'}]}],
     'PreToolUse': [
         {'matcher': '*', 'hooks': [{'type': 'command', 'command': 'echo unrelated', 'timeout': 7}]},
-        {'matcher': 'Bash', 'hooks': [guard]},
+        {'matcher': 'Bash', 'hooks': [guard, lane]},
         {'matcher': 'mcp__.*create_pull_request', 'hooks': [guard]},
     ],
     'Stop': [{'hooks': []}]

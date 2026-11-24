@@ -27,4 +27,4 @@ Every card you move by hand is a gap in the reconcile. For each one:
 
 One line per check: fine, fixed (what), or needs Valentin (the question, with your pick).
 
-Then the view's full https:// URL. Put the same report on your view's newest open ticket, in the agent lane.
+Then the view's full https:// URL. Put the same report on your view's newest open ticket as a people comment (`hypertask comment add <ticket> --kind qa`), in plain words.
