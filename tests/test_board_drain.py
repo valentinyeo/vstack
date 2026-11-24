@@ -2240,5 +2240,82 @@ class SyncTest(unittest.TestCase):
         self.assertIn('sync: FAIL', done.stdout)
 
 
+VSTACK_PR = {'url': 'https://github.com/valentinyeo/vstack/pull/7',
+             'state': 'OPEN', 'checks': 'green'}
+CEO_PR = {'url': 'https://github.com/valentinyeo/ceo/pull/9',
+          'state': 'OPEN', 'checks': 'green'}
+
+
+class ViewReposTest(unittest.TestCase):
+    """The merge gate is judged on the PRs this chat's own view carries, nothing else."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        for patcher in (patch.dict(os.environ,
+                                   {'BOARD_DRAIN_STATE_DIR': str(self.directory)}),
+                        patch.object(drain.loop_state, 'timer_enabled', return_value=True),
+                        patch.object(drain, 'open_pull_rows', return_value=[])):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def board(self):
+        return drain.reconcile.BOARDS[13556]
+
+    def run_payload(self, payload):
+        fixture = self.directory / 'fixture.json'
+        fixture.write_text(json.dumps(payload))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = drain.main(['--board', '2060', '--label', 'Poteto',
+                               '--fixture', str(fixture), '--now', iso(NOW), '--no-load'])
+        return code, out.getvalue()
+
+    def test_the_prs_loaded_for_the_view_name_their_repos(self):
+        self.assertEqual(drain.view_repos([todo('SOFT-1')], {'SOFT-1': [VSTACK_PR]}, (),
+                                          self.board()),
+                         {'valentinyeo/vstack'})
+
+    def test_a_pr_the_card_links_names_its_repo(self):
+        row = todo('SOFT-2')
+        row['task']['pullRequests'] = [CEO_PR]
+        self.assertEqual(drain.view_repos([row], None, (), self.board()), {'valentinyeo/ceo'})
+
+    def test_the_open_listing_row_matched_to_a_card_names_its_repo(self):
+        listing = [dict(VSTACK_PR, title='SOFT-3 fix the gate', headRefName='SOFT-3-gate')]
+        self.assertEqual(drain.view_repos([todo('SOFT-3')], {}, listing, self.board()),
+                         {'valentinyeo/vstack'})
+
+    def test_another_chats_pr_and_repo_never_enter_the_set(self):
+        row = todo('SOFT-4')
+        row['task']['pullRequests'] = [CEO_PR]
+        listing = [dict(VSTACK_PR, title='SOFT-99 another chat', headRefName='SOFT-99-x')]
+        self.assertEqual(drain.view_repos([row], {}, listing, self.board()),
+                         {'valentinyeo/ceo'})
+
+    def test_a_view_with_no_prs_names_no_repo(self):
+        self.assertEqual(drain.view_repos([todo('SOFT-5')], {}, (), self.board()), set())
+
+    def gate_sees(self, payload):
+        seen = {}
+
+        def record(board, now, fixture=None, repos=None):
+            seen['repos'] = repos
+            return []
+
+        with patch.object(drain.merge_gate, 'gate_findings', side_effect=record):
+            self.run_payload(payload)
+        return seen['repos']
+
+    def test_the_check_hands_the_gate_only_the_views_repos(self):
+        self.assertEqual(self.gate_sees({'rows': [todo('SOFT-1')],
+                                         'pulls': {'SOFT-1': [VSTACK_PR]}}),
+                         {'valentinyeo/vstack'})
+
+    def test_the_check_asks_no_gate_read_without_a_pr(self):
+        self.assertEqual(self.gate_sees({'rows': [todo('SOFT-1')]}), set())
+
+
 if __name__ == '__main__':
     unittest.main()

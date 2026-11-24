@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / 'skills/board-drain/merge-gate'
@@ -403,6 +403,13 @@ class ReposForBoardTest(GateCase):
 
 
 class FixTest(GateCase):
+    def assert_fixed_gate_cached(self):
+        with patch.dict(os.environ, self.env), \
+                patch.object(gate, 'repos_for', return_value=BOARD_REPOS), \
+                patch.object(gate, 'gh_json', side_effect=AssertionError('unexpected gate read')):
+            self.assertEqual(gate.gate_findings(gate.board_object(13556), gate.time.time() + 1,
+                                                repos={'valentinyeo/vstack'}), [])
+
     def setUp(self):
         super().setUp()
         (self.bin / 'gh').rename(self.bin / 'gh.real')
@@ -435,6 +442,19 @@ class FixTest(GateCase):
                 self.assertIn('failed: valentinyeo/vstack main still does not require verifier',
                               done.stdout)
                 self.assertNotIn('fixed:', done.stdout)
+                saved = json.loads(Path(self.env['RECONCILE_CACHE']).read_text())
+                self.assertNotIn('merge-gate:valentinyeo/vstack@main', saved)
+
+    def test_fix_caches_the_fresh_record_not_the_expected_write(self):
+        fresh = dict(gate_record('build', 'verifier', 'server-check'), at=NOW)
+        with patch.object(gate, 'owner_login', return_value='valentinyeo'), \
+                patch.object(gate, 'api_write'), \
+                patch.object(gate, 'gate', return_value=fresh) as read, \
+                patch.object(gate.reconcile, 'cache_write') as write:
+            result = gate.fix('valentinyeo/vstack', 'main', gate_record('build'))
+        self.assertTrue(result.startswith('fixed:'), result)
+        read.assert_called_once_with('valentinyeo/vstack', 'main', fresh=True)
+        write.assert_called_once_with('merge-gate:valentinyeo/vstack@main', fresh)
 
     def test_fix_adds_the_check_to_classic_protection(self):
         self.answer([{'match': ['-X PATCH'], 'apply': True},
@@ -449,6 +469,7 @@ class FixTest(GateCase):
         self.assertEqual(len(writes), 1)
         self.assertEqual(writes[0]['input'], {'strict': True,
                                               'contexts': ['build', 'verifier']})
+        self.assert_fixed_gate_cached()
 
     def test_fix_updates_the_ruleset_that_already_covers_the_branch(self):
         ruleset = {'id': 7, 'name': 'main', 'target': 'branch', 'enforcement': 'active',
@@ -472,6 +493,7 @@ class FixTest(GateCase):
         self.assertEqual(contexts, ['build', 'verifier'])
         self.assertTrue(writes[0]['input']['rules'][0]['parameters']
                         ['strict_required_status_checks_policy'])
+        self.assert_fixed_gate_cached()
 
     def test_fix_creates_a_ruleset_when_the_repo_has_none(self):
         other = {'contexts': ['build'], 'at': NOW}
@@ -488,6 +510,7 @@ class FixTest(GateCase):
         self.assertEqual(writes[0]['input']['conditions']['ref_name']['include'],
                          ['~DEFAULT_BRANCH'])
         self.assertEqual(writes[0]['input']['rules'][0]['type'], 'required_status_checks')
+        self.assert_fixed_gate_cached()
         saved = json.loads(Path(self.env['RECONCILE_CACHE']).read_text())
         self.assertEqual(saved['merge-gate:valentinyeo/other@main'], other)
         self.assertEqual(saved['merge-gate:valentinyeo/vstack@main']['contexts'], ['verifier'])
@@ -496,6 +519,20 @@ class FixTest(GateCase):
         self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
         self.assertIn('gate ok:', again.stdout)
         self.assertEqual(len(self.calls()), spent)
+
+    def test_a_failed_fix_does_not_cache_a_passing_gate(self):
+        self.answer([{'match': ['-X', 'PATCH'], 'code': 1, 'stderr': 'write failed'},
+                     ok_route(PROTECTION, {'strict': True, 'contexts': ['build']}),
+                     ok_route(RULES, []),
+                     ok_route('user', {'login': 'valentinyeo'})])
+        done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertNotIn('fixed:', done.stdout)
+        calls = self.calls()
+        again = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main')
+        self.assertEqual(again.returncode, 1, again.stderr)
+        self.assertEqual(again.stdout.strip(), 'gate missing: valentinyeo/vstack main')
+        self.assertEqual(self.calls(), calls)
 
     def test_fix_never_touches_a_hypertask_ai_repo(self):
         self.answer([missing_route('branches/production/protection/required_status_checks'),
@@ -562,6 +599,54 @@ class DrainCheckGateTest(GateCase):
                                           'required': ['build', 'pstack-verifier']}]})
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertIn('merge gate missing: valentinyeo/vstack main', done.stdout)
+
+
+# Board 13556 ships from three repos, but one chat's view usually touches only one.
+BOARD_REPOS = (('valentinyeo/ceo', 'master'), ('valentinyeo/house-rules', 'main'),
+               ('valentinyeo/vstack', 'main'))
+
+
+def gate_record(*contexts):
+    return {'mode': 'classic', 'classic': list(contexts), 'strict': False,
+            'contexts': list(contexts)}
+
+
+class ViewReposGateTest(GateCase):
+    """A gate is judged where the chat's own view ships, never where another chat does."""
+
+    def findings(self, repos, *contexts):
+        with patch.object(gate, 'repos_for', return_value=BOARD_REPOS), \
+                patch.object(gate, 'gate', return_value=gate_record(*contexts)) as read:
+            found = gate.gate_findings(gate.board_object(13556), NOW, repos=repos)
+        return found, [item[0][:2] for item in read.call_args_list]
+
+    def test_a_view_whose_work_is_only_in_vstack_never_judges_ceo(self):
+        found, read = self.findings({'valentinyeo/vstack'}, 'verifier')
+        self.assertEqual(found, [])
+        self.assertEqual(read, [('valentinyeo/vstack', 'main')])
+
+    def test_a_missing_gate_in_the_views_own_repo_is_still_reported(self):
+        found, read = self.findings({'valentinyeo/vstack'}, 'build', 'lint')
+        self.assertEqual(read, [('valentinyeo/vstack', 'main')])
+        self.assertEqual([text for _, text in found],
+                         ['merge gate missing: valentinyeo/vstack main; run '
+                          'skills/board-drain/merge-gate --board 13556 --fix.'])
+
+    def test_a_repo_the_board_does_not_ship_from_is_never_judged(self):
+        found, read = self.findings({'someoneelse/app'})
+        self.assertEqual(found, [])
+        self.assertEqual(read, [])
+
+    def test_a_view_with_no_prs_reads_no_gate(self):
+        found, read = self.findings(set())
+        self.assertEqual(found, [])
+        self.assertEqual(read, [])
+
+    def test_a_board_wide_judgement_still_reads_every_repo(self):
+        # merge-gate's own CLI passes no repos: it still judges every repo the board ships from.
+        found, read = self.findings(None)
+        self.assertEqual(read, list(BOARD_REPOS))
+        self.assertEqual(len(found), 3)
 
 
 if __name__ == '__main__':

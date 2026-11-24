@@ -492,6 +492,34 @@ def card_pulls(key, listing, board):
                    for name in keys)]
 
 
+def pull_repo(pull):
+    """`owner/name` for one PR row, from the repository fact it carries or its URL."""
+    repo = ''
+    if isinstance(pull, dict):
+        found = pull.get('repository')
+        if isinstance(found, dict):
+            repo = found.get('nameWithOwner') or ''
+    return repo or merge_gate.repo_from_url(pull_field(pull, 'url') or '')
+
+
+def view_repos(rows, pulls, listing, board):
+    """The repos this chat's own view ships from: the PRs on its cards, and nothing else.
+
+    Three sources, all already in hand for this tick: the PR rows loaded for the view,
+    the PRs each card links, and the open-PR listing rows matched to an idle Checks
+    card. Another chat's repo is another chat's gate, so it is never judged here.
+    """
+    found = set()
+    for row in rows:
+        key = row['task'].get('ticketNumber')
+        linked = list((pulls or {}).get(key) or ())
+        linked += [item for item in row['task'].get('pullRequests') or ()
+                   if isinstance(item, dict)]
+        linked += card_pulls(key, listing, board)
+        found.update(repo for repo in (pull_repo(pull) for pull in linked) if repo)
+    return found
+
+
 def stuck_finding(task, pulls, now, board, listing=()):
     """A Checks card on a red PR with no push and no owner for a day, or None.
 
@@ -710,9 +738,12 @@ def read_view(args, now):
                                       f'for {int(spent // 3600)}h.'))
     findings += merge_findings(rows, pulls)
     # The repos this board ships from must refuse a merge until a verifier passed it.
+    # Only this view's own repos are judged: another chat's repo is its gate, not this
+    # one's. A view with no PRs names no repo, and asks GitHub nothing at all.
     # A fixture names its own gates; with none named, the test reads no GitHub at all.
     findings += merge_gate.gate_findings(
-        board, now, fixture=((data.get('gates') or []) if args.fixture else None))
+        board, now, fixture=((data.get('gates') or []) if args.fixture else None),
+        repos=view_repos(rows, pulls, listing, board))
     # The watcher records its own name and reads the view without a loop state to judge.
     state_name = getattr(args, 'state_name', None)
     if state_name:
