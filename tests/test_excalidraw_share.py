@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Tests for skills/excalidraw/excalidraw-share. No real API call and no real key."""
-
 import importlib.machinery
 import importlib.util
 import io
@@ -44,8 +42,6 @@ def load_module():
 
 
 class FakeApi:
-    """Stands in for urlopen: records the calls and answers like the real API."""
-
     def __init__(self, failed=None):
         self.calls = []
         self.failed = failed
@@ -204,8 +200,6 @@ class ShareTest(unittest.TestCase):
 
 
 class KeyCommandTest(unittest.TestCase):
-    """read_key runs the documented yeo-key line, once, and never echoes the value."""
-
     def test_reads_the_credential_with_xdg_runtime_dir(self):
         module = load_module()
         module.os.environ.pop('XDG_RUNTIME_DIR', None)

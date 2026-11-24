@@ -81,12 +81,16 @@ def document(data) -> dict:
     return scene
 
 
+def yeo_key_env() -> dict:
+    return dict(os.environ, XDG_RUNTIME_DIR=os.environ.get('XDG_RUNTIME_DIR')
+                or '/run/user/%d' % os.getuid())
+
+
 def read_key() -> str:
-    env = dict(os.environ)
-    env.setdefault('XDG_RUNTIME_DIR', '/run/user/%d' % os.getuid())
     try:
         done = subprocess.run(['yeo-key', 'Excalidraw', 'credential'],
-                              capture_output=True, text=True, timeout=120, env=env)
+                              capture_output=True, text=True, timeout=120,
+                              env=yeo_key_env())
     except FileNotFoundError:
         raise ShareError('yeo-key is not on PATH; run ~/.local/share/vstack/install')
     except (OSError, subprocess.TimeoutExpired):
