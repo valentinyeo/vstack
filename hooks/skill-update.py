@@ -11,7 +11,13 @@ never touched. Every failure is one line in
 Job 2 keeps the sha256 of `~/.claude/skills/valentin-mode/SKILL.md` per session, keyed
 by the hook input's `session_id`. The first prompt whose transcript shows
 valentin-mode was loaded records the hash. A later prompt with a different hash prints
-one reload notice, once, and records the new hash. No transcript or no load: nothing.
+one reload notice carrying the new SKILL.md text, once, and records the new hash. A
+skill over MAX_INLINE chars gets the one-line notice instead. No transcript or no
+load: nothing.
+
+This hook is registered once, globally, by `./install`, so a chat in any project hears
+about a change; the repo-only registration fired only in chats whose cwd was vstack
+(VSTA-207).
 
 SKILL_UPDATE_HOME overrides the home dir. SKILL_UPDATE_NO_GIT=1 skips job 1.
 
@@ -32,9 +38,14 @@ INSTALL_TIMEOUT = 60
 SKILL = 'valentin-mode'
 SKILL_REL = '.claude/skills/valentin-mode/SKILL.md'
 LOADED_MARK = 'Base directory for this skill:'
+# The whole skill goes into the turn, under the harness cap on hook context.
+MAX_INLINE = 9000
 NOTICE = ('valentin-mode changed since this chat loaded it ({old}..{new}). '
           'Re-read ~/.claude/skills/valentin-mode/SKILL.md in full now and follow '
           'the new version.')
+NOTICE_WITH_TEXT = ('valentin-mode changed since this chat loaded it ({old}..{new}). '
+                    'The new version is below; follow it from now on instead of the '
+                    'copy you loaded.\n\n{text}')
 
 
 def home_dir(env):
@@ -186,6 +197,15 @@ def loaded_in(transcript_path):
     return False
 
 
+def fresh_text(home):
+    """The new SKILL.md text, or None when it is unreadable or too big to inline."""
+    try:
+        text = skill_file(home).resolve().read_text(errors='replace')
+    except OSError:
+        return None
+    return text if len(text) <= MAX_INLINE else None
+
+
 def recorded_hash(record):
     try:
         seen = json.loads(record.read_text()).get('hash')
@@ -222,9 +242,12 @@ def reload_notice(payload, home):
     if seen == current:
         return {}
     note_hash(record, current)
+    text = fresh_text(home)
+    notice = NOTICE if text is None else NOTICE_WITH_TEXT
     return {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit',
-                                   'additionalContext': NOTICE.format(old=seen[:8],
-                                                                      new=current[:8])}}
+                                   'additionalContext': notice.format(old=seen[:8],
+                                                                      new=current[:8],
+                                                                      text=text)}}
 
 
 def hook(payload, env, now=None):
@@ -253,9 +276,14 @@ def self_test():
         text = answer['hookSpecificOutput']['additionalContext']
         assert 'valentin-mode changed since this chat loaded it' in text, \
             'the notice names the change'
-        assert 'Re-read ~/.claude/skills/valentin-mode/SKILL.md in full now' in text, \
-            'the notice says what to do'
+        assert 'version two' in text, 'the notice carries the new skill text'
         assert reload_notice(payload, home) == {}, 'the notice fires once'
+        skill.write_text('version three\n' + 'x' * MAX_INLINE)
+        big = reload_notice(payload, home)['hookSpecificOutput']['additionalContext']
+        assert 'Re-read ~/.claude/skills/valentin-mode/SKILL.md in full now' in big, \
+            'a skill too big to inline gets the one-line instruction instead'
+        skill.unlink()
+        assert reload_notice(payload, home) == {}, 'an unreadable skill is silent'
         quiet = Path(temp) / 'quiet.jsonl'
         quiet.write_text('{"content": "no skill load here"}\n')
         assert reload_notice({'session_id': 'sid-b', 'transcript_path': str(quiet)}, home) == {}, \

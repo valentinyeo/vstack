@@ -16,7 +16,8 @@ A chat runs a hook by the command string in its settings. When that string names
 
 - A chat loads its settings, then calls a hook on each prompt, tool call and stop.
 - An existing hook can intentionally block the turn. A missing hook lets the prompt through, writes one stderr warning, and appends it to `~/.local/state/vstack/hook-missing.log`. Fleet-report shows the missing registration and its fix.
-- `./install` repairs the two settings files this repo owns. Every project sets up its own wiring, so the same registration lives on in each project's `.claude/settings.json`.
+- `./install` repairs the two settings files this repo owns, and registers `skill-update.py` globally so every chat, whatever its cwd, hears that valentin-mode changed. Every project sets up its own wiring, so the same registration lives on in each project's `.claude/settings.json`.
+- VSTA-207: `skill-update.py` was registered only in this repo's `.claude/settings.json`, so only a chat whose cwd was vstack was told; a chat in `~/projects/multiprompt` missed a change for six hours. The global entry is now the only one.
 
 ## Driving it with verify-vstack
 
@@ -30,7 +31,7 @@ Preconditions:
 - **No dangling link.** Read `CHECK hook-links`. It names each link in `~/.claude/hooks` that points at nothing.
 - **Skill hooks resolve.** Read `CHECK frontmatter`. It names each `$CLAUDE_PLUGIN_ROOT/...` target missing from a linked skill folder.
 - **Missing script still accepts the prompt.** Run `timeout 90 python3 -m unittest discover -s tests -p test_hook_paths.py -v`. This invokes the installed skill hook after deleting its script, checks exit 0 and the warning log, and proves an executable hook still blocks at 2 with stdin, arguments and output intact.
-- **Deletion cannot ship.** Run `python3 scripts/check-hook-paths --repo .`. Then run `timeout 60 python3 -m unittest discover -s tests -p test_hook_wiring.py -v`; it deletes `skill-update.py` in a scratch copy and requires the same CI command to fail with both the file and its registration.
+- **Deletion cannot ship.** Run `python3 scripts/check-hook-paths --repo .`. Then run `timeout 60 python3 -m unittest discover -s tests -p test_hook_wiring.py -v`; it deletes `skill-update.py` in a scratch copy and requires the same CI command to fail with both the file and its registration in `install`.
 - **Fleet visibility.** Run `timeout 60 python3 -m unittest discover -s tests -p test_fleet_report.py`. Its missing-hook fixture must appear in both text and HTML reports, without changing settings or inspecting inne.
 - **Proof.** Keep `doctor.txt` and the seeded `settings.json` that Launch wrote into the scratch HOME; copy it to the evidence folder before cleanup.
 

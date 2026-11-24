@@ -187,6 +187,10 @@ def check(root, home, repo=False):
         files = sorted(set(files) | {p for folder in ('config', 'scripts', 'skills')
                                    for p in (root / folder).rglob('*')
                                    if p.suffix in ('.json', '.md', '.py') and allowed(p)})
+        # `install` registers hooks too (skill-update.py, globally), so its
+        # commands need the same missing-file check as the shipped settings.
+        if (root / 'install').is_file():
+            files = sorted(set(files) | {root / 'install'})
     problems = []
     for path in files:
         project = (path.parent.parent if path.parent.name == '.claude'
