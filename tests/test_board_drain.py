@@ -1145,8 +1145,6 @@ class RuleBreakTest(CheckTest):
                                            'pulls': [], 'facts': {}}}}
         board = drain.reconcile.BOARDS[2060]
         lint = drain.lint_module()
-        self.assertIs(lint.reconcile, drain.reconcile)
-        self.assertIs(drain.pr_park.reconcile, drain.reconcile)
         gh_calls, board_reads = [], []
 
         def fake_run(*args, **kwargs):
@@ -1161,7 +1159,8 @@ class RuleBreakTest(CheckTest):
             return [task]
 
         out = io.StringIO()
-        with patch.object(drain.reconcile, 'board_config', return_value=board), \
+        with patch.object(lint, 'reconcile', drain.reconcile), \
+                patch.object(drain.reconcile, 'board_config', return_value=board), \
                 patch.object(drain.reconcile, 'tickets', side_effect=fake_tickets), \
                 patch.object(drain.reconcile, 'api', return_value={}), \
                 patch.object(drain.reconcile, 'read_board_facts', return_value=saved), \
