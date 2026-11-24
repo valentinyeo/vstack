@@ -4,7 +4,8 @@
 pstack `poteto-mode/playbooks/shipping.md` step 1: "Only a verdict from an agent that did
 not write the code counts, because an author checks what it meant to build." Green CI and
 an approving bot review are not verdicts. GitHub enforces that only when the branch a PR
-merges into requires the `pstack-verifier` check, so this tool reads that requirement.
+merges into requires the repo's own verifier check, so this tool reads that requirement.
+The names come from the one per-repo table reconcile judges a merged PR's PASS by.
 
     merge-gate [--board BOARD] [--repo owner/name ...] [--branch NAME] [--fix]
 
@@ -33,7 +34,6 @@ import tempfile
 import time
 
 HERE = Path(__file__).resolve().parent
-CHECK = 'pstack-verifier'
 # A gate does not change between two ticks; an hour keeps a fleet-wide drain inside budget.
 TTL = 3600
 # Repos under this owner are reported, never changed: another team's rules are theirs.
@@ -59,6 +59,21 @@ def load(name, path):
 
 
 reconcile = load('fleet_reconcile', HERE.parent / 'hypertask-work' / 'reconcile')
+
+
+def check_names(repo):
+    """The check names that count as this repo's verifier, from reconcile's one table.
+
+    vstack answers as `verifier`; every repo that runs the pstack verifier workflow
+    answers as `pstack-verifier`. Importing the table keeps the gate and the board sync
+    from disagreeing about which name is a gate.
+    """
+    return tuple(reconcile.verifier_check_names(repo))
+
+
+def required_name(repo):
+    """The single name `--fix` adds: the first name that counts for this repo."""
+    return check_names(repo)[0]
 
 
 def repo_from_url(url):
@@ -166,7 +181,8 @@ def gate(repo, branch, now=None):
         classic = classic_settings(repo, branch)
         # A classic gate that already requires the check needs no ruleset read, so a
         # healthy repo costs one call an hour. A missing or partial gate asks both.
-        gated_by_classic = bool(classic and CHECK in classic['contexts'])
+        gated_by_classic = bool(classic and any(name in classic['contexts']
+                                              for name in check_names(repo)))
         rules = [] if gated_by_classic else rule_checks(repo, branch)
         if classic is not None:
             mode = 'classic'
@@ -182,13 +198,14 @@ def gate(repo, branch, now=None):
     return cached(f'merge-gate:{repo}@{branch}', read, now)
 
 
-def requires(record):
-    return CHECK in (record.get('contexts') or ())
+def requires(record, repo):
+    """True when a check name that counts for this repo is required on its branch."""
+    return any(name in (record.get('contexts') or ()) for name in check_names(repo))
 
 
 def gate_line(repo, branch, record):
     """The one line a repo contributes."""
-    return (f'gate ok: {repo} {branch}' if requires(record)
+    return (f'gate ok: {repo} {branch}' if requires(record, repo)
             else f'gate missing: {repo} {branch}')
 
 
@@ -205,7 +222,7 @@ def missing_gates(pairs, now):
         except ERRORS + (reconcile.BudgetRefused, reconcile.RateLimit) as error:
             unread.append((repo, branch, str(error)))
             continue
-        if not requires(record):
+        if not requires(record, repo):
             missing.append((repo, branch))
     return missing, unread
 
@@ -216,7 +233,8 @@ def fixture_gates(rows):
     for row in rows or ():
         if not isinstance(row, dict) or not row.get('repo'):
             continue
-        if CHECK not in (row.get('required') or ()):
+        required = row.get('required') or ()
+        if not any(name in required for name in check_names(row['repo'])):
             missing.append((row['repo'], row.get('branch') or DEFAULT_BRANCH))
     return missing
 
@@ -300,6 +318,7 @@ def matching_rulesets(repo, branch):
 
 def add_to_ruleset(repo, ruleset):
     """The same ruleset with the check required, or None when it already is."""
+    name = required_name(repo)
     rules, added = [], False
     for rule in ruleset.get('rules') or ():
         if (rule or {}).get('type') != 'required_status_checks':
@@ -307,15 +326,15 @@ def add_to_ruleset(repo, ruleset):
             continue
         parameters = dict(rule.get('parameters') or {})
         checks = list(parameters.get('required_status_checks') or ())
-        if any((check or {}).get('context') == CHECK for check in checks):
+        if any((check or {}).get('context') == name for check in checks):
             return None
-        parameters['required_status_checks'] = checks + [{'context': CHECK}]
+        parameters['required_status_checks'] = checks + [{'context': name}]
         rules.append({**rule, 'parameters': parameters})
         added = True
     if not added:
         rules.append({'type': 'required_status_checks',
                       'parameters': {'strict_required_status_checks_policy': False,
-                                     'required_status_checks': [{'context': CHECK}]}})
+                                     'required_status_checks': [{'context': name}]}})
     payload = {'name': ruleset.get('name') or 'merge gate',
                'target': ruleset.get('target') or 'branch',
                'enforcement': ruleset.get('enforcement') or 'active',
@@ -328,6 +347,7 @@ def add_to_ruleset(repo, ruleset):
 
 def fix(repo, branch, record):
     """Add the required check to one repo, or explain why this tool leaves it alone."""
+    name = required_name(repo)
     owner = repo.split('/', 1)[0]
     if owner in REPORT_ONLY:
         return f'skipped: {repo} {branch} is {owner}; report only'
@@ -337,22 +357,22 @@ def fix(repo, branch, record):
     if record.get('mode') == 'classic':
         api_write('PATCH', f'repos/{repo}/branches/{branch}/protection/required_status_checks',
                   {'strict': bool(record.get('strict')),
-                   'contexts': list(record.get('classic') or ()) + [CHECK]})
-        return f'fixed: {repo} {branch} now requires {CHECK} in classic branch protection'
+                   'contexts': list(record.get('classic') or ()) + [name]})
+        return f'fixed: {repo} {branch} now requires {name} in classic branch protection'
     for ruleset in matching_rulesets(repo, branch):
         payload = add_to_ruleset(repo, ruleset)
         if payload is None:
-            return f'skipped: {repo} {branch} ruleset {ruleset.get("name")} already requires {CHECK}'
+            return f'skipped: {repo} {branch} ruleset {ruleset.get("name")} already requires {name}'
         api_write('PUT', f'repos/{repo}/rulesets/{ruleset["id"]}', payload)
-        return (f'fixed: {repo} {branch} now requires {CHECK} in ruleset '
+        return (f'fixed: {repo} {branch} now requires {name} in ruleset '
                 f'{ruleset.get("name")} ({ruleset["id"]})')
     api_write('POST', f'repos/{repo}/rulesets',
               {'name': 'merge gate', 'target': 'branch', 'enforcement': 'active',
                'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
                'rules': [{'type': 'required_status_checks',
                           'parameters': {'strict_required_status_checks_policy': False,
-                                         'required_status_checks': [{'context': CHECK}]}}]})
-    return f'fixed: {repo} {branch} now requires {CHECK} in a new ruleset "merge gate"'
+                                         'required_status_checks': [{'context': name}]}}]})
+    return f'fixed: {repo} {branch} now requires {name} in a new ruleset "merge gate"'
 
 
 def pairs_from_args(args):
@@ -391,7 +411,7 @@ def main(argv=None):
                 failing = 2
                 continue
             print(gate_line(repo, branch, record))
-            if requires(record):
+            if requires(record, repo):
                 continue
             failing = max(failing, 1)
             if args.fix:
