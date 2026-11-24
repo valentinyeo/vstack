@@ -120,10 +120,10 @@ def parked_states(journal):
     return states
 
 
-def own_login(label):
+def own_login():
     login = reconcile.session.login_for_session()
-    if not login or reconcile.session.slug(login[0]) != reconcile.session.slug(label):
-        raise ValueError('run as the chat that owns this label (SHIP_SESSION_NAME for headless runs)')
+    if not login:
+        raise ValueError('run as your own chat (SHIP_SESSION_NAME for headless runs)')
     token = login[1].read_text().strip()
     agent_id = reconcile.session.token_agent_id(token)
     if not agent_id:
@@ -200,7 +200,7 @@ def main(argv=None):
         parser.error('a positive board and nonempty label are required')
     with ExitStack() as stack:
         try:
-            own_login(args.label)
+            own_login()
             board = reconcile.board_config(args.board)
             if args.apply:
                 handles = reconcile.acquire_locks(board, label=args.label)

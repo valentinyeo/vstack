@@ -30,4 +30,4 @@ The test file creates fake `gh` and `hypertask` executables and a scratch HOME. 
 - Never run `--apply` against real repos to verify this feature.
 - Keep `~/.local/state/board-drain/parked-<board>-<label-slug>.json`. It records which closed PRs this chat parked.
 - Protected columns, waiting cards, and cards with another open PR retain their columns.
-- `SHIP_SESSION_NAME` names the chat in a headless run. The tool requires that chat's agent token file and verifies the connected agent before any change.
+- `SHIP_SESSION_NAME` names the chat in a headless run. The tool requires that chat's agent token file and verifies the connected agent before any change. A label override such as Vstack for Vstack Maintainer still uses the chat's token.

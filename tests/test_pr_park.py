@@ -363,6 +363,15 @@ class ParkingTests(unittest.TestCase):
                 self.assertEqual(drain.repo_cap_notes({REPO}, argparse.Namespace(fixture=None), {}, NOW), [])
         self.assertEqual(len(output.getvalue().splitlines()), 1)
 
+    def test_label_override_uses_the_current_chat_token(self):
+        token_file = self.home / '.config/hypertask-agents/credentials/sessions/maintenance-chat-agent-token'
+        token_file.write_text(self.token)
+        with patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Maintenance Chat'}):
+            result = self.run_park('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.writes()), 2)
+        self.assertTrue(all(c['own'] for c in self.writes()))
+
     def test_missing_own_login_never_uses_inherited_person_token(self):
         with patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Other Chat'}):
             result = self.run_park('--apply')
