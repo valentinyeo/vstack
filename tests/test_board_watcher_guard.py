@@ -67,7 +67,8 @@ class GuardTest(unittest.TestCase):
         (configs / 'own.config.json').write_text(json.dumps({'tmux': TAB, 'sid': 'sid-bugs'}))
         sender = self.home / '.multiprompt-runtime/mp-send'
         sender.parent.mkdir()
-        sender.write_text('import sys\nsys.exit(0)\n')
+        sender.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(0)\n')
+        sender.chmod(0o755)
         # All three tab keys are set, so an ambient one in the test runner never wins.
         self.env = {'HOME': str(self.home), 'MULTIBOT_SESSION': TAB, 'PATH': str(sender.parent),
                     'ZSB_SESSION': TAB, 'MULTIPROMPT_TAB': TAB,
