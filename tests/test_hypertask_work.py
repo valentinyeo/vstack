@@ -3217,7 +3217,7 @@ class CallBudgetTest(unittest.TestCase):
                            'pulls': [], 'facts': {}}}}
         searched = []
 
-        def pulls(keys, board=r.DEFAULT, sweep=None):
+        def pulls(keys, board=r.DEFAULT, sweep=None, rows=None):
             searched.append(list(keys))
             return {key: [] for key in keys}
         with tempfile.TemporaryDirectory() as directory, \
@@ -3294,6 +3294,93 @@ class CallBudgetTest(unittest.TestCase):
         found = {key: [open_pull]}
         r.merge_probe_pulls(found, [item], [key], r.DEFAULT, saved)
         self.assertEqual(found[key], [])
+
+    def test_a_re_read_takes_the_rows_word_for_a_saved_link(self):
+        """A quiet sync tops a card up; the rows it saw also correct what it kept."""
+        open_pull = {'url': 'https://github.com/x/y/pull/1', 'state': 'OPEN', 'number': 1,
+                     'title': 'work', 'headRefName': 'T-1-work', 'repository': {'nameWithOwner': 'x/y'}}
+        merged_pull = {**open_pull, 'url': 'https://github.com/x/y/pull/2', 'number': 2}
+        unseen = {**open_pull, 'url': 'https://github.com/x/y/pull/3', 'number': 3}
+        lagging = {**open_pull, 'url': 'https://github.com/x/y/pull/4', 'number': 4,
+                   'state': 'MERGED', 'mergedAt': '2026-10-01T00:00:00Z'}
+        found = {'T-1': [open_pull, merged_pull, unseen, lagging]}
+        rows = [{'url': open_pull['url'], 'state': 'CLOSED', 'number': 1},
+                {'url': merged_pull['url'], 'state': 'MERGED',
+                 'mergedAt': '2026-11-01T00:00:00Z', 'number': 2},
+                {'url': lagging['url'], 'state': 'OPEN', 'number': 4},
+                {'url': 'https://github.com/x/y/pull/9', 'state': 'CLOSED', 'number': 9}]
+        r.refresh_links(found, rows)
+        self.assertEqual([p['url'] for p in found['T-1']],
+                         [merged_pull['url'], unseen['url'], lagging['url']],
+                         'a closed pull leaves the card; an unread link is left alone')
+        self.assertEqual(found['T-1'][0]['state'], 'MERGED')
+        self.assertEqual(found['T-1'][0]['mergedAt'], '2026-11-01T00:00:00Z')
+        self.assertEqual(found['T-1'][0]['headRefName'], 'T-1-work', 'the saved branch name stays')
+        self.assertEqual(found['T-1'][2]['mergedAt'], '2026-10-01T00:00:00Z',
+                         'a merge the card already knows outranks a row that lags behind')
+        self.assertEqual(r.refresh_links({'T-1': [unseen]}, []), {'T-1': [unseen]})
+
+    def test_a_closed_pull_that_no_probe_row_names_leaves_the_card(self):
+        """VSTA-233: #3594 was parked, the saved facts kept it OPEN, and a label run
+        planned HTPR-9387 Backlog -> AI Review | open PR.
+
+        The close never landed in the probe, and the card's own re-read dropped the
+        closed row as a finding while keeping the saved OPEN link, so the cache wrote
+        the parked pull back as OPEN on every run that read the card.
+        """
+        key = 'HTPR-9387'
+        url = 'https://github.com/hypertask-ai/hypertask/pull/3594'
+        t = {'ticketNumber': key, 'section': 'Backlog', 'projectId': 15,
+             'updatedAt': NOW - 20000, 'assignees': [], 'labels': [{'name': 'HT Product Lead'}]}
+        saved_pull = {'url': url, 'title': f'{key} work', 'body': f'Ticket: {key}',
+                      'headRefName': f'{key.lower()}-work', 'state': 'OPEN', 'number': 3594,
+                      'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+        saved_at = NOW - r.FACTS_STALE - 60
+        saved = {'at': saved_at, 'probe_since': '2026-01-01T00:00:00Z',
+                 'repos': ['hypertask-ai/hypertask'],
+                 'tickets': {key: {'at': saved_at, 'updated_at': t['updatedAt'],
+                                   'pulls': [saved_pull],
+                                   'facts': {'hypertask-ai/hypertask#3594': {
+                                       'url': url, 'state': 'OPEN', 'checks': 'green',
+                                       'passed': False, 'activity': saved_at}}}}}
+        row = {**saved_pull, 'state': 'CLOSED', 'mergedAt': None, 'baseRefName': 'production',
+               'createdAt': '2026-11-01T00:00:00Z'}
+
+        def respond(args, **kwargs):
+            call = ' '.join(args)
+            if 'search/issues' in call:
+                return subprocess.CompletedProcess([], 0, json.dumps({'items': []}), '')
+            page = {'pageInfo': {'hasNextPage': False}, 'nodes': [row]}
+            return subprocess.CompletedProcess(
+                [], 0, json.dumps({'data': {f'q{n}': page for n in range(10)}}), '')
+
+        def sync(argv):
+            written = []
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(r.Path, 'home', return_value=Path(directory)), \
+                    patch.object(sys, 'argv', ['reconcile', *argv]), \
+                    patch.object(r.time, 'time', return_value=NOW), \
+                    patch.object(r, 'tickets', return_value=[dict(t)]), \
+                    patch.object(r, 'product_workers', return_value=set()), \
+                    patch.object(r, 'read_sections', return_value={'Backlog'}), \
+                    patch.object(r, 'live_lease', return_value=False), \
+                    patch.object(r, 'process_tickets', return_value=set()), \
+                    patch.object(r, 'read_board_facts', return_value=saved), \
+                    patch.object(r, 'write_board_facts',
+                                 side_effect=lambda board_id, payload: written.append(payload)), \
+                    patch.object(r.subprocess, 'run', side_effect=respond), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                r.reset_github_count()
+                r.PULLS.clear()
+                self.assertEqual(r.main(), 0)
+            return out.getvalue(), (written[0] if written else None)
+
+        plan, _ = sync(['--board', '15', '--label', 'HT Product Lead'])
+        self.assertIn(f'KEEP {key} Backlog -> Backlog', plan)
+        self.assertNotIn('-> AI Review', plan)
+        _, facts = sync(['--board', '15'])
+        self.assertEqual(facts['tickets'][key]['pulls'], [],
+                         'a closed pull is never written back as OPEN')
 
     def test_quiet_prefetch_keeps_restored_pull_facts(self):
         key = 'SOFT-1'

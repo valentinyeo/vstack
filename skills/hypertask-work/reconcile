@@ -1326,6 +1326,44 @@ def merge_probe_pulls(found, items, keys, board, saved=None):
                 found[key] = [pull if p['url'] == pull['url'] else p for p in found[key]]
 
 
+def refresh_links(found, rows):
+    """Take the re-read's own word for every link the card already saved.
+
+    A quiet sync used to add only the links its read found, so a link saved as OPEN
+    stayed OPEN after its pull was closed (the closed row is dropped before the add)
+    and stayed OPEN after its pull merged, because the read skipped a URL it already
+    had. GitHub's rows for this read carry both facts; a closed unmerged pull is no
+    link at all, so it leaves the card instead of moving it to review forever.
+    """
+    seen = {row['url']: row for row in rows if row and row.get('url')}
+    for key, pulls in found.items():
+        kept = []
+        for pull in pulls:
+            row = seen.get(pull['url'])
+            if row is None:
+                kept.append(pull)
+                continue
+            merged = row.get('mergedAt')
+            # A merge this card already knows about outranks a row that has not caught
+            # up yet, the same rule the batched pull read follows.
+            if merged or pull.get('state') == 'MERGED':
+                state = 'MERGED'
+            elif (row.get('state') or '').upper() == 'CLOSED':
+                state = 'CLOSED'
+            else:
+                state = 'OPEN'
+            if state == 'CLOSED':
+                continue
+            kept.append({**pull, 'state': state,
+                         'mergedAt': merged or pull.get('mergedAt'),
+                         'title': row.get('title') or pull.get('title'),
+                         'body': row.get('body') or pull.get('body'),
+                         'createdAt': row.get('createdAt') or pull.get('createdAt'),
+                         'headRefName': row.get('headRefName') or pull.get('headRefName')})
+        found[key] = kept
+    return found
+
+
 def restore_pull_facts(saved):
     for entry in (saved.get('tickets') or {}).values():
         for ref, fact in (entry.get('facts') or {}).items():
@@ -1512,7 +1550,7 @@ def open_pulls(board=DEFAULT):
     return scan_window(board, 'is:open', 'created', date(2008, 1, 1), today())
 
 
-def ticket_pulls(keys, board=DEFAULT, sweep=None):
+def ticket_pulls(keys, board=DEFAULT, sweep=None, rows=None):
     """Every PR that names each ticket in its title, its body, or its branch.
 
     The ticket search packs cards into OR-joined queries within GitHub's limit.
@@ -1520,12 +1558,13 @@ def ticket_pulls(keys, board=DEFAULT, sweep=None):
     its key past the start of the name shows up nowhere else and that sweep replaces
     many lookups. A ticket still silent after text search and the open sweep gets
     one branch lookup, which is how a merge from years ago is found without reading
-    the whole merge history.
+    the whole merge history. Every row this read saw, closed ones included, is
+    appended to `rows` when the caller asks for them.
     """
     if not keys:
         return {}
     sweep = len(keys) >= SWEEP_MIN_TICKETS if sweep is None else sweep
-    seen = []
+    seen = [] if rows is None else rows
     found = text_pulls(keys, board, seen)
     by_key = {key.upper(): key for key in keys}
     by_key.update({old.upper(): key for key in keys for old in aliases_of(key, board)})
@@ -1560,15 +1599,18 @@ def discover_quiet(keys, board=DEFAULT, saved=None, probe_items=(), refresh=()):
     missing = [key for key in keys if key not in (saved.get('tickets') or {})]
     read = [key for key in refresh if key not in missing]
     to_read = missing + read
-    searched = []
+    searched, rows = [], []
     if to_read:
         # Only a large batch of unseen tickets pays for the open-PR sweep; a refreshed
         # ticket already has its saved links and rides along in the same search batch.
         sweep = len(missing) >= SWEEP_MIN_TICKETS
-        for key, pulls in ticket_pulls(to_read, board, sweep=sweep).items():
+        for key, pulls in ticket_pulls(to_read, board, sweep=sweep, rows=rows).items():
             urls = {p['url'] for p in found[key]}
             found[key] += [pull for pull in pulls if pull['url'] not in urls]
             searched += pulls
+    # A refreshed ticket is a re-read, not a top-up: the rows this read saw also say
+    # which saved links are closed, or no longer open (VSTA-233).
+    refresh_links(found, rows)
     restore_pull_facts(saved)
     # Saved facts and the probe's own rows carry the revert, so a quiet sync cannot
     # keep counting a merge another merge took back.
