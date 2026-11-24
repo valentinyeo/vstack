@@ -42,7 +42,7 @@ Loading this skill turns on four checks in this chat: each tool step reminds the
 ## Every ask ends done
 
 6. Every ask goes on the todo list when it arrives. A side question does not close it.
-7. Background means tracked by the harness, so its end wakes this session. Claude: Bash or Agent with `run_in_background`. Codex and hax: a job the harness reports back on. Never `&`, `nohup`, `setsid` or a detached `tmux` window. Their result never comes back.
+7. Background means tracked by the harness, so its end wakes this session. Printing into a running job's log does not wake it. The long-lived board-drain watcher sends a prompt through `mp-send` to its own Multibot tab on changes and heartbeats, coalescing wakes to at most one per 60s. If delivery is unavailable or fails, it prints and exits 0 so the harness wakes the chat. Claude: Bash or Agent with `run_in_background`. Codex and hax: a job the harness reports back on. Never `&`, `nohup`, `setsid` or a detached `tmux` window. Their result never comes back.
 8. Start a worker with its brief in brief.txt, then `~/.local/bin/plan-pick --run` as a tracked background job. A Claude background agent only when `~/.local/bin/plan-pick --claude-helper` exits 0. A failed launch is not a running job. Say what failed.
 9. End a turn only when each open item is done and checked, has a tracked background job running, or waits on a call only Valentin can make, which the reply asks.
 10. A job ends? Pick it up at once. Verify the result per pstack `principle-prove-it-works`, then mark it done and tell him if it changes his outcome. On a failed check, spawn a fresh worker per pstack `poteto-mode` Subagents.

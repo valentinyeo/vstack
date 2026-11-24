@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Poll this chat's own board view, report changes, and keep running across cycles.
 
-The watcher pulses into this chat's loop state on every poll and survives its own normal
-cycle (view changes, sync failures, and quiet heartbeats) instead of exiting and waiting
-for the chat to restart it by hand. Whatever kills it, a crash, a chat restart, or a hang,
+The watcher pulses into this chat's loop state on every poll. View changes, sync failures,
+and quiet heartbeats send a prompt to its own Multibot tab, keeping the watcher alive.
+If that wake is unavailable, exit so the tracked job wakes the chat. After a crash or hang,
 the last pulse is the marker the chat's own hook reads to say "your watcher is dead: re-arm"
 and push Valentin after 10 minutes (VSTA-151).
 """
@@ -16,6 +16,8 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import time
 
@@ -140,14 +142,47 @@ def sync_reason(args):
     return record.get('reason') or f'sync exited {code}', None
 
 
+def wake(lines):
+    """Send a prompt only to this process's own tab; False means use the job-exit wake."""
+    try:
+        tab = os.environ.get('MULTIPROMPT_TAB')
+        if not tab and os.environ.get('TMUX'):
+            tab = subprocess.run(['tmux', 'display-message', '-p', '#S'],
+                                 check=True, capture_output=True, text=True, timeout=5).stdout.strip()
+        if not tab:
+            return False
+        sender = shutil.which('mp-send') or Path.home() / '.multiprompt-runtime/mp-send'
+        if not Path(sender).is_file():
+            return False
+        for path in sorted((Path.home() / '.local/state/multiprompt/agent-host').glob('*.config.json')):
+            try:
+                config = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(config, dict) or config.get('tmux') != tab:
+                continue
+            sid = config.get('sid')
+            if not isinstance(sid, str) or not sid:
+                continue
+            prompt = '; '.join(lines) + '; run drain-check'
+            sent = subprocess.run([sys.executable, str(sender), '--tmux', tab, 'claude', sid, prompt],
+                                  capture_output=True, timeout=10)
+            return sent.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return False
+
+
 def follow(args, clock=time.time, sleep=time.sleep):
-    """Poll the view; report changes and keep running. 0 when --cycles finishes, 1 on API loss."""
+    """Poll and wake our own chat; exit 0 on wake failure or --cycles, 1 on API loss."""
     heartbeat, baseline, started, failures = heartbeat_seconds(args), None, clock(), 0
     every_sync = 0 if args.no_sync else args.sync_every
     synced = None
     reported = 0
+    pending, last_wake = [], None
     max_cycles = getattr(args, 'cycles', 0) or 0
     while True:
+        lines = []
         # The pulse comes first: a watcher that stops here is dead, and its last pulse says when.
         try:
             loop_state.beat(args.name, now=clock())
@@ -161,10 +196,7 @@ def follow(args, clock=time.time, sleep=time.sleep):
                 # Over the gh budget: one line, then keep watching this tick.
                 print(skipped, flush=True)
             elif reason:
-                print(f'changed: sync failed: {reason}', flush=True)
-                reported += 1
-                if max_cycles and reported >= max_cycles:
-                    return 0
+                lines.append(f'changed: sync failed: {reason}')
         try:
             current = snapshot(args, clock())
         except drain.ERRORS as error:
@@ -177,20 +209,28 @@ def follow(args, clock=time.time, sleep=time.sleep):
             if baseline is None:
                 baseline, started = current, clock()
             elif current != baseline:
-                for line in changes(baseline, current):
-                    print(line, flush=True)
+                lines.extend(changes(baseline, current))
                 baseline, started = current, clock()
-                reported += 1
-                if max_cycles and reported >= max_cycles:
-                    return 0
             elif clock() - started >= heartbeat:
-                print(f'heartbeat: no change in {window(heartbeat)}', flush=True)
+                lines.append(f'heartbeat: no change in {window(heartbeat)}')
                 started = clock()
-                reported += 1
-                if max_cycles and reported >= max_cycles:
-                    return 0
-        # Sleep one poll, but never past the next heartbeat.
+        if lines:
+            for line in lines:
+                print(line, flush=True)
+                if line not in pending:
+                    pending.append(line)
+            reported += 1
+        if pending and (last_wake is None or clock() - last_wake >= 60):
+            if not wake(pending):
+                return 0
+            pending.clear()
+            last_wake = clock()
+        if max_cycles and reported >= max_cycles:
+            return 0
+        # Do not strand a coalesced wake until the next poll or heartbeat.
         left = heartbeat - (clock() - started)
+        if pending:
+            left = min(left, 60 - (clock() - last_wake))
         sleep(max(1, min(args.every, left)))
 
 

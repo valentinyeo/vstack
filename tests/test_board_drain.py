@@ -1454,14 +1454,29 @@ class LoopStateTest(unittest.TestCase):
 
 
 class WatchTest(unittest.TestCase):
-    """The watcher blocks on the chat's own view and exits the moment it changes."""
+    """The watcher wakes its own chat on changes and keeps polling when delivery works."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.fixture = self.directory / 'view.json'
-        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
+        self.sender = self.directory / 'bin/mp-send'
+        self.sender.parent.mkdir()
+        self.wakes = self.directory / 'wakes.jsonl'
+        self.sender.write_text(
+            f'#!{sys.executable}\nimport json, pathlib, sys\n'
+            f'with pathlib.Path({str(self.wakes)!r}).open("a") as log:\n'
+            '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+        self.sender.chmod(0o755)
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        configs.mkdir(parents=True)
+        (configs / 'other.config.json').write_text(json.dumps({'tmux': 'other-tab', 'sid': 'other-sid'}))
+        (configs / 'own.config.json').write_text(json.dumps({'tmux': 'own-tab', 'sid': 'own-sid'}))
+        env = patch.dict(os.environ, {
+            'HOME': str(self.directory), 'MULTIPROMPT_TAB': 'own-tab', 'TMUX': '',
+            'PATH': str(self.sender.parent),
+            'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
         env.start()
         self.addCleanup(env.stop)
 
@@ -1502,6 +1517,96 @@ class WatchTest(unittest.TestCase):
                 [vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-80')]))
         self.assertEqual(code, 0, out)
         self.assertIn('changed: VSTA-80 new in Todo', out)
+
+    def test_a_change_sends_one_own_tab_wake_and_keeps_polling(self):
+        def on_sleep(tick):
+            if tick == 1:
+                self.rows([vsta('VSTA-80')])
+            elif tick == 2:
+                self.assertTrue(self.wakes.exists(), 'change must wake the chat before the job exits')
+                wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+                self.assertEqual(len(wakes), 1)
+                self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'own-sid'])
+                self.assertIn('changed: VSTA-80 new in Todo', wakes[0][4])
+                self.assertIn('run drain-check', wakes[0][4])
+
+        code, out, clock = self.run_watch([], '--every', '10', '--heartbeat', '100',
+                                           '--cycles', '2', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        self.assertGreater(clock.now - NOW, 10, 'must keep polling after the change')
+
+    def test_missing_sender_prints_change_and_exits_zero(self):
+        self.sender.unlink()
+        code, out, clock = self.run_watch(
+            [], '--every', '10', '--heartbeat', '100', '--cycles', '0',
+            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                'missing own-tab wake must exit so the harness wakes the chat'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertEqual(clock.now - NOW, 10)
+        self.assertFalse(self.wakes.exists())
+
+    def test_failed_sender_falls_back_to_exit(self):
+        self.sender.write_text('import sys\nsys.exit(1)\n')
+        code, out, _ = self.run_watch(
+            [], '--every', '10', '--cycles', '0',
+            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                'failed delivery must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+
+    def test_no_own_tab_never_targets_another_sid(self):
+        with patch.dict(os.environ, {'MULTIPROMPT_TAB': '', 'TMUX': ''}):
+            code, out, _ = self.run_watch(
+                [], '--every', '10', '--cycles', '0',
+                on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                    'no own tab must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertFalse(self.wakes.exists())
+
+    def test_no_matching_own_sid_falls_back_without_messaging_another_chat(self):
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        (configs / 'own.config.json').write_text('{broken')
+        code, out, _ = self.run_watch(
+            [], '--every', '10', '--cycles', '0',
+            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                'missing own sid must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertFalse(self.wakes.exists())
+
+    def test_tmux_session_resolves_the_own_tab_when_environment_tab_is_absent(self):
+        tmux = self.sender.parent / 'tmux'
+        tmux.write_text(f'#!{sys.executable}\nprint("own-tab")\n')
+        tmux.chmod(0o755)
+        with patch.dict(os.environ, {'MULTIPROMPT_TAB': '', 'TMUX': 'fake-socket'}):
+            code, out, _ = self.run_watch(
+                [], '--every', '10', on_sleep=lambda tick: self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'own-sid'])
+
+    def test_two_changes_within_sixty_seconds_send_one_wake_then_coalesce(self):
+        def on_sleep(tick):
+            if tick == 1:
+                self.rows([vsta('VSTA-80')])
+            elif tick == 2:
+                self.rows([vsta('VSTA-80'), vsta('VSTA-81')])
+            elif tick == 3:
+                self.rows([vsta('VSTA-80'), vsta('VSTA-81'), vsta('VSTA-82')])
+            elif tick == 6:
+                self.assertTrue(self.wakes.exists(), 'first change must send a wake')
+                self.assertEqual(len(self.wakes.read_text().splitlines()), 1)
+            elif tick == 8:
+                wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+                self.assertEqual(len(wakes), 2, 'pending changes must wake at the rate-limit deadline')
+                self.assertIn('VSTA-81', wakes[1][4])
+                self.assertIn('VSTA-82', wakes[1][4])
+
+        code, out, _ = self.run_watch([], '--every', '10', '--heartbeat', '100',
+                                       '--cycles', '4', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
 
     def test_a_valentin_reply_on_a_waiting_ticket_wakes_the_chat(self):
         first = [dict(agent_comment(3600), id=11)]
@@ -1718,7 +1823,9 @@ class WatchSyncTest(unittest.TestCase):
         self.directory = Path(self.temp.name)
         self.fixture = self.directory / 'view.json'
         self.rows([vsta('VSTA-1', section='Done')])
-        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
+        env = patch.dict(os.environ, {'HOME': str(self.directory), 'MULTIPROMPT_TAB': '',
+                                     'TMUX': '', 'PATH': str(self.directory),
+                                     'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
         env.start()
         self.addCleanup(env.stop)
 

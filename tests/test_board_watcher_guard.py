@@ -62,8 +62,14 @@ class GuardTest(unittest.TestCase):
             'tmux': TAB, 'multibot': 'Multi Bot Bugs', 'sid': 'sid-bugs'}))
         (announce / 'live-features.json').write_text(json.dumps({
             'tmux': 'live-features', 'multibot': 'Multi Bot Features', 'sid': 'sid-features'}))
+        configs = self.home / '.local/state/multiprompt/agent-host'
+        configs.mkdir(parents=True)
+        (configs / 'own.config.json').write_text(json.dumps({'tmux': TAB, 'sid': 'sid-bugs'}))
+        sender = self.home / '.multiprompt-runtime/mp-send'
+        sender.parent.mkdir()
+        sender.write_text('import sys\nsys.exit(0)\n')
         # All three tab keys are set, so an ambient one in the test runner never wins.
-        self.env = {'HOME': str(self.home), 'MULTIBOT_SESSION': TAB,
+        self.env = {'HOME': str(self.home), 'MULTIBOT_SESSION': TAB, 'PATH': str(sender.parent),
                     'ZSB_SESSION': TAB, 'MULTIPROMPT_TAB': TAB,
                     'BOARD_DRAIN_STATE_DIR': str(self.state),
                     'BOARD_DRAIN_NOTIFY_URL': '', 'NTFY_URL': '', 'NTFY_TOPIC': '',

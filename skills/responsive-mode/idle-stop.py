@@ -10,8 +10,10 @@ The decision, in order:
 2. A live background job in the transcript's last lines: allow. A job starts on a Bash background result
    ("Command running in background with ID: <id>") or an async agent result ("agentId: <id>"), and ends on
    a `<task-notification>` naming it, or a TaskStop/KillShell call naming it.
-3. A live job means the harness will wake this chat, so nothing to do. No job, but the reply's last line is
-   a question to Valentin: allow, he owes the answer.
+3. The harness wakes this chat when a tracked job exits, not when it prints. The long-lived board-drain
+   watcher instead sends its own Multibot tab a prompt, at most once per 60s, coalescing changes;
+   unavailable or failed delivery falls back to printing and exiting 0. A live job is allowed here.
+   No job, but the reply's last line is a question to Valentin: allow, he owes the answer.
 4. Otherwise ask this chat's own board for its open tickets (Doing, In Progress, Checks, AI Review,
    assigned to its agent). One open ticket blocks.
 5. No board line, no login, or any error, timeout or unreadable transcript: allow. A quiet check must never

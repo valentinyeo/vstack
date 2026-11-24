@@ -30,7 +30,7 @@ Session crons die with the chat; recurring ones expire in 7 days. Arm at session
 
 `watch` arms independent 15-minute sync via `board-sync@<name-slug>.timer`; for `sync timer off`, run `./loop-state timer --board <id> --label <label> --name "<name>"`.
 
-A quiet chat wakes only on a view change or the plan pacer's heartbeat (at most 2h).
+On changes, sync failures or heartbeats, `watch` sends its own tab the change and `run drain-check` via `mp-send`, matching its tmux to agent-host `sid`. It keeps polling, coalescing wakes to one per 60s. If delivery is unavailable or fails, it prints and exits 0; the tracked job wakes the chat. Re-arm step 2.
 
 Never delete the loop for an empty Todo; a tick with nothing new stays quiet.
 
