@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -67,6 +68,16 @@ def missing_route(path, error='Branch not protected'):
 
 PROTECTION = 'branches/main/protection/required_status_checks'
 RULES = 'rules/branches/main'
+CEO_PROTECTION = 'branches/master/protection/required_status_checks'
+CEO_RULES = 'rules/branches/master'
+# GitHub's own annotation when it refuses to start a private repo's job (VSTA-198).
+BILLING_NOTE = ('The job was not started because recent account payments have failed or '
+                'your spending limit needs to be increased. Please check the \'Billing & '
+                "plans' section in your settings")
+WAITS = ('gate waits: valentinyeo/ceo master '
+         '(GitHub billing blocks private checks; waits on Valentin)')
+# What `gh api repos/<owner>/<name>` answers unless a test routes it itself.
+REPO = {'private': False, 'default_branch': 'main'}
 
 
 class GateCase(unittest.TestCase):
@@ -86,7 +97,9 @@ class GateCase(unittest.TestCase):
                     'RECONCILE_CACHE': str(self.directory / 'cache.json')}
 
     def answer(self, routes):
-        self.routes.write_text(json.dumps(routes))
+        """Serve these routes, then a public repo for the read every missing gate makes."""
+        self.routes.write_text(json.dumps([*routes, {'match': ['repos/'],
+                                                     'stdout': json.dumps(REPO)}]))
         self.log.unlink(missing_ok=True)
 
     def calls(self):
@@ -158,8 +171,9 @@ class GateReadTest(GateCase):
                      ok_route(RULES, [])])
         first = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main')
         self.assertEqual(first.returncode, 1, first.stderr)
+        # Protection, rulesets and the repo it takes privacy from: one read each.
         spent = len(self.calls())
-        self.assertEqual(spent, 2)
+        self.assertEqual(spent, 3)
         second = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main')
         self.assertEqual(second.stdout, first.stdout)
         self.assertEqual(len(self.calls()), spent)
@@ -177,6 +191,105 @@ class GateReadTest(GateCase):
         done = self.run_gate()
         self.assertEqual(done.returncode, 2)
         self.assertIn('--board or --repo', done.stderr)
+
+
+class BillingTest(GateCase):
+    """A private repo GitHub bills cannot run checks for waits, and never gets --fixed.
+
+    The real case is valentinyeo/ceo on master: PR #82's pstack-verifier job was never
+    started because the account's payments failed. Requiring that check would block
+    every merge, so the gate reports the wait instead of a missing gate.
+    """
+
+    def answer_ceo(self, private=True, note=BILLING_NOTE, annotated=1):
+        self.answer([
+            missing_route(CEO_PROTECTION),
+            ok_route(CEO_RULES, []),
+            ok_route('actions/runs', {'total_count': 1, 'workflow_runs': [
+                {'id': 45422309359, 'check_suite_id': 9002, 'conclusion': 'failure'}]}),
+            ok_route('check-suites/9002/check-runs', {'total_count': 1, 'check_runs': [
+                {'id': 777, 'name': 'skill-lint / pstack-verifier', 'conclusion': 'failure',
+                 'output': {'annotations_count': annotated}}]}),
+            ok_route('check-runs/777/annotations', [{'message': note}]),
+            # Last: this path is a prefix of every read above it.
+            ok_route('repos/valentinyeo/ceo', {'private': private,
+                                              'default_branch': 'master'}),
+        ])
+
+    def test_a_private_repo_blocked_by_billing_waits(self):
+        self.answer_ceo()
+        done = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master')
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(done.stdout.strip(), WAITS)
+
+    def test_fix_refuses_a_billing_blocked_private_repo(self):
+        self.answer_ceo()
+        done = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master', '--fix')
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn('skipped: valentinyeo/ceo master cannot run checks (GitHub billing',
+                      done.stdout)
+        self.assertEqual([call for call in self.calls() if '-X' in call['argv']], [])
+
+    def test_the_billing_read_is_cached_with_the_gate(self):
+        self.answer_ceo()
+        first = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        spent = len(self.calls())
+        second = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master')
+        self.assertEqual(second.stdout, first.stdout)
+        self.assertEqual(len(self.calls()), spent)
+
+    def test_a_gate_saved_before_billing_existed_is_read_again(self):
+        self.answer_ceo()
+        # The shape an older merge-gate cached an hour ago: a miss with no billing answer.
+        Path(self.env['RECONCILE_CACHE']).write_text(json.dumps({
+            'merge-gate:valentinyeo/ceo@master':
+                {'mode': 'none', 'contexts': [], 'at': int(time.time())}}))
+        done = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master')
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(done.stdout.strip(), WAITS)
+
+    def test_a_public_repo_still_reads_nothing_about_billing(self):
+        self.answer_ceo(private=False)
+        done = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master')
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate missing: valentinyeo/ceo master')
+        self.assertEqual([call for call in self.calls() if 'actions' in ' '.join(call['argv'])],
+                         [])
+
+    def test_a_private_repo_whose_checks_run_is_still_missing(self):
+        self.answer_ceo(note='Build failed: 2 tests', annotated=1)
+        done = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master')
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate missing: valentinyeo/ceo master')
+
+    def test_a_check_run_with_no_annotation_is_still_missing(self):
+        self.answer_ceo(annotated=0)
+        done = self.run_gate('--repo', 'valentinyeo/ceo', '--branch', 'master')
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate missing: valentinyeo/ceo master')
+
+
+def fake_gate(record):
+    return lambda repo, branch, now=None: (record if repo == 'valentinyeo/ceo'
+                                           else {'mode': 'none', 'contexts': []})
+
+
+class GateFindingsBillingTest(unittest.TestCase):
+    """drain-check must not read a billing wait as a gate a chat can fix."""
+
+    def findings(self, record):
+        board = gate.board_object(13556)
+        with patch.object(gate, 'repos_for', return_value=(('valentinyeo/ceo', 'master'),
+                                                          ('valentinyeo/vstack', 'main'))), \
+                patch.object(gate, 'gate', side_effect=fake_gate(record)):
+            return gate.gate_findings(board, NOW)
+
+    def test_a_billing_wait_produces_no_finding(self):
+        findings = self.findings({'mode': 'none', 'contexts': [], 'billing': True})
+        self.assertEqual([text for _kind, text in findings],
+                         ['merge gate missing: valentinyeo/vstack main; run '
+                          'skills/board-drain/merge-gate --board 13556 --fix.'])
 
 
 class VerifierNameTest(GateCase):
