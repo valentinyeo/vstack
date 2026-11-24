@@ -120,15 +120,22 @@ def changes(before, after):
 
 
 def sync_reason(args):
-    """Run this chat's own board sync; None when it worked, else the one-line reason."""
+    """Run this chat's own board sync: (one-line failure reason, one-line skip).
+
+    A sync skipped over the gh budget is not a failure: its one line comes back in
+    the second slot, and the watcher prints it and keeps watching.
+    """
     quiet = io.StringIO()
     with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
         code = sync.main(['--board', str(args.board), '--label', args.label,
                           '--name', args.name])
-    if code == 0:
-        return None
     record = sync.loop_state.sync_state(args.name) or {}
-    return record.get('reason') or f'sync exited {code}'
+    skipped = (record.get('skipped') or {}).get('reason')
+    if skipped:
+        return None, skipped
+    if code == 0:
+        return None, None
+    return record.get('reason') or f'sync exited {code}', None
 
 
 def follow(args, clock=time.time, sleep=time.sleep):
@@ -145,8 +152,11 @@ def follow(args, clock=time.time, sleep=time.sleep):
         # Before the snapshot, so a sync that moved a card is a change on this read.
         if every_sync and (synced is None or clock() - synced >= every_sync):
             synced = clock()
-            reason = sync_reason(args)
-            if reason:
+            reason, skipped = sync_reason(args)
+            if skipped:
+                # Over the gh budget: one line, then keep watching this tick.
+                print(skipped)
+            elif reason:
                 print(f'changed: sync failed: {reason}')
                 return 0
         try:

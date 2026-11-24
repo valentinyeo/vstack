@@ -374,10 +374,20 @@ def status(name, now=None):
         else f'armed, expires in {window(remaining)}')
 
 
-def record_sync(name, ok, reason, now=None):
-    """Record this chat's last board sync. A record alone never arms the loop."""
+def record_sync(name, ok, reason, now=None, skipped=False):
+    """Record this chat's last board sync. A record alone never arms the loop.
+
+    A skipped sync (the chat is over its gh budget) is not a failure: it never reads
+    as failed, and it does not refresh the clock either, so skips that outlast
+    SYNC_STALE still read as a stale sync.
+    """
     moment = time.time() if now is None else now
-    record = {'at': iso(moment), 'ok': bool(ok), 'reason': reason or ''}
+    if skipped:
+        prior = sync_state(name) or {}
+        record = {'at': prior.get('at'), 'ok': bool(prior.get('ok', True)), 'reason': '',
+                  'skipped': {'at': iso(moment), 'reason': reason or ''}}
+    else:
+        record = {'at': iso(moment), 'ok': bool(ok), 'reason': reason or ''}
     store(name, {'last_sync': record})
     return record
 

@@ -14,6 +14,9 @@ HERE = Path(__file__).resolve().parent
 RECONCILE = HERE.parent / 'hypertask-work' / 'reconcile'
 BAD_WORDS = ('usage:', 'error:')
 ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+# A tick over the gh budget is skipped, not failed: reconcile prints this one line
+# and exits 0, and the watcher keeps watching.
+SKIP_PREFIX = 'sync skipped:'
 
 loader = importlib.machinery.SourceFileLoader('board_drain_loop_state', str(HERE / 'loop-state'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -68,20 +71,36 @@ def echo(text):
         print(text.rstrip('\n'))
 
 
+def sync_skip_line(text):
+    """The skip line reconcile printed, or '' when this run was no skip."""
+    for line in (text or '').splitlines():
+        if line.strip().startswith(SKIP_PREFIX):
+            return line.strip()
+    return ''
+
+
 def run(step, args, env):
-    """Run one reconcile step; None when it worked, else the one-line reason it did not."""
+    """Run one reconcile step: ('ok'|'skipped'|'failed', one-line reason).
+
+    A refused gh budget is a skipped tick, not a failure: the apply step does not
+    run after it, and only its one skip line is printed.
+    """
     command = [sys.executable, str(RECONCILE), *args]
     done = subprocess.run(command, capture_output=True, text=True, env=env)
+    text = '\n'.join(part for part in (done.stdout, done.stderr) if part)
+    skipped = sync_skip_line(text)
+    if skipped:
+        return 'skipped', skipped
     echo(done.stdout)
     echo(done.stderr)
     lines = (done.stdout or '').splitlines() + (done.stderr or '').splitlines()
     offending = [line.strip() for line in lines
                  if any(bad in line.lower() for bad in BAD_WORDS)]
     if offending:
-        return f'{step} printed: {offending[0]}'
+        return 'failed', f'{step} printed: {offending[0]}'
     if done.returncode:
-        return f'{step} exited {done.returncode}'
-    return None
+        return 'failed', f'{step} exited {done.returncode}'
+    return 'ok', ''
 
 
 def steps(board, label, limit):
@@ -104,8 +123,14 @@ def main(argv=None):
     try:
         env = with_caller(environment(args.name, args.own_token), args.board, args.label)
         for step, step_args in steps(args.board, args.label, args.limit):
-            reason = run(step, step_args, env)
-            if reason:
+            status, detail = run(step, step_args, env)
+            if status == 'skipped':
+                # One line, then stop: the apply step would only be refused again.
+                print(detail)
+                record(args.name, True, detail, skipped=True)
+                return 0
+            if status == 'failed':
+                reason = detail
                 break
     except (*ERRORS, RuntimeError) as error:
         reason = str(error) or error.__class__.__name__
@@ -118,9 +143,9 @@ def main(argv=None):
     return 1
 
 
-def record(name, ok, reason):
+def record(name, ok, reason, skipped=False):
     try:
-        loop_state.record_sync(name, ok, reason)
+        loop_state.record_sync(name, ok, reason, skipped=skipped)
     except ERRORS as error:
         print(f'sync: could not record the result: {error}', file=sys.stderr)
 
