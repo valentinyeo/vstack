@@ -2,6 +2,7 @@
 """Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, blocked links, armed loop."""
 import argparse
 from dataclasses import replace
+from datetime import datetime, timezone
 import importlib.machinery
 import importlib.util
 import json
@@ -57,6 +58,13 @@ ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.Sub
 # The load probe: only these findings are about work the server is too busy to take.
 VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
 LOAD_FINDINGS = frozenset({'loop off', 'stale'})
+# The lane probe: plan-pick's own record of never finding a free worker lane.
+PLAN_PICK_LOG = Path(os.environ.get('PLAN_PICK_LAUNCHES')
+                     or os.path.expanduser('~/.local/state/token-ladder/launches.jsonl'))
+PLAN_PICK_STATE = PLAN_PICK_LOG.parent / 'rung-attempts.json'
+# A no-lane record older than this no longer explains an idle loop: something else does.
+LANE_WINDOW = 1800
+LANE_FINDINGS = frozenset({'loop off', 'stale', 'stalled'})
 
 
 def probe_load():
@@ -74,6 +82,61 @@ def probe_load():
         return 3, ''
     lines = (done.stdout or '').strip().splitlines()
     return done.returncode, lines[0].strip() if lines else ''
+
+
+def launch_moments():
+    """Every launch plan-pick logged, in epoch seconds; None when the log cannot be read."""
+    try:
+        text = PLAN_PICK_LOG.read_text()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+    moments = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            return None
+        moment = stamp_of(row.get('at')) if isinstance(row, dict) else None
+        if moment is None:
+            return None
+        moments.append(moment)
+    return moments
+
+
+def probe_lane(now):
+    """When plan-pick last found no free lane, in epoch seconds, or None.
+
+    plan-pick writes one rung attempt per job with failure "lane" and exit 75 when
+    every lane is spent, so the newest such row, any job, is the no-lane moment.
+    A launch logged after it means a lane came free again. A probe that cannot
+    read never hides a finding.
+    """
+    try:
+        rows = json.loads(PLAN_PICK_STATE.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rows, dict):
+        return None
+    moments = [stamp_of(row.get('finished_at')) for row in rows.values()
+               if isinstance(row, dict) and row.get('failure') == 'lane']
+    moments = [moment for moment in moments if moment is not None]
+    if not moments:
+        return None
+    moment = max(moments)
+    if not 0 <= now - moment <= LANE_WINDOW:
+        return None
+    launched = launch_moments()
+    if launched is None or any(at >= moment for at in launched):
+        return None
+    return moment
+
+
+def clock_utc(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%H:%M UTC')
 
 
 def stamp_of(value):
@@ -452,12 +515,12 @@ def check(args, now):
     workable, findings = view['workable'], view['findings']
     for line in view['notes']:
         print(line)
-    held = hold_line(workable, findings, args.no_load)
+    held = hold_line(workable, findings, args, now)
     shown, printed_hold, failing = [], False, 0
     for kind, text in findings:
-        if held is not None and kind in LOAD_FINDINGS:
+        if held is not None and kind in held[0]:
             if not printed_hold:
-                shown.append(held)
+                shown.append(held[1])
                 printed_hold = True
             continue
         shown.append(text)
@@ -478,19 +541,28 @@ def check(args, now):
     return 0 if not failing else 1
 
 
-def hold_line(workable, findings, no_load):
-    """One held line when the server says HOLD, else None so findings stand.
+def hold_line(workable, findings, args, now):
+    """(findings to collapse, one held line) when the loop holds on purpose, else None.
 
-    Valentin's rule is to launch nothing while the server is overloaded, so an
-    idle drain on a HOLD server is holding on purpose, not a broken loop.
-    Stalled, unassigned, answered, loop-state and sync findings always stand.
+    Valentin's rule is to launch nothing while the server is overloaded, and
+    plan-pick launches nothing while no worker lane is free, so an idle drain in
+    either state is holding on purpose, not a broken loop. The server HOLD wins.
+    Unassigned, answered, loop-state and sync findings always stand.
     """
-    if no_load or not any(kind in LOAD_FINDINGS for kind, _ in findings):
+    if args.no_load:
         return None
-    code, line = probe_load()
-    if code != 2 or not line:
-        return None
-    return f'held: {line}; {len(workable)} workable Todo wait for the server'
+    kinds = {kind for kind, _ in findings}
+    if kinds & LOAD_FINDINGS:
+        code, line = probe_load()
+        if code == 2 and line:
+            return LOAD_FINDINGS, (f'held: {line}; '
+                                   f'{len(workable)} workable Todo wait for the server')
+    if kinds & LANE_FINDINGS:
+        moment = probe_lane(now)
+        if moment is not None:
+            return LANE_FINDINGS, (f'held: no worker lane since {clock_utc(moment)}; '
+                                   f'{len(workable)} workable Todo wait for a lane')
+    return None
 
 
 def main(argv=None):
@@ -502,7 +574,7 @@ def main(argv=None):
     parser.add_argument('--now', help='Judge ages against this ISO time instead of the clock')
     parser.add_argument('--state-name', help='Also require this chat\'s loop to be armed')
     parser.add_argument('--no-load', action='store_true',
-                        help='Skip the vps-state load probe')
+                        help='Skip the vps-state load probe and the plan-pick lane probe')
     args = parser.parse_args(argv)
     if args.board < 1:
         parser.error('--board must be a positive board id')

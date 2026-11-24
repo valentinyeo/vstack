@@ -59,7 +59,7 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 - **not armed** or **watcher dead since <time>:** the chat restarted, the loop expired, or the watcher stopped pulsing. Arm it.
 - **sync failed** or **sync stale:** the last sync broke or is over 45 minutes old. Fix it, then `./sync --board <id> --label <label> --name "<name>"`.
 
-A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:` line; `--no-load` skips the probe.
+A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:` line. When plan-pick last found no free worker lane (a `lane` failure under 30 minutes old in `~/.local/state/token-ladder/rung-attempts.json`, with no launch since), **loop off**, **stale** and **stalled** collapse into one non-failing `held: no worker lane since <HH:MM UTC>` line; a server HOLD wins. `--no-load` skips both probes.
 
 A board-rule break prints as `rule-break: <ticket> <rule>: <fix>` and passes; add its rule id to `FAIL_RULES` in drain-check to make it fail.
 
