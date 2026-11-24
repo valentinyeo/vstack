@@ -116,6 +116,18 @@ jobs:
           Keep prose sentences within eight words. Preserve command output verbatim.
           BRIEF
           printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
+      - name: Fetch pinned pstack
+        run: |
+          set -euo pipefail
+          ref=$(python3 -c 'import json; print(json.load(open(".skill-lint.json"))["pstack-ref"])')
+          version=$(python3 -c 'import json; print(json.load(open(".skill-lint.json"))["pstack-version"])')
+          git init -q "$RUNNER_TEMP/cursor-plugins"
+          git -C "$RUNNER_TEMP/cursor-plugins" remote add origin https://github.com/cursor/plugins
+          git -C "$RUNNER_TEMP/cursor-plugins" fetch --quiet --depth 1 origin "$ref"
+          git -C "$RUNNER_TEMP/cursor-plugins" checkout --quiet FETCH_HEAD
+          mkdir -p "$RUNNER_TEMP/pstack"
+          ln -s "$RUNNER_TEMP/cursor-plugins/pstack" "$RUNNER_TEMP/pstack/$version"
+          echo "PSTACK_PINNED_DIR=$RUNNER_TEMP/cursor-plugins/pstack" >> "$GITHUB_ENV"
       - name: Verifier drives the changed files
         id: drive
         env:
@@ -130,7 +142,7 @@ jobs:
             echo "verifier: the base checkout has no run-verifier, running one attempt" >&2
             model=$(python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/pick-verifier-model")
             echo "VERIFIER_MODEL=$model" >> "$GITHUB_ENV"
-            timeout 540 pi --provider opencode-go --model "$model" --thinking low \
+            timeout 840 pi --provider opencode-go --model "$model" --thinking low \
               --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
               --tools read,bash --mode json --print "$(cat /tmp/verify.md)" > verifier.jsonl
             git diff --exit-code
@@ -139,7 +151,7 @@ jobs:
           set -o pipefail
           exec 3>&1
           python3 -I "$GITHUB_WORKSPACE/picker-base/scripts/run-verifier" \
-            --out verifier.jsonl --prompt-file /tmp/verify.md --attempt-timeout 540 \
+            --out verifier.jsonl --prompt-file /tmp/verify.md --attempt-timeout 840 \
             -- --thinking low --no-session --no-extensions --no-skills --no-prompt-templates --no-mcp \
             --tools read,bash 2>&1 1>&3 | tee run-verifier.err >&2
           exec 3>&-
