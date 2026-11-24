@@ -3301,17 +3301,23 @@ class CallBudgetTest(unittest.TestCase):
                      'title': 'work', 'headRefName': 'T-1-work', 'repository': {'nameWithOwner': 'x/y'}}
         merged_pull = {**open_pull, 'url': 'https://github.com/x/y/pull/2', 'number': 2}
         unseen = {**open_pull, 'url': 'https://github.com/x/y/pull/3', 'number': 3}
-        found = {'T-1': [open_pull, merged_pull, unseen]}
+        lagging = {**open_pull, 'url': 'https://github.com/x/y/pull/4', 'number': 4,
+                   'state': 'MERGED', 'mergedAt': '2026-10-01T00:00:00Z'}
+        found = {'T-1': [open_pull, merged_pull, unseen, lagging]}
         rows = [{'url': open_pull['url'], 'state': 'CLOSED', 'number': 1},
                 {'url': merged_pull['url'], 'state': 'MERGED',
                  'mergedAt': '2026-11-01T00:00:00Z', 'number': 2},
+                {'url': lagging['url'], 'state': 'OPEN', 'number': 4},
                 {'url': 'https://github.com/x/y/pull/9', 'state': 'CLOSED', 'number': 9}]
         r.refresh_links(found, rows)
-        self.assertEqual([p['url'] for p in found['T-1']], [merged_pull['url'], unseen['url']],
+        self.assertEqual([p['url'] for p in found['T-1']],
+                         [merged_pull['url'], unseen['url'], lagging['url']],
                          'a closed pull leaves the card; an unread link is left alone')
         self.assertEqual(found['T-1'][0]['state'], 'MERGED')
         self.assertEqual(found['T-1'][0]['mergedAt'], '2026-11-01T00:00:00Z')
         self.assertEqual(found['T-1'][0]['headRefName'], 'T-1-work', 'the saved branch name stays')
+        self.assertEqual(found['T-1'][2]['mergedAt'], '2026-10-01T00:00:00Z',
+                         'a merge the card already knows outranks a row that lags behind')
         self.assertEqual(r.refresh_links({'T-1': [unseen]}, []), {'T-1': [unseen]})
 
     def test_a_closed_pull_that_no_probe_row_names_leaves_the_card(self):

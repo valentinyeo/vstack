@@ -1344,11 +1344,18 @@ def refresh_links(found, rows):
                 kept.append(pull)
                 continue
             merged = row.get('mergedAt')
-            state = 'MERGED' if merged else (
-                'CLOSED' if (row.get('state') or '').upper() == 'CLOSED' else 'OPEN')
+            # A merge this card already knows about outranks a row that has not caught
+            # up yet, the same rule the batched pull read follows.
+            if merged or pull.get('state') == 'MERGED':
+                state = 'MERGED'
+            elif (row.get('state') or '').upper() == 'CLOSED':
+                state = 'CLOSED'
+            else:
+                state = 'OPEN'
             if state == 'CLOSED':
                 continue
-            kept.append({**pull, 'state': state, 'mergedAt': merged or pull.get('mergedAt'),
+            kept.append({**pull, 'state': state,
+                         'mergedAt': merged or pull.get('mergedAt'),
                          'title': row.get('title') or pull.get('title'),
                          'body': row.get('body') or pull.get('body'),
                          'createdAt': row.get('createdAt') or pull.get('createdAt'),
