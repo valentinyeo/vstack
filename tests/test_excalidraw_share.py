@@ -362,11 +362,12 @@ class ShareTest(unittest.TestCase):
         self.assertNotIn('Traceback', err)
 
     def test_read_rejects_a_value_that_is_not_a_scene(self):
-        code, out, err = self.read(source='https://app.excalidraw.com/s/1GorMHPWnnO/')
-        self.assertEqual(code, 1)
-        self.assertEqual(out, '')
-        self.assertEqual(len(err.strip().splitlines()), 1)
-        self.assertFalse(self.reader.calls)
+        for source in ('not a scene!', 'https://app.excalidraw.com/s/1GorMHPWnnO/bad id'):
+            code, out, err = self.read(source=source)
+            self.assertEqual(code, 1, source)
+            self.assertEqual(out, '', source)
+            self.assertEqual(len(err.strip().splitlines()), 1, source)
+            self.assertFalse(self.reader.calls)
 
 
 class KeyCommandTest(unittest.TestCase):
