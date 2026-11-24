@@ -12,11 +12,6 @@ mkdir -p "$TEST_HOME/.claude/hooks" "$TEST_HOME/.local/bin"
 for hook in "${retired_hooks[@]}"; do
   ln -s "$ROOT/hooks/$hook" "$TEST_HOME/.claude/hooks/$hook"
 done
-ln -s "$ROOT/skills/vps-tidy/vps-tidy" "$TEST_HOME/.local/bin/vps-tidy"
-for dest in "${dests[@]}"; do
-  mkdir -p "$TEST_HOME/$dest"
-  ln -s "$ROOT/skills/vps-tidy" "$TEST_HOME/$dest/vps-tidy"
-done
 printf 'user hook\n' > "$TEST_HOME/.claude/hooks/user-hook.py"
 
 for run in 1 2; do
@@ -33,10 +28,6 @@ done
 
 for hook in "${retired_hooks[@]}"; do
   [ ! -L "$TEST_HOME/.claude/hooks/$hook" ]
-done
-[ ! -L "$TEST_HOME/.local/bin/vps-tidy" ]
-for dest in "${dests[@]}"; do
-  [ ! -L "$TEST_HOME/$dest/vps-tidy" ]
 done
 [ "$(cat "$TEST_HOME/.claude/hooks/user-hook.py")" = 'user hook' ]
 printf 'PASS retired links removed and unrelated hooks preserved\n'
@@ -124,6 +115,15 @@ printf 'PASS retired registrations removed without changing unrelated settings\n
 [ "$(readlink -f "$TEST_HOME/.local/bin/repo-tidy")" = "$ROOT/skills/repo-tidy/repo-tidy" ]
 [ -x "$TEST_HOME/.local/bin/repo-tidy" ]
 printf 'PASS repo-tidy command linked\n'
+
+# vps-tidy is the shared server cleaner (VSTA-7).
+[ -L "$TEST_HOME/.local/bin/vps-tidy" ]
+[ "$(readlink -f "$TEST_HOME/.local/bin/vps-tidy")" = "$ROOT/skills/vps-tidy/vps-tidy" ]
+[ -x "$TEST_HOME/.local/bin/vps-tidy" ]
+for dest in "${dests[@]}"; do
+  [ -L "$TEST_HOME/$dest/vps-tidy" ]
+done
+printf 'PASS vps-tidy command linked\n'
 
 for hook in pacer-guard.py; do
   [ -L "$TEST_HOME/.claude/hooks/$hook" ]
