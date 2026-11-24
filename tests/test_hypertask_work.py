@@ -3137,6 +3137,39 @@ class CallBudgetTest(unittest.TestCase):
             task()['ticketNumber']: {'at': NOW - 10 * 3600, 'pulls': [], 'facts': {}}}}),
             'an old board is still readable: age is a per-ticket question')
 
+    def test_a_merged_probe_row_has_its_branch_read_once(self):
+        """The REST probe carries no branch, and a revert's branch names what it undoes.
+
+        PR 598 on another card cannot undo PR 584 until the branch is known, so the
+        merged rows get one batched read, and a branch is cached because it never
+        changes. An open row cannot undo a merge, so it costs nothing.
+        """
+        merged = {'html_url': 'https://github.com/valentinyeo/multiprompt-android/pull/598',
+                  'number': 598, 'state': 'closed', 'title': 'MUBO-453: undo the follow',
+                  'body': '', 'pull_request': {'merged_at': '2026-11-24T20:37:00Z'}}
+        opened = {**merged, 'number': 599, 'pull_request': {}}
+        heads = json.dumps({'data': {'p0': {'pullRequest': {'headRefName': 'mpa/revert-584'}}}})
+        with patch.object(r, 'run', return_value=heads) as gh:
+            rows = r.probe_heads([dict(merged), dict(opened)])
+            self.assertEqual(rows[0]['headRefName'], 'mpa/revert-584')
+            self.assertNotIn('headRefName', rows[1])
+            self.assertEqual(r.search_item_to_pull(rows[0])['headRefName'], 'mpa/revert-584')
+            self.assertEqual(gh.call_count, 1, 'only a merged row pays for its branch')
+            again = r.probe_heads([dict(merged)])
+            self.assertEqual(again[0]['headRefName'], 'mpa/revert-584')
+            self.assertEqual(gh.call_count, 1, 'a branch read once is cached for good')
+
+    def test_a_revert_branch_is_no_ticket_key(self):
+        """`mpa/revert-584` names a pull, and read as key REVERT-584 it cost a read.
+
+        The alias learner then asked hypertask about REVERT-584 on every run and
+        remembered the answer (VSTA-256).
+        """
+        self.assertEqual(r.named_keys({'headRefName': 'mpa/revert-584'}), [])
+        self.assertEqual(r.named_keys({'headRefName': 'revert-223-x'}), [])
+        self.assertEqual(r.named_keys({'headRefName': 'revert-223-x', 'title': 'VSTA-1: undo'}),
+                         ['VSTA-1'])
+
     def test_quiet_probe_preserves_product_merge_time(self):
         merged_at = '2026-01-02T00:00:00Z'
         item = {'html_url': 'https://github.com/hypertask-ai/hypertask/pull/1',
@@ -3885,6 +3918,76 @@ class WholeSyncTest(unittest.TestCase):
         again = self.sync(['--board', '13556'], [task], respond)
         self.assertIn(f'PLAN {key} Doing -> Todo | no live worker and no PR', again)
 
+    def test_a_revert_on_another_card_undoes_the_merge_its_branch_names(self):
+        """PR 584 shipped VSTA-289, then PR 598 on VSTA-453 undid it (VSTA-256).
+
+        The revert is titled after its own ticket and its body names neither PR, so
+        the head branch `mpa/revert-584` is the only thing that says what it undoes,
+        and the card it undid must not land in Done, now or on the run after it.
+        """
+        shipped = {'title': 'VSTA-289: new replies stay on screen during model changes (#584)',
+                   'body': '', 'headRefName': 'mpa/vsta-289b', 'state': 'MERGED',
+                   'baseRefName': 'main', 'number': 584, 'mergedAt': '2026-11-24T18:07:00Z',
+                   'createdAt': '2026-11-24T16:00:00Z', 'mergeCommit': {'oid': 'a' * 40},
+                   'url': 'https://github.com/valentinyeo/vstack/pull/584',
+                   'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
+        revert_item = {'html_url': 'https://github.com/valentinyeo/vstack/pull/598',
+                       'number': 598, 'state': 'closed',
+                       'title': 'VSTA-453: undo the newest-reply follow while the app spikes',
+                       'body': 'Undoes the branch spike fix.',
+                       'pull_request': {'merged_at': '2026-11-24T20:37:00Z'}}
+        state = {'probe': []}
+
+        def respond(args, **kwargs):
+            call = ' '.join(args)
+            if 'project sections' in call:
+                return subprocess.CompletedProcess(
+                    [], 0, json.dumps({'sections': self.VSTA_PROJECT['project']['sections']}), '')
+            if 'search/issues' in call:
+                return subprocess.CompletedProcess([], 0, json.dumps({'items': state['probe']}), '')
+            if 'search(query' in call:
+                nodes = [shipped] if 'VSTA-289' in call else []
+                page = {'pageInfo': {'hasNextPage': False}, 'nodes': nodes}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'q0': page}}), '')
+            if '{headRefName}' in call:
+                heads = {f'p{n}': {'pullRequest': {'headRefName': item.get('headRefName') or 'mpa/revert-584'}}
+                         for n, item in enumerate(state['probe'])}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': heads}), '')
+            if 'expression:' in call:
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'p0': {'object': None}}}), '')
+            if 'repository(owner:' in call:
+                keys = list(dict.fromkeys(re.findall(r'p(\d+):repository', call)))
+                verdict = 'pstack-verifier: PASS @' + HEAD
+                body = {'data': {f'p{n}': {'pullRequest': {
+                    'url': shipped['url'], 'state': 'MERGED', 'headRefOid': HEAD,
+                    'baseRefOid': 'c' * 40, 'author': {'login': 'writer'},
+                    'mergedAt': shipped['mergedAt'], 'createdAt': shipped['createdAt'],
+                    'statusCheckRollup': {'contexts': {'pageInfo': {'hasNextPage': False},
+                                                       'nodes': []}},
+                    'comments': {'totalCount': 1, 'nodes': [
+                        {'databaseId': 1, 'author': {'login': 'github-actions'},
+                         'body': verdict, 'updatedAt': '2026-11-24T18:00:00Z'}]}}} for n in keys}}
+                return subprocess.CompletedProcess([], 0, json.dumps(body), '')
+            raise AssertionError(f'unexpected call: {call}')
+
+        tasks = [{'ticketNumber': key, 'section': 'Doing', 'projectId': 13556,
+                  'updatedAt': NOW - 8000, 'createdAt': '2026-11-16T10:00:00Z'}
+                 for key in ('VSTA-289', 'VSTA-453')]
+        shipped_run = self.sync(['--board', '13556'], tasks, respond)
+        self.assertIn('PLAN VSTA-289 Doing -> Done | merged with PASS', shipped_run)
+
+        # The revert merges under VSTA-453. The probe carries the row, no branch, and
+        # the branch is what names PR 584.
+        state['probe'] = [revert_item]
+        after_revert = self.sync(['--board', '13556'], tasks, respond)
+        self.assertIn('PLAN VSTA-289 Doing -> Todo | no live worker and no PR', after_revert)
+        self.assertNotIn('PLAN VSTA-289 Doing -> Done', after_revert)
+
+        # Nothing changed since: the card stays out of Done instead of flapping back.
+        state['probe'] = []
+        again = self.sync(['--board', '13556'], tasks, respond)
+        self.assertIn('PLAN VSTA-289 Doing -> Todo | no live worker and no PR', again)
+
     def test_every_revert_marker_undoes_the_merge_it_names(self):
         repo = {'nameWithOwner': 'valentinyeo/vstack'}
         pull = {'url': 'https://github.com/valentinyeo/vstack/pull/223', 'state': 'MERGED',
@@ -3902,6 +4005,25 @@ class WholeSyncTest(unittest.TestCase):
                 revert = {'url': 'https://github.com/valentinyeo/vstack/pull/282', 'state': 'MERGED',
                           'number': 282, 'repository': repo, **case}
                 self.assertEqual(r.undone_urls([pull, revert]), {pull['url'], revert['url']})
+        # A revert titled after its own ticket says nothing about 223; its branch does.
+        branches = ['revert-223', 'revert-223-main', 'mpa/revert-223']
+        for branch in branches:
+            with self.subTest(headRefName=branch):
+                revert = {'url': 'https://github.com/valentinyeo/vstack/pull/282', 'state': 'MERGED',
+                          'number': 282, 'repository': repo, 'title': 'MUBO-453: undo the follow',
+                          'body': '', 'headRefName': branch}
+                self.assertEqual(r.undone_urls([pull, revert]), {pull['url'], revert['url']})
+        with self.subTest('a branch that only carries the word undoes nothing'):
+            for branch in ('feature/revert-button-12', 'not-a-revert-223-x'):
+                revert = {'url': 'https://github.com/valentinyeo/vstack/pull/282', 'state': 'MERGED',
+                          'number': 282, 'repository': repo, 'title': 'MUBO-453: undo the follow',
+                          'body': '', 'headRefName': branch}
+                self.assertEqual(r.undone_urls([pull, revert]), set(), branch)
+        with self.subTest('a branch naming another pull undoes only that pull'):
+            revert = {'url': 'https://github.com/valentinyeo/vstack/pull/282', 'state': 'MERGED',
+                      'number': 282, 'repository': repo, 'title': 'MUBO-453: undo the follow',
+                      'body': '', 'headRefName': 'revert-2234'}
+            self.assertEqual(r.undone_urls([pull, revert]), {revert['url']})
         with self.subTest('prose that only mentions a ticket undoes nothing'):
             self.assertEqual(r.undone_urls([pull]), set())
             self.assertEqual(r.undone_urls([pull, {**pull, 'state': 'OPEN', 'body': 'Reverts #223'}]),
