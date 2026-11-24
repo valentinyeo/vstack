@@ -57,6 +57,30 @@ Get `<userId>` from `creatorId` in `hypertask comment list <ticket>`, or from an
 
 **Agent lane:** `hypertask activity add <ticket> --text` from an agent login. Only agent-to-agent coordination chatter no person needs: claims, `Next:`, branch or PR names, and resume commands. Plain text, no HTML tags. Never put evidence, proof, results, verdicts, or done summaries here — those always go in a people comment (`comment add --kind done` or `--kind qa`) in plain words with screenshot or video links. `hooks/agent-lane-guard.py` refuses result-like text in `activity add`, including `vcc activity add` and `poteto-ticket log`. Structured column-move notes are coordination; result prose or media links added to them still block. Never post an agent note under a person's login.
 
+## One comment for every real step
+
+Valentin follows a ticket by reading its people comments. He never reads the agent lane. A ticket
+with no people comment reads as no progress at all.
+
+Every real step on a ticket gets one short people comment (`hypertask comment add <ticket> --kind qa`,
+or `--kind done` at the end):
+
+- work started: what you do now, and when the next line lands
+- PR opened: the PR link
+- checks green or red: the run link, and what happens next
+- verifier verdict: pass or fail, with the report link
+- merged and live: what he can see now, with the screenshot or video link
+- blocked or waiting: what stops it, and who moves it
+
+Each comment says what changed, what is next, and carries its proof link. One idea per comment,
+plain short sentences, a `<p>` or a `<ul>` and nothing fancier. No logs, paths or tag soup.
+Skip a step only when nothing changed since the last comment.
+
+Only agent-to-agent chatter stays in the agent lane: claims, `Next:`, branch names, resume commands.
+
+Check: `skills/hypertask-work/board-lint` rule `silent-ticket` names every card in a working column,
+and every card that moved to Done in the last day, that carries no comment since it entered it.
+
 ## Comment rules that break rendering or notifications
 
 - Wrap every description and comment in HTML block tags: `<p>`, `<ul><li>`, `<strong>`. Never bare text or a run of `<br>`.

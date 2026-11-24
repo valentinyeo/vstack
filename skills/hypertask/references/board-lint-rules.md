@@ -21,3 +21,4 @@ Each chat also runs it inside its own drain check, on its own label, where each 
 | `view-owner` | A chat's view is owned by a person, not the chat's agent (`views.md`) | board-lint; report only, recreate the view as the agent login |
 | `ticket-split` | One ticket hiding two units of work | written only |
 | `agent-lane-results` | `hypertask activity add` carrying results, verdicts, proof, done summaries, or screenshot/video links instead of coordination chatter (`tickets.md`) | `hooks/agent-lane-guard.py` (PreToolUse hook and worker shim) |
+| `silent-ticket` | Card in a working column, or moved to Done in the last day, with no comment since it entered that column: Valentin cannot follow it (`tickets.md`) | board-lint; drain-check warns |

@@ -20,6 +20,7 @@ Prior art: pstack `poteto-mode` was checked for task workflow rules; it covers s
 - One unit of work, one ticket. It starts before the work and ends in Done with proof.
 - Never delete a ticket. Archive it, or move it to Done.
 - A Hypertask command that fails unexpectedly is a fault. File `hypertask feedback` the same minute, then keep working.
+- Every real step on a ticket gets one short people comment in plain words, so Valentin can follow it without the agent lane.
 - Read the one reference file for the topic you are on. Do not work from memory of an old skill.
 
 ## Map

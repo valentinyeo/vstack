@@ -55,6 +55,8 @@ ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.Sub
 SESSION_TIMEOUT = 60
 CHAT_LOGIN = "as the chat's own login"
 
+SILENT_DONE_SEC = 86400
+
 STALE_SEC = {
     'Todo': 14 * 86400,
     'Verification Backlog': 14 * 86400,
@@ -80,6 +82,7 @@ RULE_ROWS = (
     {'id': 'unnamed-identity', 'ref': 'skills/hypertask/references/identity.md', 'enforcer': 'board-lint'},
     {'id': 'view-filter', 'ref': 'skills/hypertask/references/views.md', 'enforcer': 'board-lint'},
     {'id': 'view-owner', 'ref': 'skills/hypertask/references/views.md', 'enforcer': 'board-lint'},
+    {'id': 'silent-ticket', 'ref': 'skills/hypertask/references/tickets.md', 'enforcer': 'board-lint'},
 )
 
 
@@ -141,6 +144,18 @@ def owner_chat(task):
 def section_changed_at(task):
     stale = task.get('staleness') if isinstance(task.get('staleness'), dict) else {}
     value = stale.get('sectionChangedAt') or task.get('sectionChangedAt')
+    if not value:
+        return None
+    try:
+        return reconcile.stamp(value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def last_comment_at(task):
+    """The board's own `lastCommentAt` for this card in epoch seconds, or None."""
+    stale = task.get('staleness') if isinstance(task.get('staleness'), dict) else {}
+    value = stale.get('lastCommentAt') or task.get('lastCommentAt')
     if not value:
         return None
     try:
@@ -685,6 +700,27 @@ def check_stale(task, now, breaks):
                             f'idle {days}d in {task.get("section")} since section change; work or re-triage'))
 
 
+def check_silent_ticket(task, now, breaks):
+    entered = section_changed_at(task)
+    section = task.get('section')
+    if entered is None:
+        return
+    if section == DONE:
+        if now - entered > SILENT_DONE_SEC:
+            return
+        fix = ('moved to Done with no Done comment since; add one short comment: what shipped '
+               'and its proof link (`hypertask comment add <ticket> --kind done`)')
+    elif section in WORKING:
+        fix = (f'no comment since it entered {section}; add one short plain comment now: what '
+               'changed, what is next, proof link (`hypertask comment add <ticket> --kind qa`)')
+    else:
+        return
+    said = last_comment_at(task)
+    if said is not None and said >= entered:
+        return
+    breaks.append(Break(task['ticketNumber'], 'silent-ticket', owner_chat(task), fix))
+
+
 def check_duplicates(tasks, breaks):
     buckets = defaultdict(list)
     for task in tasks:
@@ -865,6 +901,7 @@ def lint(args, shared=None):
         check_no_owner_label(task, breaks)
         check_unnamed_identity(task, breaks)
         check_stale(task, now, breaks)
+        check_silent_ticket(task, now, breaks)
     check_duplicates(tasks, breaks)
     if pull_rules and args.fixture:
         check_unlinked_prs(board, tasks, pulls, breaks)
