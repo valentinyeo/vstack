@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import importlib.util
+import pwd
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -228,12 +230,49 @@ class WorkerShim(unittest.TestCase):
 
 
 class Wiring(unittest.TestCase):
-    def test_the_hook_is_registered_and_installed_for_workers(self):
+    """The guard must reach every chat, not only one whose cwd is vstack (VSTA-204)."""
+
+    def install(self, home):
+        env = {key: value for key, value in os.environ.items()
+               if key not in ('VSTACK_DIR', 'VSTACK_INSTALL_ANYWHERE')}
+        env['HOME'] = str(home)
+        env['VSTACK_INSTALL_ANYWHERE'] = '1'
+        result = subprocess.run(['bash', str(ROOT / 'install')], env=env, text=True,
+                                capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return json.loads((home / '.claude/settings.json').read_text())
+
+    def registrations(self, settings):
+        return [(group.get('matcher'), hook.get('command', ''), hook.get('timeout'))
+                for group in settings['hooks']['PreToolUse']
+                for hook in group.get('hooks', [])
+                if 'pr-cap-guard.py' in hook.get('command', '')]
+
+    def test_install_registers_the_hook_once_in_user_settings(self):
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        home = scratch / 'home'
+        home.mkdir()
+        real = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.claude/settings.json'
+        before = real.read_bytes() if real.is_file() else None
+        first = self.install(home)
+        self.assertEqual(len(self.registrations(first)), 2, first)
+        found = self.registrations(self.install(home))
+        self.assertEqual(len(found), 2, found)
+        self.assertEqual(sorted(matcher for matcher, _, _ in found),
+                         ['Bash', 'mcp__.*create_pull_request'])
+        for _, command, timeout in found:
+            self.assertIn('"$HOME/.local/share/vstack/hooks/run-hook"', command)
+            self.assertIn('"$HOME/.claude/hooks/pr-cap-guard.py"', command)
+            self.assertEqual(timeout, 30)
+        self.assertEqual(real.read_bytes() if real.is_file() else None, before,
+                         'the test must never touch the real ~/.claude/settings.json')
+
+    def test_the_repo_does_not_register_the_hook_a_second_time(self):
         settings = json.loads((ROOT / '.claude/settings.json').read_text())
-        commands = [hook.get('command', '')
-                    for group in settings['hooks']['PreToolUse']
-                    for hook in group.get('hooks', [])]
-        self.assertTrue(any('pr-cap-guard.py' in command for command in commands), commands)
+        self.assertEqual(self.registrations(settings), [])
+
+    def test_the_hook_is_installed_for_workers(self):
         install = (ROOT / 'install').read_text()
         self.assertIn('--pr-cap-hook', install)
         self.assertIn('pr-cap-guard.py', install)
