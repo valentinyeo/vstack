@@ -105,7 +105,22 @@ def spawn_card(command, env):
                      env=env, cwd=str(Path.home()))
 
 
-def sync_card(key, phase, env=None):
+LANE_WAITING = 'nothing ran, waiting for a lane'
+
+
+def report(key, code):
+    """One loud line on the worker's own exit, which a pipeline cannot hide.
+
+    plan-pick exits 75 when every lane is used up and no worker ran (VSTA-182).
+    The chat's launch command ends in `| tail`, so bash hands it tail's 0 and the
+    run reads as a success. This line is the last one it prints, so `tail` shows
+    it and the chat can no longer call a run that ran nothing started.
+    """
+    note = f': {LANE_WAITING}' if code == 75 else ''
+    print(f'lease: {key} worker exited {code}{note}', file=sys.stderr, flush=True)
+
+
+def sync_card(key, phase, env=None, worker_exit=None):
     """Sync this card on start and on end, as the chat's own login.
 
     The run is `reconcile --ticket KEY --apply --limit 1`, fully detached, and it
@@ -127,6 +142,8 @@ def sync_card(key, phase, env=None):
         env['HT_TOKEN'] = Path(token).read_text().strip()
         env['SHIP_SESSION_NAME'] = name
         env['RECONCILE_CARD_PHASE'] = phase
+        if worker_exit is not None:
+            env['RECONCILE_WORKER_EXIT'] = str(worker_exit)
         env.setdefault('GH_CALLER', 'lease:' + key)
         if phase == 'start':
             take_card(key, name, token, env)
@@ -194,7 +211,8 @@ def main():
             raise
         finally:
             write(args.key, 'end', child.pid)
-            sync_card(args.key, 'end')
+            report(args.key, child.returncode)
+            sync_card(args.key, 'end', worker_exit=child.returncode)
     if command:
         parser.error('unexpected arguments')
     if args.action == 'watch':

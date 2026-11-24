@@ -897,6 +897,60 @@ class ReconcileTest(unittest.TestCase):
             Path(temp.name), 2060, 'SOFT-1', 'start')))
         self.assertEqual(record['session_name'], 'Poteto')
 
+    def test_a_card_sync_records_a_worker_that_ran_nothing(self):
+        """VSTA-182: the end record carries the worker's 75 and says nothing ran."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        with patch.dict(os.environ, {'RECONCILE_CARD_PHASE': 'end',
+                                     'RECONCILE_WORKER_EXIT': '75'}):
+            code, _printed, _calls = self.ticket_run(['--ticket', 'SOFT-1'], task('Doing'),
+                                                     home=Path(temp.name))
+            record = json.loads(r.session.card_record_path(
+                Path(temp.name), 2060, 'SOFT-1', 'end').read_text())
+        self.assertEqual(code, 0)
+        self.assertEqual(record['worker_exit'], 75)
+        self.assertEqual(record['worker_note'], 'nothing ran, waiting for a lane')
+        self.assertEqual(r.NOTHING_RAN, record['worker_note'],
+                         'the record and the column line say the same thing')
+
+    def test_a_run_that_ran_nothing_puts_the_card_back_waiting(self):
+        """VSTA-182: the lease start moved the card to Doing, then plan-pick exited 75,
+        and the end sync held Doing for two hours as if a worker were in there."""
+        recent = {**task('Doing'), 'updatedAt': NOW - 60}
+        with patch.dict(os.environ, {'RECONCILE_CARD_PHASE': 'end'}, clear=False):
+            os.environ.pop('RECONCILE_WORKER_EXIT', None)
+            _code, held, _calls = self.ticket_run(['--ticket', 'SOFT-1'], recent)
+        self.assertIn('KEEP SOFT-1 Doing -> Doing | touched within 2h', held)
+
+        with patch.dict(os.environ, {'RECONCILE_CARD_PHASE': 'end',
+                                     'RECONCILE_WORKER_EXIT': '75'}):
+            code, printed, calls = self.ticket_run(
+                ['--ticket', 'SOFT-1', '--apply', '--limit', '1'], recent)
+        self.assertEqual(code, 0)
+        self.assertIn('PLAN SOFT-1 Doing -> Todo | nothing ran, waiting for a lane', printed)
+        self.assertEqual(calls['moves'], ['SOFT-1'], 'the card says waiting, not started')
+
+    def test_a_ran_nothing_sync_leaves_a_live_worker_alone(self):
+        """A relaunch that did start a worker keeps its card in Doing: the old 75
+        belongs to the run that ended, not to the worker now in there."""
+        facts = r.Facts('Doing', 60, alive=True)
+        with patch.dict(os.environ, {'RECONCILE_WORKER_EXIT': '75'}):
+            planned, reason = r.plan_stage(facts, r.Stage.IN_PROGRESS, r.DEFAULT)
+        self.assertEqual(planned, r.Stage.IN_PROGRESS)
+        self.assertEqual(reason, 'live worker: lease or process')
+
+    def test_a_card_sync_without_a_worker_exit_claims_no_run(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        with patch.dict(os.environ, {'RECONCILE_CARD_PHASE': 'start'}, clear=False):
+            os.environ.pop('RECONCILE_WORKER_EXIT', None)
+            _code, _printed, _calls = self.ticket_run(['--ticket', 'SOFT-1'], task('Doing'),
+                                                      home=Path(temp.name))
+            record = json.loads(r.session.card_record_path(
+                Path(temp.name), 2060, 'SOFT-1', 'start').read_text())
+        self.assertIsNone(record['worker_exit'])
+        self.assertIsNone(record['worker_note'])
+
     def test_current_head_cross_family_actions_verdict(self):
         workflow = {'head_sha': HEAD, 'status': 'completed', 'conclusion': 'success',
                     'path': '.github/workflows/pstack-verifier.yml'}
@@ -2076,6 +2130,29 @@ class LeaseTest(unittest.TestCase):
             self.assertEqual(self.lease_main(['SOFT-1', 'watch', '--pid', '12345']), 0)
         self.assertEqual([env['RECONCILE_CARD_PHASE'] for _command, env in self.spawned],
                          ['start', 'end'])
+
+    def test_a_worker_that_ran_nothing_says_so(self):
+        """VSTA-182: every lane used up, plan-pick exits 75, and the launch command's
+        `| tail` handed bash tail's 0, so the run read as started. The lease now says it."""
+        self.spawned, said = [], io.StringIO()
+        no_lane = 'plan-pick: no lane left, nothing ran. every lane is used up or limited\n'
+        with contextlib.redirect_stderr(said):
+            code = self.lease_main(['VSTA-182', 'run', '--', sys.executable, '-c',
+                                    f'import sys; sys.stderr.write({no_lane!r}); sys.exit(75)'])
+        self.assertEqual(code, 75, 'the exit code still reaches the caller')
+        self.assertIn('lease: VSTA-182 worker exited 75: nothing ran, waiting for a lane',
+                      said.getvalue())
+        self.assertEqual(self.spawned[-1][1]['RECONCILE_WORKER_EXIT'], '75',
+                         'the card record carries the worker exit, not just the sync exit')
+
+    def test_a_worker_that_worked_reports_a_plain_exit(self):
+        self.spawned, said = [], io.StringIO()
+        with contextlib.redirect_stderr(said):
+            code = self.lease_main(['SOFT-1', 'run', '--', sys.executable, '-c', 'pass'])
+        self.assertEqual(code, 0)
+        self.assertIn('lease: SOFT-1 worker exited 0', said.getvalue())
+        self.assertNotIn('nothing ran', said.getvalue())
+        self.assertEqual(self.spawned[-1][1]['RECONCILE_WORKER_EXIT'], '0')
 
     def sync_start(self, assignees, take_code=0):
         """Run one start action with the board CLI faked; return its calls."""

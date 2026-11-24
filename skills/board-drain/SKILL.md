@@ -16,7 +16,7 @@ The loop prompt:
 /pstack:poteto-mode full autopilot on this queue: every workable ticket in my view <view URL>. each item is independent. done when skills/board-drain/drain-check --board <id> --label <label> passes.
 ```
 
-Owners start through `~/.local/bin/plan-pick --run` in `../hypertask-work/lease`, never as Claude chats; columns follow `/hypertask` and references/board.md, never Valentin Review.
+Owners start through `~/.local/bin/plan-pick --run` in `../hypertask-work/lease`, never as Claude chats; columns follow `/hypertask` and references/board.md, never Valentin Review. Read the lease's last line and its exit status: `worker exited 75: nothing ran, waiting for a lane` means no lane was free, so report waiting, not started. A launch command ending in `| tail` hands bash `tail`'s 0 and hides that status; keep the status with `set -o pipefail` or no pipe.
 
 ## Arm
 

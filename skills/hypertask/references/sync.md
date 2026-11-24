@@ -50,7 +50,9 @@ Board sync is per project and per chat. Nothing user-wide runs it.
 
 A sync writes one status record per board and label: `~/.local/state/reconcile-auto/<board>-<label>.json`, with its log beside it. Fields: `at`, `session_name`, `board`, `label`, `ticket`, `exit`, `moved`, `unknown`, `summary_line`, `log`.
 
-The lease writes one card record per phase: `<board>-<ticket>-<phase>.json`, with `phase` `start` or `end` from `RECONCILE_CARD_PHASE`. It has the same fields.
+The lease writes one card record per phase: `<board>-<ticket>-<phase>.json`, with `phase` `start` or `end` from `RECONCILE_CARD_PHASE`. It has the same fields, plus `worker_exit` from `RECONCILE_WORKER_EXIT` and `worker_note`, which reads `nothing ran, waiting for a lane` when that exit is 75.
+
+An end sync with `worker_exit` 75 puts the card back with `nothing ran, waiting for a lane`, even inside the two-hour grace. The start moved it to Doing because a lease existed; the 75 says no worker ran, so the card waits instead of reading as started.
 
 A card sync that cannot read its ticket writes no record; its one line goes to `failures.jsonl`.
 
