@@ -30,13 +30,13 @@ Move the ticket the moment its stage moves. The PR outranks a live worker.
 - merged with PASS on the head -> Done, unless a PR linked to the same ticket was opened after that merge and is still open: the newer PR is the work in flight (a redo after a revert), so the card follows its stage, Checks or AI Review
 - merged without PASS -> Todo, a rule break the owner must verify
 - a merged PR that a later merged revert names (a `Revert "..."` title or a `Reverts owner/repo#n` line) never counts as shipped
-- open PR checks red or missing, no push, check run or comment for 24h, no live worker -> Todo, and it stays there until the PR moves again
+- open PR checks red or missing, no push, check run or comment for an hour, no live worker -> Todo, and it stays there until the PR moves again. The root audits every hour, and an owner with nothing new by the first tick is stuck (pstack `autopilot-full` step 6)
 
 A merged PR is evidence only when it merged after the card entered the column it is in now. A card parked or reopened behind an older merge keeps its column, and a card already in review stays there: an old merge is history, never a promotion, and never a demotion. Open PRs and live workers read the same as before.
 
-A verifier PASS runs before the merge, so no card waits for live proof after one (pstack `shipping.md` step 1). Board 15 is the exception and keeps its own config: it runs no verifier gate, so a merge there is review evidence, Done there is a Done comment with live proof, and its red PRs stay in Checks instead of going back to Backlog on the 24h clock.
+A verifier PASS runs before the merge, so no card waits for live proof after one (pstack `shipping.md` step 1). Board 15 is the exception and keeps its own config: it runs no verifier gate, so a merge there is review evidence, Done there is a Done comment with live proof, and its red PRs stay in Checks instead of going back to Backlog on the hourly clock.
 
-A ticket waiting on Valentin, or blocked by another ticket, stays where it is. Never move a ticket into Valentin Review. Other boards keep their own columns; use the name the board shows, including the `Building` and `Verifier` aliases.
+A ticket waiting on Valentin, or blocked by a card whose own work is in flight (a live worker or an open PR), stays where it is, and the plan line names that blocker. A blocker that is Done or idle holds nothing: the card follows the idle rules. The links come from the board read itself (`blockingTasks`), never from a read per card. Never move a ticket into Valentin Review. Other boards keep their own columns; use the name the board shows, including the `Building` and `Verifier` aliases.
 
 Verification tickets carry the label `verification` and start in Verification Backlog. The reconcile moves a labelled ticket out of Todo into that column, and an unlabelled one back to Todo. An open or merged PR still outranks the label.
 

@@ -410,9 +410,10 @@ class CheckTest(unittest.TestCase):
         code, out = self.run_check([doing('SOFT-2907', age=7200)], alive=True)
         self.assertEqual(code, 0, out)
 
-    def test_a_red_pr_idle_a_day_with_no_owner_is_stuck(self):
-        # VSTA-187: a card parked in Checks on a red PR that took no push for a day,
-        # with no worker holding it, needs a fresh owner rather than another tick.
+    def test_a_red_pr_idle_an_hour_with_no_owner_is_stuck(self):
+        # VSTA-187, now on the hourly clock (VSTA-208): a card parked in Checks on a red
+        # PR that took no push for an hour, with no worker holding it, needs a fresh
+        # owner rather than another tick.
         with patch.object(drain, 'read_pull_facts') as read:
             code, out = self.run_payload(checks_payload(stuck_card(), red_pull()))
         self.assertEqual(code, 1, out)
@@ -431,8 +432,10 @@ class CheckTest(unittest.TestCase):
         read.assert_not_called()
         self.assertNotIn('stuck:', out)
 
-    def test_a_push_inside_a_day_is_not_stuck(self):
-        for push in (iso(NOW - 3600), iso(NOW - 86400)):
+    def test_a_push_inside_an_hour_is_not_stuck(self):
+        # The window is one hour: a push inside it, or exactly on it, still counts as
+        # an owner working the PR.
+        for push in (iso(NOW - 60), iso(NOW - 3600)):
             with self.subTest(push=push):
                 with patch.object(drain, 'read_pull_facts') as read:
                     code, out = self.run_payload(checks_payload(stuck_card(), red_pull(push)),
@@ -477,23 +480,39 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn('stuck:', out)
 
-    def test_a_listed_pr_pushed_inside_a_day_is_not_stuck(self):
-        pull = listed_pull(pushed=iso(NOW - 3600))
+    def test_a_listed_pr_pushed_inside_an_hour_is_not_stuck(self):
+        pull = listed_pull(pushed=iso(NOW - 60))
         with patch.object(drain, 'open_pull_rows', return_value=[pull]):
             code, out = self.run_payload({'rows': [stuck_card()]})
         self.assertEqual(code, 0, out)
         self.assertNotIn('stuck:', out)
 
-    def test_the_listing_is_read_once_an_hour(self):
+    def test_the_listing_is_read_once_ten_minutes(self):
         listing = [listed_pull()]
         with patch.object(drain, 'open_pull_rows', return_value=listing) as read:
             first = self.run_payload({'rows': [stuck_card()]})
-            second = self.run_payload({'rows': [stuck_card()]}, now=NOW + 1800)
-            third = self.run_payload({'rows': [stuck_card()]}, now=NOW + 3601)
+            second = self.run_payload({'rows': [stuck_card()]}, now=NOW + 300)
+            third = self.run_payload({'rows': [stuck_card()]}, now=NOW + 601)
         self.assertEqual((first[0], second[0], third[0]), (1, 1, 1), second[1])
-        self.assertEqual(read.call_count, 2, 'one read an hour, not one a tick')
+        self.assertEqual(read.call_count, 2, 'one read per ten minutes, not one a tick')
         for code, out in (first, second, third):
             self.assertIn('stuck: SOFT-2940 in Checks', out)
+
+    def test_a_listing_taken_before_the_last_push_cannot_mark_a_card_stuck(self):
+        # The listing is a snapshot: a push after it was taken is invisible to it, so a
+        # card read from it is judged against the moment of the snapshot, not now.
+        pull = listed_pull(pushed=iso(NOW - 3000))
+        drain.save_listing(drain.reconcile.BOARDS[2060], [pull], NOW - 600)
+        code, out = self.run_payload({'rows': [stuck_card()]})
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('stuck:', out)
+
+    def test_a_listing_that_saw_an_hour_of_silence_marks_the_card_stuck(self):
+        pull = listed_pull(pushed=iso(NOW - 2 * 3600))
+        drain.save_listing(drain.reconcile.BOARDS[2060], [pull], NOW - 600)
+        code, out = self.run_payload({'rows': [stuck_card()]})
+        self.assertEqual(code, 1, out)
+        self.assertIn('stuck: SOFT-2940 in Checks', out)
 
     def test_a_failed_listing_read_hides_no_other_finding(self):
         for failure in (RuntimeError('gh down'), KeyError('data'), ValueError('not json')):
