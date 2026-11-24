@@ -466,6 +466,7 @@ class PullFactsTest(unittest.TestCase):
                                        'pulls': [{'url': 'https://github.com/org/repo/pull/1',
                                                   'state': 'MERGED', 'number': 1,
                                                   'mergedAt': '2027-01-01T00:00:00Z',
+                                                  'createdAt': '2026-12-31T00:00:00Z',
                                                   'repository': {'nameWithOwner': 'org/repo'}}],
                                        'facts': {}}}}
 

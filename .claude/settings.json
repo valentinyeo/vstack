@@ -46,6 +46,21 @@
           {
             "type": "command",
             "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$CLAUDE_PROJECT_DIR\"/hooks/pstack-new-gates.py"
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/pr-cap-guard.py\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*create_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/pr-cap-guard.py\"",
+            "timeout": 30
           }
         ]
       }
