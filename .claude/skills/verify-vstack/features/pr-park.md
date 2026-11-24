@@ -1,10 +1,10 @@
 # Park PRs above the agent cap
 
-A board-drain label keeps at most five open PRs. `skills/board-drain/drain-check` names the newest extras and fails. `skills/board-drain/pr-park` previews parking by default and changes PRs and cards only with `--apply`.
+A board-drain label keeps at most as many open PRs as `skills/board-drain/wip-cap` holds for it (five today), so one table owns the number. `skills/board-drain/drain-check` names the newest extras and fails. `skills/board-drain/pr-park` previews parking by default and changes PRs and cards only with `--apply`.
 
 ## Sub-features
 
-- `agent-cap` counts distinct open PRs matched to the label's tickets through reconcile's ticket keys, aliases, board URLs, branches, and card links. Five passes. Six fails and names the newest extra.
+- `agent-cap` counts distinct open PRs matched to the label's tickets through reconcile's ticket keys, aliases, board URLs, branches, and card links. The cap is `wip-cap`'s label cap. Five passes. Six fails and names the newest extra.
 - `park` closes newest extras with the required parking comment, keeps branches, and moves their cards to Todo using the chat's own token.
 - `resume` reopens the oldest parked PRs into available slots and moves their Todo cards to Checks.
 - `retry` reads saved parking records and current PR states. A second run changes nothing. Interrupted card moves finish without another close or reopen, even while GitHub search is stale.

@@ -821,7 +821,8 @@ def read_view(args, now):
         else:
             workable.append(row)
     # An urgent Todo card may start while its label is at cap, so its nudge stands.
-    # PRs over the label cap hold a new start back the same way open tickets do.
+    # An open PR over the cap is not the same: it gets parked before any new start,
+    # urgent or not, because a start would open one more.
     held_by_cap = (len(opened) >= cap
                    or (over and not any(wip.urgent(row['task']) for row in workable)))
     for row in doings:
