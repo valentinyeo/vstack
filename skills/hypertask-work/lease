@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Write worker leases. fleet/lease KEY run -- COMMAND beats until COMMAND ends."""
+"""Write worker leases. fleet/lease KEY run -- COMMAND beats until COMMAND ends.
+
+A run refuses to start in a shared checkout: a worker edits in a git worktree only.
+"""
 import argparse
 import fcntl
 import importlib.machinery
@@ -112,6 +115,15 @@ LANE_WAITING = 'nothing ran, waiting for a lane'
 # The card's start is refused, not its worker run: nothing runs and the chat must
 # ship one of its open tickets first (VSTA-206).
 CAP_HELD = 'lease: {key} held: {line}'
+# Other chats read the shared checkout live, so a worker never starts in one. The
+# launch line's `cd` can fail and bash carries on in the shared checkout (VSTA-259).
+SHARED = ('lease: refusing to run a worker in a shared checkout ({path} on {branch}); '
+          'make a git worktree on a branch first')
+NO_BRIEF = ('lease: refusing to run a worker in {path}, which is no git checkout and '
+            'holds no brief.txt; make a git worktree on a branch first')
+DEFAULT_BRANCHES = frozenset({'main', 'master'})
+BRIEF = 'brief.txt'
+GIT_TIMEOUT = 5
 
 
 def board_tasks(board_id):
@@ -139,6 +151,50 @@ def cap_refusal(key):
         return None
     line = wip.read_held(board_id, labels, board_tasks)
     return CAP_HELD.format(key=key, line=line) if line else None
+
+
+def git_read(*args, cwd=None):
+    """One git answer, or None when git cannot give one."""
+    try:
+        done = subprocess.run(['git', *args], cwd=cwd, capture_output=True, text=True,
+                              timeout=GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def checkout(path=None):
+    """(top, branch, shared) for a launch directory, or None outside git.
+
+    A checkout is shared when it is the repo's main worktree, or when its current
+    branch is the branch that repo checks out by default. Anything git cannot answer
+    reads as shared: a launch never proves itself a worktree.
+    """
+    here = str(path or os.getcwd())
+    top = git_read('rev-parse', '--show-toplevel', cwd=here)
+    if not top:
+        return None
+    branch = git_read('rev-parse', '--abbrev-ref', 'HEAD', cwd=here) or 'HEAD'
+    common = git_read('rev-parse', '--git-common-dir', cwd=here)
+    if common and not os.path.isabs(common):
+        common = os.path.join(top, common)
+    main = os.path.realpath(os.path.join(top, '.git'))
+    linked = common is not None and os.path.realpath(common) != main
+    return top, branch, not linked or branch in DEFAULT_BRANCHES
+
+
+def shared_refusal(path=None):
+    """The one line that refuses a launch in a shared checkout, or None.
+
+    A linked worktree on a branch is the normal launch directory. A directory outside
+    git is allowed only when it holds the brief a plan-pick launch reads.
+    """
+    here = str(path or os.getcwd())
+    where = checkout(here)
+    if where is None:
+        return None if (Path(here) / BRIEF).is_file() else NO_BRIEF.format(path=here)
+    top, branch, shared = where
+    return SHARED.format(path=top, branch=branch) if shared else None
 
 
 def report(key, code):
@@ -214,6 +270,10 @@ def main():
             command = command[1:]
         if not command:
             parser.error('run requires -- COMMAND')
+        refusal = shared_refusal()
+        if refusal is not None:
+            print(refusal, file=sys.stderr, flush=True)
+            return 2
         refusal = cap_refusal(args.key)
         if refusal is not None:
             print(refusal, file=sys.stderr, flush=True)

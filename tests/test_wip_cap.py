@@ -122,6 +122,11 @@ class LeaseRefusalTest(unittest.TestCase):
         popping = patch.object(lease.subprocess, 'Popen')
         started = popping.start()
         self.addCleanup(popping.stop)
+        # This class tests the cap; the checkout here is the shared one, and
+        # tests/test_hypertask_work.py proves the shared-checkout refusal (VSTA-259).
+        checkout = patch.object(lease, 'shared_refusal', return_value=None)
+        checkout.start()
+        self.addCleanup(checkout.stop)
         started.return_value.poll.return_value = 0
         started.return_value.returncode = 0
         board = (patch.object(lease, 'board_tasks', side_effect=read_error) if read_error

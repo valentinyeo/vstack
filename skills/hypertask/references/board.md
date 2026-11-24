@@ -57,8 +57,16 @@ A hand move is allowed when the board is wrong and the reconcile will not fix it
 A launch through the lease writes a lease; a plain agent launch writes none. Wrap the launch:
 
 ```bash
+cd <worktree> || exit 1
 skills/hypertask-work/lease "$KEY" run -- worker-command worker-arguments
 ```
+
+The `cd` needs its `|| exit 1`: without it bash carries on in whatever directory it
+started in. A run in a shared checkout is refused with exit 2 and one
+`lease: refusing to run a worker in a shared checkout (<path> on <branch>); make a git
+worktree on a branch first` line, before any lease is taken. A linked `git worktree` on
+a feature branch starts normally; a directory outside git starts only when it holds
+`brief.txt`.
 
 An already running worker:
 
