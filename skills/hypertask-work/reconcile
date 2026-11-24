@@ -1278,12 +1278,76 @@ def probe_items(board, saved):
     """The change probe's rows, or None when GitHub will not answer the search."""
     try:
         with phase('probe'):
-            return probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
+            items = probe_changed_prs(board, saved['probe_since'], saved.get('repos') or ())
     except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         # A refused probe is a missed probe, never a dead sync: read every fact instead.
         print(f'reconcile: probe failed: {error}; reading every fact instead',
               file=sys.stderr, flush=True)
         return None
+    with phase('probe'):
+        return probe_heads(items, saved_pull_index(saved))
+
+
+HEAD_FIELDS = 'headRefName'
+
+
+def cached_branch(repo, number):
+    """A PR's head branch, read once: a pull keeps its branch for good."""
+    branch = cache_read(f'head-v1:{repo}#{number}')
+    return branch if isinstance(branch, str) else ''
+
+
+def read_heads(refs):
+    """The head branch of each pull, a batch per GitHub call."""
+    found = {}
+    for offset in range(0, len(refs), PULL_BATCH):
+        batch = refs[offset:offset + PULL_BATCH]
+        result = json.loads(run('gh', 'api', 'graphql', '-f',
+                                'query=' + pull_query(batch, HEAD_FIELDS)))
+        data = result.get('data') or {}
+        for n, ref in enumerate(batch):
+            node = (data.get(f'p{n}') or {}).get('pullRequest') or {}
+            if node.get('headRefName'):
+                found[ref] = node['headRefName']
+    return found
+
+
+def probe_heads(items, saved_index=()):
+    """Give a probe row the head branch it needs to undo a merge.
+
+    The probe is one REST search, and a REST issue row carries no branch, while a
+    revert is told by its branch: `revert-<n>`, GitHub's own `revert-<n>-<branch>`,
+    or our `<prefix>/revert-<n>` (VSTA-256). Only a merged pull can undo a merge,
+    and a branch is read once and cached, so this costs no call after the first.
+    """
+    wanted = {}
+    for item in items:
+        if item.get('headRefName'):
+            continue
+        pull = search_item_to_pull(item, saved_index)
+        repo, number = pull['repository']['nameWithOwner'], pull['number']
+        if pull['state'] != 'MERGED' or not repo or not number:
+            continue
+        branch = cached_branch(repo, number)
+        if branch:
+            item['headRefName'] = branch
+            continue
+        wanted[(repo, number)] = item
+    if not wanted:
+        return items
+    try:
+        found = read_heads(list(wanted))
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError,
+            subprocess.SubprocessError) as error:
+        # A branch this run cannot read costs one undo, never the sync.
+        print(f'reconcile: head branch read failed: {error}', file=sys.stderr, flush=True)
+        return items
+    updates = {}
+    for (repo, number), branch in found.items():
+        wanted[(repo, number)]['headRefName'] = branch
+        updates[f'head-v1:{repo}#{number}'] = branch
+    cache_write_many(updates)
+    return items
 
 
 def probe_changed_prs(board, since_iso, repos=()):
@@ -1981,10 +2045,14 @@ def shipped(pull, board=DEFAULT):
     return release is None or pull.get('baseRefName') in (None, release)
 
 
-# The three ways GitHub writes a revert. One merged revert undoes one merged PR.
+# The ways a revert names what it undoes. One merged revert undoes one merged PR.
 REVERT_TITLE = re.compile(r'^[ \t]*Revert[ \t]+"(.+)"[ \t]*(?:\(#\d+\))?[ \t]*$', re.I)
 REVERT_NUMBER = re.compile(r'^[ \t]*Reverts?[ \t]+(?:[\w.-]+/[\w.-]+)?#(\d+)[ \t]*$', re.I | re.M)
 REVERT_COMMIT = re.compile(r'^[ \t]*This reverts commit ([0-9a-f]{7,40})', re.I | re.M)
+# A revert's branch names the pull it undoes in the same repo: GitHub's own revert
+# button branches `revert-<n>-<branch>`, our agents use `<prefix>/revert-<n>`. A
+# branch that only carries the word, `feature/revert-button-12`, is nobody's revert.
+REVERT_BRANCH = re.compile(r'(?:^|/)revert-(\d+)(?:-|$)')
 SQUASH_SUFFIX = re.compile(r'[ \t]*\(#\d+\)$')
 
 
@@ -1999,14 +2067,16 @@ def merge_commit(pull):
 
 
 def revert_markers(pull):
-    """What one pull says it undoes: a quoted title, a `Reverts #n` line, or a commit."""
+    """What one pull says it undoes: a branch, a quoted title, a `Reverts #n`, a commit."""
     repo = (pull.get('repository') or {}).get('nameWithOwner') or ''
     title, body = pull.get('title') or '', pull.get('body') or ''
     quoted = REVERT_TITLE.match(title)
     found = [('title', repo, squashless(quoted[1]))] if quoted else []
+    found += [('number', repo, int(match)) for match in REVERT_BRANCH.findall(pull.get('headRefName') or '')]
     found += [('number', repo, int(match[1])) for match in REVERT_NUMBER.finditer(body)]
     found += [('commit', repo, match[1].lower()) for match in REVERT_COMMIT.finditer(body)]
-    return found
+    # A revert that names its pull twice undoes it once.
+    return list(dict.fromkeys(found))
 
 
 def undone_urls(pulls):
@@ -2015,7 +2085,9 @@ def undone_urls(pulls):
     #282 reverted #223 while its ticket's card still counted #223 as shipped, so
     the card planned review on one sync and Todo on the next. An undo is not a
     ship of the work, so it leaves the facts on every run, and the run that lands
-    it also takes the reverted merge out.
+    it also takes the reverted merge out. The lookup is by repository, not by card:
+    a revert filed under another ticket (PR 598 on MUBO-453 undoing PR 584) still
+    undoes the merge it names, and the probe already carries that row (VSTA-256).
     """
     merged = [p for p in pulls if p and p.get('state') == 'MERGED' and p.get('url')]
     gone = set()
