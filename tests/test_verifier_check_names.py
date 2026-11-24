@@ -46,9 +46,10 @@ def check(name, oid=HEAD, status='COMPLETED', conclusion='SUCCESS', run=RUN):
 
 
 def pr_344_checks():
-    """The full rollup GitHub returned for #344 on its merged head."""
+    """The rollup GitHub returned for #344 on its merged head,
+    minus the checks the repo has since dropped."""
     return [check('regression'), check('skill-lint'), check('hook-self-tests'),
-            check('skills'), check('up-to-date', run=45390544481),
+            check('skills'),
             check('verifier', run=45390544671),
             check('verify-vstack', run=45390544811),
             check('pacer-check', run=45390544811)]
