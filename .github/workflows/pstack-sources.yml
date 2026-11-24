@@ -33,13 +33,27 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - name: Wording-only changes skip the verifier
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if python3 scripts/wording-only --base "$BASE_SHA" --head "$HEAD_SHA"; then
+            echo "wording-only change: no verifier per pstack autopilot-full step 4" >> "$GITHUB_STEP_SUMMARY"
+            echo "wording_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "wording_only=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.classify.outputs.wording_only != 'true'
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: picker-base
           persist-credentials: false
       - name: Read pinned verifier sources
         id: verifier-sources
+        if: steps.classify.outputs.wording_only != 'true'
         run: |
           python3 - <<'PYTHON'
           import json, os, re
@@ -52,16 +66,20 @@ jobs:
               output.write(f'repository={repository}\nrevision={revision}\n')
           PYTHON
       - uses: actions/checkout@v4
+        if: steps.classify.outputs.wording_only != 'true'
         with:
           repository: ${{ steps.verifier-sources.outputs.repository }}
           ref: ${{ steps.verifier-sources.outputs.revision }}
           path: .verifier-catalog
           persist-credentials: false
       - uses: actions/setup-node@v4
+        if: steps.classify.outputs.wording_only != 'true'
         with:
           node-version: '24'
       - run: npm install --global @earendil-works/pi-coding-agent@1.5.0
+        if: steps.classify.outputs.wording_only != 'true'
       - name: Prepare independent verifier
+        if: steps.classify.outputs.wording_only != 'true'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
@@ -117,6 +135,7 @@ jobs:
           BRIEF
           printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
       - name: Fetch pinned pstack
+        if: steps.classify.outputs.wording_only != 'true'
         run: |
           set -euo pipefail
           ref=$(python3 -c 'import json; print(json.load(open(".skill-lint.json"))["pstack-ref"])')
@@ -130,6 +149,7 @@ jobs:
           echo "PSTACK_PINNED_DIR=$RUNNER_TEMP/cursor-plugins/pstack" >> "$GITHUB_ENV"
       - name: Verifier drives the changed files
         id: drive
+        if: steps.classify.outputs.wording_only != 'true'
         env:
           OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
           AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
@@ -182,6 +202,7 @@ jobs:
             fi
           fi
       - name: Read verifier answer
+        if: steps.classify.outputs.wording_only != 'true'
         env:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -196,6 +217,7 @@ jobs:
           Path('verdict.md').write_text(answer + '\n\nVerifier model: ' + os.environ['VERIFIER_MODEL'] + '. Head `' + os.environ['PR_HEAD'] + '`.\n')
           PYTHON
       - name: Post independent verdict
+        if: steps.classify.outputs.wording_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -203,7 +225,7 @@ jobs:
           gh pr comment "$PR_NUMBER" --body-file verdict.md
           python3 scripts/verdict.py verdict.md
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.classify.outputs.wording_only != 'true'
         with:
           name: verifier-evidence
           path: |
