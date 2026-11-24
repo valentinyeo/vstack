@@ -73,6 +73,16 @@ ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.Sub
 # The load probe: only these findings are about work the server is too busy to take.
 VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
 LOAD_FINDINGS = frozenset({'loop off', 'stale'})
+# A card that holds a review column for a day is work nobody acted on: drain-check says
+# so and passes. The reason and the PR come from the board facts the chat's own sync
+# saved, so naming these cards costs no GitHub call.
+STUCK_STAGES = frozenset({reconcile.Stage.CHECKS, reconcile.Stage.REVIEW})
+STUCK_AGE = 24 * 3600
+STUCK_LINES = 10
+# A board list row carries no staleness, so a card's column entry comes from one task
+# read, kept per board until that card's own update invalidates it.
+COLUMN_ENTRIES = Path(os.environ.get('DRAIN_COLUMN_CACHE')
+                      or Path.home() / '.cache/vstack/drain-check')
 # The lane probe: plan-pick's own record of never finding a free worker lane.
 PLAN_PICK_LOG = Path(os.environ.get('PLAN_PICK_LAUNCHES')
                      or os.path.expanduser('~/.local/state/token-ladder/launches.jsonl'))
@@ -302,6 +312,160 @@ def merge_findings(rows, pulls):
         out.append(('wait on merge', f'wait on merge: {key} waits on Valentin with '
                                      f'{" and ".join(reasons)}; {merge_ask.FIX}'))
     return out
+
+
+def entries_path(board):
+    return COLUMN_ENTRIES / f'column-entry-{board.id}.json'
+
+
+def saved_entries(board):
+    """The column entries this host has already read, by card key."""
+    try:
+        rows = json.loads(entries_path(board).read_text())
+    except (OSError, ValueError):
+        return {}
+    return rows if isinstance(rows, dict) else {}
+
+
+def write_entries(board, entries):
+    """Best effort: a cache that cannot be written costs reads, never a wrong age."""
+    path = entries_path(board)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+        temporary.write_text(json.dumps(entries))
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def column_entry(task, known, may_read=True):
+    """When this card entered its column: the row says it, else one read, else the cache.
+
+    A board read sends no staleness, so a card that does not carry its own entry time
+    costs one `task get`. That read is kept until the card's own update moves it. A
+    fixture is its own answer, so it never reads.
+    """
+    entered = reconcile.column_entered(task)
+    if entered is None and may_read:
+        key = task['ticketNumber']
+        memo = known.get(key) or {}
+        if (memo.get('section') == task.get('section')
+                and memo.get('updated_at') == task.get('updatedAt')):
+            return memo
+        try:
+            entered = reconcile.column_entered(reconcile.read_ticket(key))
+        except ERRORS + (AttributeError, reconcile.BudgetRefused, reconcile.RateLimit):
+            # An entry nobody can read is no age, never a guessed one.
+            return None
+    if entered is None:
+        return None
+    return {'updated_at': task.get('updatedAt'), 'section': task.get('section'),
+            'entered': entered}
+
+
+def entered_columns(tasks, board, may_read=True):
+    """Column entry per card, read once each, keeping the file to cards still in review.
+
+    A fixture answers for itself, so it reads nothing and writes nothing: a test run
+    can never disturb the entries a real tick collected.
+    """
+    known, entries = saved_entries(board), {}
+    for task in tasks:
+        entry = column_entry(task, known, may_read)
+        if entry is not None:
+            entries[task['ticketNumber']] = entry
+    if may_read:
+        write_entries(board, entries)
+    return {key: entry['entered'] for key, entry in entries.items()}
+
+
+def saved_pulls(key, saved):
+    """The PRs the last sync saved for one card, as reconcile's own Pull, verdict included."""
+    entry = ((saved or {}).get('tickets') or {}).get(key) or {}
+    facts = entry.get('facts') or {}
+    out = []
+    for pull in entry.get('pulls') or ():
+        if not isinstance(pull, dict):
+            continue
+        repo = (pull.get('repository') or {}).get('nameWithOwner') or ''
+        fact = facts.get(f'{repo}#{pull.get("number")}') or {}
+        merged = (fact['merged_at'] if 'merged_at' in fact
+                  else reconcile.moment(pull.get('mergedAt')))
+        out.append((pull.get('number'), reconcile.Pull(
+            fact.get('url') or pull.get('url') or '',
+            (fact.get('state') or pull.get('state') or '').upper(),
+            fact.get('checks') or '', bool(fact.get('passed')), merged)))
+    return out
+
+
+def stuck_reason(task, pulls, board, entered, now):
+    """The reason reconcile itself would give this card, and the PR that drives it.
+
+    A card the saved facts do not cover names the sync that would fill them in instead
+    of guessing why it sits there.
+    """
+    if not pulls:
+        return 'no PR in the saved board facts; run ./sync', None
+    spent = age(task, now) or 0
+    facts = reconcile.Facts(task['section'], spent, False, tuple(pull for _, pull in pulls),
+                            waiting(task), bool(task.get('blockerCommentId')),
+                            column_entered=entered)
+    _column, reason = reconcile.target(facts, board)
+    open_pr = next((number for number, pull in pulls if pull.state == 'OPEN'), None)
+    return reason, open_pr or pulls[0][0]
+
+
+def stuck_lines(view, args, now):
+    """This chat's cards holding a review column over a day, oldest first, ten of them.
+
+    Stuck work is the thing a drain loop exists to notice, and no fail ever named it:
+    a card can sit in Checks or AI Review for days with nothing acting on it.
+    """
+    board, rows = view['board'], view['rows']
+    named = view.get('stuck') or ()
+    cards = [row['task'] for row in rows
+             if reconcile.column_stage_of(board, row['task']['section']) in STUCK_STAGES
+             and row['task']['ticketNumber'] not in named]
+    if not cards:
+        return []
+    entered = entered_columns(cards, board, may_read=not args.fixture)
+    stale = [task for task in cards
+             if task['ticketNumber'] in entered
+             and now - entered[task['ticketNumber']] > STUCK_AGE]
+    if not stale:
+        return []
+    saved = board_facts(args, view.get('data'))
+    stale.sort(key=lambda task: entered[task['ticketNumber']])
+    found = []
+    for task in stale:
+        reason, number = stuck_reason(task, saved_pulls(task['ticketNumber'], saved), board,
+                                      entered[task['ticketNumber']], now)
+        spent = f'{int((now - entered[task["ticketNumber"]]) // 3600)}h'
+        named = f'; PR #{number}' if number else ''
+        found.append(f'stuck: {task["ticketNumber"]} in {task["section"]} '
+                     f'{spent}: {reason}{named}')
+    shown = found[:STUCK_LINES]
+    count = f'{len(found)} card' + ('' if len(found) == 1 else 's')
+    capped = f'; showing the {len(shown)} oldest' if len(found) > len(shown) else ''
+    return shown + [f'stuck: {count} over 24h in Checks or AI Review{capped}.']
+
+
+def board_facts(args, data):
+    """The board facts this chat's own sync saved: the reason and PR for a stuck card.
+
+    Facts written before a field the rules read existed are not quoted at all: a card
+    they cannot answer for names the sync instead of showing a reason they cannot back.
+    """
+    if args.fixture:
+        saved = (data or {}).get('saved')
+        saved = saved if isinstance(saved, dict) else {}
+    else:
+        try:
+            saved = reconcile.read_board_facts(args.board) or {}
+        except ERRORS:
+            return {}
+    return saved if reconcile.saved_facts_usable(saved) else {}
 
 
 def alive(task, now, board):
@@ -555,7 +719,8 @@ def read_fixture(path):
     """Rows of {"task", "comments", "relations"}: the API answers, without the API.
 
     A JSON list is rows alone; an object carries the same rows under "rows" plus the
-    facts the board rules read (chats, agents, views, pulls, roster, workers).
+    facts the board rules read (chats, agents, views, pulls, roster, workers, and the
+    board facts the last sync saved under "saved").
     """
     data = json.loads(Path(path).read_text())
     extra = {}
@@ -652,6 +817,7 @@ def read_view(args, now):
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
     workable, waiting_lines, blocked_lines, findings = [], [], [], []
+    named_stuck = set()
     for row in todos:
         task = row['task']
         if waiting(task):
@@ -683,6 +849,9 @@ def read_view(args, now):
         finding = stuck_finding(row['task'], pulls, now, board, listing)
         if finding is not None:
             findings.append(finding)
+            # Already named as a fail with its own fix: the warning list stays quiet
+            # about it rather than print the same card twice.
+            named_stuck.update([row['task']['ticketNumber']])
     for row in rows:
         task = row['task']
         if task.get('section') in WORKING and not agent_assigned(task):
@@ -706,7 +875,8 @@ def read_view(args, now):
             findings.append(('sync timer', 'sync timer off: re-arm this chat with ./loop-state timer.'))
         findings += [('sync', line) for line in sync_findings(state_name, now)]
     return {'board': board, 'rows': rows, 'workable': workable, 'data': data,
-            'pulls': pulls, 'notes': waiting_lines + blocked_lines, 'findings': findings}
+            'pulls': pulls, 'notes': waiting_lines + blocked_lines, 'findings': findings,
+            'stuck': named_stuck}
 
 
 def lint_module():
@@ -768,6 +938,12 @@ def check(args, now):
         failing += 1
     for line in shown:
         print(line)
+    try:
+        for line in stuck_lines(view, args, now):
+            print(line)
+    except ERRORS + (AttributeError, reconcile.BudgetRefused, reconcile.RateLimit) as error:
+        # A warning that cannot read is reported and never turns a pass into a fail.
+        print(f'stuck: read failed: {error}', file=sys.stderr)
     try:
         breaks = rule_breaks(view, args, now)
     except ERRORS + (AttributeError,) as error:

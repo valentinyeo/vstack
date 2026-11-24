@@ -65,6 +65,10 @@ A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:`
 
 A board-rule break prints as `rule-break: <ticket> <rule>: <fix>` and passes; add its rule id to `FAIL_RULES` in drain-check to make it fail.
 
+A card held in Checks or AI Review for over 24 hours prints `stuck: <ticket> in <column> <hours>h: <reconcile reason>; PR #<n>`, the ten oldest first and then one count line, and passes. The reason and the PR come from the board facts your own sync saved, so a card those facts do not cover reads `no PR in the saved board facts; run ./sync`.
+
+A stuck card is work nobody acted on: move it along, or hand it back to Todo.
+
 A fail that returns is a gap: file it on board 13556, label Board Drain Loop, with the output.
 
 ## Rules
