@@ -16,16 +16,17 @@ class ValentinModeRules(unittest.TestCase):
         self.rows = json.loads((ROOT / 'skills/valentin-mode/board-rules.json').read_text())
         self.skill = (ROOT / 'skills/valentin-mode/SKILL.md').read_text()
 
-    def test_all_seven_rules_are_registered(self):
+    def test_all_eight_rules_are_registered(self):
         self.assertEqual({row['id'] for row in self.rows}, {
             'pr-owner', 'proof-before-merge', 'ticket-cap', 'agent-pr-cap',
-            'repo-pr-cap', 'orphan-recovery', 'orphan-first',
+            'repo-pr-cap', 'orphan-recovery', 'orphan-first', 'ui-video-proof',
         })
-        self.assertEqual(len(self.rows), 7)
+        self.assertEqual(len(self.rows), 8)
 
     def test_every_rule_sentence_is_in_board_rules(self):
-        block = self.skill.split('## Board rules\n', 1)[1].split('\n## ', 1)[0]
         for row in self.rows:
+            section = row.get('section', 'Board rules')
+            block = self.skill.split(f'## {section}\n', 1)[1].split('\n## ', 1)[0]
             with self.subTest(rule=row['id']):
                 self.assertTrue(row['rule'].strip())
                 self.assertTrue(row['sentence'].strip())
@@ -78,7 +79,7 @@ class ValentinModeRules(unittest.TestCase):
         questions = json.loads((eval_run.CASES / 'scenarios.json').read_text())
         guidance = json.loads((eval_run.CASES / 'judge-only.json').read_text())
         self.assertEqual(set(questions), set(guidance['expected']))
-        self.assertGreaterEqual(len(questions), 7)
+        self.assertGreaterEqual(len(questions), 8)
         self.assertTrue(all(guidance['expected'].values()))
         self.assertTrue(3 <= len(guidance['criteria']) <= 6)
 

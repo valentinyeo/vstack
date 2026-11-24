@@ -31,6 +31,7 @@ Nobody pushes to main.
 | A vstack change keeps chats working (pstack `skills/principle-prove-it-works/SKILL.md`: "Verify every output by checking the real thing directly: run the feature, read the actual value, inspect the diff.") | `.claude/skills/verify-vstack/run` (Doctor in CI, Drive by the PR owner), `tests/test_verify_vstack.py` |
 | A hook never points at a missing script (pstack `skills/principle-prove-it-works/SKILL.md`: "Script the check when you can.") | `hooks/run-hook` (fail open), `scripts/check-hook-paths`, `tests/test_hook_paths.py` |
 | A change ships only when a journey exercised it (house `uncovered-pass-gate`) | `scripts/uncovered_gate.py` (behind every vstack review), `GAP uncovered pass gate` in `skills/pstack-diff`, `tests/test_uncovered_gate.py` |
+| A change the user can see ships a short before and after video (house `ui-video-proof-gate`) | `scripts/video_proof_gate.py`, `scripts/verdict.py`, `tests/test_video_proof_gate.py` |
 | A repo a chat ships from refuses a merge until a checker that did not write the code has passed it (house `merge-gate`) | `skills/board-drain/merge-gate`, `skills/board-drain/drain-check`, `tests/test_merge_gate.py` |
 | Every chat reads one true server facts file (house `server-facts`) | `docs/servers.md`, `config/servers.json`, `tests/test_server_facts.py` |
 | A merged rule reaches a running chat without anyone asking (pstack `skills/poteto-mode/playbooks/autopilot-full.md`: "Each tick re-reads this playbook from trunk and fixes drift") | `hooks/skill-update.py`, `tests/test_skill_update.py` |
