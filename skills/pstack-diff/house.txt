@@ -160,7 +160,7 @@ id: merge-gate
 pstack: skills/poteto-mode/playbooks/shipping.md
 quote: Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.
 change: Every repo a chat ships from requires the `pstack-verifier` check on the branch its PRs merge into; `skills/board-drain/merge-gate` reads it, `--fix` adds it to repos the account owns, and `drain-check` fails with `merge gate missing` when one does not.
-basis: VSTA-188
+basis: PR #346, VSTA-188
 approved: 2026-11-24
 expiry: 2027-02-24
 
