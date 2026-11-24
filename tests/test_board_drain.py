@@ -1085,6 +1085,153 @@ class RuleBreakTest(CheckTest):
         self.assertIn('search/issues', gh_calls[0])
 
 
+class StuckTest(CheckTest):
+    """A card that holds a review column for a day is named, and never fails the check."""
+
+    def setUp(self):
+        super().setUp()
+        cache = patch.object(drain, 'COLUMN_ENTRIES', self.directory / 'columns',
+                             create=True)
+        cache.start()
+        self.addCleanup(cache.stop)
+
+    def card(self, key, section='Checks', age=30 * 3600, entered=None, staleness=True):
+        """A card an agent holds: nothing else in the view has anything to say about it."""
+        task = {'ticketNumber': key, 'projectId': 2060, 'section': section,
+                'labels': [{'name': 'Poteto'}], 'waitingOnUserId': None,
+                'blockerCommentId': None, 'updatedAt': iso(NOW - 600),
+                'assignees': [agent_assignee()]}
+        if staleness:
+            task['staleness'] = {'sectionChangedAt': iso(entered if entered else NOW - age)}
+        return {'task': task, 'comments': []}
+
+    def facts(self, key, number=1401, state='OPEN', checks='running', passed=False,
+              merged_at=None):
+        """The board facts the chat's own sync saved for one card, as reconcile writes them."""
+        repo = 'valentinyeo/multiprompt'
+        url = f'https://github.com/{repo}/pull/{number}'
+        return {key: {'at': NOW - 60, 'updated_at': iso(NOW - 600),
+                      'pulls': [{'url': url, 'number': number, 'state': state,
+                                 'repository': {'nameWithOwner': repo}, 'mergedAt': None}],
+                      'facts': {f'{repo}#{number}': {'url': url, 'state': state,
+                                                    'checks': checks, 'passed': passed,
+                                                    'merged_at': merged_at}}}}
+
+    def saved(self, *cards):
+        tickets = {}
+        for card in cards:
+            tickets.update(card)
+        return {'at': NOW - 60, 'probe_since': '2027-01-01T00:00:00Z', 'tickets': tickets}
+
+    def stuck(self, out):
+        return [line for line in out.splitlines() if line.startswith('stuck: ')]
+
+    def test_a_checks_card_over_a_day_names_its_reason_and_pr(self):
+        payload = {'rows': [self.card('SOFT-2940')], 'saved': self.saved(self.facts('SOFT-2940'))}
+        code, out = self.run_payload(payload)
+        self.assertEqual(code, 0, out)
+        self.assertIn('drain-check: PASS', out)
+        self.assertEqual(self.stuck(out), [
+            'stuck: SOFT-2940 in Checks 30h: open PR checks running, red, or missing; PR #1401',
+            'stuck: 1 card over 24h in Checks or AI Review.'])
+
+    def test_a_review_card_merged_with_pass_names_its_pr(self):
+        facts = self.facts('SOFT-2941', number=1402, state='MERGED', checks='green',
+                           passed=True, merged_at=NOW - 40 * 3600)
+        payload = {'rows': [self.card('SOFT-2941', section='AI Review', age=40 * 3600)],
+                   'saved': self.saved(facts)}
+        code, out = self.run_payload(payload)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.stuck(out)[0], 'stuck: SOFT-2941 in AI Review 40h: merged PR with '
+                                            'PASS; live proof pending; PR #1402')
+
+    def test_a_card_that_entered_its_column_today_is_not_stuck(self):
+        payload = {'rows': [self.card('SOFT-2942', age=23 * 3600)],
+                   'saved': self.saved(self.facts('SOFT-2942'))}
+        code, out = self.run_payload(payload)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.stuck(out), [])
+
+    def test_a_stuck_card_with_no_saved_facts_names_the_sync(self):
+        payload = {'rows': [self.card('SOFT-2943')]}
+        code, out = self.run_payload(payload)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.stuck(out)[0], 'stuck: SOFT-2943 in Checks 30h: no PR in the saved '
+                                            'board facts; run ./sync')
+
+    def test_the_list_stops_at_ten_and_counts_the_rest_oldest_first(self):
+        rows, cards = [], []
+        for index in range(12):
+            key = f'SOFT-{2950 + index}'
+            rows.append(self.card(key, age=(25 + index) * 3600))
+            cards.append(self.facts(key))
+        payload = {'rows': rows, 'saved': self.saved(*cards)}
+        code, out = self.run_payload(payload)
+        self.assertEqual(code, 0, out)
+        lines = self.stuck(out)
+        self.assertEqual(len(lines), drain.STUCK_LINES + 1, out)
+        self.assertIn('SOFT-2961 in Checks 36h', lines[0])
+        self.assertNotIn('SOFT-2950', out)
+        self.assertEqual(lines[-1], 'stuck: 12 cards over 24h in Checks or AI Review; showing the '
+                                   '10 oldest.')
+
+    def test_a_stuck_card_is_read_once_and_reused_until_its_own_update(self):
+        rows = [self.card('SOFT-2970', staleness=False)]
+        payload = {'rows': rows, 'saved': self.saved(self.facts('SOFT-2970'))}
+        fixture = self.directory / 'fixture.json'
+        reads = []
+
+        def fake_api(*args):
+            reads.append(args)
+            return {'tasks': [{'ticketNumber': 'SOFT-2970',
+                               'staleness': {'sectionChangedAt': iso(NOW - 30 * 3600)}}]}
+
+        def tick():
+            fixture.write_text(json.dumps(payload))
+            out = io.StringIO()
+            with patch.object(drain.reconcile, 'api', side_effect=fake_api), \
+                    patch.object(drain, 'probe_load', return_value=(0, ADD_LINE)), \
+                    patch.object(drain, 'probe_lane', return_value=None), \
+                    contextlib.redirect_stdout(out):
+                code = drain.main(['--board', '2060', '--label', 'Poteto', '--fixture',
+                                   str(fixture), '--now', iso(NOW)])
+            return code, out.getvalue()
+
+        code, out = tick()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(reads), 1, reads)
+        self.assertIn('stuck: SOFT-2970 in Checks 30h', out)
+        code, out = tick()
+        self.assertEqual(len(reads), 1, 'a second tick reuses the saved entry')
+        self.assertIn('stuck: SOFT-2970 in Checks 30h', out)
+        rows[0]['task']['updatedAt'] = iso(NOW - 60)
+        code, out = tick()
+        self.assertEqual(len(reads), 2, 'a card that moved is read again')
+
+    def test_an_unreadable_column_entry_stays_quiet(self):
+        rows = [self.card('SOFT-2971', staleness=False)]
+        fixture = self.directory / 'fixture.json'
+        fixture.write_text(json.dumps({'rows': rows}))
+        out = io.StringIO()
+        with patch.object(drain.reconcile, 'api', side_effect=ValueError('read failed')), \
+                patch.object(drain, 'probe_load', return_value=(0, ADD_LINE)), \
+                patch.object(drain, 'probe_lane', return_value=None), \
+                contextlib.redirect_stdout(out):
+            code = drain.main(['--board', '2060', '--label', 'Poteto', '--fixture',
+                               str(fixture), '--now', iso(NOW)])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(self.stuck(out.getvalue()), [])
+
+    def test_the_cache_keeps_only_cards_still_in_review(self):
+        self.run_payload({'rows': [self.card('SOFT-2972')],
+                          'saved': self.saved(self.facts('SOFT-2972'))})
+        path = drain.entries_path(drain.reconcile.BOARDS[2060])
+        self.assertEqual(list(json.loads(path.read_text())), ['SOFT-2972'])
+        self.run_payload({'rows': [self.card('SOFT-2973', section='AI Review')],
+                          'saved': self.saved(self.facts('SOFT-2973'))})
+        self.assertEqual(list(json.loads(path.read_text())), ['SOFT-2973'])
+
+
 def write_tool(path, body):
     path.write_text(f'#!{sys.executable}\n' + body)
     path.chmod(0o755)
