@@ -2358,6 +2358,15 @@ def card_phase():
     return session.slug(os.environ.get('RECONCILE_CARD_PHASE') or '')
 
 
+def worker_exit():
+    """The worker's own exit code, when a lease ran one and recorded it."""
+    raw = os.environ.get('RECONCILE_WORKER_EXIT')
+    try:
+        return int(raw) if raw is not None and raw.strip() else None
+    except ValueError:
+        return None
+
+
 def write_card_record(tee, code):
     """One status record per lease-synced card, in the hook's status store."""
     board, ticket, phase = CARD['board'], CARD['ticket'], card_phase()
@@ -2368,10 +2377,13 @@ def write_card_record(tee, code):
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(tee.text())
     moved, unknown, summary = session.parse_output(tee.text())
+    ran = worker_exit()
     session.write_record(session.card_record_path(where, board, ticket, phase), {
         'at': time.time(), 'session_name': os.environ.get('SHIP_SESSION_NAME') or '',
         'board': board, 'label': None, 'ticket': ticket, 'phase': phase,
-        'exit': int(code), 'moved': moved, 'unknown': unknown,
+        'exit': int(code), 'worker_exit': ran,
+        'worker_note': 'nothing ran, waiting for a lane' if ran == 75 else None,
+        'moved': moved, 'unknown': unknown,
         'summary_line': summary, 'log': str(log)})
 
 

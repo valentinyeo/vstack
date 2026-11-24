@@ -72,6 +72,8 @@ skills/hypertask-work/lease "$KEY" end --pid "$WORKER_PID"
 
 The lease records the worker PID and host and renews every minute. It lives in `~/.local/state/fleet/leases/<KEY>.json` with `pid`, `host`, `started` and `last_beat`. A live worker cannot replace another worker's lease.
 
+On the way out the lease prints one line with the worker's own exit code: `lease: <KEY> worker exited 75: nothing ran, waiting for a lane`. `plan-pick --run` exits 75 when every lane is used up, so that line is the report, not a start. Do not hide it: a launch command ending in `| tail` gives bash `tail`'s 0, so the run reads as a success.
+
 A worker is live when the lease is fresh and its PID exists, or when a live agent CLI process (`hax`, `pi`, `codex`, `cursor-agent`, `claude`, `opencode`, `gemini`) names the ticket in its arguments and is not under another worker's lease. A dead PID, a lease older than 15 minutes, a search, a grep or any other command that only reads the ticket is not a live worker.
 
 The lease syncs the card when the worker starts and ends, and takes the ticket as its agent when the ticket has no agent assignee. See `sync.md`.
