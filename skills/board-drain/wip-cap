@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Finish before starting: how many cards a board may hold in Checks plus AI Review (VSTA-206).
+
+Valentin's order, 2026-11-24: "finish before starting". While a board has more than
+10 cards in Checks plus AI Review, no chat starts a Todo ticket, except one marked
+urgent. pstack's autopilot-full runs one owner per PR in parallel and sets no WIP
+limit, so this is a house rule (house.txt id `wip-cap`).
+
+One table holds the cap. `skills/board-drain/drain-check` counts the board rows its
+tick already read and fails `over cap`; `skills/hypertask-work/lease` reads the same
+two columns before it starts a worker and refuses with exit 75.
+
+A read that fails fails open with one warning line: a board outage must never stop
+work.
+
+  wip-cap --self-test
+"""
+import subprocess
+import sys
+
+BUSY = ('Checks', 'AI Review')
+LABEL = 'Checks+AI Review'
+# The columns a chat starts work from. A card already in a working column is a resume.
+NOT_STARTED = frozenset({'todo', 'backlog', 'verification backlog'})
+# One table: cards allowed in Checks plus AI Review, per board. None covers every
+# board with no row of its own, so moving the fleet's cap is this one number.
+CAPS = {None: 10}
+ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, AttributeError,
+          subprocess.SubprocessError)
+_warned = set()
+
+
+def section(task):
+    return str(task.get('section') or '').strip().casefold()
+
+
+def cap_for(board_id):
+    """The cards this board may hold in Checks plus AI Review."""
+    try:
+        board_id = int(board_id)
+    except (TypeError, ValueError):
+        board_id = None
+    return CAPS.get(board_id, CAPS[None])
+
+
+def count(tasks):
+    """The cards in Checks plus AI Review, whatever label or owner they carry."""
+    busy = {name.casefold() for name in BUSY}
+    return sum(1 for task in tasks or () if section(task) in busy)
+
+
+def over_cap(tasks, board_id=None):
+    """(over_cap, count, cap) for the rows of one board, already read."""
+    cap = cap_for(board_id)
+    cards = count(tasks)
+    return cards > cap, cards, cap
+
+
+def urgent(task):
+    """Hypertask priority urgent: index 1, or the word itself."""
+    priority = task.get('priority')
+    if isinstance(priority, dict):
+        return (str(priority.get('priority_index') or '').strip() == '1'
+                or str(priority.get('Priority_Value') or '').strip().casefold() == 'urgent')
+    return str(priority or '').strip().casefold() == 'urgent'
+
+
+def starts_work(task):
+    """True when the card waits in a not-started column, where a start takes a slot."""
+    return section(task) in NOT_STARTED
+
+
+def held_line(board_id, cards, cap):
+    """The one sentence that says which board is full and what to finish first."""
+    return f'board {board_id} has {cards} cards in {LABEL} (cap {cap}); finish those first'
+
+
+def warn_once(detail):
+    """One line per run; a repeated failure in the same tick stays quiet."""
+    if detail in _warned:
+        return
+    _warned.add(detail)
+    print(f'wip-cap: {detail}; cap not enforced', file=sys.stderr, flush=True)
+
+
+def board_over_cap(board_id, read):
+    """(over_cap, count, cap) from one whole-board read; a failed read fails open.
+
+    `read(board_id)` answers that board's cards. drain-check passes the rows its tick
+    already read through `over_cap`; the lease reads the busy columns through here.
+    """
+    try:
+        tasks = read(board_id)
+        if tasks is None:
+            raise ValueError('no board rows')
+        return over_cap(tasks, board_id)
+    except ERRORS as error:
+        warn_once(f'board {board_id} read failed ({error})')
+        return False, 0, cap_for(board_id)
+
+
+def self_test():
+    assert count([{'section': 'Checks'}, {'section': 'AI Review'},
+                  {'section': 'Todo'}]) == 2, 'only the two busy columns count'
+    assert over_cap([{'section': 'AI Review'}] * 10, 13556) == (False, 10, 10), 'at cap is fine'
+    assert over_cap([{'section': 'Checks'}] * 11, 13556) == (True, 11, 10), 'one over is over'
+    assert cap_for(999999) == 10, 'a board with no row of its own takes the one cap'
+    assert urgent({'priority': {'priority_index': 1, 'Priority_Value': 'Urgent'}}), 'index 1'
+    assert urgent({'priority': {'Priority_Value': 'Urgent'}}), 'the word'
+    assert urgent({'priority': 'urgent'}), 'a plain word'
+    assert not urgent({'priority': {'priority_index': 3, 'Priority_Value': 'Medium'}}), 'medium'
+    assert not urgent({}), 'no priority'
+    assert starts_work({'section': 'Todo'}), 'Todo starts work'
+    assert starts_work({'section': 'Backlog'}), 'a product backlog starts work'
+    assert not starts_work({'section': 'Doing'}), 'Doing is a resume'
+    assert not starts_work({'section': 'Checks'}), 'Checks is already started'
+
+    def broken(_board_id):
+        raise OSError('board unreadable')
+
+    assert board_over_cap(13556, broken) == (False, 0, 10), 'a failed read fails open'
+    assert board_over_cap(13556, lambda _board: None) == (False, 0, 10), 'no rows fails open'
+    assert board_over_cap(13556, lambda _board: [{'section': 'Checks'}] * 11) == (True, 11, 10)
+    print('wip-cap self-test ok')
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv == ['--self-test']:
+        self_test()
+        return 0
+    print('usage: wip-cap --self-test', file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

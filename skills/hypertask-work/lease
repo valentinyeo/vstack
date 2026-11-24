@@ -28,6 +28,7 @@ def load(name, path):
 
 reconcile = load('fleet_reconcile', Path(__file__).with_name('reconcile'))
 session = load('fleet_session', Path(__file__).with_name('session_login.py'))
+wip = load('board_drain_wip_cap', Path(__file__).resolve().parents[1] / 'board-drain' / 'wip-cap')
 
 
 def write(key, action, pid, directory=None, now=None):
@@ -106,6 +107,34 @@ def spawn_card(command, env):
 
 
 LANE_WAITING = 'nothing ran, waiting for a lane'
+# The card's start is refused, not its worker run: nothing runs and the chat must
+# finish what is already in Checks and AI Review first (VSTA-206).
+CAP_HELD = 'lease: {key} held: {line}'
+
+
+def board_tasks(board_id):
+    """The cards in this board's two busy columns, read through the CLI's board read."""
+    board = reconcile.board_config(board_id)
+    return [task for name in wip.BUSY for task in reconcile.tickets(section=name, board=board)]
+
+
+def cap_refusal(key):
+    """The line that refuses a start while the board is over cap, or None.
+
+    Reads the card this run would start. A card already in a working column is a
+    resume, and an urgent card may start first, so neither is refused. Any read
+    that fails answers None: a board outage never stops a worker.
+    """
+    try:
+        task = reconcile.read_ticket(key)
+        if not wip.starts_work(task) or wip.urgent(task):
+            return None
+        board_id = int(task['projectId'])
+    except wip.ERRORS as error:
+        wip.warn_once(f'{key} read failed ({error})')
+        return None
+    over, cards, cap = wip.board_over_cap(board_id, board_tasks)
+    return CAP_HELD.format(key=key, line=wip.held_line(board_id, cards, cap)) if over else None
 
 
 def report(key, code):
@@ -181,6 +210,10 @@ def main():
             command = command[1:]
         if not command:
             parser.error('run requires -- COMMAND')
+        refusal = cap_refusal(args.key)
+        if refusal is not None:
+            print(refusal, file=sys.stderr, flush=True)
+            return 75
         child = subprocess.Popen(command)
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda number, frame: child.send_signal(number))

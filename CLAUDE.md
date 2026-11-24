@@ -48,6 +48,7 @@ Nobody pushes to main.
 | Loaded skills stay lean: no dead links, duplicate names, retired terms or oversized descriptions (pstack `skills/principle-guard-the-context-window/SKILL.md`: "Context overflow degrades reasoning quality, creates compression artifacts, and halts progress.") | `scripts/skill-check.py`, `tests/test_skill_check.py` |
 | A PR adds no verification gate pstack does not ask for (pstack `skills/poteto-mode/worker.md`: "The bar in your kickoff is the whole bar. Add no check, gate, sign-off or review round above it.") | `hooks/pstack-new-gates.py`, `checks` workflow step |
 | A repo over 10 open pull requests refuses a new one (pstack `skills/principle-encode-lessons-in-structure/SKILL.md`: "Encode the rule as a lint, metadata flag, runtime check, or script instead of more text.") | `hooks/pr-cap-guard.py`, `scripts/pr-cap.py`, `scripts/worker-shims`, `tests/test_pr_cap.py` |
+| A board over 10 cards in Checks plus AI Review starts no non-urgent Todo ticket (house `wip-cap`) | `skills/board-drain/wip-cap`, `skills/hypertask-work/lease`, `skills/board-drain/drain-check`, `tests/test_wip_cap.py` |
 | A house change to pstack is listed once, quoting pstack (pstack `skills/correct/SKILL.md`: "Replace hand-synced lists with one source of truth.") | `skills/pstack-diff/house.txt`, `tests/test_house_list.py` |
 
 Poteto ticket commands live in `bin/poteto-ticket`.
