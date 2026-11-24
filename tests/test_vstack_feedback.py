@@ -3,23 +3,33 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / 'skills/vstack-feedback/vstack-feedback'
+TOKENS = '.config/hypertask-agents/credentials/sessions'
+CHAT_TOKEN = 'chat-test-token'
+MAINTAINER_TOKEN = 'agent-test-token'
 
 FAKE = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 p = pathlib.Path(os.environ['FAKE_STATE'])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
+refused = [t for t in (os.environ.get('FAKE_REFUSE') or '').split(',') if t]
 if '--token' in a:
     i = a.index('--token')
-    if a[i + 1] != 'agent-test-token':
-        sys.exit(3)
+    used = a[i + 1]
     del a[i:i + 2]
+    s.setdefault('tokens', []).append(used)
+    if used in refused:
+        s.setdefault('refused', []).append(used)
+        p.write_text(json.dumps(s))
+        print(json.dumps({'success': False, 'error': 'Task not found or access denied'}))
+        sys.exit(1)
 if '--json' in a:
     a.remove('--json')
 
@@ -86,28 +96,37 @@ class Feedback(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        home = Path(self.tmp.name)
-        token = home / '.config/hypertask-agents/credentials/sessions/vstack-maintainer-agent-token'
-        token.parent.mkdir(parents=True)
-        token.write_text('agent-test-token')
-        binary = home / 'bin' / 'hypertask'
+        self.home = Path(self.tmp.name)
+        for name, token in (('vstack-maintainer', MAINTAINER_TOKEN),
+                            ('demo-chat', CHAT_TOKEN)):
+            path = self.home / TOKENS / f'{name}-agent-token'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(token)
+        binary = self.home / 'bin' / 'hypertask'
         binary.parent.mkdir(parents=True)
         binary.write_text(FAKE)
         binary.chmod(0o755)
-        self.state = home / 'state.json'
+        self.state = self.home / 'state.json'
         self.state.write_text(json.dumps({'calls': [], 'tasks': []}))
         self.env = dict(
             os.environ,
-            HOME=str(home),
+            HOME=str(self.home),
             PATH=f'{binary.parent}:{os.environ.get("PATH", "")}',
             FAKE_STATE=str(self.state),
+            FAKE_REFUSE='',
             SHIP_SESSION_NAME='Vstack Maintainer',
+            MULTIPROMPT_TAB='',
         )
 
+    def run_env(self, *args, **changes):
+        env = dict(self.env, **changes)
+        return subprocess.run([str(TOOL), *args], env=env, capture_output=True, text=True)
+
     def run_tool(self, *args, success=True):
-        r = subprocess.run([str(TOOL), *args], env=self.env, capture_output=True, text=True)
+        r = self.run_env(*args)
         self.assertEqual(r.returncode == 0, success, r.stdout + r.stderr)
-        self.assertNotIn('agent-test-token', r.stdout + r.stderr)
+        self.assertNotIn(MAINTAINER_TOKEN, r.stdout + r.stderr)
+        self.assertNotIn(CHAT_TOKEN, r.stdout + r.stderr)
         return r
 
     def data(self):
@@ -139,10 +158,40 @@ class Feedback(unittest.TestCase):
         self.assertEqual(self.data()['created'], 1)
 
     def test_refuses_without_agent_token(self):
-        env = dict(self.env, SHIP_SESSION_NAME='Missing Agent')
-        r = subprocess.run([str(TOOL), 'x', '--why', 'y'], env=env, capture_output=True, text=True)
+        r = self.run_env('x', '--why', 'y', SHIP_SESSION_NAME='Missing Agent')
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.data()['calls'], [])
+
+    def test_finds_hypertask_in_local_bin_when_path_has_none(self):
+        local = self.home / '.local/bin'
+        local.mkdir(parents=True)
+        shutil.copy(self.env['PATH'].split(':')[0] + '/hypertask', local / 'hypertask')
+        r = self.run_env('Add a feedback command', '--why', 'x', PATH='/usr/bin:/bin')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.data()['created'], 1)
+
+    def test_refused_chat_files_through_the_maintainer_login(self):
+        r = self.run_env('Add a feedback command', '--why', 'not a member of this board',
+                         SHIP_SESSION_NAME='Demo Chat', FAKE_REFUSE=CHAT_TOKEN)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.data()['refused'], [CHAT_TOKEN])
+        self.assertEqual(self.data()['tokens'][-1], MAINTAINER_TOKEN)
+        description = self.opt(self.create_call(), '--description')
+        self.assertIn('<li>Filed for: Demo Chat</li>', description)
+        self.assertIn('not a member of this board', description)
+        for token in (CHAT_TOKEN, MAINTAINER_TOKEN):
+            self.assertNotIn(token, r.stdout + r.stderr)
+
+    def test_both_logins_refused_is_a_clear_error(self):
+        r = self.run_env('Add a feedback command', '--why', 'x',
+                         SHIP_SESSION_NAME='Demo Chat',
+                         FAKE_REFUSE=f'{CHAT_TOKEN},{MAINTAINER_TOKEN}')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('access denied', r.stderr)
+        self.assertIn('Vstack Maintainer', r.stderr)
+        self.assertEqual(self.data().get('created', 0), 0)
+        for token in (CHAT_TOKEN, MAINTAINER_TOKEN):
+            self.assertNotIn(token, r.stdout + r.stderr)
 
     def test_skips_duplicate_title(self):
         self.add_task()

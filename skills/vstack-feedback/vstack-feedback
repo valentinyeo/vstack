@@ -8,6 +8,10 @@ Usage:
 
 A repeat of the same title updates that open ticket with a count instead of filing a second
 one, when `--count` is given. `--board` picks the board (default 13556).
+
+A chat that board 13556 refuses, or an agent that is not a member of it, files through the
+Vstack Maintainer login instead, and the ticket carries `Filed for: <chat name>`. A person's
+login is never used, and no token is ever printed.
 """
 import argparse
 import html
@@ -26,6 +30,32 @@ BOARD = '13556'
 LABEL = 'Vstack'
 SEEN = re.compile(r'Seen (\d+) times')
 DONE_WHEN = 'The request works in vstack.'
+FALLBACK = 'Vstack Maintainer'
+REFUSED = re.compile(
+    r'access denied|not a member|not found|forbidden|unauthorized|\b40[134]\b', re.I)
+
+
+class Refused(ValueError):
+    """The board refused this login: not a member, unknown to it, or forbidden."""
+
+
+def hypertask_binary():
+    """The hypertask CLI on PATH, else the one this server installs in ~/.local/bin."""
+    found = shutil.which('hypertask')
+    if found:
+        return found
+    local = Path.home() / '.local' / 'bin' / 'hypertask'
+    return str(local) if local.is_file() else None
+
+
+def fallback_token(env):
+    """The Vstack Maintainer agent token, or '' when this server has not got one."""
+    session = load_session()
+    path = session.token_path(session.home(env), FALLBACK)
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ''
 
 
 def load_session():
@@ -76,9 +106,11 @@ class Client:
         if not self.token:
             raise ValueError('agent token is empty')
         self.board = str(board)
-        self.binary = shutil.which('hypertask')
+        self.binary = hypertask_binary()
         if not self.binary:
-            raise ValueError('install hypertask before using vstack-feedback')
+            raise ValueError(
+                'install hypertask on PATH or at ~/.local/bin/hypertask before using '
+                'vstack-feedback')
 
     def call(self, *args):
         result = subprocess.run(
@@ -90,7 +122,8 @@ class Client:
             data = None
         if result.returncode or not isinstance(data, dict) or data.get('success') is False:
             detail = (result.stderr or result.stdout).replace(self.token, '[redacted]').strip()
-            raise ValueError(f'hypertask failed: {detail or "unknown"}')
+            message = f'hypertask failed: {detail or "unknown"}'
+            raise Refused(message) if REFUSED.search(detail) else ValueError(message)
         return data
 
     def open_titles(self, label):
@@ -132,13 +165,33 @@ def seen_count(text):
 
 
 def resolve_login(env):
+    """(chat name, token) for this chat's own login, or ('', '') when it has none."""
     login = load_session().login_for_session(env)
     if not login:
-        return None
+        return '', ''
     name, path = login
     if not path.is_file():
         raise ValueError(f'no agent token for {name}; run the session login flow first')
-    return path.read_text().strip()
+    return name, path.read_text().strip()
+
+
+def file_with(client, title, why, facts, labels, board, done, count, now):
+    """File, bump or report a duplicate, and return the line to print."""
+    existing = client.open_titles(labels[0]).get(normalized(title))
+    if existing:
+        url = ticket_url(existing, board)
+        if not count:
+            return f'duplicate: open ticket already titled like this: {url}'
+        seen = seen_count(client.current(existing)) + 1
+        client.update_description(existing, description(
+            title, why, facts, done, seen=seen, now=now))
+        return f'bumped: {url} (seen {seen} times)'
+    body = description(title, why, facts, done, seen=1 if count else None, now=now)
+    task = client.create(title, body, labels).get('task') or {}
+    ref = task.get('ticketNumber')
+    if not isinstance(ref, str) or not ref:
+        raise ValueError('ticket creation returned no number')
+    return ticket_url(ref, board)
 
 
 def main(argv=None):
@@ -164,7 +217,7 @@ def main(argv=None):
     labels = [label.strip() for label in args.label if label.strip()] or [LABEL]
     board = str(args.board).strip() or BOARD
     try:
-        token = resolve_login(os.environ)
+        name, token = resolve_login(os.environ)
     except ValueError as exc:
         print(f'vstack-feedback: {exc}', file=sys.stderr)
         return 2
@@ -172,28 +225,26 @@ def main(argv=None):
         print('vstack-feedback: this chat has no agent token; never use a person token', file=sys.stderr)
         return 2
     try:
-        client = Client(token, board)
-        existing = client.open_titles(labels[0]).get(normalized(title))
-        if existing:
-            url = ticket_url(existing, board)
-            if not args.count:
-                print(f'duplicate: open ticket already titled like this: {url}')
-                return 0
-            seen = seen_count(client.current(existing)) + 1
-            client.update_description(existing, description(
-                title, why, facts, args.done, seen=seen, now=args.now))
-            print(f'bumped: {url} (seen {seen} times)')
-            return 0
-        body = description(title, why, facts, args.done,
-                           seen=1 if args.count else None, now=args.now)
-        task = client.create(title, body, labels).get('task') or {}
-        ref = task.get('ticketNumber')
-        if not isinstance(ref, str) or not ref:
-            raise ValueError('ticket creation returned no number')
-        print(ticket_url(ref, board))
+        print(file_with(Client(token, board), title, why, facts, labels, board,
+                        args.done, args.count, args.now))
         return 0
+    except Refused as exc:
+        refused = exc
     except ValueError as exc:
         print(f'vstack-feedback: {exc}', file=sys.stderr)
+        return 1
+    spare = '' if name == FALLBACK or board != BOARD else fallback_token(os.environ)
+    if not spare:
+        print(f'vstack-feedback: {refused}', file=sys.stderr)
+        return 1
+    try:
+        print(file_with(Client(spare, board), title, why,
+                        facts + [f'Filed for: {name}'], labels, board,
+                        args.done, args.count, args.now))
+        return 0
+    except ValueError as exc:
+        print(f'vstack-feedback: board {board} refused {name} ({refused}) and the '
+              f'{FALLBACK} login ({exc})', file=sys.stderr)
         return 1
 
 
