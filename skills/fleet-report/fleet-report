@@ -31,6 +31,7 @@ PSTACK_STDERR_BROKEN = re.compile(r"^GAP pstack:", re.I)
 PSTACK_WARN_BEHIND = re.compile(r"^WARN checkout is (\d+) commits behind")
 HYPERTASK_BOARD = re.compile(r"Hypertask board:", re.I)
 WATCHER_LINE = re.compile(r"^watcher (dead since .+|ok)$")
+NOTICE_LINE = re.compile(r"^notice (sent .+|not sent)$")
 
 
 def home() -> Path:
@@ -341,6 +342,26 @@ def watch_status(name: str) -> str:
         return "-"
     lines = (done.stdout or "").strip().splitlines()
     match = WATCHER_LINE.match(lines[-1].strip()) if lines else None
+    return match.group(1) if match else "-"
+
+
+def notice_status(name: str) -> str:
+    """Whether this chat's own hook pushed Valentin for a dead loop (VSTA-151)."""
+    loop_state = loop_state_tool()
+    if not loop_state.is_file():
+        return "-"
+    try:
+        done = subprocess.run(
+            [sys.executable, str(loop_state), "notice", "--name", name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "-"
+    lines = (done.stdout or "").strip().splitlines()
+    match = NOTICE_LINE.match(lines[-1].strip()) if lines else None
     return match.group(1) if match else "-"
 
 
@@ -762,6 +783,7 @@ def build_rows() -> list[dict]:
         effective_latest = latest_num if latest_num is not None else transcript_latest
         board_exit, board_text = board_loop_status(session["name"])
         watcher = watch_status(session["name"])
+        notice = notice_status(session["name"])
         pstack = run_pstack_diff(session.get("cwd", ""))
         has_board = repo_has_hypertask_board(session.get("cwd", ""))
         status, reason, action = verdict(
@@ -799,6 +821,7 @@ def build_rows() -> list[dict]:
                 board=f"{board_exit if board_exit is not None else '?'} {board_text}".strip(),
                 board_exit=board_exit,
                 watcher=watcher,
+                notice=notice,
                 self_check=pstack["self_check"],
                 pstack_exit=pstack["pstack_exit"],
                 extra_count=pstack["extra_count"],
@@ -831,6 +854,7 @@ def format_table(rows: list[dict]) -> str:
         ("LATEST", "latest"),
         ("BOARD", "board"),
         ("WATCHER", "watcher"),
+        ("NOTICE", "notice"),
         ("SELF-CHECK", "self_check"),
         ("HOOKS", "hook_paths"),
         ("VERDICT", "verdict"),
@@ -863,6 +887,7 @@ def write_html(path: Path, rows: list[dict]) -> None:
         "Latest",
         "Board loop",
         "Watcher",
+        "Notice",
         "Self-check",
         "Hooks",
         "Verdict",
@@ -874,24 +899,27 @@ def write_html(path: Path, rows: list[dict]) -> None:
         if row.get("reason"):
             verdict = f"{verdict} ({row['reason']})"
         body_rows.append(
-            [
-                row["name"],
-                row["harness"],
-                row["loaded"],
-                row["latest"],
-                row["board"],
-                row["watcher"],
-                row["self_check"],
-                row.get("hook_paths", "?") + (" " + row["hook_details"] if row.get("hook_details") else ""),
+            (
                 verdict,
-                row.get("action") or "",
-            ]
+                [
+                    row["name"],
+                    row["harness"],
+                    row["loaded"],
+                    row["latest"],
+                    row["board"],
+                    row["watcher"],
+                    row.get("notice", "-"),
+                    row["self_check"],
+                    row.get("hook_paths", "?") + (" " + row["hook_details"] if row.get("hook_details") else ""),
+                    verdict,
+                    row.get("action") or "",
+                ],
+            )
         )
     table_rows = []
-    for cells in body_rows:
+    for verdict_cell, cells in body_rows:
         tds = "".join(f"<td>{html.escape(str(cell))}</td>" for cell in cells)
         cls = ""
-        verdict_cell = cells[8]
         if verdict_cell != "OK" and not verdict_cell.startswith("BEHIND"):
             cls = ' class="fail"'
         elif verdict_cell.startswith("BEHIND") or verdict_cell.endswith("BEHIND"):

@@ -325,6 +325,71 @@ sys.exit({code})
         self.assertIn("WATCHER", table)
         self.assertIn(f"dead since {stamp(seen)}", table)
 
+    def test_dead_watcher_shows_whether_notice_went_out(self):
+        """VSTA-151 round 2: fleet report shows dead since <time> and whether the notice went out."""
+        self.fake_version_script("valentin-mode v5 (latest)")
+        self.fake_pstack_diff(0, 0)
+        repo = self.home / "watched-notice"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "CLAUDE.md").write_text("Hypertask board: 13556, label: Demo\n", encoding="utf-8")
+        for sid in ("sid-sent", "sid-pending", "sid-ok"):
+            self.write_transcript(
+                str(repo), sid, '{"message":{"content":"valentin-mode v5 (latest)"}}\n'
+            )
+        state = self.home / "board-drain-state"
+        state.mkdir()
+        now = time.time()
+        stamp = lambda moment: time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(moment))
+        seen_a = stamp(now - 3600)
+        sent_at = stamp(now - 2900)
+        seen_b = stamp(now - 1800)
+        base = {
+            "every": "6h", "armed_at": stamp(now - 86400),
+            "expires_at": stamp(now + 6 * 86400), "job": "efcdac5d",
+            "owner_pid": os.getpid(), "host": socket.gethostname(),
+            "board": 13556, "watch_every": 180,
+        }
+        (state / "notified-chat.json").write_text(json.dumps({
+            **base, "name": "Notified Chat", "label": "Notified Chat",
+            "watch_pid": None, "watch_started": seen_a, "watch_beat": seen_a,
+            "dead_notice": {"at": sent_at, "since": seen_a, "via": "ntfy"},
+        }))
+        (state / "pending-chat.json").write_text(json.dumps({
+            **base, "name": "Pending Chat", "label": "Pending Chat",
+            "watch_pid": None, "watch_started": seen_b, "watch_beat": seen_b,
+        }))
+        (state / "alive-chat.json").write_text(json.dumps({
+            **base, "name": "Alive Chat", "label": "Alive Chat",
+            "watch_pid": os.getpid(), "watch_started": stamp(now), "watch_beat": stamp(now),
+        }))
+        rows = self.run_report(
+            [
+                dict(name="Notified Chat", harness="claude", cwd=str(repo), sid="sid-sent", tmux="live-a"),
+                dict(name="Pending Chat", harness="claude", cwd=str(repo), sid="sid-pending", tmux="live-b"),
+                dict(name="Alive Chat", harness="claude", cwd=str(repo), sid="sid-ok", tmux="live-c"),
+            ],
+            extra_env={"BOARD_DRAIN_STATE_DIR": str(state)},
+        )
+        by_name = {row["name"]: row for row in rows}
+        self.assertEqual(by_name["Notified Chat"]["watcher"], f"dead since {seen_a}")
+        self.assertEqual(by_name["Notified Chat"]["notice"], f"sent {sent_at} (ntfy)")
+        self.assertEqual(by_name["Pending Chat"]["watcher"], f"dead since {seen_b}")
+        self.assertEqual(by_name["Pending Chat"]["notice"], "not sent")
+        self.assertEqual(by_name["Alive Chat"]["watcher"], "ok")
+        self.assertEqual(by_name["Alive Chat"]["notice"], "-")
+        mod = load_module()
+        table = mod.format_table(rows)
+        self.assertIn("NOTICE", table)
+        self.assertIn(f"sent {sent_at} (ntfy)", table)
+        self.assertIn("not sent", table)
+        page = self.home / "report-notice.html"
+        mod.write_html(page, rows)
+        html_text = page.read_text()
+        self.assertIn("<th>Notice</th>", html_text)
+        self.assertIn(f"sent {sent_at} (ntfy)", html_text)
+        self.assertIn("not sent", html_text)
+
     def test_parse_pstack_stdout_behind(self):
         mod = load_module()
         out = (

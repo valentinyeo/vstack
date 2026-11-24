@@ -1412,16 +1412,71 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(missing.returncode, 2, missing.stderr)
         self.assertEqual(missing.stdout.strip(), 'not armed')
 
+    def test_dead_notice_records_once_per_dead_spell_and_clears_on_recovery(self):
+        """VSTA-151 round 2: loop-state tracks dead_since, dead_notice, notice and beat CLI."""
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory))
+        command = [sys.executable, str(SKILL / 'loop-state')]
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW, board=13556, label='HT Test')
+        loop.record_watch('HT Test', os.getpid(), now=NOW, every=180)
+        self.assertEqual(loop.dead_since('HT Test', now=NOW), (None, ''))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW), ('none', 'no notice'))
+
+        # `loop-state beat` refreshes watch_beat in the same record without a second mechanism.
+        beat_run = subprocess.run(command + ['beat', '--name', 'HT Test'],
+                                  capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(beat_run.returncode, 0, beat_run.stderr)
+        self.assertIn('beat ', beat_run.stdout)
+
+        # Watcher dies at NOW; 11 minutes later it is dead and notice is pending.
+        loop.record_watch('HT Test', dead_pid(), now=NOW, every=180)
+        self.assertEqual(loop.dead_since('HT Test', now=NOW + 660), (NOW, iso(NOW)))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW + 660), ('pending', 'notice not sent'))
+        pending = subprocess.run(command + ['notice', '--name', 'HT Test'],
+                                 capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(pending.returncode, 1, pending.stderr)
+        self.assertEqual(pending.stdout.strip(), 'notice not sent')
+
+        # Recording the notice marks this dead spell sent.
+        loop.record_dead_notice('HT Test', iso(NOW), 'ntfy', now=NOW + 660)
+        self.assertTrue(loop.notice_sent_for(loop.stored('HT Test'), iso(NOW)))
+        self.assertFalse(loop.notice_sent_for(loop.stored('HT Test'), iso(NOW + 120)))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW + 700),
+                         ('sent', f'notice sent {iso(NOW + 660)} (ntfy)'))
+        sent = subprocess.run(command + ['notice', '--name', 'HT Test'],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        self.assertEqual(sent.stdout.strip(), f'notice sent {iso(NOW + 660)} (ntfy)')
+
+        # Starting a fresh watcher clears dead_notice for the next dead spell.
+        loop.record_watch('HT Test', os.getpid(), now=NOW + 800, every=180)
+        self.assertNotIn('dead_notice', loop.stored('HT Test'))
+        self.assertEqual(loop.notice_status('HT Test', now=NOW + 800), ('none', 'no notice'))
+
 
 class WatchTest(unittest.TestCase):
-    """The watcher blocks on the chat's own view and exits the moment it changes."""
+    """The watcher wakes its own chat on changes and keeps polling when delivery works."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.fixture = self.directory / 'view.json'
-        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
+        self.sender = self.directory / 'bin/mp-send'
+        self.sender.parent.mkdir()
+        self.wakes = self.directory / 'wakes.jsonl'
+        self.sender.write_text(
+            f'#!{sys.executable}\nimport json, pathlib, sys\n'
+            f'with pathlib.Path({str(self.wakes)!r}).open("a") as log:\n'
+            '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+        self.sender.chmod(0o755)
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        configs.mkdir(parents=True)
+        (configs / 'other.config.json').write_text(json.dumps({'tmux': 'other-tab', 'sid': 'other-sid'}))
+        (configs / 'own.config.json').write_text(json.dumps({'tmux': 'own-tab', 'sid': 'own-sid'}))
+        env = patch.dict(os.environ, {
+            'HOME': str(self.directory), 'MULTIPROMPT_TAB': 'own-tab', 'TMUX': '',
+            'PATH': str(self.sender.parent),
+            'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
         env.start()
         self.addCleanup(env.stop)
 
@@ -1432,8 +1487,9 @@ class WatchTest(unittest.TestCase):
         self.rows(rows)
         clock = clock or Clock()
         clock.on_sleep = on_sleep
+        cycles = () if ('--cycles' in extra or '--once' in extra) else ('--cycles', '1')
         argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
-                '--fixture', str(self.fixture), '--no-sync', *extra]
+                '--fixture', str(self.fixture), '--no-sync', *cycles, *extra]
         out, err = io.StringIO(), io.StringIO()
         with patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -1461,6 +1517,96 @@ class WatchTest(unittest.TestCase):
                 [vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-80')]))
         self.assertEqual(code, 0, out)
         self.assertIn('changed: VSTA-80 new in Todo', out)
+
+    def test_a_change_sends_one_own_tab_wake_and_keeps_polling(self):
+        def on_sleep(tick):
+            if tick == 1:
+                self.rows([vsta('VSTA-80')])
+            elif tick == 2:
+                self.assertTrue(self.wakes.exists(), 'change must wake the chat before the job exits')
+                wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+                self.assertEqual(len(wakes), 1)
+                self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'own-sid'])
+                self.assertIn('changed: VSTA-80 new in Todo', wakes[0][4])
+                self.assertIn('run drain-check', wakes[0][4])
+
+        code, out, clock = self.run_watch([], '--every', '10', '--heartbeat', '100',
+                                           '--cycles', '2', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        self.assertGreater(clock.now - NOW, 10, 'must keep polling after the change')
+
+    def test_missing_sender_prints_change_and_exits_zero(self):
+        self.sender.unlink()
+        code, out, clock = self.run_watch(
+            [], '--every', '10', '--heartbeat', '100', '--cycles', '0',
+            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                'missing own-tab wake must exit so the harness wakes the chat'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertEqual(clock.now - NOW, 10)
+        self.assertFalse(self.wakes.exists())
+
+    def test_failed_sender_falls_back_to_exit(self):
+        self.sender.write_text('import sys\nsys.exit(1)\n')
+        code, out, _ = self.run_watch(
+            [], '--every', '10', '--cycles', '0',
+            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                'failed delivery must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+
+    def test_no_own_tab_never_targets_another_sid(self):
+        with patch.dict(os.environ, {'MULTIPROMPT_TAB': '', 'TMUX': ''}):
+            code, out, _ = self.run_watch(
+                [], '--every', '10', '--cycles', '0',
+                on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                    'no own tab must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertFalse(self.wakes.exists())
+
+    def test_no_matching_own_sid_falls_back_without_messaging_another_chat(self):
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        (configs / 'own.config.json').write_text('{broken')
+        code, out, _ = self.run_watch(
+            [], '--every', '10', '--cycles', '0',
+            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                'missing own sid must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertFalse(self.wakes.exists())
+
+    def test_tmux_session_resolves_the_own_tab_when_environment_tab_is_absent(self):
+        tmux = self.sender.parent / 'tmux'
+        tmux.write_text(f'#!{sys.executable}\nprint("own-tab")\n')
+        tmux.chmod(0o755)
+        with patch.dict(os.environ, {'MULTIPROMPT_TAB': '', 'TMUX': 'fake-socket'}):
+            code, out, _ = self.run_watch(
+                [], '--every', '10', on_sleep=lambda tick: self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'own-sid'])
+
+    def test_two_changes_within_sixty_seconds_send_one_wake_then_coalesce(self):
+        def on_sleep(tick):
+            if tick == 1:
+                self.rows([vsta('VSTA-80')])
+            elif tick == 2:
+                self.rows([vsta('VSTA-80'), vsta('VSTA-81')])
+            elif tick == 3:
+                self.rows([vsta('VSTA-80'), vsta('VSTA-81'), vsta('VSTA-82')])
+            elif tick == 6:
+                self.assertTrue(self.wakes.exists(), 'first change must send a wake')
+                self.assertEqual(len(self.wakes.read_text().splitlines()), 1)
+            elif tick == 8:
+                wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+                self.assertEqual(len(wakes), 2, 'pending changes must wake at the rate-limit deadline')
+                self.assertIn('VSTA-81', wakes[1][4])
+                self.assertIn('VSTA-82', wakes[1][4])
+
+        code, out, _ = self.run_watch([], '--every', '10', '--heartbeat', '100',
+                                       '--cycles', '4', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
 
     def test_a_valentin_reply_on_a_waiting_ticket_wakes_the_chat(self):
         first = [dict(agent_comment(3600), id=11)]
@@ -1594,6 +1740,75 @@ class WatchTest(unittest.TestCase):
         state = json.loads((self.directory / 'state/watch-test.json').read_text())
         self.assertEqual(state['watch_pid'], os.getpid())
 
+    def test_watch_survives_view_changes_and_heartbeats_by_default(self):
+        """VSTA-151 round 2: watch keeps polling after changes and heartbeats instead of exiting."""
+        self.rows([vsta('VSTA-1', section='Doing', age=300)])
+        clock = Clock()
+        seen_pids = []
+
+        class StopTest(BaseException):
+            pass
+
+        def on_sleep(tick):
+            state = json.loads((self.directory / 'state/watch-test.json').read_text())
+            seen_pids.append((tick, state.get('watch_pid'), state.get('watch_beat')))
+            if tick == 1:
+                self.rows([vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-80')])
+            elif tick == 2:
+                self.rows([vsta('VSTA-1', section='Done'), vsta('VSTA-80')])
+            elif tick == 5:
+                raise StopTest()
+
+        clock.on_sleep = on_sleep
+        argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
+                '--fixture', str(self.fixture), '--no-sync', '--every', '180', '--heartbeat', '360']
+        out = io.StringIO()
+        with patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(StopTest):
+                watch.main(argv, clock=clock.time, sleep=clock.sleep)
+        output = out.getvalue()
+        self.assertIn('changed: VSTA-80 new in Todo', output)
+        self.assertIn('changed: VSTA-1 Doing -> Done', output)
+        self.assertIn('heartbeat: no change in 6m', output)
+        self.assertEqual(len(seen_pids), 5)
+        self.assertTrue(all(pid == os.getpid() for _, pid, _ in seen_pids), seen_pids)
+
+    def test_killed_real_watcher_subprocess_survives_change_then_reads_dead(self):
+        """VSTA-151 round 2: a real watch process survives a view change and only dies when killed."""
+        import time as real_time
+
+        state_dir = self.directory / 'state'
+        self.rows([vsta('VSTA-1', section='Doing', age=300)])
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(state_dir))
+        proc = subprocess.Popen(
+            [sys.executable, str(SKILL / 'watch'), '--board', '13556',
+             '--label', 'Board Drain Loop', '--name', 'Watch Test',
+             '--fixture', str(self.fixture), '--no-sync', '--every', '1', '--heartbeat', '60'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        try:
+            state_file = state_dir / 'watch-test.json'
+            deadline = real_time.monotonic() + 10
+            while real_time.monotonic() < deadline and not state_file.exists():
+                real_time.sleep(0.1)
+            self.assertTrue(state_file.exists(), 'watcher did not record state')
+            # Trigger a view change and confirm the watcher reports it AND stays alive.
+            self.rows([vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-80')])
+            line = proc.stdout.readline()
+            self.assertIn('changed: VSTA-80 new in Todo', line)
+            real_time.sleep(0.3)
+            self.assertIsNone(proc.poll(), 'watcher exited on view change instead of self-restarting')
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state['watch_pid'], proc.pid)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
+        self.assertEqual(loop.watch_health('Watch Test')[0], 'dead')
+        self.assertIn('watcher dead since ', loop.watch_health('Watch Test')[1])
+
     def _mark_waiting(self, rows, comments):
         rows[0]['comments'] = comments
         self.rows(rows)
@@ -1608,7 +1823,9 @@ class WatchSyncTest(unittest.TestCase):
         self.directory = Path(self.temp.name)
         self.fixture = self.directory / 'view.json'
         self.rows([vsta('VSTA-1', section='Done')])
-        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
+        env = patch.dict(os.environ, {'HOME': str(self.directory), 'MULTIPROMPT_TAB': '',
+                                     'TMUX': '', 'PATH': str(self.directory),
+                                     'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
         env.start()
         self.addCleanup(env.stop)
 
@@ -1638,8 +1855,10 @@ class WatchSyncTest(unittest.TestCase):
                 patch.object(watch.sync, 'main', side_effect=fake_sync), \
                 patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
                 contextlib.redirect_stdout(out):
+            cycles = () if ('--cycles' in extra or '--once' in extra) else ('--cycles', '1')
             code = watch.main(['--board', '13556', '--label', 'Board Drain Loop',
-                               '--name', 'Watch Test', '--fixture', str(self.fixture), *extra],
+                               '--name', 'Watch Test', '--fixture', str(self.fixture),
+                               *cycles, *extra],
                               clock=clock.time, sleep=clock.sleep)
         return code, out.getvalue(), calls
 

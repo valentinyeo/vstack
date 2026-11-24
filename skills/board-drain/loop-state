@@ -7,6 +7,8 @@ chat's own hook and the fleet report cannot disagree (VSTA-151).
 
     loop-state status --name <chat>    # 0 armed, 3 expires soon, 2 not armed or watcher dead
     loop-state watcher --name <chat>   # one line: watcher ok / watcher dead since <time>
+    loop-state notice --name <chat>    # one line: notice sent <time> (<via>) / notice not sent
+    loop-state beat --name <chat>      # refresh this chat's heartbeat in the same loop record
 """
 import argparse
 import fcntl
@@ -39,6 +41,7 @@ PACER_FLOOR = 7200
 # The watcher pulses every poll, so a pulse older than a few polls is a dead watcher.
 DEFAULT_EVERY = 180
 BEAT_FLOOR = 300
+DEAD_NOTICE_AFTER = 10 * 60
 PLAN_PICK = Path.home() / '.local/bin' / 'plan-pick'
 ERRORS = (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError)
 
@@ -129,7 +132,7 @@ def stored(name):
     return state if isinstance(state, dict) else {}
 
 
-def store(name, state):
+def store(name, state, drop=()):
     """Merge only changed fields, atomically: the timer and chat write independently."""
     target = state_path(name)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -138,6 +141,8 @@ def store(name, state):
     try:
         fcntl.flock(directory, fcntl.LOCK_EX)
         merged = {'name': name, **stored(name), **state}
+        for key in drop:
+            merged.pop(key, None)
         with tempfile.NamedTemporaryFile(mode='w', dir=target.parent, delete=False) as out:
             temporary = Path(out.name)
             out.write(json.dumps(merged, indent=2) + '\n')
@@ -159,7 +164,7 @@ def record_watch(name, pid, now=None, every=None):
     patch = {'watch_pid': int(pid), 'watch_started': iso(moment), 'watch_beat': iso(moment)}
     if every is not None:
         patch['watch_every'] = int(every)
-    return store(name, patch)
+    return store(name, patch, drop=('dead_notice',))
 
 
 def beat(name, now=None):
@@ -217,6 +222,74 @@ def clear_watch(name, pid=None):
     if 'watch_pid' not in state or (pid is not None and state['watch_pid'] != pid):
         return state
     return store(name, {'watch_pid': None})
+
+
+def dead_since(name, now=None):
+    """(epoch, iso) when this chat's loop or watcher went dead, else (None, '')."""
+    moment = time.time() if now is None else now
+    state = stored(name)
+    if not state:
+        return None, ''
+    kind, _line = watch_health(name, moment)
+    if kind == 'dead':
+        for key in ('watch_beat', 'watch_started'):
+            try:
+                seen = reconcile.stamp(state[key])
+                return seen, iso(seen)
+            except ERRORS:
+                pass
+        return None, 'before this loop was armed'
+    code, line = status(name, moment)
+    if code == 2 and line == 'not armed' and state.get('armed_at'):
+        for key in ('watch_beat', 'watch_started'):
+            try:
+                seen = reconcile.stamp(state[key])
+                return seen, iso(seen)
+            except ERRORS:
+                pass
+        try:
+            expires = reconcile.stamp(state['expires_at'])
+            if moment >= expires:
+                return expires, iso(expires)
+        except ERRORS:
+            pass
+    return None, ''
+
+
+def dead_notice(name):
+    """The recorded dead-loop notice for this chat, or None when none is stored."""
+    notice = stored(name).get('dead_notice')
+    if isinstance(notice, dict) and notice.get('at') and notice.get('since'):
+        return notice
+    return None
+
+
+def notice_sent_for(state, since):
+    """True when Valentin was already notified for this dead spell."""
+    notice = state.get('dead_notice') if isinstance(state, dict) else None
+    return isinstance(notice, dict) and notice.get('since') == since and bool(notice.get('at'))
+
+
+def record_dead_notice(name, since, via, now=None):
+    """Record that Valentin was pushed once for this chat's current dead spell."""
+    moment = time.time() if now is None else now
+    record = {'at': iso(moment), 'since': since, 'via': via or ''}
+    store(name, {'dead_notice': record})
+    return record
+
+
+def notice_status(name, now=None):
+    """('sent' | 'pending' | 'none', line) for whether a dead-loop notice went out."""
+    _epoch, since = dead_since(name, now)
+    if not since:
+        return 'none', 'no notice'
+    state = stored(name)
+    if notice_sent_for(state, since):
+        notice = state['dead_notice']
+        via = notice.get('via') or ''
+        suffix = f' ({via})' if via else ''
+        return 'sent', f'notice sent {notice["at"]}{suffix}'
+    return 'pending', 'notice not sent'
 
 
 def timer_unit(name):
@@ -343,7 +416,7 @@ def arm(name, every='2h', expires=None, job=None, now=None, board=None, label=No
         state['board'] = board
     if label is not None:
         state['label'] = label
-    return store(name, state)
+    return store(name, state, drop=('dead_notice',))
 
 
 def status(name, now=None):
@@ -405,9 +478,9 @@ def clear(name):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for command in ('arm', 'status', 'clear', 'watch', 'watcher', 'timer'):
+    for command in ('arm', 'status', 'clear', 'watch', 'watcher', 'beat', 'notice', 'timer'):
         sub = commands.add_parser(command)
-        if command == 'watcher':
+        if command in ('watcher', 'beat', 'notice'):
             sub.add_argument('--name', required=True, help="This chat's Multibot name")
         else:
             sub.add_argument('--name', required=True)
@@ -447,6 +520,17 @@ def main(argv=None):
             kind, line = watch_health(args.name)
             print(line)
             return 0 if kind == 'ok' else 1
+        if args.command == 'beat':
+            state = beat(args.name)
+            if not state:
+                print('not armed')
+                return 2
+            print(f'beat {state["watch_beat"]}')
+            return 0
+        if args.command == 'notice':
+            kind, line = notice_status(args.name)
+            print(line)
+            return 0 if kind in ('sent', 'none') else 1
         code, text = status(args.name)
         print(text)
         return code
