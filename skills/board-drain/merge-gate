@@ -370,25 +370,32 @@ def fix(repo, branch, record):
     login = owner_login()
     if not login or owner != login:
         return f'skipped: {repo} {branch} is not owned by {login or "this account"}'
+    fixed = dict(record, contexts=sorted(set(record.get('contexts') or ()) | {name}))
     if record.get('mode') == 'classic':
+        fixed['classic'] = list(record.get('classic') or ()) + [name]
         api_write('PATCH', f'repos/{repo}/branches/{branch}/protection/required_status_checks',
-                  {'strict': bool(record.get('strict')),
-                   'contexts': list(record.get('classic') or ()) + [name]})
-        return f'fixed: {repo} {branch} now requires {name} in classic branch protection'
-    for ruleset in matching_rulesets(repo, branch):
-        payload = add_to_ruleset(repo, ruleset)
-        if payload is None:
-            return f'skipped: {repo} {branch} ruleset {ruleset.get("name")} already requires {name}'
-        api_write('PUT', f'repos/{repo}/rulesets/{ruleset["id"]}', payload)
-        return (f'fixed: {repo} {branch} now requires {name} in ruleset '
-                f'{ruleset.get("name")} ({ruleset["id"]})')
-    api_write('POST', f'repos/{repo}/rulesets',
-              {'name': 'merge gate', 'target': 'branch', 'enforcement': 'active',
-               'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
-               'rules': [{'type': 'required_status_checks',
-                          'parameters': {'strict_required_status_checks_policy': False,
-                                         'required_status_checks': [{'context': name}]}}]})
-    return f'fixed: {repo} {branch} now requires {name} in a new ruleset "merge gate"'
+                  {'strict': bool(record.get('strict')), 'contexts': fixed['classic']})
+        message = f'fixed: {repo} {branch} now requires {name} in classic branch protection'
+    else:
+        fixed['mode'] = 'rulesets'
+        for ruleset in matching_rulesets(repo, branch):
+            payload = add_to_ruleset(repo, ruleset)
+            if payload is None:
+                return f'skipped: {repo} {branch} ruleset {ruleset.get("name")} already requires {name}'
+            api_write('PUT', f'repos/{repo}/rulesets/{ruleset["id"]}', payload)
+            message = (f'fixed: {repo} {branch} now requires {name} in ruleset '
+                       f'{ruleset.get("name")} ({ruleset["id"]})')
+            break
+        else:
+            api_write('POST', f'repos/{repo}/rulesets',
+                      {'name': 'merge gate', 'target': 'branch', 'enforcement': 'active',
+                       'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
+                       'rules': [{'type': 'required_status_checks',
+                                  'parameters': {'strict_required_status_checks_policy': False,
+                                                 'required_status_checks': [{'context': name}]}}]})
+            message = f'fixed: {repo} {branch} now requires {name} in a new ruleset "merge gate"'
+    reconcile.cache_write(f'merge-gate:{repo}@{branch}', dict(fixed, at=time.time()))
+    return message
 
 
 def pairs_from_args(args):

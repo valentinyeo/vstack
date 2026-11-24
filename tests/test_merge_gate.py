@@ -257,6 +257,13 @@ class ReposForBoardTest(GateCase):
 
 
 class FixTest(GateCase):
+    def assert_fixed_gate_cached(self):
+        with patch.dict(os.environ, self.env), \
+                patch.object(gate, 'repos_for', return_value=BOARD_REPOS), \
+                patch.object(gate, 'gh_json', side_effect=AssertionError('unexpected gate read')):
+            self.assertEqual(gate.gate_findings(gate.board_object(13556), gate.time.time() + 1,
+                                                repos={'valentinyeo/vstack'}), [])
+
     def test_fix_adds_the_check_to_classic_protection(self):
         self.answer([ok_route(PROTECTION, {'strict': True, 'contexts': ['build']}),
                      ok_route(RULES, []),
@@ -269,6 +276,7 @@ class FixTest(GateCase):
         self.assertEqual(len(writes), 1)
         self.assertEqual(writes[0]['input'], {'strict': True,
                                               'contexts': ['build', 'verifier']})
+        self.assert_fixed_gate_cached()
 
     def test_fix_updates_the_ruleset_that_already_covers_the_branch(self):
         ruleset = {'id': 7, 'name': 'main', 'target': 'branch', 'enforcement': 'active',
@@ -291,6 +299,7 @@ class FixTest(GateCase):
         self.assertEqual(contexts, ['build', 'verifier'])
         self.assertTrue(writes[0]['input']['rules'][0]['parameters']
                         ['strict_required_status_checks_policy'])
+        self.assert_fixed_gate_cached()
 
     def test_fix_creates_a_ruleset_when_the_repo_has_none(self):
         self.answer([missing_route(PROTECTION), ok_route(RULES, []),
@@ -303,6 +312,21 @@ class FixTest(GateCase):
         self.assertEqual(writes[0]['input']['conditions']['ref_name']['include'],
                          ['~DEFAULT_BRANCH'])
         self.assertEqual(writes[0]['input']['rules'][0]['type'], 'required_status_checks')
+        self.assert_fixed_gate_cached()
+
+    def test_a_failed_fix_does_not_cache_a_passing_gate(self):
+        self.answer([{'match': ['-X', 'PATCH'], 'code': 1, 'stderr': 'write failed'},
+                     ok_route(PROTECTION, {'strict': True, 'contexts': ['build']}),
+                     ok_route(RULES, []),
+                     ok_route('user', {'login': 'valentinyeo'})])
+        done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertNotIn('fixed:', done.stdout)
+        calls = self.calls()
+        again = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main')
+        self.assertEqual(again.returncode, 1, again.stderr)
+        self.assertEqual(again.stdout.strip(), 'gate missing: valentinyeo/vstack main')
+        self.assertEqual(self.calls(), calls)
 
     def test_fix_never_touches_a_hypertask_ai_repo(self):
         self.answer([missing_route('branches/production/protection/required_status_checks'),
