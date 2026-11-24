@@ -210,10 +210,11 @@ class CheckTest(unittest.TestCase):
         argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
                 '--now', iso(now), *extra]
         out = io.StringIO()
+        live = alive if callable(alive) else (lambda *args: alive)
         with patch.object(drain, 'probe_load', return_value=probe), \
                 patch.object(drain, 'probe_lane', return_value=lane), \
                 patch.object(drain, 'FAIL_RULES', fail_rules), \
-                patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
+                patch.object(drain.reconcile, 'worker_alive', side_effect=live), \
                 contextlib.redirect_stdout(out):
             code = drain.main(argv)
         return code, out.getvalue()
@@ -329,11 +330,55 @@ class CheckTest(unittest.TestCase):
                 self.assertNotIn('wait on merge', out)
 
     def test_a_green_pr_on_a_ticket_that_does_not_wait_on_him_passes(self):
+        # Its helper is on the PR, so nothing asks for the merge and nothing is orphaned.
         row = mubo63(section='Checks', waitingOnUserId=None)
         payload = {'rows': [row], 'pulls': {'MUBO-63': [PR_524]}}
-        code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+        code, out = self.run_payload(payload, board=13734, label='Multiprompt Android',
+                                     alive=True)
         self.assertEqual(code, 0, out)
         self.assertNotIn('wait on merge', out)
+        self.assertNotIn('orphan PR:', out)
+
+    def test_an_open_pr_with_no_helper_is_an_orphan(self):
+        # VSTA-210: the owner carries its PR to merge, so an open PR with no helper is
+        # the work it owes before it starts a new ticket.
+        code, out = self.run_payload(checks_payload(stuck_card(), PR_524))
+        self.assertEqual(code, 1, out)
+        self.assertIn('orphan PR: SOFT-2940 https://github.com/valentinyeo/multiprompt-android/'
+                      'pull/524 has no live helper; start a helper on this PR before any new '
+                      'ticket', out)
+
+    def test_a_live_helper_on_the_pr_means_no_orphan(self):
+        live = lambda key, now, board: key == 'SOFT-2940'
+        code, out = self.run_payload(checks_payload(stuck_card(), PR_524), alive=live)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('orphan PR:', out)
+
+    def test_a_card_blocked_by_work_in_flight_is_not_an_orphan(self):
+        # SOFT-2944 waits on SOFT-2945, and SOFT-2945 has a live helper, so its own PR
+        # idles on purpose rather than being dropped.
+        row = todo('SOFT-2944')
+        row['relations'] = [{'relationType': 'BlockedBy', 'direction': 'outgoing',
+                             'otherTask': {'ticketNumber': 'SOFT-2945', 'status': 'Normal'}}]
+        payload = {'rows': [row, doing('SOFT-2945')],
+                   'pulls': {'SOFT-2944': [PR_524]}}
+        live = lambda key, now, board: key == 'SOFT-2945'
+        code, out = self.run_payload(payload, alive=live)
+        self.assertEqual(code, 0, out)
+        self.assertIn('blocked: SOFT-2944 by SOFT-2945', out)
+        self.assertNotIn('orphan PR:', out)
+
+    def test_an_orphan_pr_outranks_starting_on_a_fresh_todo(self):
+        # Valentin's rule: a PR comes first. The advice names the orphan, never the Todo
+        # the loop would otherwise pick.
+        payload = {'rows': [stuck_card(), todo('SOFT-2946', age=3 * 3600)],
+                   'pulls': {'SOFT-2940': [PR_524]}}
+        code, out = self.run_payload(payload)
+        self.assertEqual(code, 1, out)
+        self.assertIn('orphan PR: SOFT-2940', out)
+        self.assertNotIn('loop off:', out)
+        self.assertNotIn('stale: SOFT-2946', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
 
     def test_a_human_answer_after_the_agent_fails(self):
         comments = [agent_comment(3600), human_comment(600)]
@@ -379,8 +424,9 @@ class CheckTest(unittest.TestCase):
         self.assertIn('drain-check: FAIL (1 findings)', out)
 
     def test_a_green_pr_in_checks_is_not_stuck_and_costs_no_read(self):
+        # A helper holds the card, so the day rule never asks GitHub about it.
         with patch.object(drain, 'read_pull_facts') as read:
-            code, out = self.run_payload(checks_payload(stuck_card(), PR_524))
+            code, out = self.run_payload(checks_payload(stuck_card(), PR_524), alive=True)
         self.assertEqual(code, 0, out)
         read.assert_not_called()
         self.assertNotIn('stuck:', out)
@@ -389,10 +435,15 @@ class CheckTest(unittest.TestCase):
         for push in (iso(NOW - 3600), iso(NOW - 86400)):
             with self.subTest(push=push):
                 with patch.object(drain, 'read_pull_facts') as read:
-                    code, out = self.run_payload(checks_payload(stuck_card(), red_pull(push)))
+                    code, out = self.run_payload(checks_payload(stuck_card(), red_pull(push)),
+                                                alive=True)
                 self.assertEqual(code, 0, out)
                 read.assert_not_called()
                 self.assertNotIn('stuck:', out)
+                # A helper aside, the day alone decides: this card is one hour short.
+                self.assertIsNone(drain.stuck_finding(
+                    stuck_card()['task'], {'SOFT-2940': [red_pull(push)]}, NOW,
+                    drain.reconcile.DEFAULT))
 
     def test_a_live_lease_on_the_card_means_it_is_not_stuck(self):
         code, out = self.run_payload(checks_payload(stuck_card(), red_pull()), alive=True)
