@@ -278,6 +278,73 @@ class BoardLintTests(unittest.TestCase):
         self.assert_rule(failed.stdout, 'merged-no-pass', present=True)
         self.assertIn('merged without PASS', failed.stdout)
 
+    def test_merged_no_pass_respects_verifier_cutoff_and_newer_unmerged_pr(self):
+        """VSTA-255: pre-cutoff merges (HTPR-7742) and newer open/parked PRs (HTPR-7799) are not breaks."""
+        module = load_board_lint()
+        now = module.reconcile.stamp('2026-11-24T22:30:00Z')
+        hyper = {'nameWithOwner': 'hypertask-ai/hypertask'}
+        other = {'nameWithOwner': 'example/unconfigured'}
+
+        def pr(number, state, created, merged=None, passed=False, repo=hyper):
+            owner = repo['nameWithOwner']
+            return {'url': f'https://github.com/{owner}/pull/{number}',
+                    'number': number, 'state': state, 'passed': passed,
+                    'createdAt': created, 'mergedAt': merged, 'repository': repo}
+
+        cases = (
+            ('HTPR-7799 old merges + newer closed PR', 'HTPR-7799', 'Backlog', [
+                pr(2078, 'MERGED', '2026-10-24T14:33:34Z', '2026-10-25T02:15:40Z'),
+                pr(3325, 'MERGED', '2026-11-11T05:46:58Z', '2026-11-11T08:07:40Z'),
+                pr(3736, 'CLOSED', '2026-11-20T10:58:07Z', None),
+            ], False),
+            ('HTPR-7742 only merges before cutoff', 'HTPR-7742', 'Backlog', [
+                pr(2086, 'MERGED', '2026-10-24T15:47:24Z', '2026-10-24T16:11:07Z'),
+                pr(3352, 'MERGED', '2026-11-11T09:10:26Z', '2026-11-11T09:45:11Z'),
+                pr(3357, 'MERGED', '2026-11-11T10:14:07Z', '2026-11-11T10:24:28Z'),
+            ], False),
+            ('post-cutoff merge without PASS still flagged', 'HTPR-9901', 'QA', [
+                pr(3800, 'MERGED', '2026-11-20T09:00:00Z', '2026-11-20T10:00:00Z'),
+            ], True),
+            ('post-cutoff merge + newer open PR skipped', 'HTPR-9902', 'AI Review', [
+                pr(3800, 'MERGED', '2026-11-20T09:00:00Z', '2026-11-20T10:00:00Z'),
+                pr(3810, 'OPEN', '2026-11-21T09:00:00Z', None),
+            ], False),
+            ('post-cutoff merge + newer closed-unmerged PR skipped', 'HTPR-9903', 'Backlog', [
+                pr(3800, 'MERGED', '2026-11-20T09:00:00Z', '2026-11-20T10:00:00Z'),
+                pr(3811, 'CLOSED', '2026-11-21T09:00:00Z', None),
+            ], False),
+            ('older closed PR + newer post-cutoff merge still flagged', 'HTPR-9904', 'QA', [
+                pr(3790, 'CLOSED', '2026-11-18T09:00:00Z', None),
+                pr(3800, 'MERGED', '2026-11-20T09:00:00Z', '2026-11-20T10:00:00Z'),
+            ], True),
+            ('repo with no cutoff entry keeps flagging old merges', 'HTPR-9905', 'QA', [
+                pr(12, 'MERGED', '2026-10-24T10:00:00Z', '2026-10-25T10:00:00Z', repo=other),
+            ], True),
+        )
+        for label, key, section, ticket_pulls, flagged in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as temp:
+                fixture = {
+                    'now': now,
+                    'roster': 'HT Product Lead (live-h, claude, /tmp)\n',
+                    'tasks': [{
+                        'ticketNumber': key,
+                        'projectId': 15,
+                        'section': section,
+                        'title': label,
+                        'updatedAt': '2026-11-24T22:00:00Z',
+                        'staleness': {'sectionChangedAt': '2026-10-20T00:00:00Z'},
+                        'labels': [{'name': 'HT Product Lead'}],
+                        'assignees': [{'type': 'agent', 'displayName': 'HT Product Lead'}],
+                    }],
+                    'pulls': {key: ticket_pulls},
+                }
+                path = Path(temp) / f'{key}.json'
+                path.write_text(json.dumps(fixture))
+                result = self.run_lint(path, board=15,
+                                       roster_text='HT Product Lead (live-h, claude, /tmp)\n')
+                self.assertNotEqual(result.returncode, 2, result.stderr)
+                self.assert_rule(result.stdout, 'merged-no-pass', present=flagged)
+
     def test_live_saved_pull_facts_clear_merged_no_pass_without_passed_on_search_row(self):
         module = load_board_lint()
         board = module.reconcile.DEFAULT

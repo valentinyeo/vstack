@@ -217,7 +217,7 @@ def seed_fixture_pulls(pulls):
             reconcile.PULLS[(repo, number)] = reconcile.Pull(
                 row.get('url') or '', (row.get('state') or 'OPEN').upper(),
                 row.get('checks') or '', fixture_pull_passed(row), reconcile.moment(row.get('mergedAt')),
-                row.get('mergeable'))
+                row.get('mergeable'), created_at=reconcile.moment(row.get('createdAt')))
 
 
 def rows_for(args):
@@ -617,15 +617,13 @@ def check_merged_no_pass(task, pulls, board, breaks, facts=None):
     """A merge with no PASS on its head is a rule break its owner must verify.
 
     A PASS verdict runs before the merge, so a merge without one proves nothing and
-    the card goes back to Todo (or Backlog on board 15).
+    the card goes back to Todo (or Backlog on board 15). Merges predating the repo's
+    verifier cutoff and cards whose newest PR is open or closed-unmerged are skipped.
     """
     if task.get('section') == DONE:
         return
     ticket_pulls = pull_facts_for(task, pulls, facts)
-    if not any(((p.get('state') if isinstance(p, dict) else p.state) or '').upper() == 'MERGED'
-               for p in ticket_pulls):
-        return
-    if reconcile.merged_with_pass(ticket_pulls):
+    if not reconcile.merged_without_pass(ticket_pulls):
         return
     breaks.append(Break(task['ticketNumber'], 'merged-no-pass', owner_chat(task),
                         'merged without PASS on the head; verify the merged head and record PASS, or reopen'))
