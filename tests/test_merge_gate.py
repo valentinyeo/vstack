@@ -347,6 +347,25 @@ class VerifierNameTest(GateCase):
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertEqual(done.stdout.strip(), 'gate missing: valentinyeo/postbox main')
 
+    def test_house_rules_requires_its_reusable_workflow_name(self):
+        """house-rules main requires `skill-lint / pstack-verifier`, the name GitHub gives
+        the verifier job of a reusable workflow (VSTA-196)."""
+        self.answer([ok_route(PROTECTION, {'strict': False,
+                                           'contexts': ['rules-lint',
+                                                        'skill-lint / pstack-verifier']}),
+                     ok_route(RULES, [])])
+        done = self.run_gate('--repo', 'valentinyeo/house-rules', '--branch', 'main')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate ok: valentinyeo/house-rules main')
+
+    def test_house_rules_does_not_accept_the_pstack_name(self):
+        # The dead name `--fix` used to re-add: house-rules requires nothing by it.
+        self.answer([ok_route(PROTECTION, {'strict': False, 'contexts': ['pstack-verifier']}),
+                     ok_route(RULES, [])])
+        done = self.run_gate('--repo', 'valentinyeo/house-rules', '--branch', 'main')
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate missing: valentinyeo/house-rules main')
+
     def test_a_repo_that_requires_nothing_fails(self):
         self.answer([ok_route(PROTECTION, {'strict': False, 'contexts': []}),
                      ok_route(RULES, [])])

@@ -20,6 +20,7 @@ SOURCE = ROOT / 'skills/hypertask-work/reconcile'
 VSTACK = 'valentinyeo/vstack'
 TOKEN_LADDER = 'valentinyeo/token-ladder'
 POSTBOX = 'valentinyeo/postbox'
+HOUSE_RULES = 'valentinyeo/house-rules'
 HYPER = 'hypertask-ai/hypertask'
 # PR #344's merged head, and the head of the PR that followed it.
 HEAD = 'b5fa03a125b6177d7e04f4001d2f50d1caf9f002'
@@ -102,6 +103,13 @@ class VerifierCheckNames(unittest.TestCase):
         """VSTA-196: postbox posts `verify-verdict` and requires it on main."""
         self.assertTrue(r.pstack_pass_on_head([check('verify-verdict')], HEAD, POSTBOX))
         self.assertFalse(r.pstack_pass_on_head([check('pstack-verifier')], HEAD, POSTBOX))
+
+    def test_house_rules_counts_its_reusable_workflow_check_as_the_pass(self):
+        """house-rules' verifier is a reusable workflow, so GitHub names the check
+        `skill-lint / pstack-verifier` and main requires exactly that (VSTA-196)."""
+        self.assertTrue(r.pstack_pass_on_head([check('skill-lint / pstack-verifier')],
+                                              HEAD, HOUSE_RULES))
+        self.assertFalse(r.pstack_pass_on_head([check('pstack-verifier')], HEAD, HOUSE_RULES))
 
     def test_pstack_verifier_still_counts_where_it_is_the_check(self):
         self.assertTrue(r.pstack_pass_on_head([check('pstack-verifier')], HEAD, HYPER))
