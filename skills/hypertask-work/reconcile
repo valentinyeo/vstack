@@ -50,8 +50,23 @@ def load_verdict():
     return module
 
 
+def load_wip():
+    """The one owner of what counts as an agent label vs a generic classification label."""
+    path = str(Path(__file__).resolve().parents[1] / 'board-drain' / 'wip-cap')
+    module = sys.modules.get('board_drain_wip_cap')
+    if module is not None and getattr(module, '__file__', None) == path:
+        return module
+    loader = importlib.machinery.SourceFileLoader('board_drain_wip_cap', path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
 session = load_session()
 verdict = load_verdict()
+wip = load_wip()
 
 BOARD = 2060
 PROTECTED = {'Valentin Review', 'Done', 'Not now'}
@@ -177,6 +192,7 @@ class BoardConfig:
     # A board read at runtime carries its real column titles; a configured board
     # keeps None and lets each stage name resolve from the ticket's own column.
     columns: frozenset | None = None
+    title: str = ''
 
 
 def column_stage_map(board):
@@ -212,20 +228,25 @@ PRODUCT_COLUMN_STAGE['QA'] = Stage.REVIEW
 
 
 def make_board(board_id, prefix, managed, protected, stage_column, column_stage, *,
-               idle_demotion=frozenset(), demote_all_idle=True, repos=(), columns=None):
+               idle_demotion=frozenset(), demote_all_idle=True, repos=(), columns=None,
+               title=''):
     return BoardConfig(board_id, prefix, frozenset(managed), frozenset(protected),
                        frozenset(column_stage.items()), frozenset(stage_column.items()),
-                       frozenset(idle_demotion), demote_all_idle, tuple(repos), columns)
+                       frozenset(idle_demotion), demote_all_idle, tuple(repos), columns,
+                       str(title or '').strip())
 
 
 BOARDS = {
-    2060: make_board(2060, 'SOFT', MANAGED, PROTECTED, FACTORY_STAGE_COLUMN, FACTORY_COLUMN_STAGE),
-    13556: make_board(13556, 'VSTA', MANAGED, PROTECTED, FACTORY_STAGE_COLUMN, FACTORY_COLUMN_STAGE),
+    2060: make_board(2060, 'SOFT', MANAGED, PROTECTED, FACTORY_STAGE_COLUMN, FACTORY_COLUMN_STAGE,
+                     title='Software Factory'),
+    13556: make_board(13556, 'VSTA', MANAGED, PROTECTED, FACTORY_STAGE_COLUMN, FACTORY_COLUMN_STAGE,
+                      title='Vstack'),
     # The Product board ships from the product repo and from vstack itself.
     15: make_board(15, 'HTPR', PRODUCT_MANAGED, PRODUCT_PROTECTED, PRODUCT_STAGE_COLUMN,
                    PRODUCT_COLUMN_STAGE, idle_demotion=frozenset({Stage.IN_PROGRESS}),
                    demote_all_idle=False,
-                   repos=(('hypertask-ai/hypertask', 'production'), ('valentinyeo/vstack', 'main'))),
+                   repos=(('hypertask-ai/hypertask', 'production'), ('valentinyeo/vstack', 'main')),
+                   title='Hypertask'),
 }
 # Release branches for boards that name no repos, so the shipped rule still holds.
 FLEET_RELEASES = {'hypertask-ai/hypertask': 'production', 'valentinyeo/vstack': 'main'}
@@ -553,8 +574,9 @@ def board_config(board_id):
                                    names['Doing'], names['AI Review']})
     protected = columns - managed
     stage_column, column_stage = dynamic_stage_maps(columns, names)
+    title = (project.get('title') or project.get('name') or project.get('project_title') or '').strip()
     return make_board(board_id, prefix, managed, protected, stage_column, column_stage,
-                      columns=columns)
+                      columns=columns, title=title)
 
 
 def target(facts, board=DEFAULT, names=None):
@@ -2640,6 +2662,15 @@ def carries_label(task, name):
                for label in task.get('labels') or ())
 
 
+def carries_no_agent_label(task):
+    """True when a card carries none of the board's agent labels.
+
+    Generic labels (Bug, brain-*, verification, infra, etc.) do not name a chat,
+    so a card carrying only generic labels (or no labels at all) still matches.
+    """
+    return not wip.agent_labels(task)
+
+
 def is_verification(task):
     """The board marks verification work with one label; nothing else makes it verification."""
     return carries_label(task, VERIFICATION)
@@ -2736,7 +2767,7 @@ def collect(task, pulls, now, board=DEFAULT, blockers=None):
                  blocker=blocker)
 
 
-def reconcile(task, facts, apply=False, board=DEFAULT, names=None, label=None):
+def reconcile(task, facts, apply=False, board=DEFAULT, names=None, label=None, unlabeled=False):
     if str(task['projectId']) != str(board.id):
         raise ValueError(f'ticket outside board {board.id}')
     column, reason = target(facts, board, names)
@@ -2745,6 +2776,11 @@ def reconcile(task, facts, apply=False, board=DEFAULT, names=None, label=None):
         # A label lead touches its own cards only: another lead's card, and an
         # unlabelled card, stay where they are.
         print(f'SKIP {key} | carries no {label!r} label; board 15 label sync leaves it alone',
+              flush=True)
+        return task['section']
+    if apply and unlabeled and not carries_no_agent_label(task):
+        # Unlabeled sync touches only cards carrying no agent label.
+        print(f'SKIP {key} | carries an agent label; unlabeled sync leaves it alone',
               flush=True)
         return task['section']
     action = 'KEEP' if column == task['section'] else ('MOVE' if apply else 'PLAN')
@@ -2762,7 +2798,7 @@ def reconcile(task, facts, apply=False, board=DEFAULT, names=None, label=None):
     return column
 
 
-def apply_plan(plans, limit, pulls, board=DEFAULT, names=None, label=None):
+def apply_plan(plans, limit, pulls, board=DEFAULT, names=None, label=None, unlabeled=False):
     if board.id == 15:
         limit = min(limit, 5)
     options = {} if board.id == BOARD else {'board': board}
@@ -2782,6 +2818,9 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None, label=None):
         fresh = api('task', 'get', old['ticketNumber'])['tasks'][0]
         if fresh['section'] != old['section'] or fresh['updatedAt'] != old['updatedAt']:
             print(f'SKIP {old["ticketNumber"]} | ticket changed since preview', flush=True)
+            continue
+        if unlabeled and not carries_no_agent_label(fresh):
+            print(f'SKIP {old["ticketNumber"]} | carries an agent label; unlabeled sync leaves it alone', flush=True)
             continue
         if str(fresh['projectId']) != str(board.id) or fresh['section'] not in board.managed:
             raise ValueError('ticket no longer eligible')
@@ -2805,7 +2844,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None, label=None):
         if target(final, board, names) != target(facts, board, names):
             print(f'SKIP {task["ticketNumber"]} | facts changed during preflight', flush=True)
             continue
-        reconcile(current, final, apply=True, names=names, label=label, **options)
+        reconcile(current, final, apply=True, names=names, label=label, unlabeled=unlabeled, **options)
     return 0
 
 
@@ -2829,18 +2868,25 @@ def ticket_lock_path(board, ticket):
     return own_lock_path(board, 'ticket', ticket)
 
 
+def unlabeled_lock_path(board):
+    path = lock_path(board)
+    return path.with_name(f'{path.name[:-len(".lock")]}-unlabeled.lock')
+
+
 LOCK_WAIT_SECONDS = 180
 LOCK_POLL_SECONDS = 0.1
 
 
-def _lock_scope(board, label=None, ticket=None):
-    own = f' ticket={ticket}' if ticket else (f' label={label}' if label else '')
+def _lock_scope(board, label=None, ticket=None, unlabeled=False):
+    own = (f' ticket={ticket}' if ticket
+           else (f' label={label}' if label
+                 else (' unlabeled' if unlabeled else '')))
     return f'board={board.id}{own}'
 
 
-def _try_acquire_locks(board=DEFAULT, label=None, ticket=None):
+def _try_acquire_locks(board=DEFAULT, label=None, ticket=None, unlabeled=False):
     """One non-blocking try for the board lock and, when scoped, its own lock."""
-    own = ticket or label
+    own = ticket or label or unlabeled
     path = lock_path(board)
     path.parent.mkdir(parents=True, exist_ok=True)
     handles = []
@@ -2848,7 +2894,9 @@ def _try_acquire_locks(board=DEFAULT, label=None, ticket=None):
         handles.append(path.open('a'))
         fcntl.flock(handles[0], (fcntl.LOCK_SH if own else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         if own:
-            second = ticket_lock_path(board, ticket) if ticket else label_lock_path(board, label)
+            second = (ticket_lock_path(board, ticket) if ticket
+                      else (label_lock_path(board, label) if label
+                            else unlabeled_lock_path(board)))
             handles.append(second.open('a'))
             fcntl.flock(handles[1], fcntl.LOCK_EX | fcntl.LOCK_NB)
         return handles
@@ -2858,16 +2906,16 @@ def _try_acquire_locks(board=DEFAULT, label=None, ticket=None):
         return None
 
 
-def acquire_locks(board=DEFAULT, label=None, ticket=None, wait=0.0, poll=None):
+def acquire_locks(board=DEFAULT, label=None, ticket=None, wait=0.0, poll=None, unlabeled=False):
     """Open handles, or None when another apply run still holds this board, label or ticket.
 
-    A whole-board apply excludes every apply on the board. A label apply or a ticket
-    apply shares the board lock and holds its own exclusive one, so two labels or
-    two tickets apply at once while a whole-board apply still excludes them all.
+    A whole-board apply excludes every apply on the board. A label, unlabeled or ticket
+    apply shares the board lock and holds its own exclusive one, so disjoint scopes
+    apply at once while a whole-board apply still excludes them all.
     When `wait` is positive, poll until the lock frees or the deadline expires,
     printing one stderr line with the seconds waited.
     """
-    handles = _try_acquire_locks(board, label, ticket)
+    handles = _try_acquire_locks(board, label, ticket, unlabeled=unlabeled)
     if handles is not None or wait <= 0:
         return handles
     step = LOCK_POLL_SECONDS if poll is None else poll
@@ -2878,14 +2926,14 @@ def acquire_locks(board=DEFAULT, label=None, ticket=None, wait=0.0, poll=None):
         if remaining <= 0:
             break
         time.sleep(min(step, remaining))
-        handles = _try_acquire_locks(board, label, ticket)
+        handles = _try_acquire_locks(board, label, ticket, unlabeled=unlabeled)
         if handles is not None:
             waited = time.monotonic() - began
-            print(f'reconcile: waited {waited:.1f}s for {_lock_scope(board, label, ticket)} lock',
+            print(f'reconcile: waited {waited:.1f}s for {_lock_scope(board, label, ticket, unlabeled=unlabeled)} lock',
                   file=sys.stderr, flush=True)
             return handles
     waited = time.monotonic() - began
-    print(f'reconcile: waited {waited:.1f}s for {_lock_scope(board, label, ticket)} lock; still held',
+    print(f'reconcile: waited {waited:.1f}s for {_lock_scope(board, label, ticket, unlabeled=unlabeled)} lock; still held',
           file=sys.stderr, flush=True)
     return None
 
@@ -3007,6 +3055,8 @@ def board_run():
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--section', help='Restrict the dry run to one column')
     parser.add_argument('--label', help='Sync only tickets carrying this label')
+    parser.add_argument('--unlabeled', action='store_true',
+                        help='Sync only tickets carrying no agent label')
     parser.add_argument('--ticket', help='Sync exactly one ticket, on the board it belongs to')
     parser.add_argument('--self-test', action='store_true')
     parser.add_argument('--limit', type=int, default=5, help='Maximum moves per apply run; default 5')
@@ -3019,10 +3069,14 @@ def board_run():
         args.ticket = args.ticket.upper()
         if args.label or args.section:
             parser.error('--ticket syncs one ticket; it takes no --label or --section')
+        if args.unlabeled:
+            parser.error('--ticket syncs one ticket; it takes no --unlabeled')
         if args.board is not None:
             parser.error('--ticket reads its board from the ticket')
     elif args.board is not None and args.board < 1:
         parser.error('--board must be a positive board id')
+    if args.label and args.unlabeled:
+        parser.error('--label and --unlabeled cannot be used together')
     if args.apply and args.section:
         parser.error('--section is read-only')
     if args.limit < 1:
@@ -3064,9 +3118,10 @@ def board_run():
     CARD.update(board=board.id, ticket=args.ticket)
     handles = []
     if args.apply:
-        handles = acquire_locks(board, args.label, args.ticket, wait=LOCK_WAIT_SECONDS)
+        handles = acquire_locks(board, args.label, args.ticket, wait=LOCK_WAIT_SECONDS,
+                                unlabeled=args.unlabeled)
         if handles is None:
-            print(f'SKIP {_lock_scope(board, args.label, args.ticket)} | reconciliation already running', flush=True)
+            print(f'SKIP {_lock_scope(board, args.label, args.ticket, unlabeled=args.unlabeled)} | reconciliation already running', flush=True)
             return 0
     with contextlib.ExitStack() as stack:
         for handle in handles:
@@ -3079,6 +3134,12 @@ def board_run():
                 probe_budget()
         with phase('tickets'):
             tasks = [one] if args.ticket else tickets(args.section, **options)
+        title = board.title or next(
+            ((t.get('boardTitle') or '').strip() for t in tasks if (t.get('boardTitle') or '').strip()),
+            '')
+        title = ' '.join(title.split())
+        if title:
+            print(f'reconcile: board {board.id} title={title}', file=sys.stderr, flush=True)
         with phase('sections'):
             sections = {t['section'] for t in tasks}
             if board.columns is not None:
@@ -3093,6 +3154,12 @@ def board_run():
             # Before any GitHub lookup: a session's run pays only for its own tickets.
             kept = [t for t in tasks if carries_label(t, args.label)]
             print(f'reconcile: label {args.label!r} kept {len(kept)} of {len(tasks)} tickets',
+                  file=sys.stderr, flush=True)
+            tasks = kept
+        elif args.unlabeled:
+            # Before any GitHub lookup: only cards carrying no agent label.
+            kept = [t for t in tasks if carries_no_agent_label(t)]
+            print(f'reconcile: unlabeled kept {len(kept)} of {len(tasks)} tickets',
                   file=sys.stderr, flush=True)
             tasks = kept
         names = {} if product_board(board) else stage_names(sections=sections)
@@ -3165,7 +3232,8 @@ def board_run():
                     else:
                         facts = collect(task, pulls[task['ticketNumber']], now,
                                         blockers=blockers, **options)
-                    reconcile(task, facts, names=names, label=args.label, **options)
+                    reconcile(task, facts, names=names, label=args.label,
+                              unlabeled=args.unlabeled, **options)
                     plans.append((task, facts))
                 except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
                     errors += 1
@@ -3173,15 +3241,16 @@ def board_run():
         if os.environ.get('RECONCILE_TIMING'):
             print(timing_table(), file=sys.stderr, flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
-        # A label or section run reads a slice of the board, so it must not overwrite
+        # A label, unlabeled or section run reads a slice of the board, so it must not overwrite
         # the whole board's facts with a snapshot that only covers its own cards.
-        scoped = bool(args.label or args.section)
+        scoped = bool(args.label or args.unlabeled or args.section)
         if not args.ticket and not scoped and not errors and candidates:
             write_board_facts(board.id, serialize_board_facts(board, candidates, pulls, time.time(),
                                                               probe_since=probe_since, saved=saved,
                                                               refreshed=refreshed))
         if args.apply and not errors:
-            return apply_plan(plans, args.limit, pulls, names=names, label=args.label, **options)
+            return apply_plan(plans, args.limit, pulls, names=names, label=args.label,
+                              unlabeled=args.unlabeled, **options)
         return bool(errors)
 
 

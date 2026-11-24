@@ -17,12 +17,21 @@ ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
 # A tick over the gh budget is skipped, not failed: reconcile prints this one line
 # and exits 0, and the watcher keeps watching.
 SKIP_PREFIX = 'sync skipped:'
+BOARD_TITLE = re.compile(r'^reconcile:\s+board\s+(\d+)\s+title=(.+)$')
 
 loader = importlib.machinery.SourceFileLoader('board_drain_loop_state', str(HERE / 'loop-state'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 loop_state = importlib.util.module_from_spec(spec)
 sys.modules[loader.name] = loop_state
 loader.exec_module(loop_state)
+
+BOARD_TITLES = {
+    board_id: cfg.title
+    for board_id, cfg in loop_state.reconcile.BOARDS.items()
+    if getattr(cfg, 'title', '')
+}
+BOARD15_LEADS = frozenset(name.strip().casefold()
+                          for name in loop_state.reconcile.BOARD15_LEADS)
 
 # Before the reconcile steps: a worker `hypertask` shim earlier on PATH exits 3.
 loop_state.ensure_cli_path()
@@ -79,8 +88,35 @@ def sync_skip_line(text):
     return ''
 
 
-def run(step, args, env):
-    """Run one reconcile step: ('ok'|'skipped'|'failed', one-line reason).
+def board_title_from(text, board):
+    """The board title reconcile reported on stderr, or '' when absent."""
+    for line in (text or '').splitlines():
+        match = BOARD_TITLE.match(line.strip())
+        if match and int(match.group(1)) == board:
+            return match.group(2).strip()
+    return ''
+
+
+def is_board_lead(board, label, name='', board_title=''):
+    """True when this chat's label (or name) is the board's lead.
+
+    Board 15 uses reconcile.BOARD15_LEADS (HT Product Lead / vcc), matching
+    require_board15_agent. Every other board identifies its lead by matching the
+    board's title (e.g. label 'Multi Bot' on board 13734 'Multi Bot', or label
+    'Vstack' on board 13556 'Vstack').
+    """
+    folded_label = (label or '').strip().casefold()
+    folded_name = (name or '').strip().casefold()
+    if board == 15:
+        return folded_label in BOARD15_LEADS or folded_name in BOARD15_LEADS
+    title = (board_title or BOARD_TITLES.get(board) or '').strip().casefold()
+    if not title:
+        return False
+    return folded_label == title or folded_name == title
+
+
+def run_with_output(step, args, env):
+    """Run one reconcile step: ('ok'|'skipped'|'failed', one-line reason, combined output).
 
     A refused gh budget is a skipped tick, not a failure: the apply step does not
     run after it, and only its one skip line is printed.
@@ -90,22 +126,34 @@ def run(step, args, env):
     text = '\n'.join(part for part in (done.stdout, done.stderr) if part)
     skipped = sync_skip_line(text)
     if skipped:
-        return 'skipped', skipped
+        return 'skipped', skipped, text
     echo(done.stdout)
     echo(done.stderr)
     lines = (done.stdout or '').splitlines() + (done.stderr or '').splitlines()
     offending = [line.strip() for line in lines
                  if any(bad in line.lower() for bad in BAD_WORDS)]
     if offending:
-        return 'failed', f'{step} printed: {offending[0]}'
+        return 'failed', f'{step} printed: {offending[0]}', text
     if done.returncode:
-        return 'failed', f'{step} exited {done.returncode}'
-    return 'ok', ''
+        return 'failed', f'{step} exited {done.returncode}', text
+    return 'ok', '', text
+
+
+def run(step, args, env):
+    """Run one reconcile step: ('ok'|'skipped'|'failed', one-line reason)."""
+    status, detail, _text = run_with_output(step, args, env)
+    return status, detail
 
 
 def steps(board, label, limit):
     base = ['--board', str(board), '--label', label]
     return ('preview', base), ('apply', [*base, '--apply', '--limit', str(limit)])
+
+
+def unlabeled_steps(board, limit):
+    base = ['--board', str(board), '--unlabeled']
+    return (('unlabeled-preview', base),
+            ('unlabeled-apply', [*base, '--apply', '--limit', str(limit)]))
 
 
 def main(argv=None):
@@ -120,10 +168,13 @@ def main(argv=None):
     if args.board < 1:
         parser.error('--board must be a positive board id')
     reason = None
+    board_title = ''
     try:
         env = with_caller(environment(args.name, args.own_token), args.board, args.label)
         for step, step_args in steps(args.board, args.label, args.limit):
-            status, detail = run(step, step_args, env)
+            status, detail, text = run_with_output(step, step_args, env)
+            if not board_title:
+                board_title = board_title_from(text, args.board)
             if status == 'skipped':
                 # One line, then stop: the apply step would only be refused again.
                 print(detail)
@@ -132,6 +183,16 @@ def main(argv=None):
             if status == 'failed':
                 reason = detail
                 break
+        if not reason and is_board_lead(args.board, args.label, args.name, board_title):
+            for step, step_args in unlabeled_steps(args.board, args.limit):
+                status, detail, _text = run_with_output(step, step_args, env)
+                if status == 'skipped':
+                    print(detail)
+                    record(args.name, True, detail, skipped=True)
+                    return 0
+                if status == 'failed':
+                    reason = detail
+                    break
     except (*ERRORS, RuntimeError) as error:
         reason = str(error) or error.__class__.__name__
     if not reason:
