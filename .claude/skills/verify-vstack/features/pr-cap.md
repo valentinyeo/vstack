@@ -11,7 +11,7 @@ reads the same refusal from a `gh` shim that `scripts/worker-shims` writes from 
 - `count` reads the open total with one `gh api` search call, keeps it for 5 minutes under `~/.local/state/vstack/pr-cap/`, and fails open with one warning line when GitHub cannot answer.
 - `message` names the repo, the count, the cap and the fix: commit small units to master per the repo's CLAUDE.md; close or land open PRs first.
 - `shims` writes a `gh` shim beside the heavy-local shims, so an OpenCode or Antigravity worker gets exit 2 and never starts the real `gh`.
-- `wiring` keeps the hook registered in `.claude/settings.json` and generates the shim from `./install`.
+- `wiring` registers the hook in `~/.claude/settings.json` from `./install` through `scripts/register-user-hook.py`, once however often install runs, so a Multi Bot chat whose cwd is its own project is refused too, and generates the shim from `./install`.
 
 ## How to get to it (user POV)
 

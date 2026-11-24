@@ -33,12 +33,14 @@ class InstallGuard(unittest.TestCase):
         return subprocess.run(['bash', str(script)], env=env, text=True, capture_output=True)
 
     def shared_checkout(self):
-        """A fake shared checkout: this install plus one skill, all under $HOME."""
+        """A fake shared checkout: this install, the hook registrar and one skill."""
         share = self.home / '.local' / 'share' / 'vstack'
         skill = share / 'skills' / 'valentin-mode'
         skill.mkdir(parents=True)
         (skill / 'SKILL.md').write_text('name: valentin-mode\n')
         shutil.copy2(ROOT / 'install', share / 'install')
+        (share / 'scripts').mkdir()
+        shutil.copy2(ROOT / 'scripts/register-user-hook.py', share / 'scripts')
         return share
 
     def test_refuses_a_checkout_that_is_not_the_shared_one(self):
