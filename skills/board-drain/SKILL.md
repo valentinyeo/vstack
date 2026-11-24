@@ -70,5 +70,5 @@ A fail that returns is a gap: file it on board 13556, label Board Drain Loop, wi
 ## Rules
 
 - Your login and your tickets only. Never move another chat's tickets.
-- Never move a ticket into Valentin Review, or to Done without live proof.
+- Never move a ticket into Valentin Review, or to Done without a PASS verdict or live proof.
 - Reconcile bugs go to Hypertask Reconciler; PR follow-up follows the PR owner rules in valentin-mode.

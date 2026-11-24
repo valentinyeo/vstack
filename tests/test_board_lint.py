@@ -212,7 +212,8 @@ class BoardLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assert_rule(result.stdout, 'done-proof')
 
-    def test_done_with_merged_pr_needs_live_proof(self):
+    def test_done_with_merged_pass_pr_is_proof(self):
+        """A PASS verdict runs before the merge, so merged with PASS is Done proof."""
         fixture = json.loads((FIXTURES / 'done-with-proof.json').read_text())
         fixture.pop('comments', None)
         with tempfile.TemporaryDirectory() as temp:
@@ -224,8 +225,45 @@ class BoardLintTests(unittest.TestCase):
                  '--roster', str(roster), '--skip-comments'],
                 capture_output=True, text=True,
                 env=dict(os.environ, BOARD_DRAIN_STATE_DIR=temp))
+            self.assert_rule(result.stdout, 'done-proof', present=False)
+
+    def test_done_with_an_unproven_merge_still_needs_proof(self):
+        fixture = json.loads((FIXTURES / 'done-with-proof.json').read_text())
+        fixture.pop('comments', None)
+        fixture['pulls']['FACT-31'][0]['passed'] = False
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'done-merged-unproven.json'
+            path.write_text(json.dumps(fixture))
+            roster = roster_path(temp, 'Board Drain Loop (live-a, claude, /tmp)\n')
+            result = subprocess.run(
+                [str(LINT), '--board', str(BOARD), '--fixture', str(path),
+                 '--roster', str(roster), '--skip-comments'],
+                capture_output=True, text=True,
+                env=dict(os.environ, BOARD_DRAIN_STATE_DIR=temp))
             self.assertEqual(result.returncode, 1)
             self.assert_rule(result.stdout, 'done-proof')
+
+    def test_a_merged_pr_without_pass_warns_its_owner(self):
+        """The drain-check warning line for a merge nobody verified."""
+        fixture = json.loads((FIXTURES / 'clean.json').read_text())
+        card = fixture['tasks'][0]
+        card['section'] = 'AI Review'
+        key = card['ticketNumber']
+        fixture['pulls'] = {key: [{'url': 'https://github.com/example/x/pull/1',
+                                  'state': 'MERGED', 'number': 1, 'passed': False,
+                                  'mergedAt': '2025-11-21T11:00:00Z',
+                                  'repository': {'nameWithOwner': 'example/x'}}]}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'merged-no-pass.json'
+            path.write_text(json.dumps(fixture))
+            roster = roster_path(temp, 'Board Drain Loop (live-a, claude, /tmp)\n')
+            result = subprocess.run(
+                [str(LINT), '--board', str(BOARD), '--fixture', str(path),
+                 '--roster', str(roster), '--skip-comments'],
+                capture_output=True, text=True,
+                env=dict(os.environ, BOARD_DRAIN_STATE_DIR=temp))
+            self.assertEqual(result.returncode, 1)
+            self.assert_rule(result.stdout, 'merged-no-pass')
 
     def test_done_with_merged_pr_and_comment_clean(self):
         result = self.run_lint('done-with-proof.json')
