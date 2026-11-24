@@ -157,26 +157,28 @@ class CheckTest(unittest.TestCase):
         self.addCleanup(timer.stop)
 
     def run_check(self, rows, *extra, alive=False, board=2060, label='Poteto',
-                  probe=(0, ADD_LINE)):
+                  probe=(0, ADD_LINE), lane=None):
         fixture = self.directory / 'fixture.json'
         fixture.write_text(json.dumps(rows))
         argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
                 '--now', iso(NOW), *extra]
         out = io.StringIO()
         with patch.object(drain, 'probe_load', return_value=probe), \
+                patch.object(drain, 'probe_lane', return_value=lane), \
                 patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
                 contextlib.redirect_stdout(out):
             code = drain.main(argv)
         return code, out.getvalue()
 
     def run_payload(self, payload, *extra, alive=False, board=2060, label='Poteto',
-                    probe=(0, ADD_LINE), fail_rules=frozenset()):
+                    probe=(0, ADD_LINE), lane=None, fail_rules=frozenset()):
         fixture = self.directory / 'fixture.json'
         fixture.write_text(json.dumps(payload))
         argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
                 '--now', iso(NOW), *extra]
         out = io.StringIO()
         with patch.object(drain, 'probe_load', return_value=probe), \
+                patch.object(drain, 'probe_lane', return_value=lane), \
                 patch.object(drain, 'FAIL_RULES', fail_rules), \
                 patch.object(drain.reconcile, 'worker_alive', return_value=alive), \
                 contextlib.redirect_stdout(out):
@@ -588,6 +590,136 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(code, 0)
         probe.assert_not_called()
 
+    def test_a_no_lane_hold_collapses_loop_findings_into_one_line(self):
+        # plan-pick found no free lane a minute ago: waiting for one is holding
+        # on purpose, so an idle Todo and a stalled Doing are not broken.
+        code, out = self.run_check([todo('SOFT-2933', age=3 * 3600),
+                                    todo('SOFT-2934', age=3 * 3600),
+                                    doing('SOFT-2935', age=7200)],
+                                   alive=False, lane=NOW - 60)
+        self.assertEqual(code, 0, out)
+        since = drain.clock_utc(NOW - 60)
+        self.assertIn(f'held: no worker lane since {since}; 2 workable Todo wait for a lane', out)
+        self.assertNotIn('loop off:', out)
+        self.assertNotIn('stale:', out)
+        self.assertNotIn('stalled:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_a_lane_hold_never_hides_an_unassigned_ticket(self):
+        row = doing('SOFT-2936', age=7200)
+        row['task']['assignees'] = []
+        code, out = self.run_check([todo('SOFT-2937'), row], alive=False, lane=NOW - 60)
+        self.assertEqual(code, 1, out)
+        self.assertIn('unassigned: SOFT-2936 in Doing has no agent assigned.', out)
+        self.assertIn('held: no worker lane since', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_server_hold_wins_over_a_lane_hold(self):
+        code, out = self.run_check([todo('SOFT-2938')], probe=(2, HOLD_LINE), lane=NOW - 60)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f'held: {HOLD_LINE}; 1 workable Todo wait for the server', out)
+        self.assertNotIn('wait for a lane', out)
+
+    def test_no_load_skips_the_lane_probe_too(self):
+        fixture = self.directory / 'fixture.json'
+        fixture.write_text(json.dumps([todo('SOFT-2939')]))
+        out = io.StringIO()
+        with patch.object(drain, 'probe_lane', return_value=NOW - 60) as lane, \
+                contextlib.redirect_stdout(out):
+            code = drain.main(['--board', '2060', '--label', 'Poteto', '--fixture',
+                               str(fixture), '--now', iso(NOW), '--no-load'])
+        lane.assert_not_called()
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertNotIn('held:', out.getvalue())
+
+    def lane_state(self, rows=None, launches=()):
+        """A plan-pick state file and launch log in the temp dir, never the real ones."""
+        state = self.directory / 'rung-attempts.json'
+        state.write_text(json.dumps(rows if rows is not None else {}))
+        log = self.directory / 'launches.jsonl'
+        log.write_text(''.join(json.dumps(row) + '\n' for row in launches))
+        patched = [patch.object(drain, 'PLAN_PICK_STATE', state),
+                   patch.object(drain, 'PLAN_PICK_LOG', log)]
+        for item in patched:
+            item.start()
+            self.addCleanup(item.stop)
+        return state, log
+
+    def test_the_lane_probe_reads_the_newest_no_lane_row(self):
+        self.lane_state({'ticket:SOFT-1': {'failure': 'lane', 'exit_code': 75,
+                                           'finished_at': NOW - 900},
+                         'ticket:SOFT-2': {'failure': 'lane', 'exit_code': 75,
+                                           'finished_at': NOW - 60}})
+        self.assertEqual(drain.probe_lane(NOW), NOW - 60)
+
+    def test_a_stale_no_lane_row_does_not_hold(self):
+        self.lane_state({'ticket:SOFT-1': {'failure': 'lane', 'exit_code': 75,
+                                           'finished_at': NOW - 1801}})
+        self.assertIsNone(drain.probe_lane(NOW))
+
+    def test_a_launch_after_the_no_lane_row_does_not_hold(self):
+        self.lane_state({'ticket:SOFT-1': {'failure': 'lane', 'exit_code': 75,
+                                           'finished_at': NOW - 600}},
+                        launches=[{'at': NOW - 300, 'lane': 'opus', 'event': 'start'}])
+        self.assertIsNone(drain.probe_lane(NOW))
+
+    def test_a_real_launch_log_beside_the_no_lane_row_still_holds(self):
+        # The log mixes finish rows, a launch row and the null-lane row plan-pick
+        # writes at the moment it records the miss. Only a lane it took counts, and
+        # only a lane taken after the miss lifts it.
+        moment = NOW - 120
+        self.lane_state({'ticket:SOFT-1': {'event': 'finish', 'exit_code': 75,
+                                           'pr_url': None, 'failure': 'lane',
+                                           'rung': 'medium', 'finished_at': moment}},
+                        launches=[{'at': moment - 3600, 'lane': 'opus', 'event': 'start',
+                                   'launch_id': 'a'},
+                                  {'event': 'finish', 'launch_id': 'a',
+                                   'finished_at': moment - 3000, 'exit_code': 0},
+                                  {'at': moment, 'lane': None, 'session': None,
+                                   'cwd': '/tmp', 'not_vendor': None, 'caller': '/tmp'}])
+        self.assertEqual(drain.probe_lane(NOW), moment)
+
+    def test_a_lane_taken_after_the_no_lane_row_lifts_the_hold(self):
+        moment = NOW - 600
+        self.lane_state({'ticket:SOFT-2': {'event': 'finish', 'exit_code': 75,
+                                           'pr_url': None, 'failure': 'lane',
+                                           'rung': 'medium', 'finished_at': moment}},
+                        launches=[{'at': moment, 'lane': None, 'session': None,
+                                   'cwd': '/tmp', 'not_vendor': None, 'caller': '/tmp'},
+                                  {'at': moment + 60, 'lane': 'sonnet', 'event': 'start',
+                                   'launch_id': 'b'},
+                                  {'event': 'finish', 'launch_id': 'b',
+                                   'finished_at': moment + 120, 'exit_code': 0}])
+        self.assertIsNone(drain.probe_lane(NOW))
+
+    def test_a_worker_that_hit_a_lane_limit_mid_run_does_not_hold(self):
+        # attempt_failure records "lane" for a run that then hit a rate limit; only
+        # exit 75 means plan-pick never found a lane to start.
+        self.lane_state({'ticket:SOFT-3': {'failure': 'lane', 'exit_code': 1,
+                                           'finished_at': NOW - 60}})
+        self.assertIsNone(drain.probe_lane(NOW))
+
+    def test_an_unreadable_launch_log_does_not_hold(self):
+        state, log = self.lane_state({'ticket:SOFT-4': {'failure': 'lane', 'exit_code': 75,
+                                                        'finished_at': NOW - 60}})
+        log.write_text('not json\n')
+        self.assertIsNone(drain.probe_lane(NOW))
+        log.unlink()
+        log.mkdir()
+        self.assertIsNone(drain.probe_lane(NOW))
+        log.rmdir()
+        self.assertEqual(drain.probe_lane(NOW), NOW - 60)
+
+    def test_an_unreadable_state_does_not_hold(self):
+        state, _ = self.lane_state()
+        state.write_text('not json')
+        self.assertIsNone(drain.probe_lane(NOW))
+        state.unlink()
+        state.mkdir()
+        self.assertIsNone(drain.probe_lane(NOW))
+        state.rmdir()
+        self.assertIsNone(drain.probe_lane(NOW))
+
     def test_a_usage_error_exits_two(self):
         with contextlib.redirect_stderr(io.StringIO()), \
                 self.assertRaises(SystemExit) as raised:
@@ -768,6 +900,7 @@ class RuleBreakTest(CheckTest):
                 patch.object(drain.reconcile, 'run', side_effect=fake_run), \
                 patch.object(drain.reconcile, 'worker_alive', return_value=True), \
                 patch.object(drain, 'probe_load', return_value=(0, ADD_LINE)), \
+                patch.object(drain, 'probe_lane', return_value=None), \
                 patch.object(lint, 'mp_session_names', return_value=set()), \
                 patch.object(lint, 'published_names', return_value=set()), \
                 patch.object(lint.owners, 'live_names', return_value=set()), \
