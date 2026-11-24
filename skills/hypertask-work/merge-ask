@@ -10,6 +10,11 @@ check read this one matcher and this one fix line, so a wording change reaches b
 A real product question still passes: "should the button be blue or green?" asks for a
 colour, not for a merge.
 
+VSTA-181: "It reached you because models ship only on your yes." is a product question, so a
+merge verb beside a bare "you" needs PR context, a review verb or a direct "ship it" to count.
+A "please" or "let me know" beside a merge verb is a direct request, so it counts with no PR
+context: "Please merge." and "Please merge when CI is green." are asks.
+
 merge-ask --self-test
 """
 import re
@@ -18,6 +23,8 @@ FIX = 'merge it yourself per pstack shipping; ask him only a product question'
 MERGE_VERB = re.compile(r"\b(merge|merging|ship|shipping|land|landing)\b", re.I)
 REVIEW_VERB = re.compile(r"\b(review|reviewing|approve|approving|approval|sign[- ]?off)\b", re.I)
 PR = re.compile(r"\b(?:PR|pull request)\b|/pull/\d+", re.I)
+PRONOUN = re.compile(r"\b(you|your|yours|you're|youre)\b", re.I)
+POLITE = re.compile(r"\b(please|let me know)\b", re.I)
 TO_HIM = re.compile(r"\b(you|your|yours|you're|youre|please|let me know)\b", re.I)
 WAITING_ON_HIM = re.compile(
     r"\b(waiting (?:on|for)|ready for|over to you|your call|your go|say (?:ship|merge|the word))\b", re.I)
@@ -35,11 +42,18 @@ def asks(text):
         review = REVIEW_VERB.search(sentence)
         his = TO_HIM.search(sentence)
         asker = his or PERMISSION.search(sentence)
-        if WAITING_ON_HIM.search(sentence) and merge:
-            return True
-        if merge and asker:
-            return True
-        if has_pr and review and asker:
+        if merge:
+            if WAITING_ON_HIM.search(sentence) or PERMISSION.search(sentence):
+                return True
+            # "Please merge" and "let me know when it merges" are direct requests, so they
+            # count without a PR in the text.
+            if POLITE.search(sentence):
+                return True
+            # A merge verb beside a bare "you" is only an ask when the text points at a PR,
+            # the same sentence asks him to review or approve, or it says "ship it".
+            if PRONOUN.search(sentence) and (has_pr or review or DIRECT.search(sentence)):
+                return True
+        elif has_pr and review and asker:
             return True
         if DIRECT.search(sentence) and '?' in sentence:
             return True
@@ -56,6 +70,8 @@ def self_test():
         "Ship it?",
         "Your approval is needed to merge.",
         "Please review PR #524.",
+        "Please merge.",
+        "Please merge when CI is green.",
     ]
     passes = [
         "Should the button be blue or green?",
@@ -66,6 +82,8 @@ def self_test():
         "Please review the button colour on the phone.",
         "Can you review the new settings page?",
         "The PR is red; babysitting it now.",
+        "It reached you because models ship only on your yes.",
+        "New models ship only when you say yes.",
     ]
     for text in asks_him:
         assert asks(text), f'a merge ask must be caught: {text}'
