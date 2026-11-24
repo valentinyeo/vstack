@@ -90,7 +90,7 @@ class Workflow(unittest.TestCase):
         shims = home / 'shims'
         result = subprocess.run(
             [sys.executable, str(ROOT / 'scripts/worker-shims'), '--dir', str(shims),
-             '--path', str(home)], capture_output=True, text=True, timeout=30)
+             '--path', self.env['PATH']], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.env['PATH'] = f'{shims}:' + self.env['PATH']
         self.run_cli('claim', 'SOFT-99')
