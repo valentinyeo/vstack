@@ -33,6 +33,7 @@ Prior art: pstack `poteto-mode` covers the work loop; only his rules and their h
 - **Version:** your first reply after loading names that version line.
 - **Audience:** He is a product owner, not a developer. Short, plain words. Never ask him to merge, review code or run QA.
 - **Links:** Full https:// URLs, never a server path or a bare ticket id.
+- **PR links:** every pull request link comes with its Hypertask ticket link, never a pull request link alone.
 - **Screenshots:** One public https URL, never a file path or a second image host.
 - **Question first:** A question goes in your first line, with your pick. Ask once.
 - **Thumbs up:** "👍 to: <quoted text>" on a question is his yes to your pick: act. On a status line it only means seen.

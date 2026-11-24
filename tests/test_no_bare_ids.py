@@ -4,6 +4,8 @@ Valentin, 2026-11-22: "they must not just constantly give me IDs for tickets. SO
 am i supposed to memorize this?" valentin-mode already says "Full https:// URLs, never a bare ticket id", but
 a rule in markdown was broken all day. The Stop hook reads the chat's last assistant reply and blocks it while
 a key like ABCD-123 sits outside a full https:// link. Code blocks and his own quoted words are ignored.
+Valentin, 2026-11-24: "agents must reply with hypertask tickets and pr urls, never JUST pr urls", so the same
+hook blocks a reply that shows a pull request link with no ticket link beside it.
 
 The hook is declared in skills/valentin-mode/SKILL.md's frontmatter, the way context.py and responsive
 mode's said-started.py are, so it runs in every valentin-mode chat and nowhere else.
@@ -22,6 +24,9 @@ SKILL = ROOT / 'skills/valentin-mode/SKILL.md'
 BESIDE_SKILL = ROOT / 'skills/valentin-mode/no-bare-ids.py'
 RULES = ROOT / 'CLAUDE.md'
 MESSAGE = 'Name the work in plain words. If he needs the ticket, give its full https:// link.'
+PR_MESSAGE = 'Every pull request link comes with the Hypertask ticket link for that work, never alone.'
+TICKET = 'https://app.hypertask.ai/detail/project-13556/213'
+PR = 'https://github.com/valentinyeo/vstack/pull/378'
 
 
 def human(text):
@@ -51,9 +56,9 @@ class NoBareIds(unittest.TestCase):
         self.assertEqual(answer.get('decision'), 'block')
         return answer.get('reason', '')
 
-    def assert_blocked(self, reply):
+    def assert_blocked(self, reply, message=MESSAGE):
         reason = self.reason(self.hook(reply))
-        self.assertIn(MESSAGE, reason)
+        self.assertIn(message, reason)
         return reason
 
     def assert_passes(self, reply):
@@ -98,6 +103,28 @@ class NoBareIds(unittest.TestCase):
                                                   'transcript_path': str(transcript)}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), '')
+
+    def test_a_pull_request_link_alone_blocks_the_reply(self):
+        reason = self.assert_blocked(f'The PR is up: {PR}', PR_MESSAGE)
+        self.assertIn(PR, reason)
+
+    def test_a_pull_request_link_with_its_ticket_link_passes(self):
+        self.assert_passes(f'The PR is up: {PR}\nThe ticket: {TICKET}')
+
+    def test_a_pull_request_link_only_inside_a_code_block_passes(self):
+        self.assert_passes(f'Pushed this:\n\n```\n{PR}\n```\n\nCI is running.')
+
+    def test_a_pull_request_link_only_in_his_own_words_passes(self):
+        self.assert_passes(f'You wrote:\n\n> {PR}?\n\nThat one merged.')
+
+    def test_several_pull_requests_with_one_ticket_link_pass(self):
+        other = 'https://github.com/valentinyeo/vstack/pull/379'
+        self.assert_passes(f'{PR} and {other} both serve {TICKET}')
+
+    def test_a_bare_key_and_a_lone_pull_request_link_are_both_named(self):
+        reason = self.assert_blocked(f'SOFT-3072 is {PR}')
+        self.assertIn(MESSAGE, reason)
+        self.assertIn(PR_MESSAGE, reason)
 
     def test_garbage_input_and_a_missing_transcript_pass(self):
         for payload in ('not json', '', 'null', '[]', json.dumps({'transcript_path': '/nonexistent/x.jsonl'})):

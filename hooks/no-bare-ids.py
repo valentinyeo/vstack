@@ -6,6 +6,9 @@ am i supposed to memorize this?" valentin-mode already said "Full https:// URLs,
 bare ticket id", in markdown only, and chats broke it all day. A ban in markdown is not a ban, so the rule
 comes with a check: the reply must not show a key like ABCD-123 unless it sits inside a full https:// link.
 
+Valentin, 2026-11-24: "agents must reply with hypertask tickets and pr urls, never JUST pr urls". So a
+reply that shows a github.com/<owner>/<repo>/pull/<n> link must also show an app.hypertask.ai/detail/ link.
+
 What is ignored, because it is not a ticket named at him:
   - code blocks and inline code, where a key is part of a command
   - his own words, quoted with a leading ">"
@@ -30,6 +33,8 @@ KEY = re.compile(r"(?<![A-Za-z0-9_/-])([A-Z]{2,6}-\d{2,6})(?![A-Za-z0-9_])")
 FENCE = re.compile(r"```.*?(?:```|\Z)", re.S)
 INLINE = re.compile(r"`[^`\n]*`")
 URL = re.compile(r"https?://\S+")
+PR_LINK = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+")
+TICKET_LINK = re.compile(r"https?://app\.hypertask\.ai/detail/")
 # Names of encodings and standards that look like a ticket key and are not one.
 NOT_A_TICKET = frozenset({"UTF-8", "UTF-16", "SHA-1", "SHA-256", "SHA-512", "ISO-8601", "AES-256",
                           "RSA-2048", "BASE-64", "HTTP-2", "IPV-6"})
@@ -37,17 +42,26 @@ MESSAGE = ("BLOCKED by no-bare-ids: your reply names ticket numbers to Valentin:
            "Name the work in plain words. If he needs the ticket, give its full https:// link.\n"
            "For example: \"the idle-stop removal: https://app.hypertask.ai/detail/project-2060/3072\"\n"
            "Drop the key from the sentence, or replace it with that full link, then send the reply again.")
+PR_MESSAGE = ("BLOCKED by no-bare-ids: your reply links a pull request with no ticket link: {links}.\n"
+              "Every pull request link comes with the Hypertask ticket link for that work, never alone.\n"
+              "For example: \"https://app.hypertask.ai/detail/project-13556/213\"\n"
+              "Add the ticket link, https://app.hypertask.ai/detail/project-<board>/<n>, then send the reply again.")
 
 
-def readable(reply):
-    """The reply with the parts that are not a ticket named at him taken out."""
+def visible(reply):
+    """The reply with code blocks, inline code and his own quoted words taken out."""
     text = FENCE.sub("", reply or "")
     kept = []
     for line in text.splitlines():
         if line.lstrip().startswith(">"):
             continue
         kept.append(INLINE.sub("", line))
-    return URL.sub("", "\n".join(kept))
+    return "\n".join(kept)
+
+
+def readable(reply):
+    """The reply with the parts that are not a ticket named at him taken out."""
+    return URL.sub("", visible(reply))
 
 
 def bare_ids(reply):
@@ -56,6 +70,18 @@ def bare_ids(reply):
     for key in KEY.findall(readable(reply)):
         if key not in NOT_A_TICKET and key not in found:
             found.append(key)
+    return found
+
+
+def lone_pr_links(reply):
+    """Every pull request link shown with no ticket link beside it, in order, without repeats."""
+    text = visible(reply)
+    if TICKET_LINK.search(text):
+        return []
+    found = []
+    for link in PR_LINK.findall(text):
+        if link not in found:
+            found.append(link)
     return found
 
 
@@ -85,8 +111,15 @@ def reply_text(payload):
 
 
 def reason(payload):
-    found = bare_ids(reply_text(payload))
-    return MESSAGE.format(ids=", ".join(found)) if found else ""
+    text = reply_text(payload)
+    why = []
+    found = bare_ids(text)
+    if found:
+        why.append(MESSAGE.format(ids=", ".join(found)))
+    lone = lone_pr_links(text)
+    if lone:
+        why.append(PR_MESSAGE.format(links=", ".join(lone)))
+    return "\n".join(why)
 
 
 def self_test():
@@ -104,9 +137,24 @@ def self_test():
         ("The fix is https://app.hypertask.ai/detail/project-13556/119 for VSTA-119.", ["VSTA-119"],
          "a linked key still leaves a bare copy caught"),
     ]
+    link_cases = [
+        ("Shipped: https://github.com/valentinyeo/vstack/pull/376",
+         ["https://github.com/valentinyeo/vstack/pull/376"], "a pull request link alone is caught"),
+        ("Shipped: https://github.com/valentinyeo/vstack/pull/376 for "
+         "https://app.hypertask.ai/detail/project-13556/141", [], "a pull request link with its ticket passes"),
+        ("Pushed:\n\n```\nhttps://github.com/valentinyeo/vstack/pull/376\n```\n\nIt waits on CI.", [],
+         "a pull request link in a code block passes"),
+        ("> https://github.com/valentinyeo/vstack/pull/376\n\nThat one landed.", [],
+         "his own quoted pull request link passes"),
+        ("https://github.com/valentinyeo/vstack/pull/376 and https://github.com/valentinyeo/vstack/pull/377 "
+         "for https://app.hypertask.ai/detail/project-13556/213", [], "one ticket link covers several pull requests"),
+    ]
     for text, want, why in cases:
         if bare_ids(text) != want:
             bad.append(f"{why}: {text!r} -> {bare_ids(text)}")
+    for text, want, why in link_cases:
+        if lone_pr_links(text) != want:
+            bad.append(f"{why}: {text!r} -> {lone_pr_links(text)}")
     try:
         reason({"last_assistant_message": "SOFT-3072 is first"})
     except Exception as exc:
