@@ -57,8 +57,10 @@ DOING = frozenset({'Doing', 'Building'})
 CHECKS = 'Checks'
 # A ticket in one of these columns has an owner, so an agent must be on it.
 WORKING = frozenset({'Doing', 'Building', CHECKS, 'AI Review', 'Verifier'})
-# A Checks card is stuck when its red PR took no push for a day and no worker holds it.
-STUCK_AFTER = 24 * 3600
+# A Checks card is stuck when its red PR took no push for an hour and no worker holds
+# it: the audit runs every hour, and an owner that shows nothing new by the first tick
+# is stuck (VSTA-208).
+STUCK_AFTER = 3600
 STUCK_FIX = 'Start a fresh plan-pick owner to fix or close it.'
 # The PR owner rule: a card with an open PR and no helper holds the owner back from
 # any new ticket, so this finding outranks the advice to start on a fresh Todo.
@@ -66,8 +68,10 @@ ORPHAN_FIX = 'start a helper on this PR before any new ticket'
 PR_URL = re.compile(r'github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)')
 # An idle Checks card often carries no PR link, and the board's saved facts cover
 # only recently changed tickets, so its PR comes from one open listing per board.
-# This rule asks about a day of idleness, so an hour-old listing answers it whole.
-LISTING_TTL = 3600
+# The listing is a snapshot of the last push at the moment it was taken, so the ten
+# minutes it may be stale are the only activity a card read from it can miss; the rest
+# of the hour window is evidence (VSTA-208).
+LISTING_TTL = 600
 LISTING_PAGE = 100
 # GitHub search shows 1,000 results at most, so a bigger fleet listing stays partial.
 LISTING_MAX = 1000
@@ -426,7 +430,7 @@ def listing_path(board):
 
 
 def saved_listing(board, now):
-    """The board's open-PR listing when it is under an hour old, else None.
+    """The board's open-PR listing and when it was taken, when under ten minutes old.
 
     None means this board has to read GitHub again; an empty list is a real answer.
     """
@@ -439,7 +443,7 @@ def saved_listing(board, now):
     at = stamp_of(data.get('at'))
     if at is None or now < at or now - at > LISTING_TTL:
         return None
-    return [row for row in data['pulls'] if isinstance(row, dict)]
+    return [row for row in data['pulls'] if isinstance(row, dict)], at
 
 
 def save_listing(board, rows, now):
@@ -502,21 +506,21 @@ def open_pull_rows(board):
 
 
 def open_listing(board, now):
-    """The board's open-PR listing, read at most once an hour and shared by every card.
+    """The board's open-PR listing and its moment, read once every ten minutes for every card.
 
-    A card idle for a day is exactly the card the board's saved facts never cover,
+    A card idle for an hour is exactly the card the board's saved facts never cover,
     so this is where its PR comes from. A read that fails comes back empty: every
     card is then left alone instead of guessed at.
     """
-    rows = saved_listing(board, now)
-    if rows is not None:
-        return rows
+    saved = saved_listing(board, now)
+    if saved is not None:
+        return saved
     try:
         rows = open_pull_rows(board)
     except ERRORS + (AttributeError, reconcile.BudgetRefused, reconcile.RateLimit):
-        return []
+        return [], now
     save_listing(board, rows, now)
-    return rows
+    return rows, now
 
 
 def names_key(text, key):
@@ -572,18 +576,23 @@ def view_repos(rows, pulls, listing, board):
     return found
 
 
-def stuck_finding(task, pulls, now, board, listing=()):
-    """A Checks card on a red PR with no push and no owner for a day, or None.
+def stuck_finding(task, pulls, now, board, listing=(), listing_at=None):
+    """A Checks card on a red PR with no push and no owner for an hour, or None.
 
     A PR link the tick already holds answers first; a card with no link is matched
     to the board's open listing by its key. One card pays for at most one read, and
     nothing here acts on a view other than this chat's own.
+
+    A listing only sees pushes up to the moment it was taken, so a pull read from it
+    is judged against that moment: the card is stuck when the PR was already silent
+    for an hour then. Reading the pull live or holding its link counts to now.
     """
     if task.get('section') != CHECKS or alive(task, now, board):
         return None
     read_used = False
-    for pull in (linked_pulls(task, pulls)
-                 or card_pulls(task.get('ticketNumber'), listing, board)):
+    linked = linked_pulls(task, pulls)
+    seen = now if linked or listing_at is None else listing_at
+    for pull in linked or card_pulls(task.get('ticketNumber'), listing, board):
         url = pull_field(pull, 'url') or ''
         state = (pull_field(pull, 'state') or '').upper()
         checks = pull_field(pull, 'checks') or ''
@@ -598,9 +607,10 @@ def stuck_finding(task, pulls, now, board, listing=()):
             state = facts.get('state') or state
             checks = facts.get('checks') or checks
             pushed = facts.get('pushed') if facts.get('pushed') is not None else pushed
+            seen = now
         if state != 'OPEN' or checks != 'red' or pushed is None:
             continue
-        if now - pushed <= STUCK_AFTER:
+        if seen - pushed <= STUCK_AFTER:
             continue
         return ('stuck', f'stuck: {task["ticketNumber"]} in Checks, PR {url} red and idle '
                          f'since {moment_utc(pushed)}, no live owner. {STUCK_FIX}')
@@ -776,11 +786,11 @@ def read_view(args, now):
     idle_checks = [row for row in rows if row['task'].get('section') == CHECKS
                    and not alive(row['task'], now, board)]
     stuck_keys = set()
-    listing = ()
+    listing, listing_at = (), None
     if any(not linked_pulls(row['task'], pulls) for row in idle_checks):
-        listing = open_listing(board, now)
+        listing, listing_at = open_listing(board, now)
     for row in idle_checks:
-        finding = stuck_finding(row['task'], pulls, now, board, listing)
+        finding = stuck_finding(row['task'], pulls, now, board, listing, listing_at)
         if finding is not None:
             findings.append(finding)
             # The stuck advice already covers this card, so its PR gets one line, not two.

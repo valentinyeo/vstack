@@ -83,13 +83,13 @@ class MuboShapes(unittest.TestCase):
                          ('Todo', 'merged without PASS: rule break; owner must verify'))
 
     def test_an_idle_red_pr_goes_back_to_todo_and_stays(self):
-        """The 68 red cards in Checks: idle over 24h and no live worker."""
+        """The red cards in Checks: idle past the hour and no live worker."""
         red = (pull(checks='red', activity=1000.0),)
         self.assertEqual(self.target('Checks', pulls=red, pr_idle=True),
-                         ('Todo', 'red PR idle 24h; owner must fix or close'))
+                         ('Todo', 'red PR idle 1h; owner must fix or close'))
         # Moved back once, it plans nowhere while the PR is still idle, so no bounce.
         self.assertEqual(self.target('Todo', pulls=red, pr_idle=True),
-                         ('Todo', 'red PR idle 24h; owner must fix or close'))
+                         ('Todo', 'red PR idle 1h; owner must fix or close'))
         # The PR moves: the card follows it again.
         self.assertEqual(self.target('Todo', pulls=(pull(checks='red'),), pr_idle=False)[0],
                          'Checks')
@@ -110,8 +110,82 @@ class MuboShapes(unittest.TestCase):
                                   board=board),
                          ('AI Review', 'merged PR; live proof pending'))
 
-    def test_the_idle_window_is_one_named_constant(self):
-        self.assertEqual(r.RED_PR_IDLE_SECONDS, 24 * 3600)
+    def test_the_idle_window_is_one_hour(self):
+        # VSTA-208: the audit runs every hour, so an owner with nothing new by the
+        # first tick is stuck (pstack autopilot-full step 6).
+        self.assertEqual(r.RED_PR_IDLE_SECONDS, 3600)
+
+
+class HourlyStuckWindow(unittest.TestCase):
+    """VSTA-208: pstack autopilot-full step 6 replaces a stuck agent at once.
+
+    The root audits every hour, so a red PR an owner has not touched for the hour is
+    stuck: the card goes back to Todo on the first tick past it, stays while it is
+    still idle, and never moves while a live worker holds it.
+    """
+
+    NOW = 100000.0
+
+    def setUp(self):
+        self.board = mubo_board()
+
+    def target(self, column, pulls, alive=False):
+        facts = r.Facts(column, 8000, alive, pulls, pr_idle=r.pr_idle(pulls, self.NOW))
+        return r.target(facts, board=self.board)
+
+    def test_a_red_pr_idle_61_minutes_with_no_live_worker_goes_to_todo(self):
+        red = (pull(checks='red', activity=self.NOW - 61 * 60),)
+        self.assertEqual(self.target('Checks', red),
+                         ('Todo', 'red PR idle 1h; owner must fix or close'))
+
+    def test_a_red_pr_idle_59_minutes_stays_in_checks(self):
+        red = (pull(checks='red', activity=self.NOW - 59 * 60),)
+        self.assertEqual(self.target('Checks', red),
+                         ('Checks', 'open PR checks running, red, or missing'))
+
+    def test_a_live_worker_keeps_an_idle_red_pr_in_checks(self):
+        red = (pull(checks='red', activity=self.NOW - 61 * 60),)
+        self.assertEqual(self.target('Checks', red, alive=True),
+                         ('Checks', 'open PR checks running, red, or missing'))
+
+
+class BlockedByWorkInFlight(unittest.TestCase):
+    """VSTA-208: a card BlockedBy work in flight is waiting, not idle.
+
+    The real shape on board 13734: MUBO-221 and MUBO-258 sit in Checks on a red PR,
+    BlockedBy MUBO-267, whose own PR carries a live worker. Their red PR is not a
+    stuck owner, so they keep their column instead of going back to Todo.
+    """
+
+    NOW = 100000.0
+
+    def setUp(self):
+        self.board = mubo_board()
+        self.red = (pull(checks='red', activity=self.NOW - 61 * 60),)
+
+    def target(self, **extra):
+        facts = r.Facts('Checks', 8000, False, self.red,
+                        pr_idle=r.pr_idle(self.red, self.NOW), **extra)
+        return r.target(facts, board=self.board)
+
+    def test_an_idle_red_pr_blocked_by_a_live_card_keeps_its_column(self):
+        self.assertEqual(self.target(blocked=True, blocker='MUBO-267 (live worker)'),
+                         ('Checks', 'blocked by MUBO-267 (live worker); kept'))
+
+    def test_an_idle_red_pr_blocked_by_an_open_pr_keeps_its_column(self):
+        self.assertEqual(self.target(blocked=True, blocker='MUBO-267 (open PR)'),
+                         ('Checks', 'blocked by MUBO-267 (open PR); kept'))
+
+    def test_the_blocker_is_named_in_the_reason_and_never_generic(self):
+        column, reason = self.target(blocked=True, blocker='MUBO-300 (open PR)')
+        self.assertIn('MUBO-300', reason)
+        self.assertNotEqual(reason, 'waiting or blocked; kept')
+
+    def test_a_card_with_no_live_blocker_follows_the_idle_rule(self):
+        # Blocked by a card that is Done or idle: nothing is in flight, so the red PR
+        # is a stuck owner like any other.
+        self.assertEqual(self.target(blocked=False),
+                         ('Todo', 'red PR idle 1h; owner must fix or close'))
 
 
 class NewestPullWins(unittest.TestCase):

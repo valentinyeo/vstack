@@ -55,7 +55,7 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 - **unassigned:** a ticket in a working column with no agent. Assign your login: `task assign <KEY> --self`.
 - **stalled:** Doing ticket, no live owner. Fresh plan-pick owner; tickets moved across boards get a new key, so check the old lease first.
 - **orphan PR:** a card of yours with an open PR and no live helper. Start a helper on that PR before any new ticket.
-- **stuck:** a Checks card whose PR is red with no push and no live worker for a day. Check the lease first; if none, start a fresh plan-pick owner that fixes the PR or closes it.
+- **stuck:** a Checks card whose PR is red with no push and no live worker for an hour. Check the lease first; if none, start a fresh plan-pick owner that fixes the PR or closes it.
 - **stale:** a workable Todo ticket idle over two hours. Give it an owner; note the gap on your role ticket.
 - **over cap:** your label already holds 5 open tickets (`Doing+Checks+AI Review`, the working columns `/hypertask` reads), one worker each. Finish before starting: one has to ship before another starts, so this one fails and **loop off** and **stale** stay quiet until it does. `lease <KEY> run` refuses a non-urgent Todo start with exit 75 and one `lease: <KEY> held: label <label> has ...; ship one first` line; an urgent ticket may still start, and a card already in a working column is a resume.
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.

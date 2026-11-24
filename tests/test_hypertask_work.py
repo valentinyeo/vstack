@@ -392,6 +392,91 @@ class ReconcileTest(unittest.TestCase):
             with self.subTest(facts=facts):
                 self.assertEqual(r.target(facts), ('Doing', 'waiting or blocked; kept'))
 
+    def blocked_card(self, **changes):
+        """A board-2060 card BlockedBy SOFT-9, as `task list` sends it."""
+        return {**task('Checks'),
+                'blockingTasks': [{'id': 2, 'ticketNumber': 'SOFT-9', 'section': 'Doing',
+                                   'status': 'Normal', 'projectId': 2060}], **changes}
+
+    def test_a_card_blocked_by_a_live_worker_reads_blocked_and_names_it(self):
+        card = self.blocked_card()
+        with patch.object(r, 'worker_alive', side_effect=lambda key, *a, **k: key == 'SOFT-9'):
+            work = r.blocker_work([card], {}, NOW, saved={})
+            facts = r.collect(card, [], NOW, blockers=work)
+        self.assertEqual(work, {'SOFT-9': 'live worker'})
+        self.assertTrue(facts.blocked)
+        self.assertEqual(facts.blocker, 'SOFT-9 (live worker)')
+        self.assertEqual(r.target(facts)[0], 'Checks', 'the card keeps its column')
+
+    def test_a_card_blocked_by_a_card_with_an_open_pr_reads_blocked(self):
+        open_pr = {'state': 'OPEN', 'number': 1351,
+                   'url': 'https://github.com/valentinyeo/multiprompt/pull/1351',
+                   'repository': {'nameWithOwner': 'valentinyeo/multiprompt'}}
+        with patch.object(r, 'worker_alive', return_value=False):
+            work = r.blocker_work([self.blocked_card()], {'SOFT-9': [open_pr]}, NOW, saved={})
+        self.assertEqual(work, {'SOFT-9': 'open PR'})
+
+    def test_a_blocker_s_pr_comes_from_the_saved_board_facts(self):
+        # A single-ticket run reads one card's pulls only, so the blocker's PR is the
+        # one the board's last saved sync holds; no GitHub call is spent on it.
+        saved = {'tickets': {'SOFT-9': {'pulls': [{'state': 'OPEN'}]}}}
+        with patch.object(r, 'worker_alive', return_value=False):
+            work = r.blocker_work([self.blocked_card()], {}, NOW, saved=saved)
+        self.assertEqual(work, {'SOFT-9': 'open PR'})
+
+    def test_a_blocker_in_a_done_column_or_with_no_work_holds_nothing(self):
+        done = self.blocked_card(blockingTasks=[{'ticketNumber': 'SOFT-9', 'section': 'Done'}])
+        idle = self.blocked_card(blockingTasks=[{'ticketNumber': 'SOFT-9', 'section': 'Todo'}])
+        merged = {'tickets': {'SOFT-9': {'pulls': [{'state': 'MERGED'}]}}}
+        with patch.object(r, 'worker_alive', return_value=True):
+            self.assertEqual(r.blocker_work([done], {}, NOW, saved={}), {})
+        with patch.object(r, 'worker_alive', return_value=False):
+            self.assertEqual(r.blocker_work([idle], {}, NOW, saved=merged), {})
+            facts = r.collect(idle, [], NOW, blockers={})
+        self.assertFalse(facts.blocked)
+        self.assertEqual(facts.blocker, '')
+
+    def test_blocker_facts_cost_no_github_call_and_no_card_read(self):
+        with patch.object(r, 'worker_alive', return_value=False), \
+                patch.object(r, 'run', side_effect=AssertionError('no GitHub here')), \
+                patch.object(r, 'api', side_effect=AssertionError('no Hypertask here')):
+            self.assertEqual(r.blocker_work([self.blocked_card()], {}, NOW, saved={}), {})
+
+    def test_a_card_sync_reads_its_blockers_once_and_keeps_a_waited_card(self):
+        reads = []
+
+        def api(*args):
+            if args[:2] == ('task', 'get'):
+                return {'tasks': [task('Doing')]}
+            if args[:2] == ('task', 'relations'):
+                reads.append(args[2])
+                return {'relations': [{'relationType': 'BlockedBy', 'direction': 'outgoing',
+                                       'otherTask': {'ticketNumber': 'SOFT-9',
+                                                     'status': 'Normal', 'projectId': 2060}}]}
+            raise AssertionError(f'unexpected hypertask call {args!r}')
+
+        code, printed, calls = self.ticket_run(
+            ['--ticket', 'SOFT-1'], task('Doing'), api=api,
+            live_lease=lambda key, *a, **k: key == 'SOFT-9')
+        self.assertEqual(code, 0, printed)
+        self.assertEqual(reads, ['SOFT-1'], 'one link read for the one card')
+        self.assertIn('KEEP SOFT-1 Doing -> Doing | blocked by SOFT-9 (live worker); kept', printed)
+        self.assertEqual(calls['discover'], [['SOFT-1']], 'a blocker spends no GitHub lookup')
+
+    def test_a_card_sync_still_moves_a_card_whose_blocker_is_idle(self):
+        def api(*args):
+            if args[:2] == ('task', 'get'):
+                return {'tasks': [task('Doing')]}
+            if args[:2] == ('task', 'relations'):
+                return {'relations': [{'relationType': 'BlockedBy', 'direction': 'outgoing',
+                                       'otherTask': {'ticketNumber': 'SOFT-9',
+                                                     'status': 'Normal', 'projectId': 2060}}]}
+            raise AssertionError(f'unexpected hypertask call {args!r}')
+
+        code, printed, calls = self.ticket_run(['--ticket', 'SOFT-1'], task('Doing'), api=api)
+        self.assertEqual(code, 0, printed)
+        self.assertIn('PLAN SOFT-1 Doing -> Todo | no live worker and no PR', printed)
+
     def test_renamed_columns_resolve_one_family_at_a_time(self):
         self.assertEqual(r.target(r.Facts('Building', 8000, True))[0], 'Building')
         self.assertEqual(r.target(r.Facts('Building', 8000, False, (pull(),)))[0], 'AI Review')
@@ -772,13 +857,15 @@ class ReconcileTest(unittest.TestCase):
         tasks = [{**t, 'createdAt': '2026-11-18T10:00:00Z'} for t in self.labelled_board()]
         self.assertEqual(self.github_calls_for(tasks, ['--label', 'nobody-uses-this']), 0)
 
-    def ticket_run(self, argv, one, api=None, env=None, home=None):
+    def ticket_run(self, argv, one, api=None, env=None, home=None, live_lease=None):
         """Run one --ticket run against one ticket: (code, stdout, calls)."""
         calls = {'discover': [], 'moves': []}
 
         def default_api(*args):
             if args[:2] == ('task', 'get'):
                 return {'tasks': [one]}
+            if args[:2] == ('task', 'relations'):
+                return {'relations': []}
             if args[:2] == ('task', 'move'):
                 calls['moves'].append(args[2])
                 return {}
@@ -798,7 +885,7 @@ class ReconcileTest(unittest.TestCase):
                 patch.object(r.time, 'time', return_value=NOW), \
                 patch.object(r, 'discover', side_effect=discover), \
                 patch.object(r, 'read_sections', return_value=set()), \
-                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'live_lease', side_effect=live_lease or (lambda *a, **k: False)), \
                 patch.object(r, 'product_workers', return_value=set()), \
                 patch.object(r, 'process_tickets', return_value=set()), \
                 patch.object(r, 'run', return_value=''), \

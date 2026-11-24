@@ -117,6 +117,9 @@ class Facts:
     column_entered: float | None = None
     # This card's open PR showed no push, check run or comment for RED_PR_IDLE_SECONDS.
     pr_idle: bool = False
+    # The block it waits on, named with its evidence, when a BlockedBy card has a live
+    # worker or an open PR. Empty means every blocker is Done or idle (VSTA-208).
+    blocker: str = ''
 
 
 class Stage(Enum):
@@ -132,8 +135,10 @@ class Stage(Enum):
 
 GRACE_SECONDS = 7200
 # An open PR with no push, no finished check run and no comment for this long has no
-# owner working it, so its card goes back to Todo until the PR itself moves.
-RED_PR_IDLE_SECONDS = 24 * 3600
+# owner working it, so its card goes back to Todo until the PR itself moves. The audit
+# runs every hour, and an owner that shows nothing new by the first tick is stuck
+# (VSTA-208), so the window is one hour rather than a day.
+RED_PR_IDLE_SECONDS = 3600
 # plan-pick's exit-75 report: every worker lane was spent, so no worker ran (VSTA-182).
 NOTHING_RAN = 'nothing ran, waiting for a lane'
 
@@ -213,9 +218,9 @@ PLAN_SOURCES = (
     {'stage': Stage.BACKLOG, 'reason': 'merged without PASS: rule break; owner must verify',
      'pstack': f'{PLAYBOOKS}/shipping.md',
      'quote': 'Walk up from the lowest unmerged PR and stop at the first one without `PASS` or `PASS+NOTES`.'},
-    {'stage': Stage.BACKLOG, 'reason': 'red PR idle 24h; owner must fix or close',
+    {'stage': Stage.BACKLOG, 'reason': 'red PR idle 1h; owner must fix or close',
      'pstack': f'{PLAYBOOKS}/autopilot-full.md',
-     'quote': 'An agent is stuck when it errors, cannot start turns, or shows nothing new past its stuck-after runtime, and so is an owner that has neither pushed nor written a trail row by the first tick.'},
+     'quote': 'An agent is stuck when it errors, cannot start turns, or shows nothing new past its stuck-after runtime, and so is an owner that has neither pushed nor written a trail row by the first tick. One waiting on you or the operator is not stuck, so answer it. Replace a stuck agent at once, without waiting for its stop to land.'},
     {'stage': Stage.BACKLOG, 'reason': 'no live worker and no PR',
      'pstack': f'{PLAYBOOKS}/autopilot-full.md',
      'quote': 'Replace a stuck agent at once, without waiting for its stop to land.'},
@@ -273,6 +278,9 @@ PLAN_SOURCES = (
      'pstack': 'skills/principle-boundary-discipline/SKILL.md',
      'quote': 'Parse raw data into domain types at the boundary, and keep transport and framework types out of the public surface.'},
     {'stage': None, 'reason': 'waiting or blocked; kept',
+     'pstack': f'{PLAYBOOKS}/autopilot-full.md',
+     'quote': 'One waiting on you or the operator is not stuck, so answer it.'},
+    {'stage': None, 'reason': 'blocked by {}; kept',
      'pstack': f'{PLAYBOOKS}/autopilot-full.md',
      'quote': 'One waiting on you or the operator is not stuck, so answer it.'},
     {'stage': None, 'reason': 'touched within 2h',
@@ -361,6 +369,8 @@ def newer_open_reason(pull):
 def plan_stage(facts, here, board):
     """One evidence order for every board: newest PR, worker, verification routing, grace, idle."""
     if facts.waiting or facts.blocked:
+        if facts.blocker:
+            return None, f'blocked by {facts.blocker}; kept'
         return None, 'waiting or blocked; kept'
     # A PR opened after the newest merged PASS is the work in flight, not the merge
     # (VSTA-205): a reverted merge shipped nothing, and the redo is what ships.
@@ -368,14 +378,14 @@ def plan_stage(facts, here, board):
     if newer:
         if any(open_pr_in_checks(p, board) for p in newer):
             if facts.pr_idle and not facts.alive:
-                return Stage.BACKLOG, 'red PR idle 24h; owner must fix or close'
+                return Stage.BACKLOG, 'red PR idle 1h; owner must fix or close'
             return Stage.CHECKS, newer_open_reason(newer[0])
         return Stage.REVIEW, newer_open_reason(newer[0])
     if any(open_pr_in_checks(p, board) for p in facts.pulls):
         if facts.pr_idle and not facts.alive:
-            # The PR has not moved for a day and nobody runs it. The card holds Todo
+            # The PR has not moved for an hour and nobody runs it. The card holds Todo
             # until the PR itself moves, so a red PR cannot bounce it back to Checks.
-            return Stage.BACKLOG, 'red PR idle 24h; owner must fix or close'
+            return Stage.BACKLOG, 'red PR idle 1h; owner must fix or close'
         return Stage.CHECKS, 'open PR checks running, red, or missing'
     if any(p.state == 'OPEN' for p in facts.pulls):
         return Stage.REVIEW, _open_pr_reason(board)
@@ -1535,7 +1545,17 @@ def read_ticket(key):
     rows = api('task', 'get', key).get('tasks') or []
     if not rows:
         raise ValueError(f'{key} unreadable')
-    return rows[0]
+    task = rows[0]
+    if 'blockingTasks' not in task:
+        # A single-ticket read is the one board read that carries no links, so the
+        # blockers come from the call drain-check makes for the same set (VSTA-208).
+        task['blockingTasks'] = [relation['otherTask']
+                                 for relation in api('task', 'relations', key).get('relations') or ()
+                                 if isinstance(relation, dict)
+                                 and isinstance(relation.get('otherTask'), dict)
+                                 and (relation.get('relationType') or '').casefold() == 'blockedby'
+                                 and (relation.get('direction') or '').casefold() == 'outgoing']
+    return task
 
 
 def tickets(section=None, board=DEFAULT):
@@ -2437,7 +2457,7 @@ def is_verification(task):
 
 
 def pr_idle(details, now):
-    """This card's open PR showed nothing new for RED_PR_IDLE_SECONDS.
+    """This card's open PR showed nothing new for RED_PR_IDLE_SECONDS (one hour).
 
     A read that carried no activity time keeps the card where it is: an unknown is
     never an idle PR, because that would demote work somebody is still doing.
@@ -2449,14 +2469,82 @@ def pr_idle(details, now):
     return bool(moments) and now - max(moments) > RED_PR_IDLE_SECONDS
 
 
-def collect(task, pulls, now, board=DEFAULT):
+def open_blockers(task):
+    """The cards this one is BlockedBy that Hypertask still counts as open.
+
+    `task list` carries them already, filtered to open blockers, so a card costs no
+    read of its own; a single-ticket read asks `task relations` once for the same set.
+    """
+    return [row for row in task.get('blockingTasks') or ()
+            if isinstance(row, dict) and row.get('ticketNumber')]
+
+
+def pull_state(pull):
+    """One PR row's state, upper-cased: a search row and a Pull carry it alike."""
+    state = pull.get('state') if isinstance(pull, dict) else getattr(pull, 'state', '')
+    return (state or '').upper()
+
+
+def saved_pulls(saved, key):
+    """The PR rows a board's last saved sync holds for one key, else nothing."""
+    tickets = saved.get('tickets') if isinstance(saved, dict) else None
+    entry = tickets.get(key) if isinstance(tickets, dict) else None
+    return (entry.get('pulls') or ()) if isinstance(entry, dict) else ()
+
+
+def blocker_work(tasks, pulls, now, board=DEFAULT, saved=None):
+    """Which BlockedBy links still have someone on the other end, and how.
+
+    A card blocked by work in flight is waiting, not idle, so it keeps its column
+    (VSTA-208). Every read here is one the run already paid for: a worker is a local
+    lease or process, and a blocker's PR is in this run's own board read or in the
+    board facts the last sync saved. Nothing here asks GitHub, per card or otherwise.
+    """
+    if saved is None:
+        saved = read_board_facts(board.id)
+    found = {}
+    for task in tasks:
+        for row in open_blockers(task):
+            key = row['ticketNumber']
+            if key in found or done_column(board, row.get('section')):
+                continue
+            if worker_alive(key, now, board):
+                found[key] = 'live worker'
+            elif any(pull_state(pull) == 'OPEN'
+                     for pull in list(pulls.get(key) or ()) + list(saved_pulls(saved, key))):
+                found[key] = 'open PR'
+    return found
+
+
+def blocked_by(task, work):
+    """The first blocker this card waits on, named with the evidence that it lives."""
+    for row in open_blockers(task):
+        note = work.get(row['ticketNumber'])
+        if note:
+            return f'{row["ticketNumber"]} ({note})'
+    return ''
+
+
+def done_column(board, section):
+    """True when a column is this board's Done, whatever the board calls it.
+
+    A Done blocker holds nothing: the card it blocked can follow the idle rules like
+    any other. Read from the board's own map, because Done is also a protected column.
+    """
+    return bool(section) and column_stage_map(board).get(section) is Stage.DONE
+
+
+def collect(task, pulls, now, board=DEFAULT, blockers=None):
     ticket_index(task['ticketNumber'], board)
     alive = worker_alive(task['ticketNumber'], now, board)
     details = tuple(pull_facts(p, board) for p in pulls)
+    blocker = blocked_by(task, blockers or {})
     return Facts(task['section'], now - stamp(task['updatedAt']), alive, details,
-                 bool(task.get('waitingOnUserId')), bool(task.get('blockerCommentId')),
+                 bool(task.get('waitingOnUserId')),
+                 bool(task.get('blockerCommentId')) or bool(blocker),
                  is_verification(task), column_entered(task),
-                 False if product_board(board) else pr_idle(details, now))
+                 False if product_board(board) else pr_idle(details, now),
+                 blocker=blocker)
 
 
 def reconcile(task, facts, apply=False, board=DEFAULT, names=None, label=None):
@@ -2488,6 +2576,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None, label=None):
     if board.id == 15:
         limit = min(limit, 5)
     options = {} if board.id == BOARD else {'board': board}
+    blockers = blocker_work([task for task, _ in plans], pulls, time.time(), **options)
     moves = [(task, facts) for task, facts in plans if target(facts, board, names)[0] != task['section']]
     if len(moves) > limit:
         # Moves backed by a live lease or PR go first; moves back to Todo go last.
@@ -2511,7 +2600,8 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None, label=None):
     PSTACK_JOBS.clear()
     ready = []
     for fresh, facts in fresh_tasks:
-        latest = collect(fresh, refreshed(pulls[fresh['ticketNumber']], board), time.time(), **options)
+        latest = collect(fresh, refreshed(pulls[fresh['ticketNumber']], board), time.time(),
+                         blockers=blockers, **options)
         if target(latest, board, names) != target(facts, board, names):
             print(f'SKIP {fresh["ticketNumber"]} | facts changed since preview', flush=True)
             continue
@@ -2859,6 +2949,15 @@ def board_run():
                 print(f'reconcile: worker facts unreadable: {error}; nothing moved', flush=True)
                 return 1
         plans = []
+        with phase('blockers'):
+            try:
+                # Blocker facts only ever keep a card where it is. A read that fails
+                # leaves the idle rules to decide alone instead of stopping the board.
+                blockers = blocker_work(tasks, pulls, now, saved=saved, **options)
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError,
+                    subprocess.SubprocessError) as error:
+                print(f'reconcile: blocker facts unreadable: {error}; idle rules decide', flush=True)
+                blockers = {}
         with phase('facts'):
             for task in tasks:
                 try:
@@ -2867,7 +2966,8 @@ def board_run():
                                       waiting=bool(task.get('waitingOnUserId')),
                                       blocked=bool(task.get('blockerCommentId')))
                     else:
-                        facts = collect(task, pulls[task['ticketNumber']], now, **options)
+                        facts = collect(task, pulls[task['ticketNumber']], now,
+                                        blockers=blockers, **options)
                     reconcile(task, facts, names=names, label=args.label, **options)
                     plans.append((task, facts))
                 except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
