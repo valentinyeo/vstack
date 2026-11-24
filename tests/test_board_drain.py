@@ -128,6 +128,27 @@ def dead_pid():
     return process.pid
 
 
+def stuck_card(key='SOFT-2940', age=7200, section='Checks', **task):
+    """A card sitting in Checks with an agent on it and nothing else wrong."""
+    row = doing(key, age=age, section=section)
+    row['task'].update(task)
+    return row
+
+
+def red_pull(pushed=iso(NOW - 2 * 86400), **changes):
+    """PR #524 red, with the head push time the board facts never carry."""
+    pull = PR_524 | {'checks': 'red'} | changes
+    pull.pop('pushedAt', None)
+    if pushed is not None:
+        pull['pushedAt'] = pushed
+    return pull
+
+
+def checks_payload(row, *pulls):
+    """One Checks row with the PR facts a fixture hands drain-check."""
+    return {'rows': [row], 'pulls': {row['task']['ticketNumber']: list(pulls)}}
+
+
 class Clock:
     """A fake clock: time only moves when the watcher decides to sleep."""
 
@@ -331,6 +352,74 @@ class CheckTest(unittest.TestCase):
     def test_a_live_lease_counts_even_on_an_old_doing_ticket(self):
         code, out = self.run_check([doing('SOFT-2907', age=7200)], alive=True)
         self.assertEqual(code, 0, out)
+
+    def test_a_red_pr_idle_a_day_with_no_owner_is_stuck(self):
+        # VSTA-187: a card parked in Checks on a red PR that took no push for a day,
+        # with no worker holding it, needs a fresh owner rather than another tick.
+        with patch.object(drain, 'read_pull_facts') as read:
+            code, out = self.run_payload(checks_payload(stuck_card(), red_pull()))
+        self.assertEqual(code, 1, out)
+        read.assert_not_called()
+        self.assertIn('stuck: SOFT-2940 in Checks, PR '
+                      'https://github.com/valentinyeo/multiprompt-android/pull/524 red and idle '
+                      'since 2027-01-13 08:00 UTC, no live owner. Start a fresh plan-pick owner '
+                      'to fix or close it.', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_green_pr_in_checks_is_not_stuck_and_costs_no_read(self):
+        with patch.object(drain, 'read_pull_facts') as read:
+            code, out = self.run_payload(checks_payload(stuck_card(), PR_524))
+        self.assertEqual(code, 0, out)
+        read.assert_not_called()
+        self.assertNotIn('stuck:', out)
+
+    def test_a_push_inside_a_day_is_not_stuck(self):
+        for push in (iso(NOW - 3600), iso(NOW - 86400)):
+            with self.subTest(push=push):
+                with patch.object(drain, 'read_pull_facts') as read:
+                    code, out = self.run_payload(checks_payload(stuck_card(), red_pull(push)))
+                self.assertEqual(code, 0, out)
+                read.assert_not_called()
+                self.assertNotIn('stuck:', out)
+
+    def test_a_live_lease_on_the_card_means_it_is_not_stuck(self):
+        code, out = self.run_payload(checks_payload(stuck_card(), red_pull()), alive=True)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('stuck:', out)
+
+    def test_a_failed_github_read_hides_no_other_finding(self):
+        row = stuck_card(assignees=[])
+        for failure in (RuntimeError('gh down'), 'not json'):
+            with self.subTest(failure=failure):
+                with patch.object(drain.reconcile, 'run', side_effect=failure):
+                    code, out = self.run_payload(checks_payload(row, red_pull(pushed=None)))
+                self.assertEqual(code, 1, out)
+                self.assertNotIn('stuck:', out)
+                self.assertIn('unassigned: SOFT-2940 in Checks has no agent assigned.', out)
+
+    def test_a_no_lane_hold_collapses_a_stuck_card(self):
+        code, out = self.run_payload(checks_payload(stuck_card(), red_pull()), lane=NOW - 60)
+        self.assertEqual(code, 0, out)
+        self.assertIn('held: no worker lane since', out)
+        self.assertNotIn('stuck:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_an_unknown_pr_costs_one_read_and_can_still_be_stuck(self):
+        facts = {'state': 'OPEN', 'checks': 'red', 'pushed': NOW - 2 * 86400}
+        with patch.object(drain, 'read_pull_facts', return_value=facts) as read:
+            code, out = self.run_payload(checks_payload(stuck_card(), {'url': PR_524['url']}))
+        self.assertEqual(code, 1, out)
+        read.assert_called_once_with(PR_524['url'])
+        self.assertIn('stuck: SOFT-2940 in Checks', out)
+
+    def test_the_board_link_alone_names_the_pr_to_read(self):
+        row = stuck_card(pullRequests=[{'url': PR_524['url'], 'state': 'OPEN'}])
+        facts = {'state': 'OPEN', 'checks': 'red', 'pushed': NOW - 2 * 86400}
+        with patch.object(drain, 'read_pull_facts', return_value=facts) as read:
+            code, out = self.run_payload({'rows': [row]})
+        self.assertEqual(code, 1, out)
+        read.assert_called_once_with(PR_524['url'])
+        self.assertIn('stuck: SOFT-2940 in Checks', out)
 
     def test_an_assigned_ticket_in_a_working_column_is_not_flagged(self):
         code, out = self.run_check([vsta4()], board=13556, label='Board Drain Loop')

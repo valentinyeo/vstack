@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -39,8 +40,13 @@ TODO = 'Todo'
 DONE = 'Done'
 NOT_NOW = 'Not now'
 DOING = frozenset({'Doing', 'Building'})
+CHECKS = 'Checks'
 # A ticket in one of these columns has an owner, so an agent must be on it.
-WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
+WORKING = frozenset({'Doing', 'Building', CHECKS, 'AI Review', 'Verifier'})
+# A Checks card is stuck when its red PR took no push for a day and no worker holds it.
+STUCK_AFTER = 24 * 3600
+STUCK_FIX = 'Start a fresh plan-pick owner to fix or close it.'
+PR_URL = re.compile(r'github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)')
 # Hypertask user 6 is Valentin (valentin.yeo@gmail.com); every board's waitingOnUserId
 # uses it, and the boards spell his column "Valentin Review".
 VALENTIN_USER_ID = 6
@@ -64,7 +70,7 @@ PLAN_PICK_LOG = Path(os.environ.get('PLAN_PICK_LAUNCHES')
 PLAN_PICK_STATE = PLAN_PICK_LOG.parent / 'rung-attempts.json'
 # A no-lane record older than this no longer explains an idle loop: something else does.
 LANE_WINDOW = 1800
-LANE_FINDINGS = frozenset({'loop off', 'stale', 'stalled'})
+LANE_FINDINGS = frozenset({'loop off', 'stale', 'stalled', 'stuck'})
 
 
 def probe_load():
@@ -301,6 +307,79 @@ def alive(task, now, board):
     return spent is not None and spent < FRESH
 
 
+def moment_utc(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+
+
+def read_pull_facts(url):
+    """One PR's state, checks and head push time: the tick's only GitHub read.
+
+    It goes through reconcile's gh wrapper, so a chat over its budget pays nothing
+    and reads the refusal as a skip. Every failure comes back empty: a read that
+    fails leaves the card alone instead of guessing at it.
+    """
+    match = PR_URL.search(url or '')
+    if match is None:
+        return {}
+    owner, repo, number = match.groups()
+    query = ('query{repository(owner:%s,name:%s){pullRequest(number:%s){state'
+             ' headRef{target{... on Commit{committedDate}}}statusCheckRollup{state}}}}'
+             % (json.dumps(owner), json.dumps(repo), int(number)))
+    try:
+        result = json.loads(reconcile.run('gh', 'api', 'graphql', '-f', 'query=' + query))
+    except ERRORS + (AttributeError, reconcile.BudgetRefused, reconcile.RateLimit):
+        return {}
+    node = ((result.get('data') or {}).get('repository') or {}).get('pullRequest') or {}
+    rollup = node.get('statusCheckRollup') or {}
+    target = (node.get('headRef') or {}).get('target') or {}
+    return {'state': (node.get('state') or '').upper(),
+            'checks': reconcile.ROLLUP_STATE.get((rollup.get('state') or '').upper(), ''),
+            'pushed': stamp_of(target.get('committedDate'))}
+
+
+def linked_pulls(task, pulls):
+    """A ticket's PRs: the rows this tick loaded, else the ones the board links."""
+    rows = [row for row in (pulls or {}).get(task.get('ticketNumber')) or ()
+            if pull_field(row, 'url')]
+    if rows:
+        return rows
+    return [item for item in task.get('pullRequests') or ()
+            if isinstance(item, dict) and item.get('url')]
+
+
+def stuck_finding(task, pulls, now, board):
+    """A Checks card on a red PR with no push and no owner for a day, or None.
+
+    Facts the tick already holds answer wherever they can: a green, running or
+    merged PR is answered for free, and one card pays for at most one read.
+    """
+    if task.get('section') != CHECKS or alive(task, now, board):
+        return None
+    read_used = False
+    for pull in linked_pulls(task, pulls):
+        url = pull_field(pull, 'url') or ''
+        state = (pull_field(pull, 'state') or '').upper()
+        checks = pull_field(pull, 'checks') or ''
+        pushed = stamp_of(pull_field(pull, 'pushedAt'))
+        if (state and state != 'OPEN') or (checks and checks != 'red'):
+            continue
+        if not (state and checks and pushed is not None):
+            if read_used:
+                continue
+            read_used = True
+            facts = read_pull_facts(url)
+            state = facts.get('state') or state
+            checks = facts.get('checks') or checks
+            pushed = facts.get('pushed') if facts.get('pushed') is not None else pushed
+        if state != 'OPEN' or checks != 'red' or pushed is None:
+            continue
+        if now - pushed <= STUCK_AFTER:
+            continue
+        return ('stuck', f'stuck: {task["ticketNumber"]} in Checks, PR {url} red and idle '
+                         f'since {moment_utc(pushed)}, no live owner. {STUCK_FIX}')
+    return None
+
+
 def top_key(rows, now, board):
     """The longest-idle workable ticket; the lowest key breaks a tie."""
     def rank(row):
@@ -461,6 +540,10 @@ def read_view(args, now):
         if row not in live:
             findings.append(('stalled', f'stalled: {row["task"]["ticketNumber"]} in Doing with no '
                                         'live worker. Start a fresh plan-pick worker.'))
+    for row in rows:
+        finding = stuck_finding(row['task'], pulls, now, board)
+        if finding is not None:
+            findings.append(finding)
     for row in rows:
         task = row['task']
         if task.get('section') in WORKING and not agent_assigned(task):
