@@ -54,8 +54,6 @@ class ValentinModeRules(unittest.TestCase):
         self.assertEqual([m['role'] for m in request['messages']], ['system', 'user'])
         for row in self.rows:
             self.assertIn(row['sentence'], request['messages'][0]['content'])
-        self.assertNotIn('expected', json.dumps(request))
-        self.assertNotIn('criteria', json.dumps(request))
         self.assertNotIn('board-rules.json', json.dumps(request))
 
     def test_forbidden_scenario_words_are_rejected(self):
@@ -67,6 +65,11 @@ class ValentinModeRules(unittest.TestCase):
                 path.write_text('Board instructions')
             cases = root / 'evals/valentin-mode'
             cases.mkdir(parents=True)
+            (cases / 'scenarios.json').write_text('{"1": "What should I do next?"}')
+            original = eval_run.organic_request(root)
+            (cases / 'judge-only.json').write_text('{"expected": "PRIVATE ANSWER CANARY"}')
+            self.assertEqual(eval_run.organic_request(root), original)
+            self.assertNotIn('PRIVATE ANSWER CANARY', json.dumps(original))
             (cases / 'scenarios.json').write_text('{"1": "This is a test"}')
             with self.assertRaises(ValueError):
                 eval_run.organic_request(root)

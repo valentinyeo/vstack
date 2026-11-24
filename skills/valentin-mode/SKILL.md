@@ -60,7 +60,8 @@ Whoever owns a ticket owns its PR until it merges (pstack autopilot-full: one ow
 ## Board rules
 
 - One owner carries each PR from build to merge, following pstack autopilot-full.
-- Never merge without the verifier's PASS on the current head. A merged PR without that PASS goes back to Todo for verification, never Done.
+- Never merge without the verifier's PASS on the current head.
+  Under `/hypertask`, a merged PR without that PASS goes back to Todo for verification, never Done.
 - Keep at most 5 tickets in flight per agent label; at 5, ship one before starting another Todo ticket.
 - Keep at most 5 open PRs per agent; park extras and move their cards back to Todo.
 - The repo-wide cap is 10 open PRs; above it, finish existing PRs instead of opening another.
