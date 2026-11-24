@@ -1,0 +1,57 @@
+name: Valentin mode board rules
+on:
+  pull_request:
+    paths:
+      - 'skills/valentin-mode/**'
+      - 'skills/board-drain/SKILL.md'
+      - 'skills/hypertask/SKILL.md'
+      - 'skills/hypertask/references/board.md'
+      - 'skills/responsive-mode/SKILL.md'
+      - 'evals/valentin-mode/**'
+      - 'scripts/valentin-mode-eval.py'
+      - 'tests/test_valentin_mode_rules.py'
+      - '.github/workflows/valentin-mode-rules.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'skills/valentin-mode/**'
+      - 'skills/board-drain/SKILL.md'
+      - 'skills/hypertask/SKILL.md'
+      - 'skills/hypertask/references/board.md'
+      - 'skills/responsive-mode/SKILL.md'
+      - 'evals/valentin-mode/**'
+      - 'scripts/valentin-mode-eval.py'
+      - 'tests/test_valentin_mode_rules.py'
+      - '.github/workflows/valentin-mode-rules.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: board-rules-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  blind-eval:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          repository: valentinyeo/token-ladder
+          ref: 16272cf1f461fb974dd480f66890bf6d69c88ac4
+          path: .token-ladder
+          sparse-checkout: ci
+          persist-credentials: false
+      - name: Fresh chat follows the board rules
+        env:
+          OPENCODE_API_KEY: ${{ secrets.PSTACK_OPENCODE_API_KEY }}
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+        run: timeout 1400 python3 scripts/valentin-mode-eval.py --ladder "$GITHUB_WORKSPACE/.token-ladder/ci/ladder-call" --out board-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: board-rules-evidence
+          path: board-evidence/

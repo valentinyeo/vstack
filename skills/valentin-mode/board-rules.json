@@ -1,0 +1,61 @@
+[
+  {
+    "id": "pr-owner",
+    "rule": "One owner carries each PR through merge.",
+    "sentence": "One owner carries each PR from build to merge, following pstack autopilot-full.",
+    "tools": [{"path": "skills/board-drain/SKILL.md", "name": "pstack autopilot-full"}],
+    "status": "active"
+  },
+  {
+    "id": "proof-before-merge",
+    "rule": "The verifier must PASS on the current head before merge.",
+    "sentence": "Never merge without the verifier's PASS on the current head.",
+    "tools": [
+      {"path": "skills/board-drain/merge-gate", "name": "merge-gate"},
+      {"path": "skills/hypertask-work/reconcile", "name": "reconcile VERIFIER_CHECKS"}
+    ],
+    "status": "active"
+  },
+  {
+    "id": "ticket-cap",
+    "rule": "At most five tickets in flight per agent label; ship one before starting another.",
+    "sentence": "Keep at most 5 tickets in flight per agent label; at 5, ship one before starting another Todo ticket.",
+    "tools": [
+      {"path": "skills/board-drain/wip-cap", "name": "wip-cap"},
+      {"path": "skills/hypertask-work/lease", "name": "lease exit 75"}
+    ],
+    "status": "pending VSTA-206"
+  },
+  {
+    "id": "agent-pr-cap",
+    "rule": "At most five open PRs per agent; park extras and return their cards to Todo.",
+    "sentence": "Keep at most 5 open PRs per agent; park extras and move their cards back to Todo.",
+    "tools": [{"path": "skills/board-drain/drain-check", "name": "drain-check"}],
+    "status": "pending VSTA-211"
+  },
+  {
+    "id": "repo-pr-cap",
+    "rule": "The repo-wide cap is ten open PRs.",
+    "sentence": "The repo-wide cap is 10 open PRs; above it, finish existing PRs instead of opening another.",
+    "tools": [
+      {"path": "scripts/pr-cap.py", "name": "pr-cap"},
+      {"path": "scripts/worker-shims", "name": "gh shim"},
+      {"path": "hooks/pr-cap-guard.py", "name": "pr-cap-guard"}
+    ],
+    "status": "active"
+  },
+  {
+    "id": "orphan-recovery",
+    "rule": "Within an hour, give a workerless PR a worker or park it and return its card to Todo.",
+    "sentence": "A PR without a live worker gets one within the hour, or is parked with its card back in Todo.",
+    "tools": [{"path": "skills/hypertask-work/reconcile", "name": "Hypertask Reconciler hourly tick (VSTA-208/VSTA-210)"}],
+    "status": "pending VSTA-210"
+  },
+  {
+    "id": "orphan-first",
+    "rule": "An owned PR without a live worker blocks new work.",
+    "sentence": "Never start new work while you own a PR with no live worker; restore its worker or park it first.",
+    "tools": [{"path": "skills/board-drain/drain-check", "name": "drain-check orphan finding"}],
+    "status": "pending VSTA-210"
+  }
+]
