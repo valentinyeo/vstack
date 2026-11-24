@@ -996,6 +996,24 @@ class MovedKeyTest(unittest.TestCase):
         # What it must see: the PR keeps the column the card already sits in.
         self.assertIn('KEEP', self.plan_line(card, found[new], board, 'open PR checks green'))
 
+    def test_a_moved_card_is_found_by_the_key_it_wore_before_its_prefix_changed(self):
+        """MUBO-65's pulls are written under IGSH-2670, a prefix older than SOFT-"""
+        data = json.loads((ROOT / 'skills/hypertask-work/aliases/13734.json').read_text())
+        self.assertEqual(data['IGSH-2670']['newKey'], 'MUBO-65')
+        board = r.make_board(13734, 'MUBO', r.MANAGED, r.PROTECTED,
+                             r.FACTORY_STAGE_COLUMN, r.FACTORY_COLUMN_STAGE)
+        card = {'ticketNumber': 'MUBO-65', 'section': 'AI Review', 'projectId': 13734,
+                'updatedAt': NOW - 8000}
+        pr = self.named_pull('IGSH-2670', 21)
+        respond, queries = self.answering(('IGSH-2670',), pr)
+        with patch.object(r, 'run', side_effect=respond), \
+                patch.object(r, 'api', side_effect=AssertionError('the seed answers without a board read')):
+            found = r.discover(['MUBO-65'], board=board)
+        self.assertEqual([p['url'] for p in found['MUBO-65']], [pr['url']])
+        self.assertTrue(any('IGSH-2670' in q.replace('\\', '') for q in queries),
+                        'the old key is searched with the card\'s own key')
+        self.assertIn('KEEP', self.plan_line(card, found['MUBO-65'], board, 'open PR checks green'))
+
     def probe_item(self, pull):
         """The row GitHub's change probe returns for one pull."""
         return {'html_url': pull['url'], 'number': pull['number'], 'title': pull['title'],
