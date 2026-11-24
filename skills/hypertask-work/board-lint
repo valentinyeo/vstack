@@ -196,6 +196,29 @@ def pull_map_from_fixture(data):
     return out
 
 
+def pull_key(row):
+    repo = (row.get('repository') or {}).get('nameWithOwner') or ''
+    url = row.get('url') or ''
+    if not repo:
+        match = re.search(r'github\.com/([^/]+/[^/]+)/pull/', url)
+        repo = match.group(1) if match else ''
+    number = row.get('number')
+    if not number:
+        match = re.search(r'/pull/(\d+)', url)
+        number = int(match.group(1)) if match else None
+    return (repo, int(number)) if repo and number is not None else None
+
+
+def fixture_pull_passed(row):
+    if 'passed' in row:
+        return bool(row.get('passed'))
+    if (row.get('state') or '').upper() != 'MERGED':
+        return False
+    head = row.get('headRefOid') or ''
+    author = (row.get('author') or {}).get('login') or ''
+    return reconcile.comment_pass_on_head(row.get('comments') or (), head, author)
+
+
 def seed_fixture_pulls(pulls):
     reconcile.PULLS.clear()
     for rows in pulls.values():
@@ -206,7 +229,7 @@ def seed_fixture_pulls(pulls):
             number = int(row.get('number') or re.search(r'/pull/(\d+)', row.get('url') or '').group(1))
             reconcile.PULLS[(repo, number)] = reconcile.Pull(
                 row.get('url') or '', (row.get('state') or 'OPEN').upper(),
-                row.get('checks') or '', bool(row.get('passed')), reconcile.moment(row.get('mergedAt')),
+                row.get('checks') or '', fixture_pull_passed(row), reconcile.moment(row.get('mergedAt')),
                 row.get('mergeable'))
 
 
@@ -576,12 +599,27 @@ def check_true_column(task, facts, board, names, breaks):
                         f'move {task.get("section")} -> {column} ({reason}) or run reconcile dry'))
 
 
-def check_done_proof(task, pulls, comments, board, breaks):
+def pull_facts_for(task, pulls, facts=None):
+    """Resolved Pull objects for one card so rules read the same passed verdict as reconcile."""
+    if facts is not None and facts.pulls:
+        return facts.pulls
+    out = []
+    for pull in (pulls or {}).get(task['ticketNumber'], ()):
+        if isinstance(pull, dict) and 'passed' not in pull:
+            key = pull_key(pull)
+            if key is not None and key in reconcile.PULLS:
+                out.append(reconcile.PULLS[key])
+                continue
+        out.append(pull)
+    return tuple(out)
+
+
+def check_done_proof(task, pulls, comments, board, breaks, facts=None):
     if task.get('section') != DONE:
         return
     if done_comment_proof(comments.get(task['ticketNumber'])):
         return
-    ticket_pulls = pulls.get(task['ticketNumber'], ())
+    ticket_pulls = pull_facts_for(task, pulls, facts)
     if reconcile.product_board(board) and merged_proof(ticket_pulls):
         return
     if reconcile.merged_with_pass(ticket_pulls):
@@ -590,7 +628,7 @@ def check_done_proof(task, pulls, comments, board, breaks):
                         'add live Done proof (Done comment with evidence) or a PASS verdict on the merged head'))
 
 
-def check_merged_no_pass(task, pulls, board, breaks):
+def check_merged_no_pass(task, pulls, board, breaks, facts=None):
     """A merge with no PASS on its head is a rule break its owner must verify.
 
     A PASS verdict runs before the merge, so a merge without one proves nothing and
@@ -599,7 +637,7 @@ def check_merged_no_pass(task, pulls, board, breaks):
     """
     if reconcile.product_board(board) or task.get('section') == DONE:
         return
-    ticket_pulls = pulls.get(task['ticketNumber'], ())
+    ticket_pulls = pull_facts_for(task, pulls, facts)
     if not any(((p.get('state') if isinstance(p, dict) else p.state) or '').upper() == 'MERGED'
                for p in ticket_pulls):
         return
@@ -838,8 +876,8 @@ def lint(args, shared=None):
         check_agent_assignee(task, facts, live, known, members, data, args, breaks, own=own)
         if pull_rules and (known_pulls is None or task['ticketNumber'] in known_pulls):
             check_true_column(task, facts, board, names, breaks)
-            check_done_proof(task, pulls, comments, board, breaks)
-            check_merged_no_pass(task, pulls, board, breaks)
+            check_done_proof(task, pulls, comments, board, breaks, facts=facts)
+            check_merged_no_pass(task, pulls, board, breaks, facts=facts)
         check_label_assignee(task, chat_names, breaks, own=own,
                              own_label=getattr(args, 'label', '') or '')
         check_no_owner_label(task, breaks)

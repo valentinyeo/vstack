@@ -1,0 +1,37 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-41",
+      "projectId": 99001,
+      "section": "AI Review",
+      "title": "Merged PR with bare PASS verdict",
+      "updatedAt": "2025-11-21T10:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T10:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}, {"name": "brain-medium"}],
+      "assignees": [{"type": "agent", "displayName": "Board Drain Loop"}]
+    }
+  ],
+  "pulls": {
+    "FACT-41": [
+      {
+        "url": "https://github.com/valentinyeo/vstack/pull/344",
+        "number": 344,
+        "state": "MERGED",
+        "mergedAt": "2025-11-21T11:00:00Z",
+        "headRefOid": "b5fa03a125b6177d7e04f4001d2f50d1caf9f002",
+        "author": {"login": "valentinyeo"},
+        "repository": {"nameWithOwner": "valentinyeo/vstack"},
+        "comments": [
+          {
+            "author": {"login": "github-actions"},
+            "updatedAt": "2025-11-21T10:55:00Z",
+            "databaseId": 101,
+            "body": "PASS\n\nAll checks green.\n\nVerifier model: opencode-go/glm-5.3-flash. Head `b5fa03a125b6177d7e04f4001d2f50d1caf9f002`.\n"
+          }
+        ]
+      }
+    ]
+  }
+}

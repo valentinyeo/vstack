@@ -265,6 +265,91 @@ class BoardLintTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assert_rule(result.stdout, 'merged-no-pass')
 
+    def test_merged_verdict_fixtures_accept_pass_shapes_and_flag_fail(self):
+        for fixture in ('merged-pass.json', 'merged-pass-notes.json',
+                        'merged-pstack-pass-notes.json'):
+            with self.subTest(fixture=fixture):
+                result = self.run_lint(fixture)
+                self.assertNotEqual(result.returncode, 2, result.stderr)
+                self.assert_rule(result.stdout, 'merged-no-pass', present=False)
+                self.assertIn('merged with PASS', result.stdout)
+        failed = self.run_lint('merged-fail.json')
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        self.assert_rule(failed.stdout, 'merged-no-pass', present=True)
+        self.assertIn('merged without PASS', failed.stdout)
+
+    def test_live_saved_pull_facts_clear_merged_no_pass_without_passed_on_search_row(self):
+        module = load_board_lint()
+        board = module.reconcile.DEFAULT
+        now = 1800000000
+        task = {
+            'ticketNumber': 'SOFT-95', 'projectId': board.id, 'section': 'AI Review',
+            'title': 'Merged with saved PASS fact', 'updatedAt': now - 60,
+            'staleness': {'sectionChangedAt': now - 3600},
+            'labels': [{'name': 'Board Drain Loop'}],
+            'assignees': [{'type': 'agent', 'displayName': 'Board Drain Loop'}],
+        }
+        pull_row = {
+            'url': 'https://github.com/valentinyeo/multiprompt/pull/1117',
+            'state': 'MERGED', 'number': 1117,
+            'mergedAt': '2026-11-24T10:00:00Z', 'createdAt': '2026-11-24T09:00:00Z',
+            'repository': {'nameWithOwner': 'valentinyeo/multiprompt'},
+        }
+        for passed, flagged in ((True, False), (False, True)):
+            with self.subTest(passed=passed):
+                saved = {
+                    'at': now - 60, 'probe_since': '2026-11-24T10:00:00Z', 'repos': [],
+                    'tickets': {'SOFT-95': {
+                        'at': now - 60, 'updated_at': task['updatedAt'],
+                        'pulls': [pull_row],
+                        'facts': {'valentinyeo/multiprompt#1117': {
+                            'url': pull_row['url'], 'state': 'MERGED', 'checks': 'green',
+                            'passed': passed, 'merged_at': now - 120, 'created_at': now - 300,
+                        }},
+                    }},
+                }
+                module.reconcile.PULLS.clear()
+                args = type('Args', (), {
+                    'board': board.id, 'label': 'Board Drain Loop', 'fixture': None,
+                    'roster': None, 'skip_comments': True, 'json': False,
+                })()
+                shared = {
+                    'board': board, 'tasks': [task], 'data': {}, 'now': now,
+                    'probe_only': True, 'fixture_pulls': None, 'pull_rules': True,
+                }
+                with mock.patch.object(module.reconcile, 'read_board_facts', return_value=saved), \
+                        mock.patch.object(module.reconcile, 'probe_items', return_value=()), \
+                        mock.patch.object(module.reconcile, 'read_sections', return_value=set()), \
+                        mock.patch.object(module.reconcile, 'worker_alive', return_value=False), \
+                        mock.patch.object(module, 'live_names', return_value={'board drain loop'}), \
+                        mock.patch.object(module.owners, 'owned_labels', return_value=set()), \
+                        mock.patch.object(module, 'known_chats', return_value={'board drain loop'}), \
+                        mock.patch.object(module, 'member_agents', return_value=None), \
+                        mock.patch.object(module, 'read_views', return_value={}), \
+                        mock.patch.object(module, 'read_label_ids', return_value={}), \
+                        mock.patch.object(module, 'chat_naming_labels', return_value=set()), \
+                        mock.patch.object(module, 'own_agent', return_value=''), \
+                        mock.patch.object(module, 'armed_chats', return_value=[]):
+                    breaks = module.lint(args, shared=shared)
+                rules = [b.rule for b in breaks]
+                self.assertEqual('merged-no-pass' in rules, flagged, breaks)
+
+    def test_done_proof_reads_passed_from_reconcile_pulls_when_search_row_omits_it(self):
+        module = load_board_lint()
+        board = module.reconcile.DEFAULT
+        task = {'ticketNumber': 'SOFT-96', 'section': 'Done', 'labels': [{'name': 'Board Drain Loop'}]}
+        pull_row = {
+            'url': 'https://github.com/valentinyeo/multiprompt/pull/1117',
+            'state': 'MERGED', 'number': 1117,
+            'repository': {'nameWithOwner': 'valentinyeo/multiprompt'},
+        }
+        module.reconcile.PULLS.clear()
+        module.reconcile.PULLS[('valentinyeo/multiprompt', 1117)] = module.reconcile.Pull(
+            pull_row['url'], 'MERGED', 'green', True)
+        breaks = []
+        module.check_done_proof(task, {'SOFT-96': [pull_row]}, {}, board, breaks)
+        self.assertEqual(breaks, [])
+
     def test_done_with_merged_pr_and_comment_clean(self):
         result = self.run_lint('done-with-proof.json')
         self.assertEqual(result.returncode, 0, result.stdout)
