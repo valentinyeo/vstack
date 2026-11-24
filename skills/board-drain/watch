@@ -154,6 +154,7 @@ def wake(lines):
         sender = shutil.which('mp-send') or Path.home() / '.multiprompt-runtime/mp-send'
         if not Path(sender).is_file():
             return False
+        matches = []
         for path in sorted((Path.home() / '.local/state/multiprompt/agent-host').glob('*.config.json')):
             try:
                 config = json.loads(path.read_text())
@@ -164,10 +165,25 @@ def wake(lines):
             sid = config.get('sid')
             if not isinstance(sid, str) or not sid:
                 continue
-            prompt = '; '.join(lines) + '; run drain-check'
-            sent = subprocess.run([sys.executable, str(sender), '--tmux', tab, 'claude', sid, prompt],
-                                  capture_output=True, timeout=10)
-            return sent.returncode == 0
+            matches.append(config)
+        if not matches:
+            return False
+        config = next((config for config in matches if config.get('enabled')), matches[0])
+        prompt = '; '.join(lines) + '; run drain-check'
+        for attempt in range(2):
+            if attempt:
+                time.sleep(5)
+            try:
+                sent = subprocess.run(
+                    [sys.executable, str(sender), '--tmux', tab, 'claude', config['sid'], prompt],
+                    capture_output=True, timeout=30)
+                if sent.returncode == 0:
+                    return True
+                status, stderr = sent.returncode, sent.stderr
+            except subprocess.TimeoutExpired as error:
+                status, stderr = 'timeout', error.stderr
+            last = (stderr or b'').decode(errors='replace').splitlines()
+            print(f'wake: failed ({status}): {last[-1] if last else ""}', flush=True)
     except (OSError, subprocess.SubprocessError):
         pass
     return False
