@@ -60,6 +60,9 @@ WORKING = frozenset({'Doing', 'Building', CHECKS, 'AI Review', 'Verifier'})
 # A Checks card is stuck when its red PR took no push for a day and no worker holds it.
 STUCK_AFTER = 24 * 3600
 STUCK_FIX = 'Start a fresh plan-pick owner to fix or close it.'
+# The PR owner rule: a card with an open PR and no helper holds the owner back from
+# any new ticket, so this finding outranks the advice to start on a fresh Todo.
+ORPHAN_FIX = 'start a helper on this PR before any new ticket'
 PR_URL = re.compile(r'github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)')
 # An idle Checks card often carries no PR link, and the board's saved facts cover
 # only recently changed tickets, so its PR comes from one open listing per board.
@@ -86,14 +89,14 @@ LINT = HERE.parent / 'hypertask-work' / 'board-lint'
 ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
 # The load probe: only these findings are about work the server is too busy to take.
 VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
-LOAD_FINDINGS = frozenset({'loop off', 'stale'})
+LOAD_FINDINGS = frozenset({'loop off', 'stale', 'orphan PR'})
 # The lane probe: plan-pick's own record of never finding a free worker lane.
 PLAN_PICK_LOG = Path(os.environ.get('PLAN_PICK_LAUNCHES')
                      or os.path.expanduser('~/.local/state/token-ladder/launches.jsonl'))
 PLAN_PICK_STATE = PLAN_PICK_LOG.parent / 'rung-attempts.json'
 # A no-lane record older than this no longer explains an idle loop: something else does.
 LANE_WINDOW = 1800
-LANE_FINDINGS = frozenset({'loop off', 'stale', 'stalled', 'stuck'})
+LANE_FINDINGS = frozenset({'loop off', 'stale', 'stalled', 'stuck', 'orphan PR'})
 
 
 def probe_load():
@@ -231,6 +234,49 @@ def open_blockers(relations, loaded):
         if key and not done_blocker(key, loaded, other):
             stuck.append(key)
     return stuck
+
+
+def live_worker(key, now, board):
+    """A lease or a live command line on this card; another host's lease proves nothing."""
+    try:
+        return reconcile.worker_alive(key, now, board)
+    except ERRORS:
+        return False
+
+
+def open_pulls(task, pulls):
+    """This card's PRs known to be open; an unknown state is not one to resume."""
+    return [pull for pull in linked_pulls(task, pulls)
+            if pull_field(pull, 'url')
+            and (pull_field(pull, 'state') or '').upper() == 'OPEN']
+
+
+def in_flight(key, pulls, now, board):
+    """A card really moving: a live helper on it, or an open PR of its own."""
+    if not key:
+        return False
+    return live_worker(key, now, board) or bool(
+        open_pulls({'ticketNumber': key}, pulls))
+
+
+def orphan_finding(row, pulls, loaded, now, board):
+    """An open PR with no helper: the owner resumes that PR before a new ticket.
+
+    A card blocked by work already in flight, or one waiting on Valentin, has a
+    reason to idle; starting a helper on it would work around that reason. Files,
+    locks and links come from the tick's board facts; no card costs a GitHub read.
+    """
+    task = row['task']
+    if task.get('section') in (DONE, NOT_NOW) or waits_on_valentin(task):
+        return None
+    own = open_pulls(task, pulls)
+    if not own or live_worker(task['ticketNumber'], now, board):
+        return None
+    blockers = open_blockers(row.get('relations'), loaded)
+    if any(in_flight(key, pulls, now, board) for key in blockers):
+        return None
+    return ('orphan PR', f'orphan PR: {task["ticketNumber"]} {pull_field(own[0], "url")} '
+                         f'has no live helper; {ORPHAN_FIX}')
 
 
 def agent_assigned(task):
@@ -722,16 +768,13 @@ def read_view(args, now):
             workable.append(row)
     # An urgent Todo card may start while the board is over cap, so its nudge stands.
     held_by_cap = over and not any(wip.urgent(row['task']) for row in workable)
-    if workable and not live and not held_by_cap:
-        findings.append(('loop off', f'loop off: {len(workable)} workable Todo, nothing in Doing. '
-                                     f'Re-arm your loop and start a worker on '
-                                     f'{top_key(workable, now, board)}.'))
     for row in doings:
         if row not in live:
             findings.append(('stalled', f'stalled: {row["task"]["ticketNumber"]} in Doing with no '
                                         'live worker. Start a fresh plan-pick worker.'))
     idle_checks = [row for row in rows if row['task'].get('section') == CHECKS
                    and not alive(row['task'], now, board)]
+    stuck_keys = set()
     listing = ()
     if any(not linked_pulls(row['task'], pulls) for row in idle_checks):
         listing = open_listing(board, now)
@@ -739,6 +782,19 @@ def read_view(args, now):
         finding = stuck_finding(row['task'], pulls, now, board, listing)
         if finding is not None:
             findings.append(finding)
+            # The stuck advice already covers this card, so its PR gets one line, not two.
+            stuck_keys.add(row['task']['ticketNumber'])
+    # Orphans come first: while one of this chat's PRs has no helper, starting on a
+    # fresh Todo is the mistake, so the Todo advice below stays quiet.
+    orphans = [finding for finding in
+               (orphan_finding(row, pulls, loaded, now, board) for row in rows
+                if row['task']['ticketNumber'] not in stuck_keys)
+               if finding is not None]
+    findings[:0] = orphans
+    if workable and not live and not orphans and not held_by_cap:
+        findings.append(('loop off', f'loop off: {len(workable)} workable Todo, nothing in Doing. '
+                                     f'Re-arm your loop and start a worker on '
+                                     f'{top_key(workable, now, board)}.'))
     for row in rows:
         task = row['task']
         if task.get('section') in WORKING and not agent_assigned(task):
@@ -746,7 +802,7 @@ def read_view(args, now):
                                            f'{task["section"]} has no agent assigned. Assign your '
                                            f'own agent login to it (task assign '
                                            f'{task["ticketNumber"]} --self, with your token).'))
-    for row in workable:
+    for row in workable if not orphans else ():
         spent = age(row['task'], now)
         if spent is not None and spent > STALE and not held_by_cap:
             findings.append(('stale', f'stale: {row["task"]["ticketNumber"]} workable in Todo '
