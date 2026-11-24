@@ -47,6 +47,11 @@ def busy(cards, column='Checks'):
              'labels': [], 'updatedAt': iso(NOW - 600)} for index in range(cards)]
 
 
+def busy_rows(cards, column='Checks'):
+    """Those cards as drain-check fixture rows."""
+    return [{'task': task, 'comments': []} for task in busy(cards, column)]
+
+
 def card(key, section='Todo', priority=None, age=3 * 3600):
     task = {'ticketNumber': key, 'projectId': 13556, 'section': section, 'status': 'Normal',
             'labels': [{'name': LABEL}], 'waitingOnUserId': None, 'blockerCommentId': None,
@@ -147,8 +152,8 @@ class LeaseRefusalTest(unittest.TestCase):
         code, said, started, _written = self.run_lease(card('VSTA-206')['task'], [],
                                                        read_error=OSError('board unreadable'))
         self.assertEqual(code, 0, said)
-        self.assertEqual(len(said.strip().splitlines()), 1, said)
-        self.assertIn('cap not enforced', said)
+        self.assertEqual(said.count('cap not enforced'), 1, said)
+        self.assertIn('wip-cap: board 13556 read failed (board unreadable); cap not enforced', said)
         started.assert_called_once()
 
 
@@ -180,7 +185,7 @@ class DrainCheckCapTest(unittest.TestCase):
         return code, out.getvalue()
 
     def test_over_cap_fails_and_stops_asking_for_a_start(self):
-        code, out = self.run_check(busy(11) + [card('VSTA-206')])
+        code, out = self.run_check(busy_rows(11) + [card('VSTA-206')])
         self.assertEqual(code, 1, out)
         self.assertIn('over cap: 11 cards in Checks+AI Review (cap 10); finish before starting', out)
         self.assertNotIn('loop off', out)
@@ -188,16 +193,17 @@ class DrainCheckCapTest(unittest.TestCase):
         self.assertIn('drain-check: FAIL (1 findings)', out)
 
     def test_at_cap_still_reports_the_idle_loop(self):
-        code, out = self.run_check(busy(10) + [card('VSTA-206')])
+        code, out = self.run_check(busy_rows(10) + [card('VSTA-206')])
         self.assertEqual(code, 1, out)
         self.assertNotIn('over cap', out)
         self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
         self.assertIn('stale: VSTA-206 workable in Todo for 3h.', out)
+        self.assertIn('drain-check: FAIL (2 findings)', out)
 
     def test_an_urgent_card_still_gets_its_nudge_over_cap(self):
-        code, out = self.run_check(busy(11) + [card('VSTA-206', priority=URGENT)])
+        code, out = self.run_check(busy_rows(11) + [card('VSTA-206', priority=URGENT, age=1800)])
         self.assertEqual(code, 1, out)
-        self.assertIn('over cap:', out)
+        self.assertIn('over cap: 11 cards in Checks+AI Review (cap 10); finish before starting', out)
         self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
         self.assertIn('drain-check: FAIL (2 findings)', out)
 

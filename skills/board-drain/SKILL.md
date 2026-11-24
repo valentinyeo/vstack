@@ -56,7 +56,7 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 - **stalled:** Doing ticket, no live owner. Fresh plan-pick owner; tickets moved across boards get a new key, so check the old lease first.
 - **stuck:** a Checks card whose PR is red with no push and no live worker for a day. Check the lease first; if none, start a fresh plan-pick owner that fixes the PR or closes it.
 - **stale:** a workable Todo ticket idle over two hours. Give it an owner; note the gap on your role ticket.
-- **over cap:** more than 10 cards in Checks+AI Review (Valentin, "finish before starting"): finish those first. This one fails and stays quiet on **loop off** and **stale** until the board drains, so it is the only thing to work; `lease <KEY> run` refuses a non-urgent Todo start with exit 75 and one `lease: <KEY> held: ...` line. An urgent ticket may still start.
+- **over cap:** more than 10 cards in Checks+AI Review, the two columns `/hypertask` owns. Finish those first: this one fails, and **loop off** and **stale** stay quiet until the board drains, so it is the only work to do. `lease <KEY> run` refuses a non-urgent Todo start with exit 75 and one `lease: <KEY> held: ...` line; an urgent ticket may still start.
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.
 - **not armed** or **watcher dead since <time>:** the chat restarted, the loop expired, or the watcher stopped pulsing. Arm it.
 - **sync failed** or **sync stale:** the last sync broke or is over 45 minutes old. Fix it, then `./sync --board <id> --label <label> --name "<name>"`.
