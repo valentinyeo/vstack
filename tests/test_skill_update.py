@@ -165,8 +165,13 @@ class SkillUpdate(unittest.TestCase):
         old = hashlib.sha256(b'v1\n').hexdigest()[:8]
         new = hashlib.sha256(b'v2\n').hexdigest()[:8]
         self.assertIn(f'({old}..{new})', text)
-        self.assertIn('Re-read ~/.claude/skills/valentin-mode/SKILL.md in full now', text)
+        self.assertIn('v2', text, 'the notice carries the new SKILL.md text')
         self.assertEqual(hook.reload_notice(payload, self.home), {}, 'the notice fires once')
+        skill.write_text('v3\n' + 'x' * hook.MAX_INLINE)
+        big = self.notice(hook.reload_notice(payload, self.home))
+        self.assertIn('Re-read ~/.claude/skills/valentin-mode/SKILL.md in full now', big,
+                      'a skill too big to inline gets the one-line instruction')
+        self.assertNotIn('x' * 100, big)
 
     def test_a_chat_that_never_loaded_valentin_mode_gets_nothing(self):
         self.valentin_skill('v1\n')
@@ -209,6 +214,67 @@ class SkillUpdate(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         answer = json.loads(done.stdout)
         self.assertIn('valentin-mode changed', self.notice(answer))
+
+    def test_an_unchanged_skill_says_nothing(self):
+        self.valentin_skill('v1\n')
+        payload = self.payload()
+        self.assertEqual(hook.reload_notice(payload, self.home), {}, 'the first load records')
+        self.assertEqual(hook.reload_notice(payload, self.home), {}, 'no change, no notice')
+
+    def test_a_session_in_another_project_gets_the_notice_once(self):
+        skill = self.valentin_skill('v1\n')
+        payload = self.payload()
+        project = self.base / 'multiprompt'
+        project.mkdir()
+        env = {'PATH': os.environ['PATH'], 'HOME': str(self.home), 'SKILL_UPDATE_NO_GIT': '1'}
+
+        def prompt():
+            return subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                                  text=True, capture_output=True, env=env,
+                                  cwd=str(project), check=False)
+
+        self.assertEqual(prompt().stdout, '', 'the first prompt only records the hash')
+        skill.write_text('version two, the new rule\n')
+        first = prompt()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn('version two, the new rule', self.notice(json.loads(first.stdout)))
+        self.assertEqual(prompt().stdout, '', 'the notice fires once per change')
+
+    def test_a_broken_hook_still_passes_the_prompt(self):
+        real = hook.reload_notice
+
+        def explode(*_args):
+            raise RuntimeError('boom')
+
+        hook.reload_notice = explode
+        self.addCleanup(setattr, hook, 'reload_notice', real)
+        self.assertEqual(hook.hook({'session_id': 'sid-1', 'transcript_path': '/x'},
+                                   dict(self.env, SKILL_UPDATE_NO_GIT='1')), {})
+
+    def install_twice(self):
+        env = {**os.environ, 'HOME': str(self.home), 'VSTACK_INSTALL_ANYWHERE': '1',
+               'VSTACK_DIR': str(self.share)}
+        for _ in range(2):
+            result = subprocess.run([str(INSTALL)], env=env, capture_output=True,
+                                    text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        settings = json.loads((self.home / '.claude/settings.json').read_text())
+        return [entry.get('command', '')
+                for group in settings['hooks']['UserPromptSubmit']
+                for entry in group['hooks'] if 'skill-update.py' in entry.get('command', '')]
+
+    def test_install_registers_the_reload_hook_once_globally(self):
+        commands = self.install_twice()
+        self.assertEqual(len(commands), 1, 'a second install adds no duplicate registration')
+        self.assertEqual(commands[0],
+                         '"$HOME/.local/share/vstack/hooks/run-hook" '
+                         '"$HOME/.claude/hooks/skill-update.py"')
+        self.assertNotIn('CLAUDE_PROJECT_DIR', commands[0], 'it fires in every chat, not only vstack')
+        repo = json.loads((ROOT / '.claude/settings.json').read_text())
+        registered = [entry.get('command', '') for groups in repo['hooks'].values()
+                      for group in groups for entry in group.get('hooks', [])]
+        self.assertFalse([c for c in registered if 'skill-update.py' in c],
+                         'the repo-only registration is gone, so it never fires twice')
 
     def test_install_links_the_hook_into_claude(self):
         env = {**os.environ, 'HOME': str(self.home), 'VSTACK_INSTALL_ANYWHERE': '1',

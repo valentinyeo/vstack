@@ -1,5 +1,4 @@
 """The CLI used by CI must reject the deletion from PR #278."""
-import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,14 +24,16 @@ class HookWiring(unittest.TestCase):
             after = subprocess.run(command, capture_output=True, text=True, timeout=30)
             self.assertEqual(after.returncode, 1, after.stdout + after.stderr)
             self.assertIn('hooks/skill-update.py', after.stderr)
-            self.assertIn('.claude/settings.json', after.stderr)
+            self.assertIn('install', after.stderr)
             self.assertIn('reinstall vstack', after.stderr)
-            settings = repo / '.claude/settings.json'
-            data = json.loads(settings.read_text())
-            data['hooks']['UserPromptSubmit'] = []
-            settings.write_text(json.dumps(data))
+            # Skill-update is registered globally by `install`, not by project settings,
+            # so the registration that must fail here is the one in `install`.
+            (repo / '.claude/settings.json').write_text('{"hooks": {}}')
+            install = repo / 'install'
+            install.write_text('\n'.join(line for line in install.read_text().splitlines()
+                                         if not line.startswith('SKILL_UPDATE_HOOK=')) + '\n')
             repaired = subprocess.run(command, capture_output=True, text=True, timeout=30)
-            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            self.assertEqual(repaired.returncode, 0, repaired.stdout + repaired.stderr)
 
 
 if __name__ == '__main__':

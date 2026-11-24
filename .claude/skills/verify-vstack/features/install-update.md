@@ -9,6 +9,7 @@
 - `bin-links` links `vps-state`, `repo-tidy`, `vstack-feedback` into `.local/bin`, and each link resolves.
 - `drive-skill` leaves `valentin-mode/SKILL.md` readable through its link, because that is the skill Drive loads.
 - `retire` removes links to skills and hooks the checkout no longer ships, and moves a real folder to the dupe store instead of deleting it.
+- `reload-hook` registers `skill-update.py` once in `~/.claude/settings.json` as a UserPromptSubmit hook through `run-hook`, so a chat in any project hears that valentin-mode changed; a re-run adds no second entry (VSTA-207).
 
 ## How to get to it (user POV)
 

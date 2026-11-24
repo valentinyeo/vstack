@@ -80,8 +80,25 @@ retired=("$TEST_HOME"/.local/state/skill-dupes-*/.claude/skills/ticket/SKILL.md)
 [ "$(cat "${retired[0]}")" = 'old ticket skill' ]
 printf 'PASS retired ticket folder moved, not deleted\n'
 
-[ "$(sha256sum "$TEST_HOME/.claude/settings.json")" = "$settings" ]
-printf 'PASS settings without retired hooks stay byte-for-byte unchanged\n'
+# VSTA-207: the reload hook is registered once, globally, so a chat working in any
+# project hears that valentin-mode changed. A re-run adds no second entry and leaves
+# the rest of the file alone.
+settings_before_install=$(sha256sum "$TEST_HOME/.claude/settings.json")
+env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
+[ "$(sha256sum "$TEST_HOME/.claude/settings.json")" = "$settings_before_install" ]
+python3 - "$TEST_HOME/.claude/settings.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+data = json.loads(Path(sys.argv[1]).read_text())
+registered = [hook['command'] for group in data['hooks']['UserPromptSubmit']
+              for hook in group['hooks'] if 'skill-update.py' in hook.get('command', '')]
+assert registered == ['"$HOME/.local/share/vstack/hooks/run-hook" '
+                      '"$HOME/.claude/hooks/skill-update.py"'], registered
+assert set(data) >= {'hooks'}, data
+assert data['hooks']['Stop'] == [], 'unrelated settings stay put'
+PY
+printf 'PASS skill-update registered globally exactly once, idempotently\n'
 python3 - "$TEST_HOME/.claude/settings.json" "${retired_hooks[@]}" <<'PY'
 import json
 from pathlib import Path
@@ -103,7 +120,7 @@ from pathlib import Path
 import sys
 path = Path(sys.argv[1])
 assert json.loads(path.read_text()) == {'env': {'KEEP': 'yes'}, 'hooks': {
-    'UserPromptSubmit': [],
+    'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/skill-update.py"'}]}],
     'PreToolUse': [{'matcher': '*', 'hooks': [{'type': 'command', 'command': 'echo unrelated', 'timeout': 7}]}],
     'Stop': [{'hooks': []}]
 }}
