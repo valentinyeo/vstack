@@ -1829,6 +1829,22 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(clock.now - NOW, 7020)
         self.assertLess(clock.now - NOW, 7200)
 
+    def test_a_quiet_watcher_exits_before_the_job_limit(self):
+        """VSTA-239: the harness kills a 2h job, so the watcher leaves first and asks to restart."""
+        with patch.object(watch.loop_state, 'loop_interval', return_value=loop.PACER_FLOOR):
+            code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+        self.assertEqual(code, 0, out)
+        self.assertIn('lifetime: exiting before the 2h job limit; restart me', out)
+        self.assertLess(clock.now - NOW, watch.LIMIT)
+
+    def test_a_watcher_never_runs_past_the_job_limit(self):
+        """A heartbeat set beyond the limit still ends at the lifetime line, not the kill."""
+        code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0',
+                                          '--heartbeat', str(watch.LIMIT))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip(), 'lifetime: exiting before the 2h job limit; restart me')
+        self.assertLess(clock.now - NOW, watch.LIMIT)
+
     def test_the_default_heartbeat_follows_the_plan_pacer(self):
         """A 1h plan pace caps under 2h and sets the heartbeat one poll short of it."""
         paced = 3600 - 180
