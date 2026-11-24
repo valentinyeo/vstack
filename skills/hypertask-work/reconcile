@@ -2046,11 +2046,27 @@ def jobs_evidence(repo, run_id):
     return evidence
 
 
+# The check run each repo's own verifier workflow posts, one row per repo so no repo
+# accepts another repo's verifier name. vstack's verifier answers as the `verifier` job
+# of .github/workflows/pstack-sources.yml (VSTA-193, house delta
+# github-actions-verifier in skills/pstack-diff/house.txt); every repo that runs the
+# pstack verifier workflow posts `pstack-verifier`, so that name is the default and
+# needs no row.
+VERIFIER_CHECKS = {'valentinyeo/vstack': ('verifier',)}
+PSTACK_VERIFIER_CHECK = 'pstack-verifier'
+
+
+def verifier_check_names(repo):
+    """The check run names that count as this repo's verifier, and no others."""
+    return VERIFIER_CHECKS.get(repo, (PSTACK_VERIFIER_CHECK,))
+
+
 def pstack_pass_on_head(checks, head, repo):
+    names = verifier_check_names(repo)
     for check in checks:
         suite = check.get('checkSuite') or {}
         workflow = suite.get('workflowRun') or {}
-        if (check.get('__typename') != 'CheckRun' or check.get('name') != 'pstack-verifier' or
+        if (check.get('__typename') != 'CheckRun' or check.get('name') not in names or
                 check.get('status') != 'COMPLETED' or check.get('conclusion') != 'SUCCESS' or
                 (suite.get('commit') or {}).get('oid') != head or not workflow.get('databaseId')):
             continue
