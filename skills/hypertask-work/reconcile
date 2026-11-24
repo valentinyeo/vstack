@@ -240,9 +240,10 @@ def plan_stage(facts, here, board):
         return Stage.REVIEW, 'merged PR with PASS; live proof pending'
     if fresh:
         return Stage.REVIEW, 'merged PR missing PASS on current head'
-    if here == Stage.IN_PROGRESS and nothing_ran():
+    if here == Stage.IN_PROGRESS and not facts.alive and nothing_ran():
         # plan-pick exited 75: every lane was used up and no worker ran (VSTA-182).
         # Say so and wait, instead of leaving the card reading as started for 2h.
+        # A live worker from a later launch keeps its card where it is.
         return Stage.BACKLOG, NOTHING_RAN
     if facts.alive:
         return Stage.IN_PROGRESS, _worker_reason(board)

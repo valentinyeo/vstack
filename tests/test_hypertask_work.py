@@ -930,6 +930,15 @@ class ReconcileTest(unittest.TestCase):
         self.assertIn('PLAN SOFT-1 Doing -> Todo | nothing ran, waiting for a lane', printed)
         self.assertEqual(calls['moves'], ['SOFT-1'], 'the card says waiting, not started')
 
+    def test_a_ran_nothing_sync_leaves_a_live_worker_alone(self):
+        """A relaunch that did start a worker keeps its card in Doing: the old 75
+        belongs to the run that ended, not to the worker now in there."""
+        facts = r.Facts('Doing', 60, alive=True)
+        with patch.dict(os.environ, {'RECONCILE_WORKER_EXIT': '75'}):
+            planned, reason = r.plan_stage(facts, r.Stage.IN_PROGRESS, r.DEFAULT)
+        self.assertEqual(planned, r.Stage.IN_PROGRESS)
+        self.assertEqual(reason, 'live worker: lease or process')
+
     def test_a_card_sync_without_a_worker_exit_claims_no_run(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
