@@ -2,8 +2,6 @@
 name: deep-work
 description: "/deep-work [task]: hand a big task to this session and walk away for 60 to 90 minutes. Proves first that it can check its own work, asks every question in one go, then runs alone on pstack's full autopilot until done, parks what it cannot finish and ends with a two minute report. Use for 'deep work', 'run without me', 'I'm away for an hour', or any big prompt the owner wants finished alone."
 disable-model-invocation: true
-skill-word-budget: 1020
-skill-word-budget-reason: "Contract, run rules and report are one protocol; splitting them hides the checks the run is graded on."
 ---
 
 # /deep-work

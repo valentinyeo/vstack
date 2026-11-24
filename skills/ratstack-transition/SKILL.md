@@ -2,8 +2,6 @@
 name: ratstack-transition
 description: Plan a forced rewrite of an existing app onto Rat Stack (github.com/joelhooks/rat-stack), as close to Joel Hooks' stack as possible. Pins Rat Stack at one commit, diffs the app against it, maps every behaviour onto Rat Stack's own nouns and layout, and files one ticket per slice. Use for /ratstack-transition, "move this app to Rat Stack", "rewrite on ratstack", or a stack review that says move. Any session or runner, any harness.
 disable-model-invocation: true
-skill-word-budget: 2000
-skill-word-budget-reason: The rat-stack migration protocol must stay together.
 ---
 
 # /ratstack-transition [app dir]

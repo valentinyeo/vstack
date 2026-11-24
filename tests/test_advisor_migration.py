@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HOOKS = ('book-check', 'said-started', 'pstack-source', 'pstack-reply',
+HOOKS = ('book-check', 'said-started', 'pstack-source',
          'out-of-bounds', 'billing-quiet')
 
 

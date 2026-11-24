@@ -17,13 +17,7 @@ jobs:
           fetch-depth: 0
       - name: Every shipped hook reference resolves
         run: timeout 60 python3 scripts/check-hook-paths --repo .
-      - run: timeout 900 python3 -m unittest discover -s tests
-      - run: python3 -m unittest discover -s tests -p test_verify_reconcile.py -v
-      - run: bash tests/install.sh
-      - name: No new verification gates
-        if: github.event_name == 'pull_request'
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+      - name: Fetch pinned pstack
         run: |
           set -euo pipefail
           ref=$(python3 -c 'import json; print(json.load(open(".skill-lint.json"))["pstack-ref"])')
@@ -34,6 +28,16 @@ jobs:
           git -C "$RUNNER_TEMP/cursor-plugins" checkout --quiet FETCH_HEAD
           mkdir -p "$RUNNER_TEMP/pstack"
           ln -s "$RUNNER_TEMP/cursor-plugins/pstack" "$RUNNER_TEMP/pstack/$version"
+          echo "PSTACK_PINNED_DIR=$RUNNER_TEMP/cursor-plugins/pstack" >> "$GITHUB_ENV"
+      - run: timeout 900 python3 -m unittest discover -s tests
+      - run: python3 -m unittest discover -s tests -p test_verify_reconcile.py -v
+      - run: bash tests/install.sh
+      - name: No new verification gates
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
           python3 skills/pstack-diff/pstack-diff --base "$BASE" --pstack "$RUNNER_TEMP/pstack"
 
   verify-vstack:

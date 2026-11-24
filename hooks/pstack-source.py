@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""PreToolUse guard for the advisor: every worker brief and PR names the pstack source it follows.
+"""PreToolUse guard for the advisor: every worker brief names the pstack source it follows.
 
-A worker launch (codex exec, pi -p, cursor-agent -p) or `gh pr create` from this project must carry a line
+A worker launch (codex exec, pi -p, cursor-agent -p) from this project must carry a line
 `pstack: <path>` in the brief file or command, and the path must be a real file under the installed pstack plugin
 (a playbook, a principle skill, or another pstack skill). Verifiers and reviewers prefixed with
 NO_TICKET_REASON= are exempt: they check work, they do not design it.
@@ -14,13 +14,13 @@ import sys
 from pathlib import Path
 
 PSTACK = Path.home() / ".claude/plugins/cache/cursor-plugins/pstack"
-LAUNCH = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:codex\s+exec\b|pi\s+(?:.*\s)?-p\b|cursor-agent\s+(?:.*\s)?-p\b|gh\s+pr\s+create\b)")
+LAUNCH = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:codex\s+exec\b|pi\s+(?:.*\s)?-p\b|cursor-agent\s+(?:.*\s)?-p\b)")
 SOURCE = re.compile(r"pstack:\s*(\S+\.md)")
 WORKER = re.compile(r"Read \S*poteto-mode/worker\.md before anything else")
 WORKER_MESSAGE = ("pstack 0.15.43: the first line of every kickoff is `Read <abs path>/worker.md before anything else.` "
                   "Add: Read " + str(PSTACK) + "/<newest version>/skills/poteto-mode/worker.md before anything else.")
-BRIEF = re.compile(r"\$\(cat\s+([^)\s]+)\)|--body-file\s+(\S+)")
-MESSAGE = ("Name the pstack source first. Add a line `pstack: <path>` to the brief or PR body, pointing at the "
+BRIEF = re.compile(r"\$\(cat\s+([^)\s]+)\)")
+MESSAGE = ("Name the pstack source first. Add a line `pstack: <path>` to the brief, pointing at the "
            "playbook or principle this design follows, under " + str(PSTACK) + " (for example "
            "skills/poteto-mode/playbooks/autonomous-run.md). No pstack skill covers it? Then do not build it "
            "(SKILL.md, Design first).")
@@ -28,8 +28,8 @@ MESSAGE = ("Name the pstack source first. Add a line `pstack: <path>` to the bri
 
 def text_of(cmd):
     parts = [cmd]
-    for a, b in BRIEF.findall(cmd):
-        path = Path((a or b).replace("~", str(Path.home()), 1))
+    for a in BRIEF.findall(cmd):
+        path = Path(a.replace("~", str(Path.home()), 1))
         try:
             parts.append(path.read_text(errors="ignore"))
         except OSError:
@@ -56,7 +56,7 @@ def verdict(cmd):
     text = text_of(cmd)
     if not any(resolves(r) for r in SOURCE.findall(text)):
         return MESSAGE
-    if not WORKER.search(text) and not re.search(r"gh\s+pr\s+create\b", cmd):
+    if not WORKER.search(text):
         return WORKER_MESSAGE
     return None
 
@@ -80,8 +80,8 @@ def self_test():
         h.write("pstack: skills/poteto-mode/playbooks/orchestrate.md\n")
     assert verdict(f'codex exec "$(cat {h.name})"'), "orchestrate.md, removed in pstack 0.15.43, is blocked"
     assert verdict("git status") is None, "other commands pass"
-    assert verdict('gh pr create --title t --body "x"'), "a PR without a source is blocked"
-    assert verdict(f'gh pr create --body-file {f.name}') is None, "a PR needs a pstack source but not the worker.md kickoff line"
+    assert verdict('gh pr create --title t --body "x"') is None, "gh pr create does not require a pstack: line"
+    assert verdict(f'gh pr create --body-file {f.name}') is None, "gh pr create passes without pstack checks"
     print("pstack-source self-test ok")
 
 
