@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""excalidraw-share: put an .excalidraw drawing in Valentin's workspace and print its link.
+"""excalidraw-share: draw a shared Excalidraw scene, or read one back.
 
     excalidraw-share drawing.excalidraw --name "How a ticket ships"
     excalidraw-share drawing.json --scene 2YaSpW57ZCO
+    excalidraw-share --read https://app.excalidraw.com/s/1GorMHPWnnO/2YaSpW57ZCO
 
-Creates the scene (or replaces it with --scene), fills every missing standard element
-field and `index` with Excalidraw's own defaults, turns on view sharing, and prints
-only the https link.
+Writing creates the scene (or replaces it with --scene), fills every missing standard
+element field and `index` with Excalidraw's own defaults, turns on view sharing, and
+prints only the https link. --read prints a plain outline of a shared scene, or its
+raw JSON with --json.
 The API key comes from 1Password through yeo-key, once per run, and is never printed.
 """
 from __future__ import annotations
@@ -20,6 +22,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 BASE = 'https://api.excalidraw.com/api/v1'
@@ -30,6 +33,7 @@ TIMEOUT = 60
 ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 RANDOM_MAX = 2 ** 31 - 1
 LINE_TYPES = ('arrow', 'line')
+ID_CHARS = set('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_')
 
 
 class ShareError(Exception):
@@ -194,6 +198,83 @@ def api(method: str, path: str, key: str, body=None) -> dict:
         raise ShareError('%s %s returned a body that is not JSON' % (method, path))
 
 
+def scene_id_from(value: str) -> str:
+    text = value.strip()
+    if '/' in text or ':' in text:
+        parts = [part for part in urlsplit(text).path.split('/') if part]
+        text = parts[-1] if parts else ''
+    if not text or any(char not in ID_CHARS for char in text):
+        raise ShareError('not a scene link or id: ' + one_line(value))
+    return text
+
+
+def scene_of(data) -> dict:
+    if isinstance(data, list):
+        return {'type': 'excalidraw', 'elements': data}
+    if not isinstance(data, dict) or not isinstance(data.get('elements'), list):
+        raise ShareError('the scene holds no elements')
+    return data
+
+
+def visible(scene: dict) -> list:
+    return [element for element in scene.get('elements') or []
+            if isinstance(element, dict) and not element.get('isDeleted')]
+
+
+def placed(elements: list) -> list:
+    return sorted(elements, key=lambda element: (element.get('y') or 0,
+                                                element.get('x') or 0))
+
+
+def label(element: dict) -> str:
+    return one_line((element.get('text') or '').replace('\n', ' ').strip())
+
+
+def outline(scene: dict) -> list:
+    elements = visible(scene)
+    bound = {}
+    for element in elements:
+        if element.get('type') == 'text' and element.get('containerId'):
+            bound.setdefault(str(element['containerId']), []).append(label(element))
+    by_id = {str(element.get('id')): element for element in elements}
+
+    def label_of(element_id: str) -> str:
+        element = by_id.get(element_id)
+        if element is None:
+            return element_id
+        if element.get('type') == 'text':
+            return label(element) or element_id
+        return ' '.join(text for text in bound.get(element_id, []) if text) or element_id
+
+    lines = []
+    for element in placed(elements):
+        if element.get('type') in LINE_TYPES:
+            continue
+        if element.get('type') == 'text' and element.get('containerId'):
+            continue
+        text = ' '.join(bound.get(str(element.get('id')), []))
+        if not text and element.get('type') == 'text':
+            text = label(element)
+        lines.append('%s: %s' % (element.get('type') or 'element', text)
+                     if text else str(element.get('type') or 'element'))
+    for element in placed(elements):
+        if element.get('type') != 'arrow':
+            continue
+        start = (element.get('startBinding') or {}).get('elementId')
+        end = (element.get('endBinding') or {}).get('elementId')
+        lines.append('arrow: %s -> %s' % (label_of(str(start)) if start else '?',
+                                          label_of(str(end)) if end else '?'))
+    return lines
+
+
+def read_scene(value: str, key: str, as_json: bool) -> str:
+    scene = scene_of(api('GET', '/scenes/%s/content' % scene_id_from(value), key))
+    if as_json:
+        return json.dumps(scene, indent=2)
+    lines = outline(scene)
+    return '\n'.join(lines) if lines else 'the scene holds no elements'
+
+
 def share(path: Path, name: str, scene_id: str | None, key: str) -> str:
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
@@ -221,13 +302,24 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog='excalidraw-share',
         description='Put an Excalidraw file in the workspace and print its share link.')
-    parser.add_argument('file', help='.excalidraw or .json drawing')
+    parser.add_argument('file', nargs='?', help='.excalidraw or .json drawing')
     parser.add_argument('--name', help='scene name; defaults to the file name')
     parser.add_argument('--scene', help='replace this scene instead of creating one')
+    parser.add_argument('--read', metavar='LINK-OR-ID',
+                        help='print a plain outline of a shared scene')
+    parser.add_argument('--json', action='store_true',
+                        help='with --read, print the raw scene JSON')
     args = parser.parse_args(argv)
-    path = Path(args.file).expanduser()
-    name = args.name or path.stem
+    if args.read is None and args.file is None:
+        parser.error('give a drawing file, or --read LINK-OR-ID')
+    if args.read is not None and args.file is not None:
+        parser.error('--read takes no drawing file')
     try:
+        if args.read is not None:
+            print(read_scene(args.read, read_key(), args.json))
+            return 0
+        path = Path(args.file).expanduser()
+        name = args.name or path.stem
         print(share(path, name, args.scene, read_key()))
     except ShareError as error:
         print('excalidraw-share: ' + one_line(str(error)), file=sys.stderr)

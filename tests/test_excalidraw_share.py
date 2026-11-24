@@ -67,6 +67,59 @@ class FakeApi:
         return io.BytesIO(payload)
 
 
+class FakeRead:
+    def __init__(self, payload, status=200):
+        self.calls = []
+        self.payload = payload
+        self.status = status
+
+    def __call__(self, request, timeout=None):
+        self.calls.append((request.get_method(), request.full_url,
+                           dict(request.headers)))
+        if self.status != 200:
+            from urllib.error import HTTPError
+            raise HTTPError(request.full_url, self.status, 'Server Error', {},
+                            io.BytesIO(b'{"error":"scene not found"}'))
+        return io.BytesIO(json.dumps(self.payload).encode())
+
+
+READ_SCENE = {
+    'type': 'excalidraw',
+    'version': 2,
+    'elements': [
+        {'id': 'note', 'type': 'text', 'x': 0, 'y': 200, 'width': 200, 'height': 20,
+         'text': 'Legend: two lanes', 'containerId': None},
+        {'id': 'ar2', 'type': 'arrow', 'x': 300, 'y': 150, 'width': 80, 'height': 40,
+         'startBinding': {'elementId': 'd'},
+         'endBinding': {'elementId': 'nowhere'}},
+        {'id': 'd', 'type': 'diamond', 'x': 300, 'y': 0, 'width': 160, 'height': 90,
+         'boundElements': [{'type': 'text', 'id': 'td'}]},
+        {'id': 'td', 'type': 'text', 'x': 320, 'y': 30, 'width': 120, 'height': 20,
+         'text': 'Needs review?', 'containerId': 'd'},
+        {'id': 'u', 'type': 'rectangle', 'x': 0, 'y': 100, 'width': 200, 'height': 90},
+        {'id': 'tu', 'type': 'text', 'x': 10, 'y': 130, 'width': 100, 'height': 20,
+         'text': 'Unstarted', 'containerId': 'u'},
+        {'id': 'ar', 'type': 'arrow', 'x': 100, 'y': 30, 'width': 180, 'height': 0,
+         'startBinding': {'elementId': 'q'},
+         'endBinding': {'elementId': 'd'}},
+        {'id': 'q', 'type': 'rectangle', 'x': 0, 'y': 0, 'width': 200, 'height': 90},
+        {'id': 'tq', 'type': 'text', 'x': 20, 'y': 35, 'width': 100, 'height': 20,
+         'text': 'Queue', 'containerId': 'q'},
+        {'id': 'gone', 'type': 'text', 'x': 0, 'y': 400, 'width': 10, 'height': 10,
+         'text': 'deleted', 'isDeleted': True},
+    ],
+}
+
+READ_OUTLINE = [
+    'rectangle: Queue',
+    'diamond: Needs review?',
+    'rectangle: Unstarted',
+    'text: Legend: two lanes',
+    'arrow: Queue -> Needs review?',
+    'arrow: Needs review? -> nowhere',
+]
+
+
 class ShareTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -268,6 +321,53 @@ class ShareTest(unittest.TestCase):
         self.assertTrue(all(element['index'] for element in scene['elements']))
         types = {element['type'] for element in scene['elements']}
         self.assertTrue({'rectangle', 'arrow', 'text'} <= types)
+
+    def read(self, source='8w5c4H009mf', payload=None, status=200):
+        self.reader = FakeRead(READ_SCENE if payload is None else payload, status)
+        self.module.urlopen = self.reader
+        return self.run_main('--read', source)
+
+    def test_read_prints_the_outline_in_reading_order(self):
+        code, out, err = self.read()
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(out.splitlines(), READ_OUTLINE)
+        self.assertEqual([(method, url.split('/api/v1')[-1]) for method, url, _
+                          in self.reader.calls],
+                         [('GET', '/scenes/8w5c4H009mf/content')])
+        self.assertEqual(self.reader.calls[0][2].get('Authorization'), 'Bearer ' + KEY)
+        self.assertEqual(self.key_reads, 1)
+
+    def test_read_takes_a_full_link_or_a_bare_id(self):
+        for source in ('https://app.excalidraw.com/s/1GorMHPWnnO/8w5c4H009mf',
+                       '8w5c4H009mf'):
+            code, out, err = self.read(source)
+            self.assertEqual((code, err), (0, ''), source)
+            self.assertEqual(out.splitlines(), READ_OUTLINE)
+            self.assertTrue(self.reader.calls[0][1].endswith('/scenes/8w5c4H009mf/content'))
+
+    def test_read_json_prints_the_raw_scene(self):
+        self.reader = FakeRead(READ_SCENE)
+        self.module.urlopen = self.reader
+        code, out, err = self.run_main('--read', '8w5c4H009mf', '--json')
+        self.assertEqual((code, err), (0, ''))
+        self.assertEqual(json.loads(out), READ_SCENE)
+
+    def test_read_api_error_exits_non_zero_with_one_plain_line(self):
+        code, out, err = self.read(status=500)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, '')
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertIn('HTTP 500', err)
+        self.assertNotIn(KEY, err)
+        self.assertNotIn('Traceback', err)
+
+    def test_read_rejects_a_value_that_is_not_a_scene(self):
+        for source in ('not a scene!', 'https://app.excalidraw.com/s/1GorMHPWnnO/bad id'):
+            code, out, err = self.read(source=source)
+            self.assertEqual(code, 1, source)
+            self.assertEqual(out, '', source)
+            self.assertEqual(len(err.strip().splitlines()), 1, source)
+            self.assertFalse(self.reader.calls)
 
 
 class KeyCommandTest(unittest.TestCase):
