@@ -421,7 +421,7 @@ class VerifierWorkflowTests(unittest.TestCase):
         self.assertIn("scripts/run-verifier", text)
         self.assertIn("--prompt-file /tmp/verify.md", text)
         self.assertIn("--out verifier.jsonl", text)
-        self.assertIn("--attempt-timeout 540", text)
+        self.assertIn("--attempt-timeout 840", text)
         self.assertIn("AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}", text)
         self.assertNotIn('test -n "$OPENCODE_API_KEY"', text)
         self.assertIn("GITHUB_ENV", text)
