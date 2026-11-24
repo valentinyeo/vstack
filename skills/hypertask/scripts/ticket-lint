@@ -152,7 +152,7 @@ def main(argv):
             print("  - " + b, file=sys.stderr)
         if len(bad) > 15:
             print(f"  ... {len(bad) - 15} more", file=sys.stderr)
-        print("Fix: short plain sentences. Paths, logs, status: plain comment with no --kind (agent lane).", file=sys.stderr)
+        print("Fix: split long sentences. Keep exact names and paths when needed; put status and logs in the agent lane.", file=sys.stderr)
         print("     A Question states its amount when it costs money, and only what he can decide today.", file=sys.stderr)
         return 1
     return 0

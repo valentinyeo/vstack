@@ -1,5 +1,8 @@
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
+from unittest.mock import patch
 from pathlib import Path
 import unittest
 
@@ -27,7 +30,12 @@ class SentenceStyleTest(unittest.TestCase):
         self.assertEqual(lint_mod.lint('Read skills/hypertask/SKILL.md before changing the board.'), [])
 
     def test_a_sentence_over_twenty_five_words_needs_splitting(self):
-        self.assertTrue(any('max 25' in error for error in lint_mod.lint('word ' * 26 + '.')))
+        text = 'word ' * 26 + '.'
+        self.assertTrue(any('max 25' in error for error in lint_mod.lint(text)))
+        errors = io.StringIO()
+        with patch.object(lint_mod.sys, 'stdin', io.StringIO(text)), contextlib.redirect_stderr(errors):
+            self.assertEqual(lint_mod.main(['-']), 1)
+        self.assertIn('Keep exact names and paths when needed', errors.getvalue())
 
 
 class QuestionLintTest(unittest.TestCase):
