@@ -45,13 +45,10 @@ The file is one JSON document:
  "elements": [...], "appState": {"viewBackgroundColor": "#ffffff"}, "files": {}}
 ```
 
-Each element carries the usual Excalidraw fields; a rectangle is enough with
-`id`, `type`, `x`, `y`, `width`, `height`, `strokeColor`, `backgroundColor`,
-`fillStyle`, `strokeWidth`, `roughness`, `opacity`, `roundness`, `groupIds`,
-`boundElements`, `seed`, `version`, `versionNonce`, `isDeleted`, `updated`, `link`, `locked`.
-Text adds `text`, `originalText`, `fontSize`, `fontFamily`, `textAlign`,
-`verticalAlign`, `containerId`, `autoResize`, `lineHeight`.
-`fontFamily` 6 is Nunito, Valentin's pick. Use it for every text element.
+A minimal element is enough: `id`, `type`, `x`, `y`, `width`, `height`, plus `text` for text
+and `points` for lines and arrows. The helper fills every other standard field with
+Excalidraw's default, and gives text `fontFamily` 6 (Nunito, Valentin's pick) unless you
+set it.
 
 Layout: draw a grid by hand. Boxes 200x90 with 60 px gaps read well; put a title text
 element above the row, and keep every arrow between two boxes.

@@ -4,8 +4,9 @@
     excalidraw-share drawing.excalidraw --name "How a ticket ships"
     excalidraw-share drawing.json --scene 2YaSpW57ZCO
 
-Creates the scene (or replaces it with --scene), fills any element `index` value
-that is missing, turns on view sharing, and prints only the https link.
+Creates the scene (or replaces it with --scene), fills every missing standard element
+field and `index` with Excalidraw's own defaults, turns on view sharing, and prints
+only the https link.
 The API key comes from 1Password through yeo-key, once per run, and is never printed.
 """
 from __future__ import annotations
@@ -13,8 +14,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -25,6 +28,8 @@ WORKSPACE = '1GorMHPWnnO'
 LINK = 'https://app.excalidraw.com/s/' + WORKSPACE + '/'
 TIMEOUT = 60
 ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+RANDOM_MAX = 2 ** 31 - 1
+LINE_TYPES = ('arrow', 'line')
 
 
 class ShareError(Exception):
@@ -52,6 +57,63 @@ def fractional_index(position: int) -> str:
         offset += 1
 
 
+def standard_fields(kind: str) -> dict:
+    """Every persisted element field Excalidraw fills at its default value."""
+    fields = {
+        'angle': 0,
+        'strokeColor': '#1e1e1e',
+        'backgroundColor': 'transparent',
+        'fillStyle': 'hachure',
+        'strokeWidth': 2,
+        'strokeStyle': 'solid',
+        'roughness': 1,
+        'opacity': 100,
+        'seed': random.randint(1, RANDOM_MAX),
+        'version': 1,
+        'versionNonce': random.randint(1, RANDOM_MAX),
+        'isDeleted': False,
+        'groupIds': [],
+        'frameId': None,
+        'roundness': None,
+        'boundElements': None,
+        'updated': int(time.time() * 1000),
+        'link': None,
+        'locked': False,
+    }
+    if kind == 'text':
+        fields.update({
+            'text': '',
+            'fontSize': 20,
+            'fontFamily': 6,
+            'textAlign': 'left',
+            'verticalAlign': 'top',
+            'containerId': None,
+            'autoResize': True,
+            'lineHeight': 1.25,
+            'baseline': None,
+        })
+    elif kind in LINE_TYPES:
+        fields.update({
+            'points': [[0, 0]],
+            'lastCommittedPoint': None,
+            'startBinding': None,
+            'endBinding': None,
+            'startArrowhead': None,
+            'endArrowhead': 'arrow' if kind == 'arrow' else None,
+        })
+        fields.update({'elbowed': False} if kind == 'arrow' else {'polygon': False})
+    return fields
+
+
+def fill_standard_fields(element: dict) -> dict:
+    """Add every absent standard field; a field the author wrote stays as written."""
+    for key, value in standard_fields(element.get('type')).items():
+        element.setdefault(key, value)
+    if element.get('type') == 'text':
+        element.setdefault('originalText', element.get('text', ''))
+    return element
+
+
 def document(data) -> dict:
     elements = data if isinstance(data, list) else None
     if elements is None:
@@ -73,6 +135,9 @@ def document(data) -> dict:
     app_state = dict(app_state) if isinstance(app_state, dict) else {}
     app_state.setdefault('viewBackgroundColor', '#ffffff')
     scene['appState'] = app_state
+
+    for element in elements:
+        fill_standard_fields(element)
 
     if any(not isinstance(element.get('index'), str) or not element['index']
            for element in elements):
