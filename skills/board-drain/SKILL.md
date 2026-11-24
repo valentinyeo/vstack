@@ -54,6 +54,7 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 - **loop off:** workable Todo, nothing alive in Doing. Re-arm, then give the named ticket an owner.
 - **unassigned:** a ticket in a working column with no agent. Assign your login: `task assign <KEY> --self`.
 - **stalled:** Doing ticket, no live owner. Fresh plan-pick owner; tickets moved across boards get a new key, so check the old lease first.
+- **stuck:** a Checks card whose PR is red with no push and no live worker for a day. Check the lease first; if none, start a fresh plan-pick owner that fixes the PR or closes it.
 - **stale:** a workable Todo ticket idle over two hours. Give it an owner; note the gap on your role ticket.
 - **answered:** Valentin replied after the waiting-on mark. Clear the mark and work it.
 - **not armed** or **watcher dead since <time>:** the chat restarted, the loop expired, or the watcher stopped pulsing. Arm it.

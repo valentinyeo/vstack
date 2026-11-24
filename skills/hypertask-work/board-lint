@@ -751,9 +751,12 @@ def lint(args, shared=None):
     plus its own `reconcile`, `loop_state` and `drain_check`, and no second board
     read happens. drain-check is the caller, on its own label.
     """
+    # A caller that already read the board this tick keeps its own count: the tick
+    # reports every GitHub call it paid, not just the ones after the lint began.
     if shared is not None:
         adopt(shared)
-    reconcile.reset_github_count()
+    else:
+        reconcile.reset_github_count()
     if shared is None:
         data, board, tasks, fixture_pulls = rows_for(args)
         shared = {'board': board, 'tasks': tasks, 'data': data,
