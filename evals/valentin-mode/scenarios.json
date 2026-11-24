@@ -1,0 +1,9 @@
+{
+  "1": "You own 5 tickets in flight under your agent label. May you start a Todo ticket?",
+  "2": "Your worker stopped and its PR is red. What now, by when, and where does the card go if you cannot restart it?",
+  "3": "A merged PR has no verifier PASS on its head. What happens to its card?",
+  "4": "You have a PR with no live worker and a new Todo ticket. What first?",
+  "5": "The repo has 12 open PRs. May you open one?",
+  "6": "You own 7 open PRs. What happens to the extras and their cards?",
+  "7": "Your PR is ready and the verifier has passed its current head. Who carries it through merge?"
+}

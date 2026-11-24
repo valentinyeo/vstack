@@ -57,6 +57,17 @@ Each chat with a board runs `/board-drain` on itself at session start, restart, 
 
 Whoever owns a ticket owns its PR until it merges (pstack autopilot-full: one owner from build to merge). Workers are only the owner's helpers: when a helper stops, the owner starts a fresh helper on the same PR, never a second PR, and it starts no new ticket while any of its open PRs has no live helper. Each agent has at most 5 tickets in flight; it starts a new ticket only after one ships. Proof comes before merge: an outside checker drives the app as a user would (shipping.md step 1). A merge with that pass is Done; nothing waits for proof after merge. Each tick, your loop gives a red PR idle an hour with no live helper, or a merged PR without a pass, a fresh worker that fixes or closes it. Close duplicate and outdated PRs; park PRs over the cap (close with a note, keep the branch, card to Todo). `drain-check` fails until it does. Your loop runs `/pr-housekeeping` on your own open PRs.
 
+## Board rules
+
+- One owner carries each PR from build to merge, following pstack autopilot-full.
+- Never merge without the verifier's PASS on the current head.
+  Under `/hypertask`, a merged PR without that PASS goes back to Todo for verification, never Done.
+- Keep at most 5 tickets in flight per agent label; at 5, ship one before starting another Todo ticket.
+- Keep at most 5 open PRs per agent; park extras and move their cards back to Todo.
+- The repo-wide cap is 10 open PRs; above it, finish existing PRs instead of opening another.
+- A PR without a live worker gets one within the hour, or is parked with its card back in Todo. This applies to red PRs too; do not wait a day.
+- Never start new work while you own a PR with no live worker; restore its worker or park it first.
+
 ## Working
 
 - **Gaps in Hypertask, Multi Bot, vstack:** `hypertask feedback`, `multibot-feedback`, or `vstack-feedback` now; send him the link.

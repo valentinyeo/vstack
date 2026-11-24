@@ -1,0 +1,18 @@
+{
+  "criteria": [
+    "Apply the ticket and PR limits to the named agent or repo, not a different scope.",
+    "Recover or park owned workerless PRs before new work, within one hour, even when red.",
+    "Require a verifier PASS on the current head before merge; missing proof cannot count as Done.",
+    "Keep the same PR owner responsible through merge.",
+    "Give the required next action without contradicting it elsewhere in the answer."
+  ],
+  "expected": {
+    "1": "No. Five tickets in flight per agent label is the limit. Ship one before starting a Todo ticket.",
+    "2": "Give the existing PR a fresh worker within the hour to fix it, or park the PR and return its card to Todo. Do not wait a day, ignore it because it is red, or open a replacement PR.",
+    "3": "This merge broke the proof-before-merge rule. Return the card to Todo for verification, not Done. Obtain the missing proof; the merge alone is not success.",
+    "4": "First restore a live worker to the owned orphan PR, or park it and return its card to Todo. Do not start the new Todo ticket first.",
+    "5": "No. The repo-wide cap is 10 open PRs. Finish existing PRs before opening another.",
+    "6": "Keep at most 5 open PRs for the agent. Park at least the 2 extras and return their cards to Todo.",
+    "7": "The same owner who built and opened the PR carries it through merge, following pstack autopilot-full. Passing verification does not hand ownership to someone else."
+  }
+}

@@ -260,6 +260,15 @@ basis: PR #299, VSTA-146 (4b33f60)
 approved: 2026-11-23
 expiry: 2027-02-23
 
+id: valentin-mode-board-rules
+gate: .github/workflows/valentin-mode-rules.yml:blind-eval
+pstack: skills/poteto-mode/playbooks/eval.md
+quote: Spawn one blinded judge** on a different model family per the **arena** skill's Phase C. Judge sees outputs by sanitized label and the rubric, never a model name.
+change: Fresh chats answer fixed board scenarios from valentin-mode and its linked skills; a blinded judge from another family must pass every scenario, using the existing verifier secrets through ladder-call.
+basis: VSTA-212
+approved: 2026-11-24
+expiry: 2027-02-24
+
 id: wip-cap
 pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: 3. **Run owners in parallel off trunk, never stacked,** so each PR lands on its own.
