@@ -351,6 +351,10 @@ def plan_stage(facts, here, board):
         # PASS of its own. A PASS runs before the merge, so merged with PASS is proven: Done.
         return Stage.DONE, 'merged with PASS'
     if fresh:
+        if facts.alive:
+            # A live owner still on the card keeps it in work while they verify the
+            # merge. Sending it to Todo now and back to work next run would flap it.
+            return Stage.IN_PROGRESS, _worker_reason(board)
         # Merging without a verdict breaks the one rule that makes Done mean proven.
         return Stage.BACKLOG, 'merged without PASS: rule break; owner must verify'
     if here == Stage.IN_PROGRESS and not facts.alive and nothing_ran():
@@ -379,10 +383,16 @@ def plan_stage(facts, here, board):
     return None, 'no live worker or open PR; kept'
 
 
+def planned_stage(stage, board):
+    """The stage this board can show: Checks folds into review when it has no Checks."""
+    if stage == Stage.CHECKS and Stage.CHECKS not in stage_column_map(board):
+        return Stage.REVIEW
+    return stage
+
+
 def resolve_column(stage, board, names):
     targets = stage_column_map(board)
-    if stage == Stage.CHECKS and Stage.CHECKS not in targets:
-        stage = Stage.REVIEW
+    stage = planned_stage(stage, board)
     if stage == Stage.IN_PROGRESS:
         return names.get('Doing', targets[Stage.IN_PROGRESS])
     if stage == Stage.REVIEW:
@@ -487,6 +497,7 @@ def target(facts, board=DEFAULT, names=None):
     planned, reason = plan_stage(facts, here, board)
     if planned is None:
         return facts.column, reason
+    planned = planned_stage(planned, board)
     if planned not in stage_column_map(board):
         return facts.column, 'target column missing; kept'
     column = resolve_column(planned, board, names)

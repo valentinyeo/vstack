@@ -180,10 +180,10 @@ class ReconcileTest(unittest.TestCase):
         for pulls in ((card_pr, mention), (mention, card_pr), (card_pr,)):
             with self.subTest(pulls=[p.url for p in pulls]):
                 self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=pulls)),
-                                 ('AI Review', 'merged PR with PASS; live proof pending'))
+                                 ('Done', 'merged with PASS'))
         with self.subTest('no merged PR passed, so the gap is real'):
             self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(mention,))),
-                             ('AI Review', 'merged PR missing PASS on current head'))
+                             ('Todo', 'merged without PASS: rule break; owner must verify'))
 
     def seven_plans(self):
         # Todo-bound moves listed first on purpose: order must come from the sort.
@@ -2646,7 +2646,7 @@ class CallBudgetTest(unittest.TestCase):
         self.assertTrue(found[refs[0]].passed, 'the card PR carries the verifier success')
         self.assertFalse(found[refs[1]].passed, 'the mention-only PR has no verifier at all')
         self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(found[refs[0]], found[refs[1]]))),
-                         ('AI Review', 'merged PR with PASS; live proof pending'))
+                         ('Done', 'merged with PASS'))
 
     def test_pstack_verifier_rejects_a_run_with_positive_evidence_of_a_self_hosted_job(self):
         data = {'data': {'p0': {'pullRequest': self.node(checks=[self.pstack_check()])}}}
@@ -3393,7 +3393,8 @@ class WholeSyncTest(unittest.TestCase):
         task = {'ticketNumber': key, 'section': 'Doing', 'projectId': 13556,
                 'updatedAt': NOW - 8000, 'createdAt': '2026-11-16T10:00:00Z'}
         shipped = self.sync(['--board', '13556'], [task], respond)
-        self.assertIn(f'PLAN {key} Doing -> AI Review | merged PR', shipped)
+        # No verifier PASS on #223's head, so the merge proves nothing: Todo.
+        self.assertIn(f'PLAN {key} Doing -> Todo | merged without PASS', shipped)
 
         # The revert merges: the probe carries it, saved facts still carry #223.
         state['merged'] = [shipped_pull, revert]

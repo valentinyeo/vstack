@@ -98,10 +98,13 @@ class VerifyReconcileModel(unittest.TestCase):
                                              f'board {board_id} flip {column}->{col}')
                             continue
                         # A live worker outranks an old merge, so the only column a
-                        # second plan may reach is the one work sits in.
-                        review = r.resolve_column(r.Stage.REVIEW, board, names)
-                        self.assertIn(planned, (col, r.resolve_column(r.Stage.IN_PROGRESS, board, names),
-                                                review),
+                        # second plan may reach is work, review, or Done once the
+                        # merge's PASS proves it.
+                        allowed = {col, r.resolve_column(r.Stage.IN_PROGRESS, board, names),
+                                   r.resolve_column(r.Stage.REVIEW, board, names)}
+                        if r.Stage.DONE in r.stage_column_map(board):
+                            allowed.add(r.resolve_column(r.Stage.DONE, board, names))
+                        self.assertIn(planned, allowed,
                                       f'board {board_id} flip {column}->{col}')
             for pulls in ((pull(),), (pull('MERGED', merged_at=NEWER),)):
                 facts = r.Facts(work, 100, False, pulls, column_entered=ENTRY)

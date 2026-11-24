@@ -33,7 +33,7 @@ Move the ticket the moment its stage moves. The PR outranks a live worker.
 
 A merged PR is evidence only when it merged after the card entered the column it is in now. A card parked or reopened behind an older merge keeps its column, and a card already in review stays there: an old merge is history, never a promotion, and never a demotion. Open PRs and live workers read the same as before.
 
-A verifier PASS runs before the merge, so a card never waits for live proof after one (pstack `shipping.md` step 1). Board 15 is the one exception: it runs no verifier gate, so a merged PR waits in AI Review for a Done comment with live proof, and its red PRs stay in Checks instead of going back to Backlog on the 24h clock.
+A verifier PASS runs before the merge, so no card waits for live proof after one (pstack `shipping.md` step 1). Board 15 is the exception and keeps its own config: it runs no verifier gate, so a merge there is review evidence, Done there is a Done comment with live proof, and its red PRs stay in Checks instead of going back to Backlog on the 24h clock.
 
 A ticket waiting on Valentin, or blocked by another ticket, stays where it is. Never move a ticket into Valentin Review. Other boards keep their own columns; use the name the board shows, including the `Building` and `Verifier` aliases.
 
