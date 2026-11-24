@@ -306,7 +306,7 @@ def _load_reusable_workflow(owner: str, repo: str, workflow_file: str, ref: str)
     return None
 
 
-HOUSE_FIELDS = frozenset({"id", "gate", "pstack", "quote", "change", "basis", "approved", "expiry"})
+HOUSE_FIELDS = frozenset({"id", "gate", "pstack", "quote", "change", "impossible", "scope", "basis", "approved", "expiry"})
 
 
 def parse_house_stanzas(text: str) -> list[dict[str, str]]:

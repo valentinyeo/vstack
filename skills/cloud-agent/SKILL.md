@@ -6,11 +6,11 @@ description: >-
 
 # Cloud agent
 
-Prior art: pstack `swarm` spawns workers with `environment: "cloud"`, and `poteto-help` says parallel agents should run as cloud agents, "which each get their own machine". The pstack Claude Code adapter (`docs/harness/claude-code.md`) maps `cloud` to a local worktree, so on this server pstack's cloud work lands on the overloaded box. This skill adds only that gap: a launcher for the vendors' own clouds.
+Prior art: pstack `swarm` spawns workers with `environment: "cloud"`, and `poteto-help` says parallel agents should run as cloud agents, "which each get their own machine". The pstack Claude Code adapter (`docs/harness/claude-code.md`) maps `cloud` to a local worktree. Follow that adapter when available. This skill is an optional transport for a task that requires a vendor cloud.
 
 ## When
 
-- A code worker, a swarm slice or an arena runner that needs only the GitHub repo goes to the cloud.
+- Use this transport when the task calls for a vendor cloud. Do not replace pstack's supported local-worktree adapter merely because the task needs only the GitHub repo.
 - Work that needs this server stays here: the QA phone, a local app, board logins, files that are not pushed.
 - Chats Valentin talks to stay on Claude, here.
 

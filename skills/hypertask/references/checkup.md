@@ -20,7 +20,7 @@ Health-check your own board and view, then fix your own gaps. Run it on a new pr
 Every card you move by hand is a gap in the reconcile. For each one:
 
 1. Write down why the reconcile missed it: board, ticket, column, and the `PLAN`/`KEEP` line it printed.
-2. Send that case to Hypertask Reconciler with the card as the test case, through a plan-pick worker. That chat owns the reconcile code and its tests.
+2. Send that case to Hypertask Reconciler with the card as the test case. Follow pstack `poteto-mode` for worker selection. That chat owns the reconcile code and its tests.
 3. Prove it: run the reconcile, then preview again. The preview shows no moves.
 
 ## Report

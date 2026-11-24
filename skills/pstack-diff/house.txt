@@ -7,6 +7,8 @@
 #   pstack: path relative to the pinned pstack root
 #   quote: verbatim sentence or line from that pstack file
 #   change: our house change in one line
+#   impossible: one sentence with evidence; deferred removals must admit pstack is possible
+#   scope: semicolon-separated board:<id|*>, repo:<owner/name|*>, skill:<name|*>
 #   basis: PR, commit, and/or ticket
 #   approved: YYYY-MM-DD
 #   expiry: YYYY-MM-DD
@@ -16,167 +18,69 @@ gate: .github/workflows/checks.yml:pacer-check
 pstack: skills/poteto-mode/playbooks/opening-a-pr.md
 quote: Body: a one-minute briefing under 40 lines with these `##` headings in order, dropping empty ones: `## Why`, `## What changed`, `## Scope`, `## Tradeoffs` (only rejected alternatives a reviewer would otherwise ask about), `## Blast Radius`, `## Verification`.
 change: Code-changing PRs also carry `Author model:`, `Pacer launch:`, and `Owner chat:` lines enforced by `scripts/pacer-check.py` (code workers never run on Claude; each chat runs tools on its own work only).
-basis: PR #261, VSTA-102 (2096624)
-approved: 2026-11-23
-expiry: 2027-02-23
+impossible: Not impossible: pstack PR headings work here, but removing the shared pacer protocol requires coordinated token-ladder and hook changes (scripts/pacer-check.py, hooks/pacer-guard.py).
+scope: repo:*; skill:valentin-mode
+basis: PR #261, VSTA-102 (2096624); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/351
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: board-drain-plan-pick-owners
 pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: Each owner is a Cursor cloud agent that builds, opens its PR per `playbooks/opening-a-pr.md`, proves the change on the real artifact, babysits to green per `playbooks/babysit.md`, and merges once steps 4 and 5 clear it.
 change: Board-drain owners launch via `~/.local/bin/plan-pick --run` in `../hypertask-work/lease` (never as Claude chats), follow `/hypertask` columns, and never move cards into Valentin Review.
-basis: PR #180, VSTA-4 (9e54f31)
-approved: 2026-11-20
-expiry: 2027-02-23
+impossible: Not impossible: local worktree owners are supported by pstack docs/harness/claude-code.md, but replacing plan-pick leases and lane-capacity state spans skills/hypertask-work/lease and token-ladder.
+scope: board:*; skill:board-drain; skill:hypertask-work
+basis: PR #180, VSTA-4 (9e54f31); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/351
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: board-drain-view-watcher-pace
 pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: On the operator's go, arm `/loop 1h` to audit until no delegated work is left, because long runs drift and agents stall silently.
 change: Replace `/loop 1h` with a Hypertask view-change watcher and a safety cron at the larger of 6h and `~/.local/bin/plan-pick --loop-interval` (at least 2h).
-basis: PR #233, VSTA-74 (e61ac99)
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: board-drain-keep-loop-empty-todo
-pstack: skills/poteto-mode/playbooks/autopilot-full.md
-quote: On the operator's go, arm `/loop 1h` to audit until no delegated work is left, because long runs drift and agents stall silently.
-change: Persistent view-draining chats keep their loop armed when Todo is empty instead of disarming when no delegated work is left.
-basis: PR #180, VSTA-4 (9e54f31); PR #233, VSTA-74 (e61ac99)
-approved: 2026-11-20
-expiry: 2027-02-23
+impossible: Not impossible: an hourly audit can run here, but skills/board-drain/watch and loop-state still encode the slower watcher cadence; VSTA-187 only adds the stuck finding.
+scope: board:*; skill:board-drain
+basis: PR #233, VSTA-74 (e61ac99); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/352
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: board-15-live-proof-stage
 pstack: skills/poteto-mode/playbooks/shipping.md
 quote: Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.
 change: Board 15 keeps its own stage model, so a merged PR waits in AI Review for a Done comment with live proof; every other board plans a merged PR with PASS to Done.
-basis: PR #186 (d2cb089); PR #212, VSTA-11 (0883ac5); VSTA-186
+impossible: Not impossible: the production branch now requires pstack-verifier (GitHub rules/branches/production read on 2026-11-24), but reconcile PRODUCT_STAGE_COLUMN still has no Done stage and its board-15 transition needs coordinated migration.
+scope: board:15; skill:hypertask-work
+basis: PR #186 (d2cb089); PR #212, VSTA-11 (0883ac5); VSTA-186; VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/353
 approved: 2026-11-24
-expiry: 2027-02-23
-
-id: cloud-agent-offload
-pstack: docs/harness/claude-code.md
-quote: | `environment: "cloud"` | `isolation: "worktree"`. Name the branch or commit the worker checks out. |
-change: Offload cloud code workers to vendor clouds via `skills/cloud-agent/cloud-agent` instead of running local worktrees on the shared VPS.
-basis: PR #214, VSTA-48 (be9fcd0)
-approved: 2026-11-20
-expiry: 2027-02-23
+expiry: 2026-12-08
 
 id: cloud-agent-vendor-routing
 pstack: skills/poteto-mode/SKILL.md
 quote: - Code, prose, and judgment: `claude-opus-5-5-xhigh-fast`.
 change: Cloud code workers route to `codex`, `claude` stays Claude-native only, and Cursor cloud launches are refused.
-basis: PR #214, VSTA-48 (be9fcd0); PR #313 (71c3a86)
-approved: 2026-11-23
-expiry: 2027-02-23
-
-id: deep-work-upfront-proof
-pstack: skills/tdd/SKILL.md
-quote: Do not force a test when it would be impractical.
-change: `/deep-work` requires running each check and seeing it fail for the right reason before any work starts.
-basis: PR #97 (498690e); PR #222, VSTA-76 (435239a)
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: deep-work-phase-c-report
-pstack: skills/poteto-mode/playbooks/autonomous-run.md
-quote: **Reply:** the exit condition, iterations run, what landed, what was discarded, final predicate state.
-change: `/deep-work` ends with its own Phase C two-minute report shape (Done, Decisions I made, Parked, Numbers).
-basis: PR #97 (498690e); PR #222, VSTA-76 (435239a)
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: deeper-ask-before-running
-pstack: skills/sharpen/SKILL.md
-quote: Then rewrite my prompt to ask for exactly that.
-change: `/deeper` stops after rewriting the prompt and asks whether to run it instead of starting execution.
-basis: PR #91 (c79a45d); PR #222, VSTA-76 (435239a)
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: design-lead-mockup-approval
-pstack: skills/poteto-mode/SKILL.md
-quote: Reversible work and external actions (team chat, ticket updates, kicking off evals) proceed without asking.
-change: `/design-lead-setup` holds UI PRs, merges, deploys, and feature-flag changes until the owner approves the specific mockup image.
-basis: PR #93 (39fd2e9)
-approved: 2026-10-25
-expiry: 2027-02-23
-
-id: hypertask-tickets-human-lane-pospeak
-pstack: skills/technical-writing/SKILL.md
-quote: Split instructions longer than about 20 words and other sentences longer than about 25.
-change: Human-lane Hypertask ticket comments for Valentin use `pospeak` (8-word target, guard bounces over 12 words, no file paths or code symbols).
-basis: PR #186 (d2cb089)
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: hypertask-checkup-plan-pick
-pstack: skills/poteto-mode/SKILL.md
-quote: - Code, prose, and judgment: `claude-opus-5-5-xhigh-fast`.
-change: Hypertask checkup routes reconcile fixes through a `plan-pick` worker rather than running directly on Opus.
-basis: PR #186 (d2cb089)
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: join-slack-caveman-voice
-pstack: skills/unslop/SKILL.md
-quote: 33. Write whole sentences with their articles and verbs. Spell out arrows and abbreviations.
-change: Slack `#fleet` posts use caveman voice with full `https://` links.
-basis: PR #155 (6cd8a3c)
-approved: 2026-11-20
-expiry: 2027-02-23
+impossible: Not impossible: the pstack model family can be selected, but removing Codex-only routing requires changing skills/cloud-agent/cloud-agent and token-ladder lane policy together.
+scope: repo:*; skill:cloud-agent
+basis: PR #214, VSTA-48 (be9fcd0); PR #313 (71c3a86); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/351
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: long-chat-auto-handover
 pstack: skills/poteto-mode/playbooks/pause-safely.md
 quote: This is explicit only. On "keep going", "going to bed, keep going", or "don't stop", do not pause.
 change: Valentin-mode chats nudge at the context soft limit and block at the hard limit until they run a Multibot fresh-start handover before autocompact.
-basis: PR #263, VSTA-97 (a00ade1); PR #314 (d93078f)
-approved: 2026-11-23
-expiry: 2027-02-23
-
-id: pospeak-caveman
-pstack: skills/unslop/SKILL.md
-quote: 33. Write whole sentences with their articles and verbs. Spell out arrows and abbreviations.
-change: Chat replies and ticket comments for Valentin use caveman length and shape with pospeak words.
-basis: PR #92 (933ceb8)
-approved: 2026-10-23
-expiry: 2027-02-23
-
-id: pr-housekeeping-one-owner-one-pr
-pstack: skills/poteto-mode/playbooks/opening-a-pr.md
-quote: Opening a PR does not start a babysit.
-change: Whoever opens a PR carries it to merge or closes it with a reason, and never opens a second PR for one ticket.
-basis: PR #261, VSTA-102 (2096624)
-approved: 2026-11-23
-expiry: 2027-02-23
+impossible: Not impossible: the chat can continue using compaction, but hooks/long-chat.py and skills/long-chat carry a blocking handover protocol requiring a separate lifecycle change.
+scope: skill:long-chat; skill:valentin-mode
+basis: PR #263, VSTA-97 (a00ade1); PR #314 (d93078f); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/354
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: github-actions-verifier
 pstack: skills/poteto-mode/playbooks/shipping.md
 quote: One verifier per PR, each a Cursor cloud agent, runs the change the way a user would with the matching control skill (such as `control-ui` or `control-cli` from `cursor-team-kit`), parent against head, and posts `PASS`, `PASS+NOTES`, or `FAIL` on that PR.
-change: The step-1 verifier may run as a GitHub Actions job (`verifier` in `pstack-sources.yml`) instead of a Cursor cloud agent, with house deviations tracked in `skills/pstack-diff/house.txt`.
+change: For valentinyeo/vstack only, the verifier job in pstack-sources.yml substitutes a hosted machine for Cursor cloud, not for shipping.md step 1: an independent agent must drive the changed CLI or skill as a user, parent against head, and post its head-bound PASS, PASS+NOTES or FAIL; static review or green tests alone never count.
+impossible: This non-Cursor harness exposes no Task environment=cloud API (pstack docs/harness/claude-code.md maps that API only for Claude Code), while .github/workflows/pstack-sources.yml can execute a separate verifier on a hosted machine.
+scope: repo:valentinyeo/vstack; skill:pstack-diff; skill:valentin-mode
 basis: PR #216 (5066f75); PR #234 (2a366e7), VSTA-65
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: merge-gate
-pstack: skills/poteto-mode/playbooks/shipping.md
-quote: Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.
-change: Every repo a chat ships from requires its own verifier check (`pstack-verifier`, or `verifier` for vstack, from reconcile's one per-repo table) on the branch its PRs merge into; `skills/board-drain/merge-gate` reads it, `--fix` adds it to repos the account owns, and `drain-check` fails with `merge gate missing` when one does not.
-basis: PR #346, VSTA-188
-approved: 2026-11-24
-expiry: 2027-02-24
-
-id: uncovered-pass-gate
-pstack: skills/poteto-mode/worker.md
-quote: The bar in your kickoff is the whole bar. Add no check, gate, sign-off or review round above it.
-change: Selection-based verifiers route verdicts through `scripts/uncovered_gate.py` (`GAP uncovered pass gate` in `pstack-diff`), turning PASS and PASS+NOTES into FAIL when changed product files went unexercised.
-basis: PR #300, VSTA-145 (8d8f8c2)
-approved: 2026-11-23
-expiry: 2027-02-23
-
-id: ratstack-github-actions-only
-pstack: skills/poteto-mode/playbooks/autopilot-full.md
-quote: Run the repo's checks for the touched paths on the committed head before the code-ready push and before a later push that needs a verifier.
-change: Rat Stack repos forbid self-hosted runners and run tests and builds in GitHub Actions only.
-basis: PR #231, VSTA-82 (f43dfe5)
 approved: 2026-11-20
 expiry: 2027-02-23
 
@@ -184,78 +88,58 @@ id: repo-tidy-automated-cleanup
 pstack: skills/poteto-mode/playbooks/worktree-cleanup.md
 quote: The bucket is advice, not permission.
 change: `skills/repo-tidy/repo-tidy --apply --mine` automatically removes merged worktrees and local/remote branches after process, tmux, 2-hour mtime, and lease safety gates instead of manual pinned-chat confirmation.
-basis: PR #197, VSTA-3 (0027916); PR #219, VSTA-68 (58b8f4b)
-approved: 2026-11-20
-expiry: 2027-02-23
+impossible: Not impossible: pinned-chat confirmation can precede cleanup, but skills/repo-tidy/repo-tidy and pr-queue currently infer safety from process and lease state rather than the pinned-chat set.
+scope: repo:*; skill:repo-tidy; skill:pr-housekeeping
+basis: PR #197, VSTA-3 (0027916); PR #219, VSTA-68 (58b8f4b); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/355
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: responsive-mode-plan-pick-workers
 pstack: skills/poteto-mode/SKILL.md
 quote: - Code, prose, and judgment: `claude-opus-5-5-xhigh-fast`.
 change: Responsive-mode chats launch workers via `~/.local/bin/plan-pick --run` and start a Claude background agent only when `plan-pick --claude-helper` exits 0.
-basis: PR #279 (39a46f4); PR #317 (575d98c)
-approved: 2026-11-23
-expiry: 2027-02-23
-
-id: schneider-german-dashes-colons
-pstack: skills/unslop/SKILL.md
-quote: 13. No em dashes, en dashes, or hyphens used as dashes, and no parentheses in their place. Use a period or a comma.
-change: German prose written under `schneider-deutsch-stil` allows Doppelpunkt and Gedankenstrich for clarity and tension.
-basis: commit 72d520e
-approved: 2026-10-13
-expiry: 2027-02-23
+impossible: Not impossible: pstack workers can run here, but skills/responsive-mode and token-ladder share a plan-pick helper eligibility protocol that must be removed together.
+scope: skill:responsive-mode; skill:valentin-mode
+basis: PR #279 (39a46f4); PR #317 (575d98c); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/351
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: heavy-local-guard
 pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: Run the repo's checks for the touched paths on the committed head before the code-ready push and before a later push that needs a verifier.
 change: `hooks/heavy-local-guard.py` refuses heavy local builds and tests on the shared VPS and directs them to GitHub Actions while keeping light local tests allowed.
-basis: PR #312 (eb1eb64)
-approved: 2026-11-23
-expiry: 2027-02-23
+impossible: Not impossible: focused local checks are allowed by the operator and pstack, but hooks/heavy-local-guard.py and scripts/worker-shims still block wider command families across supported clients.
+scope: repo:*; skill:test-timeout
+basis: PR #312 (eb1eb64); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/356
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: vps-state-hold-throttle
 pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: 3. **Run owners in parallel off trunk, never stacked,** so each PR lands on its own.
 change: When `vps-state` reports `HOLD`, chats throttle and start no new workers or builds on the shared VPS.
-basis: PR #175, SOFT-2935 (dc42723); PR #189, VSTA-39 (3cc9e2c)
-approved: 2026-11-20
-expiry: 2027-02-23
-
-id: web-writing-bulleted-sequences
-pstack: skills/technical-writing/SKILL.md
-quote: Numbered lists for sequences, bullets for everything else.
-change: Web copy under `web-writing` uses bulleted lists for any series of three or more items, numbers, or steps (NN/g scan-first rule).
-basis: commit 72d520e
-approved: 2026-10-13
-expiry: 2027-02-23
-
-id: zinsser-colons-editorial-guide
-pstack: skills/unslop/SKILL.md
-quote: 14. A colon goes before a list or an example, never mid-sentence as a connector.
-change: Standalone Zinsser and Orwell prose reference allows colons for clarity and retains Orwell's overlapping plain-English rules.
-basis: commit 708217f
-approved: 2026-10-13
-expiry: 2027-02-23
+impossible: Not impossible: cloud work does not consume local worker capacity, but drain-check and the launchers apply a shared host HOLD policy that needs a local-versus-cloud split.
+scope: board:*; skill:vps-state; skill:board-drain
+basis: PR #175, SOFT-2935 (dc42723); PR #189, VSTA-39 (3cc9e2c); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/356
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: worker-brief-pstack-source
 pstack: skills/poteto-mode/SKILL.md
 quote: Keep the rest of the kickoff to the goal and the task, plus this file's absolute path for a `poteto-agent`.
 change: `hooks/pstack-source.py` requires worker launch briefs to carry a real `pstack: <path>` line alongside the `worker.md` kickoff line.
-basis: PR #108 (c4a6d82)
-approved: 2026-11-17
-expiry: 2027-02-23
+impossible: Not impossible: pstack worker.md alone can carry the brief, but hooks/pstack-source.py, installer registrations and their migration tests enforce the extra source line.
+scope: repo:*; skill:*
+basis: PR #108 (c4a6d82); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/357
+approved: 2026-11-24
+expiry: 2026-12-08
 
 id: book-check
 pstack: skills/poteto-mode/playbooks/opening-a-pr.md
 quote: Body: a one-minute briefing under 40 lines with these `##` headings in order, dropping empty ones: `## Why`, `## What changed`, `## Scope`, `## Tradeoffs` (only rejected alternatives a reviewer would otherwise ask about), `## Blast Radius`, `## Verification`.
 change: `hooks/book-check.py` requires worker briefs and PRs to carry a 15-item `Book check:` block and worker briefs to carry a `Faults:` line naming both fault destinations.
-basis: PR #108 (c4a6d82); PR #113, SOFT-2588 (3fbf995)
-approved: 2026-11-17
-expiry: 2027-02-23
-
-id: server-facts
-pstack: skills/correct/SKILL.md
-quote: Replace hand-synced lists with one source of truth.
-change: Every chat reads one shared server facts file (`docs/servers.md` and `config/servers.json`), installed to `~/.claude/reference/` and checked by `tests/test_server_facts.py`.
-basis: PR #299, VSTA-146 (4b33f60)
-approved: 2026-11-23
-expiry: 2027-02-23
+impossible: Not impossible: the pstack short PR body works here, but hooks/book-check.py, installed registrations and tests/test_advisor_migration.py enforce the shared 15-item checklist.
+scope: repo:*; skill:*
+basis: PR #108 (c4a6d82); PR #113, SOFT-2588 (3fbf995); VSTA-191 follow-up https://github.com/valentinyeo/vstack/issues/357
+approved: 2026-11-24
+expiry: 2026-12-08

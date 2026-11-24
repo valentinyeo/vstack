@@ -32,7 +32,7 @@ Session crons die with the chat; recurring ones expire in 7 days. Arm at session
 
 On changes, sync failures or heartbeats, `watch` sends its own tab the change and `run drain-check` via `mp-send`, matching its tmux to agent-host `sid`. It keeps polling, coalescing wakes to one per 60s. If delivery is unavailable or fails, it prints and exits 0; the tracked job wakes the chat. Re-arm step 2.
 
-Never delete the loop for an empty Todo; a tick with nothing new stays quiet.
+Follow pstack `autopilot-full` step 6. Keep the hourly root audit while delegated work remains; stand down when none remains. An empty Todo alone does not prove delegated work is finished.
 
 ## Each tick adds
 

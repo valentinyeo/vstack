@@ -81,7 +81,7 @@ Prior art: pstack `unslop` and `technical-writing` cover English style and AI te
 - **Starker Schluss.** End with a point, an image or a consequence, not a weak summary or a trailing "bleibt abzuwarten".
 - **Kürzen ist die halbe Arbeit.** Almost every first draft gets better by cutting 10–30 %. Cut what the reader doesn't miss.
 - **Laut lesen.** If you stumble or run out of breath, the sentence needs work.
-- **Satzzeichen bewusst einsetzen.** Doppelpunkt and Gedankenstrich are useful for clarity and tension. Exclamation marks rarely. No ironic quotation marks as a substitute for saying what you mean.
+- **Satzzeichen bewusst einsetzen.** Follow pstack `unslop` rules 13 and 14. Use periods or commas instead of dashes. Put a colon only before a list or an example. Exclamation marks rarely. No ironic quotation marks as a substitute for saying what you mean.
 
 ## Prüfliste (vor der Abgabe)
 

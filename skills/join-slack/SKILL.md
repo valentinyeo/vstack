@@ -81,7 +81,7 @@ oauth_config:
 - Reply only inside Valentin's threads: `slack-say <name> --thread <ts> "<msg>"`.
 - No top-level, status or bot-to-bot posts. slack-say refuses them.
 - `--alarm` only for a real alarm, max one per 2 hours.
-- Caveman voice, full https links.
+- Follow pstack `unslop`. Write whole sentences with full https links.
 - Never take another lead's row or bot.
 
 ## Report

@@ -24,4 +24,4 @@ Prior art: pstack `sharpen` and `poteto-mode/playbooks/authoring-a-skill.md` wer
 ## Rules
 
 - Answer in four short parts (five for technical tasks), then the rewritten prompt in one code block that can be pasted.
-- Do not start the deeper task. End by asking whether to run the rewritten prompt.
+- Return the rewritten prompt as pstack `sharpen` specifies. Do not add an approval question.

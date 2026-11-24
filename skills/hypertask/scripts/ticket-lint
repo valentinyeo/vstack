@@ -10,7 +10,7 @@ import html
 import re
 import sys
 
-MAX_WORDS = 12  # hard cap; skill target stays 8. Approved model tickets run 9 to 10.
+MAX_WORDS = 25
 URL = re.compile(r"https?://\S+|<https?://[^>]+>")
 QUOTE = re.compile(r"\"[^\"]+\"|“[^”]+”")  # Valentin's own words stay verbatim
 ROBOT =re.compile(r"(^|[\s.])(Next|Helpers|Branch/PR|Branch|PR|Outputs|Claimed|Claim|Released|Resume|Session|tmux|Worktree|Ledger)\s*:", re.I)
@@ -27,16 +27,6 @@ REASK = re.compile(r"\byou (already |just )?(asked|ordered|told|requested|said)\
                    r"|\bas you (asked|ordered|requested)\b|\b(confirm|approve)\b[^.?]{0,20}\b(your|the) (order|request)\b", re.I)
 SECRET_ASK = re.compile(r"\b(paste|post|send|share)\b[^.?]{0,40}\b(key|token|secret|password)\b[^.?]{0,30}\b(here|in (this|the) (ticket|comment|chat))\b"
                         r"|\b(paste|post|send)\b[^.?]{0,10}\b(key|it|them)\b[^.?]{0,6}\bhere\b", re.I)
-CODE = [
-    (re.compile(r"(^|\s)(~|\.{0,2})/[\w.-]+/[\w./-]*"), "file path"),
-    (re.compile(r"\b[\w-]+\.(py|sh|zig|ts|tsx|js|mjs|go|kt|json|ya?ml|toml|md|jsonl|log|html)\b"), "file name"),
-    (re.compile(r"\b[A-Za-z_][\w.]*\(\)"), "function name"),
-    (re.compile(r"\b[a-z]+(_[a-z0-9]+)+\b"), "code identifier"),
-    (re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b"), "commit hash"),
-    (re.compile(r"`[^`]+`"), "code span"),
-    (re.compile(r"\b(Traceback|stderr|stdout|exit code|stack trace|tmux|--[a-z][\w-]+)\b"), "log or command"),
-    (re.compile(r"\b(this server|this setup|the hub|messaging hub|hub checks|exception|forbids|preflight|solo-dev|CI)\b", re.I), "insider word, say what he sees in the app"),
-]
 # Valentin 2026-11-15, seven Software Factory tickets waiting on him for a look: "prevent stuff like this landing in blockers again"
 DESIGN_PICK = re.compile(r"\b(build|pick|choose|use|go with|ship)\b[^.?\n]{0,80}\b(option|look|design|variant|layout|wireframe|mockup)s?\b"
                          r"|\boption [A-F]\b|\(([A-F])\)\s*\?|\bbuild [A-F]\s*\?|\b(which|what) (look|design|option|layout|variant)\b"
@@ -125,17 +115,11 @@ def lint(text, old=""):
         if ROBOT.search(line) or BARE_GATE.search(line):
             bad.append(f"robot status line, use the agent lane: {line[:80]}")
             continue
-        noref = URL.sub(" ", line)
-        for rx, what in CODE:
-            m = rx.search(noref)
-            if m:
-                bad.append(f"{what} '{m.group(0).strip()}' belongs in the agent lane: {line[:80]}")
-                break
         for s in sentences(line):
             n = len(words(s))
             if n > MAX_WORDS:
                 bad.append(f"{n} words, max {MAX_WORDS}: {s[:100]}")
-    # The server also counts quoted words. Keep his words verbatim, split across > lines.
+    # Preserve quoted words; split long quote lines without paraphrasing.
     for line in plain(text).splitlines():
         if line.lstrip().startswith(">"):
             for s in sentences(line.lstrip(" >")):
@@ -163,7 +147,7 @@ def main(argv):
     text = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
     bad = (shape_rules(text) if shape else []) + lint(text, old)
     if bad:
-        print("ticket-lint: rejected. Human lane is pospeak + caveman (skills/hypertask).", file=sys.stderr)
+        print("ticket-lint: rejected. Follow pstack technical-writing and unslop.", file=sys.stderr)
         for b in bad[:15]:
             print("  - " + b, file=sys.stderr)
         if len(bad) > 15:

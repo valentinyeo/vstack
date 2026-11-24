@@ -8,7 +8,7 @@ description: >-
 
 Prior art: pstack `poteto-mode` Babysit and Autopilot-full own PR follow-up. This adds per-chat listing through `Owner chat:` in the body.
 
-Carry each PR to merge or close it with a reason. Never open a second PR for one ticket.
+Follow pstack Babysit for the requested scope. Opening a PR alone does not start a babysit or authorize a merge. Under an Autopilot-full grant, one owner carries each PR through that playbook.
 
 ## Set up your own check
 

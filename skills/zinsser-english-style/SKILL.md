@@ -78,7 +78,7 @@ Prior art: pstack `unslop` is a checklist of AI tells; this skill adds only the 
 - **A strong ending.** Stop when you're done. End on a point, an image or a consequence, not a weak summary or "only time will tell".
 - **Cutting is half the work.** Almost every first draft improves by cutting 10 to 30%. Zinsser: most first drafts can be cut by half without losing anything.
 - **Read it aloud.** If you stumble or run out of breath, the sentence needs work.
-- **Use punctuation on purpose.** Colons for clarity. Exclamation marks rarely. No scare quotes as a substitute for saying what you mean.
+- **Use punctuation on purpose.** Follow pstack `unslop` rule 14. Put a colon only before a list or an example. Exclamation marks rarely. No scare quotes as a substitute for saying what you mean.
 
 ## Checklist (before handing in)
 

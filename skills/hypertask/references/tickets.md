@@ -41,9 +41,9 @@ Unsure: `brain-medium`. Keep every other label and replace only the `brain-*` on
 **Human lane:** a title, a description, or a comment with `--kind question|qa|done`, and any comment that @mentions a person.
 
 - Run `pospeak` on it first.
-- Max 8 words per sentence. The guard bounces over 12.
+- Follow pstack `technical-writing` and `unslop`. Write whole sentences; split sentences longer than about 25 words.
 - Answer first, in product-owner words.
-- No file paths, function names, logs or transcript paths.
+- Include exact paths or symbols when the reader needs them to act.
 - Links are full clickable URLs.
 - A person is notified only by real mention markup, never a plain name.
 
@@ -130,7 +130,7 @@ Reply with the full ticket URL. Runners put it in a ticket comment; only HT Prod
 
 ## Before posting
 
-Reread the human-lane text once. A sentence over 8 words, or with a path? Rewrite it. Replace dev words with what he sees.
+Reread the human-lane text once. A sentence over about 25 words? Split it. Keep exact symbols when needed. Replace dev words with what he sees.
 
 The guard checks human-lane text before it posts:
 

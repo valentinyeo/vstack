@@ -22,7 +22,7 @@ hooks:
 
 # Valentin mode
 
-The `context.py` hook hands you the version line and responsive mode's rules at your first tool call; a chat without it reads `../responsive-mode/SKILL.md`. Work the pstack way; poteto-mode runs only when he types it. This skill holds only his rules; a repo's AGENTS.md never copies them.
+The `context.py` hook hands you the version line and responsive mode's rules at your first tool call; a chat without it reads `../responsive-mode/SKILL.md`. Follow pstack `poteto-mode` and its matching playbook for the work; do not require another slash command. This skill holds only his rules; a repo's AGENTS.md never copies them.
 
 Prior art: pstack `poteto-mode` covers the work loop; only his rules and their hooks are new here.
 
@@ -50,11 +50,11 @@ Before board work, read `/hypertask` in full (`skills/hypertask/SKILL.md`). It o
 
 ### Board drain
 
-Each chat with a board runs `/board-drain` on itself at session start, restart, handover and skill load. It keeps its own Autopilot-full loop armed; `skills/board-drain/drain-check` is the pass/fail.
+Each chat with a board runs `/board-drain` on itself at session start, restart, handover and skill load. On the operator's go, keep the Autopilot-full audit armed while delegated work remains; `skills/board-drain/drain-check` checks its state.
 
 ### PR owner
 
-Whoever opens a PR carries it to merge (pstack autopilot-full: one owner from build to merge). Proof comes before merge: an outside checker drives the app as a user would (shipping.md step 1). A merge with that pass is Done; nothing waits for proof after merge. Each tick, your loop gives a red PR idle a day, or a merged PR without a pass, a fresh worker that fixes or closes it, never a second PR. `drain-check` fails until it does. Your loop runs `/pr-housekeeping` on your own open PRs.
+Opening a PR does not start a babysit. Under an Autopilot-full grant, one owner carries each PR from build to merge. Proof comes before merge: an outside checker drives the app as a user would (shipping.md step 1). A merge with that pass is Done; nothing waits for proof after merge. Each tick, your loop gives a red PR idle a day, or a merged PR without a pass, a fresh worker that follows pstack to fix or close it. `drain-check` fails until it does. Your loop runs `/pr-housekeeping` on your own open PRs.
 
 ## Working
 
@@ -62,12 +62,12 @@ Whoever opens a PR carries it to merge (pstack autopilot-full: one owner from bu
 - **Bans live in lint:** a ban only in markdown is not a ban. A corrected mistake class is fixed there at the highest level: architecture, then lint or test, docs. Add a row to its rule table.
 - **Checks:** follow the pstack hillclimb playbook.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
-- **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. House change: one free GitHub runner, or a cloud agent when a runner cannot. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls). Every verdict and done note names the verify skill used, as a slash command (`/verify-<app>`).
+- **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. For valentinyeo/vstack only, house `github-actions-verifier` permits a hosted verifier instead of Cursor cloud, only when it drives the changed behavior parent against head. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls). Every verdict and done note names the verify skill used, as a slash command (`/verify-<app>`).
 - **Shipping is pstack's:** `poteto-mode/playbooks/shipping.md` and `poteto-mode/playbooks/babysit.md` as written, every step; GitHub enforces the verifier through a required check, and `../board-drain/merge-gate` checks it.
-- **Self-audit on load:** run `~/.claude/skills/pstack-diff/pstack-diff .`; clear every EXTRA in one PR until it exits 0. A new CI gate needs a house-file line naming its pstack sentence.
+- **Self-audit on load:** run `~/.claude/skills/pstack-diff/pstack-diff .`; fix the differences introduced by your change. Record unrelated baseline differences as follow-ups rather than blocking this PR. A true house exception needs evidence of impossibility and an explicit scope.
 - **Server load:** before a worker, build or long test, run `~/.local/bin/vps-state --can-launch worker`; on HOLD start nothing and say so. Time-limit long commands.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
-- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan for secrets and client data, then make it public. A repo that must stay private: note it once on the ticket; never verify or merge around it.
+- **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", record the fault once on the ticket. Making a private repo public needs Valentin's approval; never do it as a billing workaround. A repo that must stay private: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
 - **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
 - **Own chat only:** run vstack tools only on your own chat; `tests/test_own_chat_only.py` enforces it, allowlist `config/cross-chat-allowlist.txt`.

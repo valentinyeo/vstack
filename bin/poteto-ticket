@@ -106,9 +106,9 @@ def main():
                 print(f'Created {ticket}: https://app.hypertask.ai/detail/project-{BOARD}/{ticket.split("-")[-1]}', flush=True)
             client.call('ai', 'write', args.brief, '--task', ticket, '--mode', 'task-writer',
                         '--instructions', 'Use exactly these HTML headings: Problem, Fix, Done when, Risk, Decision. '
-                        'Every sentence and title must contain at most eight words. '
+                        'Follow pstack technical-writing and unslop. Write whole sentences; split sentences longer than about 25 words. '
                         'Risk must name a failure and its undo. Use plain product words. '
-                        'No introductory paragraph, code names, paths, or status. '
+                        'No introductory paragraph or status. Include exact names and paths when needed to act. '
                         'Keep the supplied scope. Do not invent steps or questions. '
                         'Use Decision: none unless the brief requires one.', '--apply')
             print(f'{ticket}: Task Writer applied.')

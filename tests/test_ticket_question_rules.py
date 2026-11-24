@@ -18,6 +18,18 @@ def load(name, path):
 lint_mod = load("ticket_lint", ROOT / "skills/hypertask/scripts/ticket-lint")
 
 
+class SentenceStyleTest(unittest.TestCase):
+    def test_a_whole_sentence_over_twelve_words_is_allowed(self):
+        text = 'The update keeps your saved reports available while the next report finishes loading in the background.'
+        self.assertEqual(lint_mod.lint(text), [])
+
+    def test_a_needed_exact_path_is_allowed(self):
+        self.assertEqual(lint_mod.lint('Read skills/hypertask/SKILL.md before changing the board.'), [])
+
+    def test_a_sentence_over_twenty_five_words_needs_splitting(self):
+        self.assertTrue(any('max 25' in error for error in lint_mod.lint('word ' * 26 + '.')))
+
+
 class QuestionLintTest(unittest.TestCase):
     def bad(self, body):
         return "\n".join(lint_mod.question_rules(body))

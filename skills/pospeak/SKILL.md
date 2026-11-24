@@ -97,6 +97,6 @@ Good:
 > 2. The last save wins silently. Fast to build, but people lose edits without knowing. About an hour.
 > Next: reply 1 or 2.
 
-## Pospeak in caveman (Valentin, 2026-10-24)
+## Sentence style
 
-"combine the pospeak rule with the caveman rule so that we get pospeak in cavemen". Chat replies and ticket comments use caveman length and shape with pospeak words: answer first, short sentences, no fluff, plain product words, no code names, paths, flag keys or PR numbers unless he asked. Keep the bold verdict, full https URLs, no em dashes and one Next line. Questions to him stay short and carry "My recommendation:" and "Why:".
+Follow pstack `unslop` rule 33. Write whole sentences with their articles and verbs. Keep the product-owner vocabulary and full https URLs.

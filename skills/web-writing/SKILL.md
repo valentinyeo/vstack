@@ -32,7 +32,7 @@ Hype costs more than taste: readers spend effort filtering out exaggeration, and
 3. **One idea per paragraph.** Readers judge a paragraph by its first few words and skip the rest, so a second idea in the same paragraph is lost.
 4. **Highlight keywords.** Bold the words that carry the meaning, so a scanner reading only the bold gets the message. Links count as highlighting too; do not bold everything.
 5. **Plain subheadings, not clever ones.** A heading says what the section contains ("Pricing", "How to cancel"), never a pun or teaser.
-6. **Bulleted lists** for any series of three or more items, numbers or steps.
+6. **Lists** for any series of three or more items. Follow pstack `technical-writing`: numbered lists for sequences, bullets for everything else.
 7. **Objective language.** State facts, numbers and specifics. No "best ever", "revolutionary", "world-class", "seamless". If a claim needs an adjective, replace it with the evidence.
 8. **Earn credibility.** Say who is behind the claim, show real numbers, and link out to sources. Outbound links signal the homework was done.
 

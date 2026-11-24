@@ -11,7 +11,9 @@ Prior art: pstack `create-verification-skill/SKILL.md`, `maintain-verification-s
 
 Each chat that loads this skill runs `skills/pstack-diff/pstack-diff` from the project root once per session (or after verification-touching edits). Exit 0 means the repo matches pstack aside from house deviations. Exit 1 lists `GAP` or `EXTRA` lines — fix them in a PR, not by silencing the tool.
 
-House deviations live in `skills/pstack-diff/house.txt` (one stanza per house change: `id`, optional `gate: <file>:<job>` or `verify-skill:<name>`, `pstack`, verbatim `quote`, one-line `change`, `basis`, `approved`, `expiry`); repos may also add a root `.pstack-house.txt` file (stanza or `<file>:<job> <reason>`). Listed gates print `HOUSE` and do not fail the run. The step-1 verifier may be a GitHub Actions job instead of a Cursor cloud agent.
+House deviations live in `skills/pstack-diff/house.txt` (one stanza per house change: `id`, optional `gate: <file>:<job>` or `verify-skill:<name>`, `pstack`, verbatim `quote`, one-line `change`, evidence-backed `impossible`, explicit `scope`, `basis`, `approved`, `expiry`); repos may also add a root `.pstack-house.txt` file (stanza or `<file>:<job> <reason>`). Listed gates print `HOUSE` and do not fail the run. The vstack-only Actions exception changes the verifier's machine, not its job. It counts only when an independent agent drives the changed behavior parent against head per shipping step 1.
+
+`scope` lists `board:<id|*>`, `repo:<owner/name|*>`, or `skill:<name|*>`, separated by `; `. Values within a kind are alternatives; specified kinds all constrain the exception. `tests/test_house_list.py` requires both new fields and exercises every house-tagged reconcile stage on configured and runtime boards, including the historical board-13734 leak. A feasible but larger removal must say `Not impossible`, expire in 14 days, and name its follow-up in the audit.
 
 ## Run
 

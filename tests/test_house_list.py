@@ -5,7 +5,9 @@ Checks three invariants with no keyword heuristics:
        from the pinned pstack file it names.
   (ii) Every row in CLAUDE.md's rule table names either a real pstack
        `<file>: "<verbatim sentence>"` or a real `house `<id>`` from house.txt.
-  (iii) No house.txt entry is past its expiry date.
+  (iii) Every exception has impossibility evidence and scope; feasible removals
+        expire within 14 days, and no entry is past its expiry date.
+  (iv) House-tagged reconcile decisions stay on the boards their stanzas name.
 
 In CI, .github/workflows/checks.yml fetches .skill-lint.json's pstack-ref and
 sets PSTACK_PINNED_DIR. Locally, falls back to the newest installed
@@ -16,7 +18,10 @@ from __future__ import annotations
 import datetime
 import importlib.machinery
 import importlib.util
+import itertools
 import os
+import sys
+from unittest.mock import patch
 from pathlib import Path
 import re
 import tempfile
@@ -26,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "skills/pstack-diff/pstack-diff"
 PSTACK_CACHE = Path.home() / ".claude/plugins/cache/cursor-plugins/pstack"
 
-REQUIRED_FIELDS = ("id", "pstack", "quote", "change", "basis", "approved", "expiry")
+REQUIRED_FIELDS = ("id", "pstack", "quote", "change", "impossible", "scope", "basis", "approved", "expiry")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 HOUSE_REF = re.compile(r"\bhouse\s+`([a-z0-9][a-z0-9-]*)`")
 PSTACK_REF = re.compile(r'\bpstack\s+`([^`]+\.md)`:\s*"([^"]+)"')
@@ -123,6 +128,13 @@ def check_house_entries(
                     errors.append(
                         f"{label}: quote not found verbatim in {pstack_rel}: {quote!r}"
                     )
+        scope = stanza.get('scope', '').strip()
+        if scope and not re.fullmatch(
+                r'(?:board:(?:[1-9][0-9]*|\*)|repo:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|\*)|'
+                r'skill:(?:[a-z0-9][a-z0-9-]*|\*))'
+                r'(?:; (?:board:(?:[1-9][0-9]*|\*)|repo:(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|\*)|'
+                r'skill:(?:[a-z0-9][a-z0-9-]*|\*)))*', scope):
+            errors.append(f'{label}: invalid scope; use board:<id|*>, repo:<owner/name|*>, skill:<name|*>')
         for date_field in ("approved", "expiry"):
             raw_date = stanza.get(date_field, "").strip()
             if not raw_date:
@@ -140,6 +152,14 @@ def check_house_entries(
                     f"{label}: entry expired on {raw_date} (today is {today.isoformat()}); "
                     "re-approve with a new expiry or drop it"
                 )
+        if stanza.get('impossible', '').startswith('Not impossible:'):
+            try:
+                approved = datetime.date.fromisoformat(stanza['approved'])
+                expiry = datetime.date.fromisoformat(stanza['expiry'])
+            except (KeyError, ValueError):
+                continue
+            if expiry > approved + datetime.timedelta(days=14):
+                errors.append(f'{label}: feasible removal must expire within 14 days of approval')
     return ids, errors
 
 
@@ -199,6 +219,43 @@ def check_tree(repo_root: Path, pstack_root: Path, today: datetime.date | None =
     return errors
 
 
+def reconcile_scope_errors(reconcile, house_text: str) -> list[str]:
+    """Drive the stage table on configured and runtime boards, including unknown ids."""
+    stanzas = {row['id']: row for row in PSTACK_DIFF.parse_house_stanzas(house_text)}
+    tagged = {row['reason']: row['house'] for row in reconcile.PLAN_SOURCES if 'house' in row}
+    errors, exercised = set(), set()
+    columns = frozenset({'Todo', 'Doing', 'Checks', 'AI Review', 'Done', 'Verification Backlog'})
+    stages, names = reconcile.dynamic_stage_maps(columns, reconcile.stage_names(sections=columns))
+    boards = list(reconcile.BOARDS.values()) + [
+        reconcile.make_board(board_id, 'TEST', columns, (), stages, names, columns=columns)
+        for board_id in (13734, 999999)
+    ]
+    pulls = ((), (reconcile.Pull('https://github.com/valentinyeo/vstack/pull/1',
+                                'MERGED', 'green', True),),
+             (reconcile.Pull('https://github.com/valentinyeo/vstack/pull/1',
+                             'MERGED', 'green', False),))
+    for board in boards:
+        for column, alive, waiting, blocked, verification, lane_empty, prs in itertools.product(
+                reconcile.column_stage_map(board), (False, True), (False, True),
+                (False, True), (False, True), (False, True), pulls):
+            facts = reconcile.Facts(column, 8000, alive, prs, waiting=waiting,
+                                    blocked=blocked, verification=verification)
+            with patch.object(reconcile, 'nothing_ran', return_value=lane_empty):
+                _, reason = reconcile.target(facts, board=board)
+            if reason not in tagged:
+                continue
+            house_id = tagged[reason]
+            exercised.add(house_id)
+            stanza = stanzas.get(house_id, {})
+            board_scopes = [item.removeprefix('board:') for item in
+                            stanza.get('scope', '').split('; ') if item.startswith('board:')]
+            if not board_scopes or not any(s in ('*', str(board.id)) for s in board_scopes):
+                errors.add(f'{house_id}: {reason!r} ran outside scope on board {board.id}')
+    for house_id in set(tagged.values()) - exercised:
+        errors.add(f'{house_id}: scope test did not exercise this tagged path')
+    return sorted(errors)
+
+
 class HouseListTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -207,6 +264,57 @@ class HouseListTests(unittest.TestCase):
     def test_repo_house_list_and_claude_rule_table_pass(self):
         errors = check_tree(ROOT, self.pstack_root)
         self.assertEqual(errors, [], "\n".join(errors))
+
+    def test_missing_impossible_or_scope_fails(self):
+        house_text = (ROOT / 'skills/pstack-diff/house.txt').read_text()
+        for field in ('impossible', 'scope'):
+            with self.subTest(field=field):
+                edited = re.sub(rf'^{field}:.*\n', '', house_text, count=1, flags=re.M)
+                _, errors = check_house_entries(edited, self.pstack_root)
+                self.assertTrue(any(f"missing required field '{field}'" in e for e in errors), errors)
+
+    def test_reconcile_tagged_paths_stay_inside_house_scope(self):
+        reconcile = self.load_reconcile()
+        errors = reconcile_scope_errors(reconcile, (ROOT / 'skills/pstack-diff/house.txt').read_text())
+        self.assertEqual(errors, [], '\n'.join(errors))
+
+    def test_scope_check_catches_the_historical_all_board_leak(self):
+        reconcile = self.load_reconcile()
+        # Before VSTA-186, the post-merge proof stage leaked onto board 13734.
+        with patch.object(reconcile, 'product_board', return_value=True):
+            errors = reconcile_scope_errors(reconcile, (ROOT / 'skills/pstack-diff/house.txt').read_text())
+        self.assertTrue(any('board-15-live-proof-stage' in e and 'board 13734' in e
+                            for e in errors), errors)
+
+    @staticmethod
+    def load_reconcile():
+        source = ROOT / 'skills/hypertask-work/reconcile'
+        loader = importlib.machinery.SourceFileLoader('house_scope_reconcile', str(source))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[loader.name] = module
+        loader.exec_module(module)
+        return module
+
+    def test_invalid_scope_fails(self):
+        house_text = (ROOT / 'skills/pstack-diff/house.txt').read_text()
+        edited = re.sub(r'^scope:.*$', 'scope: everywhere', house_text, count=1, flags=re.M)
+        _, errors = check_house_entries(edited, self.pstack_root)
+        self.assertTrue(any('invalid scope' in e for e in errors), errors)
+
+    def test_feasible_removal_cannot_keep_a_long_expiry(self):
+        house_text = (ROOT / 'skills/pstack-diff/house.txt').read_text()
+        edited = house_text.replace('expiry: 2026-12-08', 'expiry: 2027-02-23', 1)
+        _, errors = check_house_entries(edited, self.pstack_root)
+        self.assertTrue(any('within 14 days' in e for e in errors), errors)
+
+    def test_narrowed_scope_rejects_an_existing_execution(self):
+        house_text = (ROOT / 'skills/pstack-diff/house.txt').read_text()
+        edited = house_text.replace('scope: board:15;', 'scope: board:2060;')
+        self.assertNotEqual(edited, house_text)
+        errors = reconcile_scope_errors(self.load_reconcile(), edited)
+        self.assertTrue(any('board-15-live-proof-stage' in e and 'board 15' in e
+                            for e in errors), errors)
 
     def test_missing_or_paraphrased_quote_fails(self):
         house_text = (ROOT / "skills/pstack-diff/house.txt").read_text(encoding="utf-8")
@@ -224,7 +332,8 @@ class HouseListTests(unittest.TestCase):
         self.assertTrue(any("missing required field 'quote'" in e for e in errors), errors)
 
         # Alter a quote so it is no longer verbatim.
-        altered = house_text.replace("Opening a PR does not start a babysit.", "Opening a PR never starts babysit.", 1)
+        quote = PSTACK_DIFF.parse_house_stanzas(house_text)[0]['quote']
+        altered = house_text.replace('quote: ' + quote, 'quote: A fabricated pstack rule.', 1)
         _, errors = check_house_entries(altered, self.pstack_root)
         self.assertTrue(any("quote not found verbatim" in e for e in errors), errors)
 

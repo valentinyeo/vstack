@@ -32,9 +32,9 @@ No work starts until you have shown you can prove the result yourself.
 
 1. Write done as a check that can fail: a test, a command, a page state, a live number, a ticket column. Never "looks good".
 2. Name the exact check for every outcome: the command, the URL plus what must show, or the test name.
-3. Run each check now. It must run, and it must fail today for the right reason. A check that already passes proves nothing.
-4. Confirm you have the access each check needs: test login, browser, CI, logs, deploy record. Fetch keys the way your project's rules say. Missing access is a question for round 1 of A3.
-5. No check possible? Building the checker becomes the first work step. Still impossible? Say so in A3 and ask for the owner's acceptance test instead. This is the only reason Phase B may not start.
+3. Run practical checks now to establish the baseline. Follow pstack `tdd`; do not force a failing test when impractical. A passing baseline is useful evidence too.
+4. Confirm the access each check needs: test login, browser, CI, logs, deploy record. Fetch keys the way your project's rules say. Report unavailable evidence as a limit.
+5. No check possible yet? Build the checker as the first work step. Follow pstack `autonomous-run` for genuine dead ends.
 
 Show the owner the table: outcome, check, today's result.
 
@@ -67,13 +67,6 @@ Run `/pstack:poteto-mode full autopilot` on the task, with the contract as input
 - **Check before asking for a hand.** About to ask the owner to sign in, restart or install? First test that it is really needed. Then park it and keep working.
 - **Running out of context or time.** pstack pause-safely, then Phase C.
 
-## Phase C: two minute report
+## Phase C: report
 
-Re-check every gate in the contract, then reply in short plain sentences:
-
-1. **Done.** One line per outcome with its proof link: test run, screenshot, live URL, ticket.
-2. **Decisions I made.** The decision log, one line each.
-3. **Parked.** Each with the reason and the one thing needed from the owner.
-4. **Numbers.** Minutes run alone, gates met out of total.
-
-Never report an outcome as done without its check passing in this session.
+Follow the reply contract in pstack `poteto-mode/playbooks/autonomous-run.md`: the exit condition, iterations run, what landed, what was discarded, final predicate state. Link the evidence. Never report an outcome as done without its check passing in this session.

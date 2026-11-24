@@ -89,7 +89,7 @@ Rules behind the table:
 - **Pages to Workers is part of the move.** Rat Stack deploys Workers. A Pages app (any PAGES marker) gets the Rat Stack `Website` Worker (apps/web), which serves static files and server rendering. The Pages project stays untouched until the delete slice.
 - Cut Rat Stack's demo parts the app does not need with `keep-or-cut`. Keep the fence, apps/infra, apps/web, packages/capability, packages/core and the cartridges the map uses.
 - Keep the fence whole: pins, tsconfig.base.json, oxlint.config.ts, oxfmt.config.ts, lefthook.yml, the anti-slop rules, .github/workflows/ci.yml. Never loosen a rule to make old code pass.
-- **CI.** Rat Stack's ci.yml replaces the app's own build and test workflows. Keep security scans (gitleaks, secret scans) with a written reason, on GitHub-hosted runners. Everything else goes. Self-hosted runners are forbidden. Tests and builds run in GitHub Actions only.
+- **CI.** Rat Stack's ci.yml replaces the app's own build and test workflows. Keep security scans (gitleaks, secret scans) with a written reason, on GitHub-hosted runners. Everything else goes. Self-hosted runners are forbidden. Run checks for touched paths before pushing per pstack `autopilot-full`; GitHub Actions runs the full tests and builds.
 - Port slice by slice. The old app keeps serving until the new one matches it.
 - Data stays put. Alchemy adopts the live D1, KV and R2 resources (see `learn-alchemy`). No copy, no delete.
 - **Cutover.** Deploy with Alchemy onto the same domain.
