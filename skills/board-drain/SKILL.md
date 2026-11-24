@@ -61,7 +61,7 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 - **sync failed** or **sync stale:** the last sync broke or is over 45 minutes old. Fix it, then `./sync --board <id> --label <label> --name "<name>"`.
 - **sync skipped:** the chat is over its gh budget. `./sync` prints one `sync skipped: gh budget (wait until HH:MM UTC)` line and exits 0, and the watcher keeps watching. Nothing to fix; a skip is never `sync failed`. If the skips outlast 45 minutes it reads as **sync stale** instead.
 
-A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:` line. When plan-pick last found no free worker lane (a `lane` failure under 30 minutes old in `~/.local/state/token-ladder/rung-attempts.json`, with no launch since), **loop off**, **stale** and **stalled** collapse into one non-failing `held: no worker lane since <HH:MM UTC>` line; a server HOLD wins. `--no-load` skips both probes.
+A `vps-state` HOLD turns **loop off** and **stale** into one non-failing `held:` line. When plan-pick last found no free worker lane (a `lane` failure with exit 75 in `~/.local/state/token-ladder/rung-attempts.json`, or the null-lane row it logs in `launches.jsonl` when no lane is left, either under 30 minutes old, with no launch since), **loop off**, **stale** and **stalled** collapse into one non-failing `held: no worker lane since <HH:MM UTC>` line; a server HOLD wins. `--no-load` skips both probes.
 
 A board-rule break prints as `rule-break: <ticket> <rule>: <fix>` and passes; add its rule id to `FAIL_RULES` in drain-check to make it fail.
 
