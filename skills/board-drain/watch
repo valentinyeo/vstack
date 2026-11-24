@@ -151,9 +151,11 @@ def wake(lines):
                                  check=True, capture_output=True, text=True, timeout=5).stdout.strip()
         if not tab:
             return False
-        sender = shutil.which('mp-send') or Path.home() / '.multiprompt-runtime/mp-send'
-        if not Path(sender).is_file():
+        sender = Path(shutil.which('mp-send') or Path.home() / '.multiprompt-runtime/mp-send')
+        if not sender.is_file():
             return False
+        # Run an executable sender as its own program: some senders are shell wrappers.
+        command = [str(sender)] if os.access(sender, os.X_OK) else [sys.executable, str(sender)]
         matches = []
         for path in sorted((Path.home() / '.local/state/multiprompt/agent-host').glob('*.config.json')):
             try:
@@ -175,7 +177,7 @@ def wake(lines):
                 time.sleep(5)
             try:
                 sent = subprocess.run(
-                    [sys.executable, str(sender), '--tmux', tab, 'claude', config['sid'], prompt],
+                    command + ['--tmux', tab, 'claude', config['sid'], prompt],
                     capture_output=True, timeout=30)
                 if sent.returncode == 0:
                     return True

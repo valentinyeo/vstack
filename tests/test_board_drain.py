@@ -1535,6 +1535,47 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertGreater(clock.now - NOW, 10, 'must keep polling after the change')
 
+    def test_a_shell_wrapper_sender_runs_as_its_own_program(self):
+        self.sender.write_text(
+            '#!/bin/sh\n'
+            f'for arg in "$@"; do printf "%s\\n" "$arg"; done >> "{self.wakes}"\n')
+        self.sender.chmod(0o755)
+
+        def on_sleep(tick):
+            if tick == 1:
+                self.rows([vsta('VSTA-80')])
+            elif tick == 2:
+                sent = self.wakes.read_text().splitlines()
+                self.assertEqual(sent[:4], ['--tmux', 'own-tab', 'claude', 'own-sid'])
+                self.assertIn('changed: VSTA-80 new in Todo', sent[4])
+
+        code, out, _ = self.run_watch([], '--every', '10', '--heartbeat', '100',
+                                       '--cycles', '2', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+
+    def test_a_non_executable_python_sender_runs_through_the_interpreter(self):
+        self.sender.unlink()
+        fallback = self.directory / '.multiprompt-runtime/mp-send'
+        fallback.parent.mkdir()
+        fallback.write_text(
+            'import json, pathlib, sys\n'
+            f'with pathlib.Path({str(self.wakes)!r}).open("a") as log:\n'
+            '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+        fallback.chmod(0o644)
+
+        def on_sleep(tick):
+            if tick == 1:
+                self.rows([vsta('VSTA-80')])
+            elif tick == 2:
+                wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+                self.assertEqual(len(wakes), 1)
+                self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'own-sid'])
+
+        code, out, _ = self.run_watch([], '--every', '10', '--heartbeat', '100',
+                                       '--cycles', '2', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.wakes.exists(), 'non-executable sender must still run')
+
     def test_missing_sender_prints_change_and_exits_zero(self):
         self.sender.unlink()
         code, out, clock = self.run_watch(
