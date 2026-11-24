@@ -1,0 +1,37 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-44",
+      "projectId": 99001,
+      "section": "AI Review",
+      "title": "Merged PR with FAIL verdict",
+      "updatedAt": "2025-11-21T10:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T10:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}, {"name": "brain-medium"}],
+      "assignees": [{"type": "agent", "displayName": "Board Drain Loop"}]
+    }
+  ],
+  "pulls": {
+    "FACT-44": [
+      {
+        "url": "https://github.com/valentinyeo/vstack/pull/399",
+        "number": 399,
+        "state": "MERGED",
+        "mergedAt": "2025-11-21T11:00:00Z",
+        "headRefOid": "d4e5f6a7b8c90123456789abcdef0123456789ab",
+        "author": {"login": "valentinyeo"},
+        "repository": {"nameWithOwner": "valentinyeo/vstack"},
+        "comments": [
+          {
+            "author": {"login": "github-actions"},
+            "updatedAt": "2025-11-21T10:55:00Z",
+            "databaseId": 105,
+            "body": "pstack-verifier: FAIL @ d4e5f6a7b8c90123456789abcdef0123456789ab\n\n- Regression reproduced on head.\n"
+          }
+        ]
+      }
+    ]
+  }
+}
