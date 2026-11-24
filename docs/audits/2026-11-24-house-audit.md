@@ -11,6 +11,7 @@ Valentin's setup should follow Lauren Tan's pstack 1:1. Only a measured inabilit
 - Pstack: **0.15.47**, installed at `~/.claude/plugins/cache/cursor-plugins/pstack/0.15.47`, upstream `cursor/plugins@2dd5c0ccc5b207dc23a69759871a35954082cbf7`. `.skill-lint.json` now pins this version, replacing 0.15.43. A newer 0.15.48 appeared during the run; evidence below explicitly selects 0.15.47.
 - VSTA-186 already shipped https://github.com/valentinyeo/vstack/pull/344 and https://github.com/valentinyeo/vstack/pull/345. It removed the board-2060 exception and the accidental board-13734 application. It retained a renamed `board-15-live-proof-stage`. This PR does not change its reconcile stage implementation.
 - VSTA-187 is Done. Its `stuck` finding catches idle red Checks cards. That does **not** restore the hourly audit of every owner and leaf worker. The remaining cadence removal is https://github.com/valentinyeo/vstack/issues/352.
+- Delivery was rebased onto `07a3640` before the final push, incorporating VSTA-151 (https://github.com/valentinyeo/vstack/pull/327). Watcher restart support does not replace the hourly root audit or change the stanza counts. The line-by-line audit above remains tied to its explicitly named baseline.
 - VSTA-188 already shipped https://github.com/valentinyeo/vstack/pull/346. Its `skills/board-drain/merge-gate`, drain-check finding, and Shipping bullet remain. Requiring the step-1 verifier implements pstack; it is not a reason to list a permanent exception.
 
 ## Stanza decisions
