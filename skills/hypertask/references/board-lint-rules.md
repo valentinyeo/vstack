@@ -7,7 +7,7 @@ Each chat also runs it inside its own drain check, on its own label, where each 
 |---|---|---|
 | `agent-assignee` | Open ticket with no agent assignee, a person assignee, a revoked agent, an agent name no Multibot chat ever had, or Doing with no live worker; skips waiting on Valentin or BlockedBy (`identity.md`, `board.md`) | board-lint |
 | `true-column` | Card not in the column reconcile would move it to (`board.md` true column) | board-lint; reconcile applies the fix |
-| `done-proof` | Done without live proof (`board.md`); merged PR alone is not Done on factory boards | board-lint |
+| `done-proof` | Done without a PASS (`board.md`); merged with PASS is Done, a merged PR alone is not | board-lint |
 | `unlinked-work` | Open PR or live worker naming no ticket on this board | written only (fixture-tested); ticket-scoped PR discovery cannot see unlinked open PRs yet |
 | `duplicate-title` | Likely duplicate open tickets (same normalized title) | written only; lint prints suggestion |
 | `stale-idle` | Open ticket idle past column stale age (`sectionChangedAt`, not `updatedAt`) | board-lint |

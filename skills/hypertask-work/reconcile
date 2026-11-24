@@ -236,10 +236,7 @@ def plan_stage(facts, here, board):
     if fresh and product_board(board):
         # The product board runs no verifier gate, so a merge is review evidence alone.
         return Stage.REVIEW, 'merged PR; live proof pending'
-    if any(p.passed for p in fresh):
-        # One merged PR carrying the verifier's PASS settles the card. A PR that only
-        # names the key, or one merged before the gate existed, never had a PASS of
-        # its own and must not report the card as missing one (VSTA-189).
+    if fresh and all(p.passed for p in fresh):
         return Stage.REVIEW, 'merged PR with PASS; live proof pending'
     if fresh:
         return Stage.REVIEW, 'merged PR missing PASS on current head'
@@ -2607,10 +2604,7 @@ def board_run():
         if os.environ.get('RECONCILE_TIMING'):
             print(timing_table(), file=sys.stderr, flush=True)
         print(f'{"PREVIEW" if args.apply else "DRY RUN"} board={board.id} tickets={len(tasks)} unknown={errors}', flush=True)
-        # A label or section run reads a slice of the board, so it must not overwrite
-        # the whole board's facts with a snapshot that only covers its own cards.
-        scoped = bool(args.label or args.section)
-        if not args.ticket and not scoped and not errors and candidates:
+        if not args.ticket and not errors and candidates:
             write_board_facts(board.id, serialize_board_facts(board, candidates, pulls, time.time(),
                                                               probe_since=probe_since, saved=saved,
                                                               refreshed=refreshed))

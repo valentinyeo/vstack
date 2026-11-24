@@ -163,23 +163,6 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(r.target(r.Facts('Doing', 8000, False, (pull('MERGED', passed=True),))),
                          ('AI Review', 'merged PR with PASS; live proof pending'))
 
-    def test_one_passing_merged_pr_settles_a_card_beside_a_mention_only_one(self):
-        """MUBO-249: multiprompt#1328 passed; token-ladder#40 only names the key.
-
-        The mention-only PR merged under another repository's rules, so it never had
-        a verifier PASS of its own. Requiring every merged PR to pass reported the
-        card as missing a PASS its own PR already carried.
-        """
-        card_pr = r.Pull('https://github.com/valentinyeo/multiprompt/pull/1328', 'MERGED', 'green', True)
-        mention = r.Pull('https://github.com/valentinyeo/token-ladder/pull/40', 'MERGED', 'green', False)
-        for pulls in ((card_pr, mention), (mention, card_pr), (card_pr,)):
-            with self.subTest(pulls=[p.url for p in pulls]):
-                self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=pulls)),
-                                 ('AI Review', 'merged PR with PASS; live proof pending'))
-        with self.subTest('no merged PR passed, so the gap is real'):
-            self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(mention,))),
-                             ('AI Review', 'merged PR missing PASS on current head'))
-
     def seven_plans(self):
         # Todo-bound moves listed first on purpose: order must come from the sort.
         back = [(dict(task(), ticketNumber=f'SOFT-{i}'), r.Facts('Doing', 8000)) for i in (1, 2)]
@@ -2613,36 +2596,6 @@ class CallBudgetTest(unittest.TestCase):
                          ('AI Review', 'merged PR with PASS; live proof pending'))
         self.assertEqual(run.call_count, 2)
 
-    def test_a_cross_repo_pr_that_only_names_the_key_never_hides_its_cards_pass(self):
-        """The real MUBO-249 shapes, read in one batch.
-
-        multiprompt#1328 carries the success check beside its neutral (BLOCKED) twin,
-        and token-ladder#40 is a merged PR from another repository that names the key
-        with no verifier check at all. The card's own PR passed, so the card passed.
-        """
-        card_pr = {**self.node(number=1328, checks=[
-            self.pstack_check(),
-            self.pstack_check('pstack-verifier (BLOCKED)', 'NEUTRAL'),
-            self.pstack_check('pstack-verifier report')]),
-            'state': 'MERGED', 'url': 'https://github.com/valentinyeo/multiprompt/pull/1328'}
-        mention = {**self.node(number=40, checks=[
-            {'__typename': 'CheckRun', 'name': 'tests', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]),
-            'state': 'MERGED', 'url': 'https://github.com/valentinyeo/token-ladder/pull/40'}
-        data = {'data': {'p0': {'pullRequest': card_pr}, 'p1': {'pullRequest': mention}}}
-        jobs = [{'jobs': [
-            {'name': 'formal', 'runner_name': 'GitHub Actions 1000349816', 'labels': ['ubuntu-latest']},
-            {'name': 'pstack-verifier (BLOCKED)', 'runner_name': None, 'labels': []},
-            {'name': 'pstack-verifier', 'runner_name': None, 'labels': []}]}]
-        refs = [('valentinyeo/multiprompt', 1328), ('valentinyeo/token-ladder', 40)]
-        with patch.object(r, 'run', side_effect=[json.dumps(data), json.dumps(jobs)]), \
-                patch.object(r, 'read_policies'), \
-                patch.object(r, 'verifier_policy', return_value=None):
-            found = r.read_pull_batch(refs)
-        self.assertTrue(found[refs[0]].passed, 'the card PR carries the verifier success')
-        self.assertFalse(found[refs[1]].passed, 'the mention-only PR has no verifier at all')
-        self.assertEqual(r.target(r.Facts('AI Review', 8000, pulls=(found[refs[0]], found[refs[1]]))),
-                         ('AI Review', 'merged PR with PASS; live proof pending'))
-
     def test_pstack_verifier_rejects_a_run_with_positive_evidence_of_a_self_hosted_job(self):
         data = {'data': {'p0': {'pullRequest': self.node(checks=[self.pstack_check()])}}}
         hosted = {'name': 'secret-scan', 'runner_name': 'GitHub Actions 1000322940',
@@ -3173,40 +3126,6 @@ class CallBudgetTest(unittest.TestCase):
         self.assertIn('sync skipped: gh budget (wait until 14:20 UTC)', text)
         self.assertNotIn('PLAN ', text)
         self.assertNotIn('PREVIEW ', text)
-
-    def test_a_label_run_keeps_the_whole_board_facts_it_did_not_read(self):
-        """A label run reads its own cards, so it must not save a slice as the board.
-
-        The saved file is one board's facts. Overwriting it with the label's few
-        tickets dropped every other card, which is how 13734 lost its cards.
-        """
-        t = {**task('Doing'), 'updatedAt': NOW - 8000, 'labels': [{'name': 'auto'}]}
-        saved = {'at': NOW - 60, 'probe_since': '2026-01-01T00:00:00Z', 'repos': [],
-                 'tickets': {'SOFT-1': {'at': NOW - 60, 'updated_at': t['updatedAt'],
-                                        'pulls': [], 'facts': {}},
-                             'SOFT-9': {'at': NOW - 60, 'updated_at': t['updatedAt'],
-                                        'pulls': [], 'facts': {}}}}
-        for argv, expect_write in ((['reconcile', '--label', 'auto'], False),
-                                   (['reconcile'], True)):
-            with self.subTest(argv=argv), tempfile.TemporaryDirectory() as directory, \
-                    patch.object(r.Path, 'home', return_value=Path(directory)), \
-                    patch.object(sys, 'argv', argv), \
-                    patch.object(r.time, 'time', return_value=NOW), \
-                    patch.object(r, 'tickets', return_value=[t]), \
-                    patch.object(r, 'read_sections', return_value=set()), \
-                    patch.object(r, 'live_lease', return_value=False), \
-                    patch.object(r, 'process_tickets', return_value=set()), \
-                    patch.object(r, 'read_board_facts', return_value=saved), \
-                    patch.object(r, 'probe_changed_prs', return_value=[]), \
-                    patch.object(r, 'discover', return_value={'SOFT-1': []}), \
-                    patch.object(r, 'write_board_facts') as written, \
-                    contextlib.redirect_stderr(io.StringIO()), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                r.PULLS.clear()
-                self.assertEqual(r.main(), 0)
-            self.assertEqual(written.called, expect_write, argv)
-            if expect_write:
-                self.assertIn('SOFT-1', written.call_args.args[1]['tickets'])
 
     def test_a_skip_writes_no_board_facts_and_keeps_the_saved_ones(self):
         t = {**task('Doing'), 'updatedAt': NOW - 8000}

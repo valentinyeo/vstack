@@ -54,7 +54,7 @@ Each chat with a board runs `/board-drain` on itself at session start, restart, 
 
 ### PR owner
 
-Whoever opens a PR carries it to merge and proof. A stalled one gets a fresh worker, never a second PR; unfinished ones close with a reason. Your loop runs `/pr-housekeeping` on your own open PRs.
+Whoever opens a PR carries it to merge (pstack autopilot-full: one owner from build to merge). Proof comes before merge: an outside checker drives the app as a user would (shipping.md step 1). A merge with that pass is Done; nothing waits for proof after merge. Each tick, your loop gives a red PR idle a day, or a merged PR without a pass, a fresh worker that fixes or closes it, never a second PR. `drain-check` fails until it does. Your loop runs `/pr-housekeeping` on your own open PRs.
 
 ## Working
 
