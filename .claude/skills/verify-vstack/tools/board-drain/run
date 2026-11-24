@@ -74,15 +74,16 @@ cleanup() {
 trap cleanup EXIT
 
 git -C "$W" init -q
-mkdir -p "$W/skills"
+mkdir -p "$W/skills" "$W/scripts"
 cp -a "$ROOT/skills/board-drain" "$ROOT/skills/hypertask-work" "$W/skills/"
+cp "$ROOT/scripts/pr-cap.py" "$W/scripts/"
 {
   printf '# Scratch project for the board drain check\n\n'
   printf 'Hypertask board: %s, label: %s\n\n' "$BOARD" "$LABEL"
   printf 'You are the chat "%s". Its login token is already set up.\n' "$NAME"
   printf 'Your board drain loop lives in this project under skills/board-drain/.\n'
 } > "$W/CLAUDE.md"
-git -C "$W" add CLAUDE.md skills
+git -C "$W" add CLAUDE.md skills scripts
 git -C "$W" -c user.name=vbd -c user.email=vbd@invalid commit -qm init
 printf '%s\n' "$W" > "$E/workdir"
 

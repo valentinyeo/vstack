@@ -18,6 +18,9 @@ The loop prompt:
 
 Owners start through `~/.local/bin/plan-pick --run` in `../hypertask-work/lease`, never as Claude chats; columns follow `/hypertask` and references/board.md, never Valentin Review. Read the lease's last line and its exit status: `worker exited 75: nothing ran, waiting for a lane` means no lane was free, so report waiting, not started. A launch command ending in `| tail` hands bash `tail`'s 0 and hides that status; keep the status with `set -o pipefail` or no pipe.
 
+Each agent keeps at most as many open PRs on its own label as `./wip-cap` holds for it (5), one live worker per PR; start a new ticket only after one ships. Each tick run `./pr-park --board <id> --label <label>` (dry-run), then `--apply`: park newest extras with branches kept and cards in Todo, and reopen oldest parked PRs into Checks when slots free; parking state is saved in `~/.local/state/board-drain/parked-<board>-<label-slug>.json`.
+A repo above the 10-open-PR cap from `scripts/pr-cap.py` prints a warning in drain-check, not a failure; close or land its open PRs first.
+
 ## Arm
 
 Session crons die with the chat; recurring ones expire in 7 days. Arm at session start, restart, handover, valentin-mode load, or any drain-check fail:

@@ -44,6 +44,17 @@ cap_spec = importlib.util.spec_from_loader(cap_loader.name, cap_loader)
 wip = importlib.util.module_from_spec(cap_spec)
 sys.modules[cap_loader.name] = wip
 cap_loader.exec_module(wip)
+park_loader = importlib.machinery.SourceFileLoader('board_drain_pr_park', str(HERE / 'pr-park'))
+park_spec = importlib.util.spec_from_loader(park_loader.name, park_loader)
+pr_park = importlib.util.module_from_spec(park_spec)
+sys.modules[park_loader.name] = pr_park
+park_loader.exec_module(pr_park)
+pr_park.reconcile = reconcile
+
+repo_cap_spec = importlib.util.spec_from_file_location('repo_pr_cap', HERE.parents[1] / 'scripts/pr-cap.py')
+repo_cap = importlib.util.module_from_spec(repo_cap_spec)
+repo_cap_spec.loader.exec_module(repo_cap)
+
 # One reconcile for the tick: its gh budget and its saved board facts drive the gate too.
 merge_gate.reconcile = reconcile
 
@@ -748,6 +759,31 @@ def pull_facts(args, board, rows, data):
         return None
 
 
+def agent_open_pulls(args, board, rows, pulls):
+    if not args.fixture:
+        return pr_park.owned_pulls([row['task'] for row in rows], board)
+    found = {}
+    for row in rows:
+        key = row['task']['ticketNumber']
+        for pull in (pulls or {}).get(key) or ():
+            if pull.get('state') == 'OPEN':
+                entry = found.setdefault(pull['url'], dict(pull, keys=[]))
+                entry['keys'].append(key)
+    return found
+
+
+def repo_cap_notes(repos, args, data, now):
+    notes = []
+    for repo in sorted(repos):
+        count = ((data.get('repo_counts') or {}).get(repo) if args.fixture
+                 else repo_cap.open_count(repo, now=now))
+        cap = repo_cap.REPOS.get(repo, repo_cap.CAP)
+        if count is not None and count > cap:
+            notes.append(f'warning: repo PR cap: {repo} has {count} open PRs (cap {cap}); '
+                         'close or land open PRs first')
+    return notes
+
+
 def read_view(args, now):
     """One read of the view: the board, every row, the notes, the findings, the workable rows."""
     board, rows, loaded, data, board_tasks = rows_for(args)
@@ -756,6 +792,13 @@ def read_view(args, now):
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
     workable, waiting_lines, blocked_lines, findings = [], [], [], []
+    # The open PRs this label owns; the parking cap reads the same label table.
+    opened = {}
+    try:
+        opened = agent_open_pulls(args, board, rows, pulls)
+        findings += pr_park.cap_findings(opened, args.label)
+    except ERRORS + (AttributeError, reconcile.BudgetRefused, reconcile.RateLimit) as error:
+        waiting_lines.append(f'warning: agent PR cap: read failed ({str(error).splitlines()[0]}); skipped')
     # Valentin's rule: finish before starting. A label already holding its open
     # tickets takes no new Todo work, so the findings that ask for a start stay
     # quiet until it ships one.
@@ -778,7 +821,10 @@ def read_view(args, now):
         else:
             workable.append(row)
     # An urgent Todo card may start while its label is at cap, so its nudge stands.
-    held_by_cap = over and not any(wip.urgent(row['task']) for row in workable)
+    # An open PR over the cap is not the same: it gets parked before any new start,
+    # urgent or not, because a start would open one more.
+    held_by_cap = (len(opened) >= cap
+                   or (over and not any(wip.urgent(row['task']) for row in workable)))
     for row in doings:
         if row not in live:
             findings.append(('stalled', f'stalled: {row["task"]["ticketNumber"]} in Doing with no '
@@ -823,9 +869,11 @@ def read_view(args, now):
     # Only this view's own repos are judged: another chat's repo is its gate, not this
     # one's. A view with no PRs names no repo, and asks GitHub nothing at all.
     # A fixture names its own gates; with none named, the test reads no GitHub at all.
+    repos = view_repos(rows, pulls, listing, board) | {pull_repo(p) for p in opened.values()}
+    waiting_lines += repo_cap_notes(repos, args, data, now)
     findings += merge_gate.gate_findings(
         board, now, fixture=((data.get('gates') or []) if args.fixture else None),
-        repos=view_repos(rows, pulls, listing, board))
+        repos=repos)
     # The watcher records its own name and reads the view without a loop state to judge.
     state_name = getattr(args, 'state_name', None)
     if state_name:

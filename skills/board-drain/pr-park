@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Park this label's newest PRs above wip-cap's label cap; resume parked PRs oldest first. Dry-run by default."""
+import argparse
+from contextlib import ExitStack
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+HERE = Path(__file__).resolve().parent
+RECONCILE = HERE.parent / 'hypertask-work/reconcile'
+reconcile = sys.modules.get('fleet_reconcile')
+if reconcile is None or getattr(reconcile, '__file__', None) != str(RECONCILE):
+    loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(RECONCILE))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    reconcile = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = reconcile
+    loader.exec_module(reconcile)
+
+# One table holds the per-label cap: wip-cap's, the same one the ticket cap reads.
+WIP_CAP = HERE / 'wip-cap'
+wip = sys.modules.get('board_drain_wip_cap')
+if wip is None or getattr(wip, '__file__', None) != str(WIP_CAP):
+    cap_loader = importlib.machinery.SourceFileLoader('board_drain_wip_cap', str(WIP_CAP))
+    cap_spec = importlib.util.spec_from_loader(cap_loader.name, cap_loader)
+    wip = importlib.util.module_from_spec(cap_spec)
+    sys.modules[cap_loader.name] = wip
+    cap_loader.exec_module(wip)
+
+COMMENT = 'parked: over the 5-per-agent cap; branch kept, reopen when a slot frees'
+ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError, subprocess.SubprocessError,
+          reconcile.BudgetRefused, reconcile.RateLimit)
+
+
+def owned_pulls(tasks, board):
+    keys = [task['ticketNumber'] for task in tasks]
+    if not keys:
+        return {}
+    by_name, by_url = reconcile.key_lookup(keys, board)
+    linked = {}
+    for task in tasks:
+        for pull in task.get('pullRequests') or ():
+            linked.setdefault(pull['url'], set()).add(task['ticketNumber'])
+    found = {}
+    for pull in reconcile.open_pulls(board):
+        matched = reconcile.matching_keys(pull, by_name, by_url) | linked.get(pull['url'], set())
+        if pull['state'] == 'OPEN' and matched:
+            reconcile.stamp(pull['createdAt'])
+            found[pull['url']] = dict(pull, keys=sorted(matched))
+    return found
+
+
+def newest_extras(pulls, cap):
+    if len(pulls) <= cap:
+        return []
+    ordered = sorted(pulls.values(), key=lambda p: (reconcile.stamp(p['createdAt']), p['url']),
+                     reverse=True)
+    return ordered[:max(0, len(ordered) - cap)]
+
+
+def cap_findings(pulls, label):
+    cap = wip.cap_for(label)
+    extras = newest_extras(pulls, cap)
+    if not extras:
+        return []
+    names = ', '.join(f'{"/".join(p["keys"])} {p["url"]}' for p in extras)
+    return [('agent PR cap', f'agent PR cap: {label} owns {len(pulls)} open PRs (cap {cap}); '
+                            f'park newest first: {names}')]
+
+
+def journal_path(board, label):
+    return Path.home() / '.local/state/board-drain' / f'parked-{board.id}-{reconcile.session.slug(label)}.json'
+
+
+def read_journal(path):
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError('invalid parking journal')
+    for url, entry in data.items():
+        if (not isinstance(entry, dict) or not isinstance(entry.get('keys'), list)
+                or entry.get('url') != url):
+            raise ValueError('invalid parking entry')
+        reconcile.stamp(entry['createdAt'])
+    return data
+
+
+def save_journal(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(data))
+    temporary.replace(path)
+
+
+def parked_states(journal):
+    refs = []
+    for url in journal:
+        match = re.fullmatch(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)', url)
+        if not match:
+            raise ValueError('invalid parked PR URL')
+        refs.append((match[1], int(match[2])))
+    if not refs:
+        return {}
+    query = reconcile.pull_query(refs, fields='url state createdAt')
+    result = json.loads(reconcile.run('gh', 'api', 'graphql', '-f', 'query=' + query))
+    if result.get('errors') or not result.get('data'):
+        raise ValueError('cannot read parked PRs')
+    states = {}
+    for n, url in enumerate(journal):
+        node = (result['data'].get(f'p{n}') or {}).get('pullRequest')
+        if not node or node.get('state') not in ('OPEN', 'CLOSED', 'MERGED'):
+            raise ValueError('cannot read parked PR state')
+        states[url] = node['state']
+    return states
+
+
+def own_login():
+    login = reconcile.session.login_for_session()
+    if not login:
+        raise ValueError('run as your own chat (SHIP_SESSION_NAME for headless runs)')
+    token = login[1].read_text().strip()
+    agent_id = reconcile.session.token_agent_id(token)
+    if not agent_id:
+        raise ValueError('own agent token required')
+    os.environ['HT_TOKEN'] = token
+    os.environ['HYPERTASKS_JWT_TOKEN'] = token
+    context = reconcile.api('context')
+    if (context.get('connected_agent') or {}).get('id') != agent_id:
+        raise ValueError('CLI is not using this chat agent token')
+
+
+def move_cards(pull, section, tasks, opened):
+    for key in pull['keys']:
+        task = tasks.get(key)
+        if (not task or task.get('section') not in ('Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier')
+                or task.get('waitingOnUserId') or task.get('blockerCommentId')):
+            continue
+        if section == 'Todo' and any(key in p['keys'] for p in opened.values()):
+            continue
+        if task['section'] != section:
+            reconcile.api('task', 'move', key, '--section', section)
+            task['section'] = section
+
+
+def park(opened, journal, states, tasks, path, label, apply=False):
+    cap = wip.cap_for(label)
+
+    def save():
+        if apply:
+            save_journal(path, journal)
+
+    for pull in newest_extras(opened, cap):
+        url = pull['url']
+        print(f'{"park" if apply else "would park"}: {url} ({", ".join(pull["keys"])})')
+        journal[url] = dict(pull)
+        save()
+        if apply:
+            reconcile.run('gh', 'pr', 'close', url, '--comment', COMMENT)
+        states[url] = 'CLOSED'
+        del opened[url]
+    for url, pull in list(journal.items()):
+        if states[url] == 'MERGED':
+            del journal[url]
+            save()
+        elif states[url] == 'OPEN':
+            if apply:
+                move_cards(pull, 'Checks', tasks, opened)
+            del journal[url]
+            save()
+        elif apply:
+            move_cards(pull, 'Todo', tasks, opened)
+    parked = sorted(journal.values(), key=lambda p: (reconcile.stamp(p['createdAt']), p['url']))
+    for pull in parked[:max(0, cap - len(opened))]:
+        url = pull['url']
+        print(f'{"reopen" if apply else "would reopen"}: {url} ({", ".join(pull["keys"])})')
+        if apply:
+            reconcile.run('gh', 'pr', 'reopen', url)
+        opened[url] = pull
+        if apply:
+            move_cards(pull, 'Checks', tasks, opened)
+        del journal[url]
+        save()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board', type=int, required=True)
+    parser.add_argument('--label', required=True)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--dry-run', action='store_true')
+    mode.add_argument('--apply', action='store_true')
+    args = parser.parse_args(argv)
+    if args.board < 1 or not args.label.strip():
+        parser.error('a positive board and nonempty label are required')
+    with ExitStack() as stack:
+        try:
+            own_login()
+            board = reconcile.board_config(args.board)
+            if args.apply:
+                handles = reconcile.acquire_locks(board, label=args.label)
+                if handles is None:
+                    raise ValueError('this label is already syncing')
+                for handle in handles:
+                    stack.enter_context(handle)
+            tasks = [t for t in reconcile.tickets(board=board) if reconcile.carries_label(t, args.label)]
+            path = journal_path(board, args.label)
+            journal = read_journal(path)
+            keys = {t['ticketNumber'] for t in tasks}
+            journal = {url: dict(p, keys=[k for k in p['keys'] if k in keys])
+                       for url, p in journal.items() if keys.intersection(p['keys'])}
+            opened = owned_pulls(tasks, board)
+            states = parked_states(journal)
+            for url, pull in journal.items():
+                if states[url] == 'OPEN':
+                    opened[url] = pull
+                else:
+                    opened.pop(url, None)
+        except ERRORS as error:
+            print(f'pr-park: warning: read failed ({str(error).splitlines()[0]}); no changes', file=sys.stderr)
+            return 0
+        try:
+            park(opened, journal, states, {t['ticketNumber']: t for t in tasks}, path,
+                 args.label, args.apply)
+        except ERRORS as error:
+            print(f'pr-park: apply failed: {error}', file=sys.stderr)
+            return 2
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

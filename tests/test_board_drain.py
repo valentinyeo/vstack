@@ -1138,7 +1138,7 @@ class RuleBreakTest(CheckTest):
         self.assertIn('ask Valentin', out)
         self.assertIn('drain-check: PASS', out)
 
-    def test_the_tick_reads_the_board_once_and_adds_one_github_call(self):
+    def test_the_tick_reads_the_board_once_and_shares_its_pr_facts(self):
         task = self.worker_card()['task']
         saved = {'at': NOW - 60, 'probe_since': '2027-01-01T00:00:00Z', 'repos': [],
                  'tickets': {'SOFT-2931': {'at': NOW - 60, 'updated_at': task['updatedAt'],
@@ -1149,6 +1149,9 @@ class RuleBreakTest(CheckTest):
 
         def fake_run(*args, **kwargs):
             gh_calls.append(args)
+            if 'graphql' in args:
+                return json.dumps({'data': {'search': {'issueCount': 0, 'nodes': [],
+                                                      'pageInfo': {'hasNextPage': False}}}})
             return json.dumps({'items': [], 'total_count': 0})
 
         def fake_tickets(**kwargs):
@@ -1156,7 +1159,8 @@ class RuleBreakTest(CheckTest):
             return [task]
 
         out = io.StringIO()
-        with patch.object(drain.reconcile, 'board_config', return_value=board), \
+        with patch.object(lint, 'reconcile', drain.reconcile), \
+                patch.object(drain.reconcile, 'board_config', return_value=board), \
                 patch.object(drain.reconcile, 'tickets', side_effect=fake_tickets), \
                 patch.object(drain.reconcile, 'api', return_value={}), \
                 patch.object(drain.reconcile, 'read_board_facts', return_value=saved), \
@@ -1171,8 +1175,10 @@ class RuleBreakTest(CheckTest):
             code = drain.main(['--board', '2060', '--label', 'Poteto', '--now', iso(NOW)])
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(len(board_reads), 1, 'one board read per tick')
-        self.assertEqual(len(gh_calls), 1, gh_calls)
+        self.assertEqual(len(gh_calls), 2, gh_calls)
         self.assertIn('search/issues', gh_calls[0])
+        self.assertIn('graphql', gh_calls[1])
+        self.assertNotIn('read failed', out.getvalue())
 
 
 def write_tool(path, body):

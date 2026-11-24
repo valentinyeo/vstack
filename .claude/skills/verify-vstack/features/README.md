@@ -44,6 +44,7 @@ Each row's third column names the tool under `tools/` that drives it, or the Doc
 | [responsive-mode.md](responsive-mode.md) | tools/responsive-mode | A chat answers fast and still finishes the job |
 | [heavy-local.md](heavy-local.md) | heavy-local hook journey | Each chat blocks heavy jobs locally and points to GitHub |
 | [pr-cap.md](pr-cap.md) | `tests/test_pr_cap.py` | A repo over its open PR cap refuses a new one in a chat and in a pacer worker |
+| [pr-park.md](pr-park.md) | `tests/test_pr_park.py` | A label parks newest PRs above five, resumes oldest PRs into free slots, and warns on the repo cap |
 | [test-timeout.md](test-timeout.md) | tools/test-timeout | The test guard refuses a hung command and passes a wrapped one |
 | [valentin-mode.md](valentin-mode.md) | tools/valentin-mode | A fresh chat uses valentin mode's three tools |
 | [valentin-subskills.md](valentin-subskills.md) | tools/valentin-subskills | A fresh chat follows valentin mode's sub-rules |
