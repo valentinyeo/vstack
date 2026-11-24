@@ -2502,7 +2502,7 @@ class LeaseTest(unittest.TestCase):
                     json.dumps({'tasks': [{'projectId': 2060, 'assignees': assignees}]}), '')
             return subprocess.CompletedProcess(command, take_code, '', '')
 
-        with patch.object(lease.shutil, 'which', return_value='/bin/hypertask'), \
+        with patch.object(lease, 'find', return_value='/bin/hypertask'), \
                 patch.object(lease.subprocess, 'run', side_effect=fake), \
                 patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
             self.assertEqual(lease.main(), 0)
