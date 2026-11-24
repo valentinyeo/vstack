@@ -495,8 +495,9 @@ class ReconcileTest(unittest.TestCase):
         with patch.object(r, 'run', side_effect=call), \
                 patch.object(r, 'open_pulls', return_value=[]):
             r.discover(keys)
-        # Thirty tickets: three ticket searches per dozen, then two branch lookups per 25.
-        self.assertEqual(len(queries), 5)
+        # Thirty tickets: packed up to 3 cards per OR query (10 queries -> 1 search call),
+        # plus 2 branch lookup batches (up to 25 per call).
+        self.assertEqual(len(queries), 3)
 
     def test_a_refused_search_batch_costs_one_call_and_keeps_the_rest(self):
         calls = []
@@ -511,7 +512,8 @@ class ReconcileTest(unittest.TestCase):
         with patch.object(r, 'run', side_effect=call), \
                 patch.object(r, 'open_pulls', return_value=[]), \
                 patch.object(r, 'branch_pulls', return_value=[]):
-            self.assertEqual(r.discover(['SOFT-1', 'SOFT-2']), {'SOFT-1': [], 'SOFT-2': []})
+            keys = ['SOFT-1', 'SOFT-2', 'SOFT-3', 'SOFT-4']
+            self.assertEqual(r.discover(keys), {k: [] for k in keys})
         self.assertEqual(len(calls), 3, 'the refused pair, then each half on its own')
 
     def test_the_open_sweep_is_one_paged_search_of_open_pulls(self):
@@ -700,9 +702,15 @@ class ReconcileTest(unittest.TestCase):
                 aliases = list(dict.fromkeys(re.findall(r'p(\d+):repository', call)))
                 body = {'data': {f'p{n}': {'object': {'text': '{}'}} for n in aliases}}
             else:
-                keys = list(dict.fromkeys(re.findall(r'SOFT-\d+', call)))
-                body = {'data': {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': [pulls[key]]}
-                                 for n, key in enumerate(keys)}}
+                # The query text is a JSON string, and a packed query quotes one term
+                # per card, so take the whole string and read the cards it names.
+                pairs = re.findall(r'(q\d+):search\(query:("(?:[^"\\]|\\.)*"),type:ISSUE', call)
+                body = {'data': {
+                    alias: {'pageInfo': {'hasNextPage': False},
+                            'nodes': [pulls[k] for k in
+                                      dict.fromkeys(re.findall(r'SOFT-\d+', json.loads(query)))
+                                      if k in pulls]}
+                    for alias, query in pairs}}
             return subprocess.CompletedProcess([], 0, json.dumps(body), '')
         return respond
 
@@ -731,8 +739,8 @@ class ReconcileTest(unittest.TestCase):
                  {**t, 'createdAt': created, 'labels': [{'id': '9', 'name': 'Bug'}]} for t in templates]
         whole = self.github_calls_for(tasks, [])
         labelled = self.github_calls_for(tasks, ['--label', 'SOFT-2807'])
-        self.assertEqual((whole, labelled), (5, 2),
-                         'whole board: 3 ticket searches + 1 open sweep + 1 pull batch, and an '
+        self.assertEqual((whole, labelled), (3, 2),
+                         'whole board: 1 packed ticket search + 1 open sweep + 1 pull batch, and an '
                          'open PR reads no policy; 2 labelled tickets: 1 + 1, and no fleet sweep')
 
     def test_a_label_nobody_carries_costs_no_github_calls(self):
@@ -1081,6 +1089,84 @@ class MovedKeyTest(unittest.TestCase):
         with patch.object(r, 'run', side_effect=respond), \
                 patch.object(r, 'api', side_effect=AssertionError('a refused key is remembered as refused')):
             self.assertEqual(r.discover(['FAKE-3'], board=board), {'FAKE-3': []})
+
+
+class AliasScaleTest(unittest.TestCase):
+    """A whole board of moved cards must cost one pass per pull, not per pull and card.
+
+    Board 13734 on 24 Nov was 255 cards and ~300 old keys. The alias pass then compared
+    every pull with every card and every old key, which is 75k regex sweeps over a PR
+    body: seven minutes of CPU on the sync timer. These fixtures are that shape.
+    """
+
+    CARDS = 250
+    PULLS = 300
+    BUDGET = 5.0
+
+    def setUp(self):
+        clear_cache()
+        r.reset_aliases()
+        r.PULLS.clear()
+        self.addCleanup(r.reset_aliases)
+        self.board = r.make_board(90010, 'FAKE', r.MANAGED, r.PROTECTED,
+                                  r.FACTORY_STAGE_COLUMN, r.FACTORY_COLUMN_STAGE)
+        self.keys = [f'FAKE-{n}' for n in range(1, self.CARDS + 1)]
+        self.forbidden = self.CARDS + 1
+
+    def old_key(self, n):
+        """One key a card moved from: 300 of them over 250 cards, one card with two."""
+        return f'GONE-{n}'
+
+    def body(self, old, card):
+        """A PR body the size of a real one, so a regex per pair is what costs."""
+        prose = 'This change keeps the board sync honest. ' * 40
+        return (f'## What changed\n{prose}\n\nTicket: {old}\n\n'
+                f'Card {card} on https://app.hypertask.ai/detail/project-90010/{card.split("-")[1]}\n'
+                f'{prose}')
+
+    def pull(self, n):
+        card = self.keys[n % self.CARDS]
+        old = self.old_key(n + 1)
+        return {'url': f'https://github.com/valentinyeo/another-repo/pull/{n + 1}',
+                'title': f'{old}: keep the card where it is',
+                'body': self.body(old, card), 'headRefName': f'{old.lower()}-work',
+                'state': 'MERGED', 'number': n + 1,
+                'repository': {'nameWithOwner': 'valentinyeo/another-repo'}}
+
+    def resolve(self, *args):
+        """Hypertask answers an old key with the card that now carries it."""
+        old = args[-1]
+        card = f'FAKE-{int(old.split("-")[1]) % self.CARDS or self.CARDS}'
+        return {'tasks': [{'ticketNumber': card, 'projectId': 90010}]}
+
+    def timed(self, work):
+        started = time.monotonic()
+        work()
+        took = time.monotonic() - started
+        self.assertLess(took, self.BUDGET,
+                        f'the alias pass took {took:.1f}s on a {self.CARDS}-card board')
+
+    def test_learning_old_keys_across_a_whole_board_costs_one_pass_per_pull(self):
+        pulls = [self.pull(n) for n in range(self.PULLS)]
+        found = {key: [] for key in self.keys}
+        with patch.object(r, 'api', side_effect=self.resolve), \
+                patch.object(r, 'run', side_effect=AssertionError('learning reads no PR')), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.timed(lambda: r.attribute(found, pulls, self.keys, self.board))
+        self.assertTrue(any(found.values()), 'the learned old key lands on its own card')
+
+    def test_a_change_probe_reads_every_pull_once(self):
+        pulls = [self.pull(n) for n in range(self.PULLS)]
+        items = [{'html_url': pull['url'], 'number': pull['number'],
+                  'title': pull['title'], 'body': pull['body'],
+                  'headRefName': pull['headRefName'], 'state': pull['state'],
+                  'repository': pull['repository']} for pull in pulls]
+        r.cache_write('aliases-90010.json',
+                      {self.old_key(n + 1): self.keys[n % self.CARDS]
+                       for n in range(self.PULLS)})
+        r.reset_aliases()
+        with patch.object(r, 'api', side_effect=AssertionError('these keys are known')):
+            self.timed(lambda: r.tickets_from_probe(items, self.keys, self.board))
 
 
 class Board15Test(unittest.TestCase):
@@ -2203,6 +2289,25 @@ class CallBudgetTest(unittest.TestCase):
             r.prefetch(pulls)
         self.assertEqual(batch.call_count, 3)
         self.assertEqual([len(c.args[0]) for c in batch.call_args_list], [50, 50, 20])
+
+    def test_an_open_pr_in_a_prefetch_reads_no_comments_or_verifier_run(self):
+        node = {**self.node(1), 'mergeable': 'CONFLICTING'}
+        pulls = {'SOFT-1': [{'repository': {'nameWithOwner': 'valentinyeo/another-repo'},
+                             'number': 1, 'state': 'OPEN'}]}
+        queries = []
+
+        def respond(*args):
+            queries.append(args[-1])
+            return json.dumps({'data': {'p0': {'pullRequest': node}}})
+
+        with patch.object(r, 'run', side_effect=respond), \
+                patch.object(r, 'verifier_policy',
+                             side_effect=AssertionError('an open PR reads no policy')):
+            r.prefetch(pulls)
+        self.assertNotIn('comments(', queries[0], 'an open PR pays for no comment page')
+        self.assertNotIn('checkSuite', queries[0], 'an open PR pays for no verifier run')
+        self.assertFalse(r.PULLS[('valentinyeo/another-repo', 1)].mergeable,
+                         'a conflicting open PR still says so, so a merge stays refused')
 
     def test_one_graphql_call_reads_many_prs(self):
         data = {'data': {'p0': {'pullRequest': self.node(1)}, 'p1': {'pullRequest': self.node(2)}}}
