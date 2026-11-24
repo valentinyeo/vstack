@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / 'skills/board-drain/merge-gate'
@@ -369,6 +369,54 @@ class DrainCheckGateTest(GateCase):
                                           'required': ['build', 'pstack-verifier']}]})
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertIn('merge gate missing: valentinyeo/vstack main', done.stdout)
+
+
+# Board 13556 ships from three repos, but one chat's view usually touches only one.
+BOARD_REPOS = (('valentinyeo/ceo', 'master'), ('valentinyeo/house-rules', 'main'),
+               ('valentinyeo/vstack', 'main'))
+
+
+def gate_record(*contexts):
+    return {'mode': 'classic', 'classic': list(contexts), 'strict': False,
+            'contexts': list(contexts)}
+
+
+class ViewReposGateTest(GateCase):
+    """A gate is judged where the chat's own view ships, never where another chat does."""
+
+    def findings(self, repos, *contexts):
+        with patch.object(gate, 'repos_for', return_value=BOARD_REPOS), \
+                patch.object(gate, 'gate', return_value=gate_record(*contexts)) as read:
+            found = gate.gate_findings(gate.board_object(13556), NOW, repos=repos)
+        return found, [item[0][:2] for item in read.call_args_list]
+
+    def test_a_view_whose_work_is_only_in_vstack_never_judges_ceo(self):
+        found, read = self.findings({'valentinyeo/vstack'}, 'verifier')
+        self.assertEqual(found, [])
+        self.assertEqual(read, [('valentinyeo/vstack', 'main')])
+
+    def test_a_missing_gate_in_the_views_own_repo_is_still_reported(self):
+        found, read = self.findings({'valentinyeo/vstack'}, 'build', 'lint')
+        self.assertEqual(read, [('valentinyeo/vstack', 'main')])
+        self.assertEqual([text for _, text in found],
+                         ['merge gate missing: valentinyeo/vstack main; run '
+                          'skills/board-drain/merge-gate --board 13556 --fix.'])
+
+    def test_a_repo_the_board_does_not_ship_from_is_never_judged(self):
+        found, read = self.findings({'someoneelse/app'})
+        self.assertEqual(found, [])
+        self.assertEqual(read, [])
+
+    def test_a_view_with_no_prs_reads_no_gate(self):
+        found, read = self.findings(set())
+        self.assertEqual(found, [])
+        self.assertEqual(read, [])
+
+    def test_a_board_wide_judgement_still_reads_every_repo(self):
+        # merge-gate's own CLI passes no repos: it still judges every repo the board ships from.
+        found, read = self.findings(None)
+        self.assertEqual(read, list(BOARD_REPOS))
+        self.assertEqual(len(found), 3)
 
 
 if __name__ == '__main__':

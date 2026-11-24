@@ -15,7 +15,8 @@ read. A read that fails leaves its repo unanswered instead of guessing at it.
 
 A chat's repos come from its board config (the reconcile BoardConfig repos) or, when the
 board names none, from the repos its PRs live in in the saved board facts. drain-check
-calls `gate_findings` for exactly that. Each repo is read at most once an hour, so a
+calls `gate_findings` for the repos its own view ships from, intersected with those, so a
+chat is never failed by another chat's repo. Each repo is read at most once an hour, so a
 drain tick stays inside the gh budget.
 
 `--fix` adds the required check through the GitHub API for repos this account owns, and
@@ -213,8 +214,16 @@ def fix_command(board_id):
     return f'skills/board-drain/merge-gate --board {board_id} --fix'
 
 
-def missing_gates(pairs, now):
-    """Every (repo, branch) that does not require the check, and every one left unread."""
+def missing_gates(pairs, now, repos=None):
+    """Every (repo, branch) that does not require the check, and every one left unread.
+
+    `repos` narrows the judgement to those repo names: drain-check passes its own
+    view's repos so another chat's repo is never read, let alone failed. None judges
+    every pair, which is what the CLI and --fix do.
+    """
+    if repos is not None:
+        wanted = frozenset(repos)
+        pairs = [(repo, branch) for repo, branch in pairs if repo in wanted]
     missing, unread = [], []
     for repo, branch in pairs:
         try:
@@ -239,17 +248,24 @@ def fixture_gates(rows):
     return missing
 
 
-def gate_findings(board, now, fixture=None):
-    """drain-check findings for the repos this board ships from.
+def gate_findings(board, now, fixture=None, repos=None):
+    """drain-check findings for the repos this chat's own view ships from.
+
+    `repos` names them. None judges every repo the board ships from, which is what the
+    CLI does. An empty set is no repos: no finding and no GitHub read at all. The gate
+    is judged only where the board ships, so a repo the board never merges into is
+    never named here.
 
     A fixture names its own repos and required checks, so tests never reach GitHub.
     A repo whose gate cannot be read is left alone: an unknown gate is not a missing one.
     """
     if fixture is not None:
         missing = fixture_gates(fixture)
+    elif repos is not None and not repos:
+        return []
     else:
         try:
-            missing = missing_gates(repos_for(board), now)[0]
+            missing = missing_gates(repos_for(board), now, repos)[0]
         except ERRORS + (reconcile.BudgetRefused, reconcile.RateLimit):
             return []
     return [('merge gate', f'merge gate missing: {repo} {branch}; run '
