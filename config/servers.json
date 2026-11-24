@@ -5,6 +5,7 @@
     {
       "id": "contabo-uk",
       "role": "main",
+      "multiprompt_slot": 1,
       "ip": "80.190.82.74",
       "hostname": "hypertask-vps",
       "previous_hostname": "vmi3202882",
@@ -15,6 +16,7 @@
     {
       "id": "hetzner",
       "role": "shared",
+      "multiprompt_slot": 0,
       "ip": "46.224.218.39",
       "hostname": "ubuntu-4gb-nbg1-1",
       "users": ["valentin", "inne", "agent"],
