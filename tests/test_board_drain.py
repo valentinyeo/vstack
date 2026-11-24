@@ -268,6 +268,21 @@ class CheckTest(unittest.TestCase):
         self.assertIn('drain-check: PASS', out)
         self.assertNotIn('wait on merge', out)
 
+    def test_a_product_question_about_the_model_shipping_still_passes(self):
+        # VSTA-181: HTPR-9457, 9544 and 9545 failed drain-check with "wait on merge" and no PR,
+        # because "models ship only on your yes" reads as a merge verb beside "your".
+        for text in ('It reached you because models ship only on your yes.',
+                     'New models ship only when you say yes.'):
+            with self.subTest(text=text):
+                row = mubo63(section='Checks', waitingOnUserId=6)
+                row['comments'] = [{'createdAt': iso(NOW - 600),
+                                    'agent_display_name': 'HT Product Lead',
+                                    'text': text}]
+                payload = {'rows': [row], 'pulls': {'MUBO-63': [PR_524 | {'checks': 'red'}]}}
+                code, out = self.run_payload(payload, board=13734, label='Multiprompt Android')
+                self.assertEqual(code, 0, out)
+                self.assertNotIn('wait on merge', out)
+
     def test_a_red_or_conflicting_pr_is_not_finished_work(self):
         for pull in (PR_524 | {'checks': 'red'}, PR_524 | {'mergeable': False},
                      PR_524 | {'state': 'MERGED'}):
