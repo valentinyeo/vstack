@@ -51,6 +51,17 @@ MEDIA_LINK = re.compile(
     re.IGNORECASE,
 )
 URL = re.compile(r'https?://\S+')
+COLUMN = r'(?:Todo|Backlog|Verification Backlog|Doing|Building|In Progress|Checks|AI Review|Verifier|QA|Done)'
+MOVE = rf'{COLUMN} -> {COLUMN}'
+MOVE_NOTES = (
+    re.compile(rf'fleet/reconcile: (?P<reason>[^\n]*); {MOVE}\.'),
+    re.compile(rf'[A-Z][A-Z0-9]*-\d+ {MOVE} \| (?P<reason>[^\n]*)'),
+)
+SYNC_REASON = re.compile(
+    r'merged with PASS|merged without PASS: rule break; owner must verify'
+    r'|merged PR; live proof pending'
+    r'|newer open PR https?://\S+ than the merged PASS; card follows it'
+)
 MESSAGE = (
     'BLOCKED by agent-lane-guard: the agent lane is coordination only, not results ({reason}); '
     'post evidence, verdicts and done summaries in plain words with `hypertask comment add --kind done|qa`.'
@@ -68,7 +79,7 @@ def read_text_file(raw_path, cwd):
 
 
 def activity_text(rest, cwd):
-    """Extract the message text for `hypertask activity add`, or None for any other command."""
+    """Extract activity text from Hypertask argv, including legacy positional messages."""
     words = []
     index = 0
     while index < len(rest) and len(words) < 2:
@@ -86,6 +97,7 @@ def activity_text(rest, cwd):
     if words != ['activity', 'add']:
         return None
     parts = []
+    ticket_seen = False
     while index < len(rest):
         word = rest[index]
         if word in ('--help', '-h'):
@@ -106,6 +118,13 @@ def activity_text(rest, cwd):
             parts.append(read_text_file(word.split('=', 1)[1], cwd))
             index += 1
             continue
+        if word in GLOBAL_VALUE_FLAGS:
+            index += 2
+            continue
+        if not word.startswith('-'):
+            if ticket_seen:
+                parts.append(word)
+            ticket_seen = True
         index += 1
     return '\n'.join(part for part in parts if part)
 
@@ -116,7 +135,18 @@ def reason_for(text):
         return None
     if MEDIA_LINK.search(text):
         return 'screenshot or video link'
-    cleaned = URL.sub(' ', text)
+    prose = []
+    for line in text.splitlines():
+        for pattern in MOVE_NOTES:
+            move = pattern.fullmatch(line)
+            if move:
+                # Column titles and exact board-sync reasons are metadata, not a verdict.
+                line = move['reason']
+                if SYNC_REASON.fullmatch(line):
+                    line = ''
+                break
+        prose.append(line)
+    cleaned = URL.sub(' ', '\n'.join(prose))
     qa = QA_VERDICT.search(cleaned)
     if qa:
         return f"result word '{qa.group(0)}'"
@@ -127,9 +157,16 @@ def reason_for(text):
 
 
 def check(args, cwd):
-    if not args or Path(args[0]).name != 'hypertask':
+    if not args:
         return None
-    reason = reason_for(activity_text(args[1:], cwd))
+    command, rest = Path(args[0]).name, args[1:]
+    if command in {'hypertask', 'vcc'}:
+        text = activity_text(rest, cwd)
+    elif command == 'poteto-ticket' and rest[:1] == ['log'] and len(rest) == 3:
+        text = rest[2]
+    else:
+        return None
+    reason = reason_for(text)
     return MESSAGE.format(reason=reason) if reason else None
 
 
@@ -163,17 +200,17 @@ def verdict(command, cwd='/tmp', depth=0):
 
 
 def shim(argv):
-    """Stand in for `hypertask` in a worker's PATH: refuse result notes in activity add."""
-    if len(argv) < 1:
-        print('agent-lane-guard --shim needs REAL, empty when the host lacks it', file=sys.stderr)
+    """Refuse result notes before executing a worker's board-writing command."""
+    if len(argv) < 2:
+        print('agent-lane-guard --shim needs COMMAND REAL, empty REAL when absent', file=sys.stderr)
         return 2
-    real, args = argv[0], argv[1:]
-    why = check(['hypertask'] + args, os.getcwd())
+    command, real, args = argv[0], argv[1], argv[2:]
+    why = check([command] + args, os.getcwd())
     if why:
         print(why, file=sys.stderr)
         return 2
     if not real:
-        print('agent-lane-guard: hypertask is not installed on this host', file=sys.stderr)
+        print(f'agent-lane-guard: {command} is not installed on this host', file=sys.stderr)
         return 127
     try:
         os.execv(real, [real] + args)

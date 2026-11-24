@@ -55,7 +55,7 @@ Mention markup, until the CLI has a flag (https://app.hypertask.ai/detail/projec
 
 Get `<userId>` from `creatorId` in `hypertask comment list <ticket>`, or from an existing mention. Read the comment back: `name-<userId>` must be there.
 
-**Agent lane:** `hypertask activity add <ticket> --text` from an agent login. Only agent-to-agent coordination chatter no person needs: claims, `Next:`, branch or PR names, and resume commands. Plain text, no HTML tags. Never put evidence, proof, results, verdicts, or done summaries here — those always go in a people comment (`comment add --kind done` or `--kind qa`) in plain words with screenshot or video links. `hooks/agent-lane-guard.py` refuses result-like text in `activity add`. Never post an agent note under a person's login.
+**Agent lane:** `hypertask activity add <ticket> --text` from an agent login. Only agent-to-agent coordination chatter no person needs: claims, `Next:`, branch or PR names, and resume commands. Plain text, no HTML tags. Never put evidence, proof, results, verdicts, or done summaries here — those always go in a people comment (`comment add --kind done` or `--kind qa`) in plain words with screenshot or video links. `hooks/agent-lane-guard.py` refuses result-like text in `activity add`, including `vcc activity add` and `poteto-ticket log`. Structured column-move notes are coordination; result prose or media links added to them still block. Never post an agent note under a person's login.
 
 ## Comment rules that break rendering or notifications
 

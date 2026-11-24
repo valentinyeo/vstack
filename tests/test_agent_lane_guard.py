@@ -4,17 +4,21 @@ Real case: the Seamless Session Transitioning chat put its MUBO-517 done summary
 agent lane. Results, verdicts, proof, done summaries, and screenshot or video links belong
 in a people comment (`comment add --kind done|qa`).
 """
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import pwd
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / 'hooks/agent-lane-guard.py'
@@ -31,6 +35,7 @@ def load(name, path):
     loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(name, loader)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
     loader.exec_module(module)
     return module
 
@@ -83,6 +88,19 @@ ALLOWED_TEXTS = (
     'Released lease. Next: owner picks up review.',
     'Next: fix lint on PR #12',
     'Branch: fix/verified-login. Next: open PR.',
+    'Work continues.',
+)
+
+MOVE_TEXTS = (
+    'VSTA-249 AI Review -> Done | merged and checks green',
+    'VSTA-249 Done -> Doing | owner resumes work',
+    'VSTA-249 Verifier -> Done | merged with PASS',
+    'fleet/reconcile: merged and checks green; AI Review -> Done.',
+    'fleet/reconcile: merged with PASS; AI Review -> Done.',
+    'fleet/reconcile: merged without PASS: rule break; owner must verify; Doing -> Todo.',
+    'fleet/reconcile: merged PR; live proof pending; In Progress -> AI Review.',
+    'fleet/reconcile: newer open PR https://github.com/a/b/pull/2 '
+    'than the merged PASS; card follows it; Todo -> Checks.',
 )
 
 
@@ -100,6 +118,54 @@ class GuardVerdict(unittest.TestCase):
             with self.subTest(text=text):
                 why = guard.verdict(f'hypertask activity add VSTA-249 --text "{text}"')
                 self.assertIsNone(why, f'{text} -> {why}')
+
+    def test_allows_reconcile_positional_and_text_flag_shapes(self):
+        for text in MOVE_TEXTS:
+            for flag in ('', '--text '):
+                with self.subTest(text=text, flag=flag):
+                    self.assertIsNone(guard.verdict(
+                        f'hypertask activity add VSTA-249 {flag}{shlex.quote(text)}'))
+
+    def test_allows_poteto_ticket_claim_and_log_shapes(self):
+        self.assertIsNone(guard.verdict('poteto-ticket claim SOFT-99'))
+        for text in ALLOWED_TEXTS:
+            with self.subTest(text=text):
+                self.assertIsNone(guard.verdict(f'poteto-ticket log SOFT-99 {shlex.quote(text)}'))
+                self.assertIsNone(guard.verdict(
+                    f'hypertask --token private --json activity add SOFT-99 --text {shlex.quote(text)}'))
+
+    def test_allows_vcc_coordination_and_resume_example(self):
+        for text in (*ALLOWED_TEXTS, *MOVE_TEXTS):
+            with self.subTest(text=text):
+                self.assertIsNone(guard.verdict(f'vcc activity add VSTA-249 {shlex.quote(text)}'))
+        self.assertIsNone(guard.verdict(
+            'hypertask activity add VSTA-249 --text "claude --resume $CLAUDE_CODE_SESSION_ID"'))
+
+    def test_refuses_results_through_aliases_and_positional_text(self):
+        for text in BLOCKED_TEXTS:
+            for prefix in ('vcc activity add VSTA-249', 'poteto-ticket log SOFT-99',
+                           'hypertask activity add VSTA-249'):
+                with self.subTest(prefix=prefix, text=text):
+                    self.assertIsNotNone(guard.verdict(f'{prefix} {shlex.quote(text)}'))
+
+    def test_move_notes_do_not_hide_results(self):
+        texts = (
+            'VSTA-249 AI Review -> Done | Fixed the crash',
+            'VSTA-249 AI Review -> Done | PASS: verified on staging',
+            'VSTA-249 AI Review -> Done | https://screencast2.com/x',
+            'VSTA-249 AI Review -> Done | merged with PASS; Fixed the crash',
+            'fleet/reconcile: Fixed and verified; AI Review -> Done.',
+            'fleet/reconcile: merged with PASS; Fixed it; AI Review -> Done.',
+            'fleet/reconcile: https://cdn.example.com/after.png; AI Review -> Done.',
+            'fleet/reconcile: merged with PASS; AI Review -> Done.\nDone: fixed',
+            'Done: fixed -> verified',
+            'merged with PASS',
+            'merged PR; live proof pending',
+        )
+        for text in texts:
+            with self.subTest(text=text):
+                self.assertIsNotNone(guard.verdict(
+                    f'hypertask activity add VSTA-249 --text {shlex.quote(text)}'))
 
     def test_handles_command_variants_and_wrappers(self):
         forms = (
@@ -158,9 +224,10 @@ class WorkerShim(unittest.TestCase):
         self.bin = self.dir / 'bin'
         self.bin.mkdir()
         self.log = self.dir / 'calls.log'
-        self.fake = self.bin / 'hypertask'
-        self.fake.write_text(FAKE_HYPERTASK, encoding='utf-8')
-        self.fake.chmod(0o755)
+        for command in ('hypertask', 'vcc', 'poteto-ticket'):
+            fake = self.bin / command
+            fake.write_text(FAKE_HYPERTASK, encoding='utf-8')
+            fake.chmod(0o755)
         self.shims = self.dir / 'shims'
         result = subprocess.run(
             [sys.executable, str(SHIMS), '--dir', str(self.shims),
@@ -172,19 +239,21 @@ class WorkerShim(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def run_shim(self, *args):
-        env = dict(
+    def shim_env(self):
+        return dict(
             os.environ,
             HT_LOG=str(self.log),
             PYTHONDONTWRITEBYTECODE='1',
             PATH=f'{self.shims}{os.pathsep}{self.bin}{os.pathsep}{os.environ.get("PATH", "")}',
         )
+
+    def run_shim(self, *args, command='hypertask'):
         return subprocess.run(
-            [str(self.shims / 'hypertask'), *args],
+            [str(self.shims / command), *args],
             text=True,
             capture_output=True,
             timeout=30,
-            env=env,
+            env=self.shim_env(),
         )
 
     def test_shim_refuses_result_without_calling_real_hypertask(self):
@@ -198,6 +267,71 @@ class WorkerShim(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('ok: activity add VSTA-249 --text Next: rebase', result.stdout)
         self.assertTrue(self.log.exists())
+
+    def test_shim_allows_reconcile_moves(self):
+        for text in MOVE_TEXTS:
+            for flag in ([], ['--text']):
+                with self.subTest(text=text, flag=flag):
+                    result = self.run_shim('activity', 'add', 'VSTA-249', *flag, text)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(text, self.log.read_text())
+
+    def test_alias_shims_refuse_results_and_allow_coordination(self):
+        for command, prefix in (('vcc', ('activity', 'add', 'VSTA-249')),
+                                ('poteto-ticket', ('log', 'SOFT-99'))):
+            for text in BLOCKED_TEXTS:
+                with self.subTest(command=command, text=text):
+                    result = self.run_shim(*prefix, text, command=command)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertFalse(self.log.exists())
+        for command, args in (('vcc', ('activity', 'add', 'VSTA-249', 'Next: rebase')),
+                              ('poteto-ticket', ('claim', 'SOFT-99')),
+                              ('poteto-ticket', ('log', 'SOFT-99', 'Work continues.'))):
+            result = self.run_shim(*args, command=command)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(' '.join(args), self.log.read_text())
+
+    def test_shell_variables_reach_shim_as_resolved_text(self):
+        for command in ('hypertask activity add VSTA-249 --text "$NOTE"',
+                        'vcc activity add VSTA-249 "$NOTE"',
+                        'poteto-ticket log SOFT-99 "$NOTE"'):
+            result = subprocess.run(
+                ['bash', '-c', 'NOTE="PASS: verified"; ' + command],
+                env=self.shim_env(), capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertFalse(self.log.exists())
+
+    def test_actual_reconcile_moves_through_shim_without_runtime_error(self):
+        r = load('agent_lane_reconcile', ROOT / 'skills/hypertask-work/reconcile')
+        merged = r.Pull('https://github.com/a/b/pull/1', 'MERGED', 'green', True,
+                        merged_at=100, created_at=1)
+        unproven = r.Pull('https://github.com/a/b/pull/1', 'MERGED', 'green', False)
+        newer = r.Pull('https://github.com/a/b/pull/2', 'OPEN', 'green', False, created_at=200)
+        cases = (
+            (2060, 'AI Review', (merged,), False, 'Done', 'merged with PASS'),
+            (2060, 'Doing', (unproven,), False, 'Todo', 'merged without PASS'),
+            (2060, 'Doing', (merged, newer), False, 'AI Review', 'than the merged PASS'),
+            (2060, 'Todo', (), True, 'Doing', 'live worker'),
+            (2060, 'Doing', (), False, 'Todo', 'no live worker and no PR'),
+            (15, 'In Progress', (merged,), False, 'Done', 'merged with PASS'),
+            (15, 'QA', (merged,), False, 'Done', 'merged with PASS'),
+            (15, 'Backlog', (), True, 'In Progress', 'live worker'),
+        )
+        for board_id, column, pulls, alive, expected, reason in cases:
+            with self.subTest(board=board_id, column=column, reason=reason):
+                board = r.BOARDS[board_id]
+                key = f'{board.prefix}-249'
+                task = {'ticketNumber': key, 'projectId': board_id, 'section': column}
+                with patch.dict(os.environ, self.shim_env()), \
+                        patch.object(r, 'api') as api, \
+                        patch.object(r, 'require_board15_agent'), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    result = r.reconcile(task, r.Facts(column, 8000, alive, pulls),
+                                         apply=True, board=board)
+                self.assertEqual(result, expected)
+                api.assert_called_once_with('task', 'move', key, '--section', expected)
+                self.assertIn(reason, self.log.read_text())
+                self.assertIn(f'{column} -> {expected}.', self.log.read_text())
 
 
 class TicketLintHintsAndDocs(unittest.TestCase):

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -83,6 +84,21 @@ class Workflow(unittest.TestCase):
         self.assertIn('done', self.data()['comments'][-1])
         self.assertEqual(self.data()['writer'], 1)
         self.assertEqual(self.data()['created'], 1)
+
+    def test_claim_and_log_with_agent_lane_shim(self):
+        home = Path(self.tmp.name)
+        shims = home / 'shims'
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/worker-shims'), '--dir', str(shims),
+             '--path', str(home)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.env['PATH'] = f'{shims}:' + self.env['PATH']
+        self.run_cli('claim', 'SOFT-99')
+        self.run_cli('log', 'SOFT-99', 'Work continues.')
+        self.assertEqual(self.data()['log'], ['Claimed.', 'Work continues.'])
+        result = self.run_cli('log', 'SOFT-99', 'PASS: verified', success=False)
+        self.assertIn('agent-lane-guard', result.stderr)
+        self.assertEqual(self.data()['log'], ['Claimed.', 'Work continues.'])
 
     def test_invalid_proof_never_writes(self):
         for proof in ['missing', 'https://example.com', 'https://github.com/a/b/pull/1',
