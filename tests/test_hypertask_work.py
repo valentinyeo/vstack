@@ -2075,6 +2075,9 @@ class LeaseTest(unittest.TestCase):
                 patch.object(lease.reconcile, 'LEASES', self.directory),
                 patch.object(lease.session, 'login_for_session',
                               return_value=self.login()),
+                # The WIP cap reads the board, which a test never reaches: VSTA-206
+                # tests its own rule in tests/test_wip_cap.py against card facts.
+                patch.object(lease, 'cap_refusal', return_value=None),
                 patch.object(lease, 'spawn_card',
                              side_effect=lambda command, env: self.spawned.append(
                                  (command, dict(env))))):
@@ -2167,7 +2170,16 @@ class LeaseTest(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())['pid'], os.getpid())
 
     def test_wrapper_fast_command_and_exit_status(self):
-        env = {**os.environ, 'MULTIPROMPT_TAB': '', 'FLEET_LEASE_DIR': str(self.directory)}
+        # The WIP cap's board read is not this test's subject, so a `hypertask` stub
+        # answers 3 here the way a plan-pick worker's shim does and the cap fails open.
+        # tests/test_wip_cap.py proves the refusal itself.
+        stubdir = self.directory / 'bin'
+        stubdir.mkdir()
+        stub = stubdir / 'hypertask'
+        stub.write_text('#!/bin/sh\nexit 3\n')
+        stub.chmod(0o755)
+        env = {**os.environ, 'MULTIPROMPT_TAB': '', 'FLEET_LEASE_DIR': str(self.directory),
+               'PATH': f'{stubdir}{os.pathsep}{os.environ.get("PATH", "")}'}
         for code in (0, 7):
             result = subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'SOFT-1', 'run', '--', sys.executable, '-c', f'raise SystemExit({code})'], env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, code, result.stderr)

@@ -38,6 +38,12 @@ gate_spec = importlib.util.spec_from_loader(gate_loader.name, gate_loader)
 merge_gate = importlib.util.module_from_spec(gate_spec)
 sys.modules[gate_loader.name] = merge_gate
 gate_loader.exec_module(merge_gate)
+
+cap_loader = importlib.machinery.SourceFileLoader('board_drain_wip_cap', str(HERE / 'wip-cap'))
+cap_spec = importlib.util.spec_from_loader(cap_loader.name, cap_loader)
+wip = importlib.util.module_from_spec(cap_spec)
+sys.modules[cap_loader.name] = wip
+cap_loader.exec_module(wip)
 # One reconcile for the tick: its gh budget and its saved board facts drive the gate too.
 merge_gate.reconcile = reconcile
 
@@ -648,7 +654,8 @@ def ticket_comments(key):
 def rows_for(args):
     """Open tickets carrying the label, each Todo ticket with its comments and links.
 
-    Also the whole loaded board by key, label or not, so a blocker's column is known.
+    Also the whole loaded board by key, label or not, so a blocker's column is known,
+    and that whole board's cards, because the WIP cap counts every card on the board.
     """
     extra = {}
     if args.fixture:
@@ -670,7 +677,7 @@ def rows_for(args):
             row = {'task': task, 'comments': ticket_comments(key),
                    'relations': [] if waiting(task) else ticket_relations(key)}
         kept.append(row)
-    return board, kept, loaded, extra
+    return board, kept, loaded, extra, [row['task'] for row in rows]
 
 
 def pull_facts(args, board, rows, data):
@@ -687,12 +694,18 @@ def pull_facts(args, board, rows, data):
 
 def read_view(args, now):
     """One read of the view: the board, every row, the notes, the findings, the workable rows."""
-    board, rows, loaded, data = rows_for(args)
+    board, rows, loaded, data, board_tasks = rows_for(args)
     pulls = pull_facts(args, board, rows, data)
     todos = [row for row in rows if row['task'].get('section') == TODO]
     doings = [row for row in rows if row['task'].get('section') in DOING]
     live = [row for row in doings if alive(row['task'], now, board)]
     workable, waiting_lines, blocked_lines, findings = [], [], [], []
+    # Valentin's order: finish before starting. A full board takes no new Todo work,
+    # so the findings that ask for a start stay quiet until it drains.
+    over, cards, cap = wip.over_cap(board_tasks, board.id)
+    if over:
+        findings.append(('over cap', f'over cap: {cards} cards in {wip.LABEL} '
+                                     f'(cap {cap}); finish before starting'))
     for row in todos:
         task = row['task']
         if waiting(task):
@@ -707,7 +720,9 @@ def read_view(args, now):
             blocked_lines.append(f'blocked: {task["ticketNumber"]} by {", ".join(stuck)}')
         else:
             workable.append(row)
-    if workable and not live:
+    # An urgent Todo card may start while the board is over cap, so its nudge stands.
+    held_by_cap = over and not any(wip.urgent(row['task']) for row in workable)
+    if workable and not live and not held_by_cap:
         findings.append(('loop off', f'loop off: {len(workable)} workable Todo, nothing in Doing. '
                                      f'Re-arm your loop and start a worker on '
                                      f'{top_key(workable, now, board)}.'))
@@ -733,7 +748,7 @@ def read_view(args, now):
                                            f'{task["ticketNumber"]} --self, with your token).'))
     for row in workable:
         spent = age(row['task'], now)
-        if spent is not None and spent > STALE:
+        if spent is not None and spent > STALE and not held_by_cap:
             findings.append(('stale', f'stale: {row["task"]["ticketNumber"]} workable in Todo '
                                       f'for {int(spent // 3600)}h.'))
     findings += merge_findings(rows, pulls)
