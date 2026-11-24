@@ -1005,6 +1005,39 @@ class RuleBreakTest(CheckTest):
         """Rows plus the board facts a drain-check fixture does not carry."""
         return {'rows': rows, 'roster': self.CHAT, 'chats': ['Poteto'], **facts}
 
+    def sync_record(self, name, reason='apply exited 1', board=13734):
+        """An armed loop for this chat with one failed sync recorded against it."""
+        loop.arm(name, board=board, now=NOW)
+        loop.record_sync(name, False, reason, now=NOW)
+
+    def test_another_chats_sync_break_is_not_this_chats_finding(self):
+        self.sync_record('Multi Bot Android Features', reason='apply exited 1')
+        self.sync_record('Multi Bot Android Verifiy', reason='sync token expired')
+        code, out = self.run_payload(
+            self.payload([], chats=['Multi Bot Android Features',
+                                    'Multi Bot Android Verifiy']),
+            board=13734, label='Multi Bot Android Verifiy')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('apply exited 1', out)
+        self.assertIn('rule-break: (sync) sync-record: sync failed: sync token expired.', out)
+
+    def test_the_chats_own_sync_break_comes_back_under_its_state_name(self):
+        self.sync_record('Multi Bot Android Verifiy', reason='apply exited 1')
+        code, out = self.run_payload(
+            self.payload([], chats=['Multi Bot Android Verifiy']),
+            '--state-name', 'Multi Bot Android Verifiy',
+            board=13734, label='Multi Bot Android')
+        self.assertEqual(code, 1, out)
+        self.assertIn('rule-break: (sync) sync-record: sync failed: apply exited 1.', out)
+
+    def test_the_chats_own_sync_break_comes_back_under_its_label(self):
+        self.sync_record('Multi Bot Android Verifiy', reason='apply exited 1')
+        code, out = self.run_payload(
+            self.payload([], chats=['Multi Bot Android Verifiy']),
+            board=13734, label='Multi Bot Android Verifiy')
+        self.assertEqual(code, 0, out)
+        self.assertIn('rule-break: (sync) sync-record: sync failed: apply exited 1.', out)
+
     def test_one_break_prints_one_warning_line_and_still_passes(self):
         row = todo('SOFT-2930')
         row['task']['assignees'] = [{'id': 6, 'email': 'valentin.yeo@gmail.com',

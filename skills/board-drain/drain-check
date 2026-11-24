@@ -959,8 +959,16 @@ def rule_breaks(view, args, now):
                                    roster=None, skip_comments=False, json=False)
     mine = args.label.strip().casefold()
     breaks = lint.lint(lint_args, shared=shared)
-    return [item for item in breaks
-            if item.rule not in OWN_LABEL_RULES or slug(item.owner) == mine]
+    # A sync record files under a chat name, and the lint lists every chat's.
+    own = slug(args.state_name) or mine
+    kept = []
+    for item in breaks:
+        if item.rule == 'sync-record':
+            if slug(item.owner) == own:
+                kept.append(item)
+        elif item.rule not in OWN_LABEL_RULES or slug(item.owner) == mine:
+            kept.append(item)
+    return kept
 
 
 def slug(name):
