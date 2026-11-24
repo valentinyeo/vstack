@@ -81,8 +81,8 @@ def read_journal(path):
     if not isinstance(data, dict):
         raise ValueError('invalid parking journal')
     for url, entry in data.items():
-        if (not isinstance(entry, dict) or entry.get('phase') not in ('parked', 'reopening')
-                or not isinstance(entry.get('keys'), list) or entry.get('url') != url):
+        if (not isinstance(entry, dict) or not isinstance(entry.get('keys'), list)
+                or entry.get('url') != url):
             raise ValueError('invalid parking entry')
         reconcile.stamp(entry['createdAt'])
     return data
@@ -155,7 +155,7 @@ def park(opened, journal, states, tasks, path, label, apply=False):
     for pull in newest_extras(opened, cap):
         url = pull['url']
         print(f'{"park" if apply else "would park"}: {url} ({", ".join(pull["keys"])})')
-        journal[url] = dict(pull, phase='parked')
+        journal[url] = dict(pull)
         save()
         if apply:
             reconcile.run('gh', 'pr', 'close', url, '--comment', COMMENT)
@@ -176,8 +176,6 @@ def park(opened, journal, states, tasks, path, label, apply=False):
     for pull in parked[:max(0, cap - len(opened))]:
         url = pull['url']
         print(f'{"reopen" if apply else "would reopen"}: {url} ({", ".join(pull["keys"])})')
-        pull['phase'] = 'reopening'
-        save()
         if apply:
             reconcile.run('gh', 'pr', 'reopen', url)
         opened[url] = pull
@@ -215,6 +213,11 @@ def main(argv=None):
                        for url, p in journal.items() if keys.intersection(p['keys'])}
             opened = owned_pulls(tasks, board)
             states = parked_states(journal)
+            for url, pull in journal.items():
+                if states[url] == 'OPEN':
+                    opened[url] = pull
+                else:
+                    opened.pop(url, None)
         except ERRORS as error:
             print(f'pr-park: warning: read failed ({str(error).splitlines()[0]}); no changes', file=sys.stderr)
             return 0

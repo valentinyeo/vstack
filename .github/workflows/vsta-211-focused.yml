@@ -4,6 +4,9 @@ on:
     branches: [vsta-211]
 permissions:
   contents: read
+concurrency:
+  group: vsta-211-focused
+  cancel-in-progress: true
 jobs:
   pr-park:
     runs-on: ubuntu-latest

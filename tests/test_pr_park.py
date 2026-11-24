@@ -74,7 +74,7 @@ if cli == 'gh':
     if args[:3] == ['api', 'graphql', '-f']:
         query = args[3]
         if 'search(query:' in query:
-            pulls = [p for p in data['pulls'] if p['state'] == 'OPEN']
+            pulls = data.get('search_pulls', [p for p in data['pulls'] if p['state'] == 'OPEN'])
             answer({'data': {'search': {'issueCount': len(pulls), 'nodes': pulls,
                     'pageInfo': {'hasNextPage': False}}}})
         refs = re.findall(r'p(\d+):repository\(.*?pullRequest\(number:(\d+)\)', query)
@@ -252,6 +252,29 @@ class ParkingTests(unittest.TestCase):
         self.assertEqual(self.writes(), writes)
         self.assertNotIn('delete', self.log.read_text())
 
+    def test_stale_search_after_close_does_not_close_twice(self):
+        before = self.data()['pulls']
+        self.assertEqual(self.run_park('--apply').returncode, 0)
+        writes = self.writes()
+        self.update(search_pulls=before)
+        result = self.run_park('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.writes(), writes)
+
+    def test_stale_search_after_reopen_does_not_overfill_slots(self):
+        self.seed(7)
+        self.assertEqual(self.run_park('--apply').returncode, 0)
+        data = self.data()
+        data['pulls'][0]['state'] = 'MERGED'
+        visible = [p for p in data['pulls'] if p['state'] == 'OPEN']
+        self.update(pulls=data['pulls'], fail_move=True, search_pulls=visible)
+        self.assertEqual(self.run_park('--apply').returncode, 2)
+        result = self.run_park('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.data()['pulls'][5]['state'], 'OPEN')
+        self.assertEqual(self.data()['pulls'][6]['state'], 'CLOSED')
+        self.assertEqual(sum(c['args'][:2] == ['pr', 'reopen'] for c in self.writes()), 1)
+
     def test_free_slot_reopens_oldest_and_second_run_is_noop(self):
         self.seed(7)
         first = self.run_park('--apply')
@@ -346,6 +369,42 @@ class ParkingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn('own', result.stderr)
         self.assertEqual(self.calls(), [])
+
+    def test_five_open_does_not_ask_to_start_a_parked_todo(self):
+        self.assertEqual(self.run_park('--apply').returncode, 0)
+        with patch.object(drain, 'ticket_comments', return_value=[]), \
+                patch.object(drain, 'ticket_relations', return_value=[]):
+            code, text = self.run_check()
+        self.assertEqual(code, 0, text)
+        self.assertNotIn('loop off:', text)
+        self.assertNotIn('stale:', text)
+
+    def test_missing_creation_time_fails_open_with_one_warning(self):
+        data = self.data()
+        data['pulls'][-1]['createdAt'] = None
+        self.update(pulls=data['pulls'])
+        result = self.run_park('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count('warning:'), 1)
+        self.assertEqual(self.writes(), [])
+
+    def test_card_with_another_open_pr_keeps_its_column(self):
+        data = self.data()
+        data['pulls'][-1].update(title='fix VSTA-1', headRefName='vsta-1')
+        self.update(pulls=data['pulls'])
+        result = self.run_park('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.data()['tasks'][0]['section'], 'Checks')
+        self.assertEqual(len(self.writes()), 1)
+
+    def test_protected_card_keeps_its_column(self):
+        data = self.data()
+        data['tasks'][-1]['section'] = 'Done'
+        self.update(tasks=data['tasks'])
+        result = self.run_park('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.data()['tasks'][-1]['section'], 'Done')
+        self.assertEqual(len(self.writes()), 1)
 
     def test_relabelled_card_is_not_touched(self):
         self.assertEqual(self.run_park('--apply').returncode, 0)
