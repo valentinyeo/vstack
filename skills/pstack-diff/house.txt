@@ -263,7 +263,7 @@ expiry: 2027-02-23
 id: wip-cap
 pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: 3. **Run owners in parallel off trunk, never stacked,** so each PR lands on its own.
-change: A board refuses new work while it holds more than 10 cards in Checks plus AI Review: `skills/board-drain/wip-cap` owns the one cap, `skills/hypertask-work/lease` refuses a non-urgent Todo start with exit 75, and `drain-check` fails `over cap`. An urgent ticket may start first.
+change: Each agent owns at most 5 open tickets at a time, one worker each, and starts a new ticket only after one ships (Valentin, 2026-11-24: "finish before starting"). `skills/board-drain/wip-cap` owns the one per-label cap and counts the cards carrying the agent's label in Doing plus Checks plus AI Review; `skills/hypertask-work/lease` refuses a non-urgent Todo start with exit 75 and names the full label; `drain-check` fails `over cap` for the label it was given. An urgent ticket, and a card already in a working column, may still start.
 basis: VSTA-206; PR #370 (pr-cap) precedent
 approved: 2026-11-24
 expiry: 2027-02-24

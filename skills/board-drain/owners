@@ -38,11 +38,14 @@ loop_state = importlib.util.module_from_spec(loop_spec)
 sys.modules[loop_loader.name] = loop_state
 loop_loader.exec_module(loop_state)
 
+wip_loader = importlib.machinery.SourceFileLoader('board_drain_wip_cap',
+                                                  str(HERE / 'wip-cap'))
+wip_spec = importlib.util.spec_from_loader(wip_loader.name, wip_loader)
+wip = importlib.util.module_from_spec(wip_spec)
+sys.modules[wip_loader.name] = wip
+wip_loader.exec_module(wip)
+
 SECTIONS = frozenset({'Todo', 'Doing', 'Building', 'Verification Backlog'})
-# Labels that classify work, never name a chat. brain-light and brain-medium are prefixes.
-GENERIC = frozenset({'bug', 'infra', 'verification', 'needs-design', 'triage', 'ci',
-                     'agent feedback'})
-GENERIC_PREFIX = 'brain-'
 ROSTER = Path.home() / '.local/share/house-rules/fleet/roster-live'
 ROSTER_TIMEOUT = 60
 SHOWN = 5
@@ -53,8 +56,7 @@ ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.Sub
 
 def is_generic(label):
     """A classification label, or an empty one: never a chat name."""
-    name = label.strip().casefold()
-    return not name or name in GENERIC or name.startswith(GENERIC_PREFIX)
+    return not wip.is_agent_label(label)
 
 
 def names_from_text(text):

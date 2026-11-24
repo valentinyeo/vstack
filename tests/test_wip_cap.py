@@ -1,8 +1,10 @@
-"""Finish before starting (VSTA-206): a board over cap starts no new Todo work.
+"""Finish before starting (VSTA-206): an agent at 5 open tickets starts no new work.
 
-Valentin's order, 2026-11-24. While a board holds more than 10 cards in Checks plus
-AI Review, `lease ... run` refuses a non-urgent Todo start with exit 75, and
-drain-check fails `over cap` instead of asking the chat to start more Todo work.
+Valentin's rule, 2026-11-24. Each agent owns at most 5 open tickets at a time, one
+worker each, and starts a new ticket only after one ships. So while the agent's label
+carries 5 cards in Doing, Checks or AI Review, `lease ... run` refuses a non-urgent
+Todo start with exit 75, and drain-check fails `over cap` instead of asking the chat
+to start more.
 """
 import contextlib
 from datetime import datetime, timezone
@@ -21,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/board-drain'
 NOW = 1800000000
 LABEL = 'Board Drain Loop'
+OTHER = 'Responsive Mode'
 
 
 def load(name, path):
@@ -41,15 +44,21 @@ def iso(seconds):
     return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def busy(cards, column='Checks'):
-    """Another chat's cards in a busy column: they count, and they carry no label."""
-    return [{'ticketNumber': f'VSTA-{900 + index}', 'projectId': 13556, 'section': column,
-             'labels': [], 'updatedAt': iso(NOW - 600)} for index in range(cards)]
+def open_card(index, column='Checks', label=LABEL):
+    """A card this label already owns, with a worker on it."""
+    return {'ticketNumber': f'VSTA-{900 + index}', 'projectId': 13556, 'section': column,
+            'labels': [{'name': label}],
+            'assignees': [{'type': 'agent', 'displayName': f'{label} Agent'}],
+            'updatedAt': iso(NOW - 600)}
 
 
-def busy_rows(cards, column='Checks'):
+def open_cards(cards, column='Checks', label=LABEL):
+    return [open_card(index, column, label) for index in range(cards)]
+
+
+def open_rows(cards, column='Checks', label=LABEL):
     """Those cards as drain-check fixture rows."""
-    return [{'task': task, 'comments': []} for task in busy(cards, column)]
+    return [{'task': task, 'comments': []} for task in open_cards(cards, column, label)]
 
 
 def card(key, section='Todo', priority=None, age=3 * 3600):
@@ -63,23 +72,30 @@ def card(key, section='Todo', priority=None, age=3 * 3600):
 
 URGENT = {'id': 'p1', 'priority_index': 1, 'Priority_Value': 'Urgent'}
 MEDIUM = {'id': 'p3', 'priority_index': 3, 'Priority_Value': 'Medium'}
+HELD = ('label Board Drain Loop has 5 open tickets in Doing+Checks+AI Review (cap 5); '
+        'ship one first')
 
 
 class CapRuleTest(unittest.TestCase):
     """The one function both call sites read."""
 
-    def test_count_counts_only_the_two_busy_columns(self):
-        rows = (busy(3) + busy(2, 'AI Review')
-                + [card('VSTA-1')['task'], card('VSTA-2', 'Doing')['task']])
-        self.assertEqual(wip.count(rows), 5)
+    def test_count_counts_the_working_columns_of_one_label(self):
+        rows = (open_cards(2) + open_cards(2, 'AI Review') + open_cards(1, 'Doing')
+                + open_cards(3, label=OTHER)
+                + [card('VSTA-1')['task'], card('VSTA-2', 'Done')['task']])
+        self.assertEqual(wip.count(rows, LABEL), 5)
 
-    def test_at_cap_is_not_over_and_one_more_is(self):
-        self.assertEqual(wip.over_cap(busy(10), 13556), (False, 10, 10))
-        self.assertEqual(wip.over_cap(busy(11), 13556), (True, 11, 10))
+    def test_four_open_is_not_full_and_five_is(self):
+        self.assertEqual(wip.at_cap(open_cards(4), LABEL), (False, 4, 5))
+        self.assertEqual(wip.at_cap(open_cards(5), LABEL), (True, 5, 5))
 
-    def test_a_board_with_no_row_of_its_own_takes_the_one_cap(self):
-        self.assertEqual(wip.cap_for(13556), 10)
-        self.assertEqual(wip.cap_for(999999), 10)
+    def test_a_label_with_no_row_of_its_own_takes_the_one_cap(self):
+        self.assertEqual(wip.cap_for(LABEL), 5)
+        self.assertEqual(wip.cap_for('a chat nobody configured'), 5)
+
+    def test_a_generic_label_is_never_counted(self):
+        self.assertEqual(wip.agent_labels({'labels': [{'name': 'Bug'}, {'name': 'brain-light'},
+                                                       {'name': LABEL}]}), [LABEL])
 
     def test_a_failed_board_read_fails_open_with_one_warning(self):
         said = io.StringIO()
@@ -89,8 +105,8 @@ class CapRuleTest(unittest.TestCase):
             raise OSError('board unreadable')
 
         with contextlib.redirect_stderr(said):
-            self.assertEqual(wip.board_over_cap(13556, broken), (False, 0, 10))
-            self.assertEqual(wip.board_over_cap(13556, broken), (False, 0, 10))
+            self.assertIsNone(wip.read_held(13556, [LABEL], broken))
+            self.assertIsNone(wip.read_held(13556, [LABEL], broken))
         self.assertEqual(len(said.getvalue().splitlines()), 1, said.getvalue())
         self.assertIn('cap not enforced', said.getvalue())
 
@@ -119,31 +135,37 @@ class LeaseRefusalTest(unittest.TestCase):
             code = lease.main()
         return code, said.getvalue(), started, written
 
-    def test_a_todo_start_on_a_full_board_is_refused(self):
+    def test_a_todo_start_on_a_label_at_cap_is_refused(self):
         task = card('VSTA-206', priority=MEDIUM)['task']
-        code, said, started, written = self.run_lease(task, busy(11))
+        code, said, started, written = self.run_lease(task, open_cards(5))
         self.assertEqual(code, 75, said)
-        self.assertIn('lease: VSTA-206 held: board 13556 has 11 cards in Checks+AI Review '
-                      '(cap 10); finish those first', said)
+        self.assertIn(f'lease: VSTA-206 held: {HELD}', said)
         started.assert_not_called()
         written.assert_not_called()
 
+    def test_a_todo_start_at_four_open_is_allowed(self):
+        code, said, started, _written = self.run_lease(card('VSTA-206')['task'], open_cards(4))
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('held:', said)
+        started.assert_called_once()
+
+    def test_another_labels_cards_do_not_count(self):
+        code, said, started, _written = self.run_lease(card('VSTA-206')['task'],
+                                                      open_cards(5, label=OTHER))
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('held:', said)
+        started.assert_called_once()
+
     def test_an_urgent_todo_start_is_allowed(self):
         code, said, started, _written = self.run_lease(card('VSTA-206', priority=URGENT)['task'],
-                                                      busy(11))
+                                                      open_cards(5))
         self.assertEqual(code, 0, said)
         self.assertNotIn('held:', said)
         started.assert_called_once()
 
     def test_a_doing_resume_is_allowed(self):
         code, said, started, _written = self.run_lease(card('VSTA-206', section='Doing')['task'],
-                                                      busy(11))
-        self.assertEqual(code, 0, said)
-        self.assertNotIn('held:', said)
-        started.assert_called_once()
-
-    def test_a_start_at_the_cap_is_allowed(self):
-        code, said, started, _written = self.run_lease(card('VSTA-206')['task'], busy(10))
+                                                      open_cards(5))
         self.assertEqual(code, 0, said)
         self.assertNotIn('held:', said)
         started.assert_called_once()
@@ -158,7 +180,7 @@ class LeaseRefusalTest(unittest.TestCase):
 
 
 class DrainCheckCapTest(unittest.TestCase):
-    """drain-check says the board is full instead of asking for another start."""
+    """drain-check says the label is full instead of asking for another start."""
 
     def setUp(self):
         wip._warned.clear()
@@ -184,26 +206,33 @@ class DrainCheckCapTest(unittest.TestCase):
             code = drain.main(argv)
         return code, out.getvalue()
 
-    def test_over_cap_fails_and_stops_asking_for_a_start(self):
-        code, out = self.run_check(busy_rows(11) + [card('VSTA-206')])
+    def test_five_open_on_the_label_fails_and_stops_asking_for_a_start(self):
+        code, out = self.run_check(open_rows(5) + [card('VSTA-206')])
         self.assertEqual(code, 1, out)
-        self.assertIn('over cap: 11 cards in Checks+AI Review (cap 10); finish before starting', out)
+        self.assertIn(f'over cap: {HELD}', out)
         self.assertNotIn('loop off', out)
         self.assertNotIn('stale:', out)
         self.assertIn('drain-check: FAIL (1 findings)', out)
 
-    def test_at_cap_still_reports_the_idle_loop(self):
-        code, out = self.run_check(busy_rows(10) + [card('VSTA-206')])
+    def test_four_open_still_reports_the_idle_loop(self):
+        code, out = self.run_check(open_rows(4) + [card('VSTA-206')])
         self.assertEqual(code, 1, out)
         self.assertNotIn('over cap', out)
         self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
         self.assertIn('stale: VSTA-206 workable in Todo for 3h.', out)
         self.assertIn('drain-check: FAIL (2 findings)', out)
 
-    def test_an_urgent_card_still_gets_its_nudge_over_cap(self):
-        code, out = self.run_check(busy_rows(11) + [card('VSTA-206', priority=URGENT, age=1800)])
+    def test_another_labels_cards_do_not_make_it_fail(self):
+        code, out = self.run_check(open_rows(5, label=OTHER) + [card('VSTA-206')])
         self.assertEqual(code, 1, out)
-        self.assertIn('over cap: 11 cards in Checks+AI Review (cap 10); finish before starting', out)
+        self.assertNotIn('over cap', out)
+        self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
+        self.assertIn('drain-check: FAIL (2 findings)', out)
+
+    def test_an_urgent_card_still_gets_its_nudge_at_cap(self):
+        code, out = self.run_check(open_rows(5) + [card('VSTA-206', priority=URGENT, age=1800)])
+        self.assertEqual(code, 1, out)
+        self.assertIn(f'over cap: {HELD}', out)
         self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
         self.assertIn('drain-check: FAIL (2 findings)', out)
 

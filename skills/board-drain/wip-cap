@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Finish before starting: how many cards a board may hold in Checks plus AI Review (VSTA-206).
+"""Finish before starting: how many open tickets one agent label may hold (VSTA-206).
 
-Valentin's order, 2026-11-24: "finish before starting". While a board has more than
-10 cards in Checks plus AI Review, no chat starts a Todo ticket, except one marked
-urgent. pstack's autopilot-full runs one owner per PR in parallel and sets no WIP
-limit, so this is a house rule (house.txt id `wip-cap`).
+Valentin's rule, 2026-11-24: "finish before starting". Each agent owns at most 5
+open tickets at a time, one worker each, and starts a new ticket only after one
+ships. An agent's tickets are the cards carrying its label; a card is open while it
+sits in Doing, Checks or AI Review. Done, Todo, Backlog and the waiting-on-Valentin
+columns are not open. pstack's autopilot-full runs one owner per PR in parallel and
+sets no WIP limit, so this is a house rule (house.txt id `wip-cap`).
 
-One table holds the cap. `skills/board-drain/drain-check` counts the board rows its
-tick already read and fails `over cap`; `skills/hypertask-work/lease` reads the same
-two columns before it starts a worker and refuses with exit 75.
+One table holds the cap, keyed by agent label. `skills/board-drain/drain-check`
+counts the board rows its tick already read and fails `over cap`;
+`skills/hypertask-work/lease` reads the same board before it starts a worker and
+refuses with exit 75.
 
 A read that fails fails open with one warning line: a board outage must never stop
 work.
@@ -18,42 +21,75 @@ work.
 import subprocess
 import sys
 
-BUSY = ('Checks', 'AI Review')
-LABEL = 'Checks+AI Review'
+WORKING = ('Doing', 'Building', 'Checks', 'AI Review')
+WORKING_LABEL = 'Doing+Checks+AI Review'
+_WORKING = frozenset(name.casefold() for name in WORKING)
 # The columns a chat starts work from. A card already in a working column is a resume.
 NOT_STARTED = frozenset({'todo', 'backlog', 'verification backlog'})
-# One table: cards allowed in Checks plus AI Review, per board. None covers every
-# board with no row of its own, so moving the fleet's cap is this one number.
-CAPS = {None: 10}
+# Labels that classify work, never name a chat, so no cap counts against them.
+GENERIC = frozenset({'bug', 'infra', 'verification', 'needs-design', 'triage', 'ci',
+                     'agent feedback'})
+GENERIC_PREFIX = 'brain-'
+# One table: open tickets one agent label may hold, keyed by casefolded label name.
+# None covers every label with no row of its own, so moving the fleet's cap is this
+# one number.
+CAPS = {None: 5}
 ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, AttributeError,
           subprocess.SubprocessError)
 _warned = set()
+
+
+def name_of(label):
+    """A label's name, whether the board sent a dict or a plain string."""
+    if isinstance(label, dict):
+        return str(label.get('name') or '').strip()
+    return str(label or '').strip()
 
 
 def section(task):
     return str(task.get('section') or '').strip().casefold()
 
 
-def cap_for(board_id):
-    """The cards this board may hold in Checks plus AI Review."""
-    try:
-        board_id = int(board_id)
-    except (TypeError, ValueError):
-        board_id = None
-    return CAPS.get(board_id, CAPS[None])
+def is_agent_label(name):
+    """A label that names a chat, so the cap counts its cards."""
+    folded = (name or '').strip().casefold()
+    return bool(folded) and folded not in GENERIC and not folded.startswith(GENERIC_PREFIX)
 
 
-def count(tasks):
-    """The cards in Checks plus AI Review, whatever label or owner they carry."""
-    busy = {name.casefold() for name in BUSY}
-    return sum(1 for task in tasks or () if section(task) in busy)
+def agent_labels(task):
+    """The ticket's chat labels, one per label, in board order."""
+    names, seen = [], set()
+    for label in task.get('labels') or ():
+        name = name_of(label)
+        if not is_agent_label(name) or name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        names.append(name)
+    return names
 
 
-def over_cap(tasks, board_id=None):
-    """(over_cap, count, cap) for the rows of one board, already read."""
-    cap = cap_for(board_id)
-    cards = count(tasks)
-    return cards > cap, cards, cap
+def carries(task, label):
+    """Trimmed and case-insensitive, the way every label on the board is read."""
+    wanted = (label or '').strip().casefold()
+    return any(name_of(item).casefold() == wanted for item in task.get('labels') or ())
+
+
+def cap_for(label):
+    """The open tickets this agent label may hold."""
+    return CAPS.get((label or '').strip().casefold(), CAPS[None])
+
+
+def count(tasks, label):
+    """The open tickets carrying this label: the working columns only."""
+    return sum(1 for task in tasks or ()
+               if section(task) in _WORKING and carries(task, label))
+
+
+def at_cap(tasks, label):
+    """(at_cap, count, cap): a start takes one more slot, so the cap itself is full."""
+    cap = cap_for(label)
+    cards = count(tasks, label)
+    return cards >= cap, cards, cap
 
 
 def urgent(task):
@@ -70,9 +106,9 @@ def starts_work(task):
     return section(task) in NOT_STARTED
 
 
-def held_line(board_id, cards, cap):
-    """The one sentence that says which board is full and what to finish first."""
-    return f'board {board_id} has {cards} cards in {LABEL} (cap {cap}); finish those first'
+def held_line(label, cards, cap):
+    """The one sentence that names the full label and what to ship first."""
+    return f'label {label} has {cards} open tickets in {WORKING_LABEL} (cap {cap}); ship one first'
 
 
 def warn_once(detail):
@@ -83,28 +119,38 @@ def warn_once(detail):
     print(f'wip-cap: {detail}; cap not enforced', file=sys.stderr, flush=True)
 
 
-def board_over_cap(board_id, read):
-    """(over_cap, count, cap) from one whole-board read; a failed read fails open.
+def read_held(board_id, labels, read):
+    """The held line for the first of these labels at cap, or None.
 
-    `read(board_id)` answers that board's cards. drain-check passes the rows its tick
-    already read through `over_cap`; the lease reads the busy columns through here.
+    `read(board_id)` answers that board's cards. The lease passes the ticket's own
+    labels through here; drain-check counts its tick's rows with `at_cap`. A read
+    that fails answers None, so a board outage never stops a worker.
     """
     try:
         tasks = read(board_id)
         if tasks is None:
             raise ValueError('no board rows')
-        return over_cap(tasks, board_id)
     except ERRORS as error:
         warn_once(f'board {board_id} read failed ({error})')
-        return False, 0, cap_for(board_id)
+        return None
+    for label in labels:
+        over, cards, cap = at_cap(tasks, label)
+        if over:
+            return held_line(label, cards, cap)
+    return None
 
 
 def self_test():
-    assert count([{'section': 'Checks'}, {'section': 'AI Review'},
-                  {'section': 'Todo'}]) == 2, 'only the two busy columns count'
-    assert over_cap([{'section': 'AI Review'}] * 10, 13556) == (False, 10, 10), 'at cap is fine'
-    assert over_cap([{'section': 'Checks'}] * 11, 13556) == (True, 11, 10), 'one over is over'
-    assert cap_for(999999) == 10, 'a board with no row of its own takes the one cap'
+    mine = [{'section': 'Doing'}, {'section': 'Checks'}, {'section': 'AI Review'},
+            {'section': 'Todo'}, {'section': 'Done'}]
+    rows = [dict(task, labels=[{'name': 'Vstack'}]) for task in mine]
+    assert count(rows, 'Vstack') == 3, 'Doing, Checks and AI Review are open'
+    assert count(rows, 'vstack') == 3, 'a label reads case-insensitively'
+    assert count(rows, 'Other') == 0, 'another label owns other cards'
+    assert at_cap(rows, 'Vstack') == (False, 3, 5), 'three open is fine'
+    full = [{'section': 'Checks', 'labels': [{'name': 'Vstack'}]}] * 5
+    assert at_cap(full, 'Vstack') == (True, 5, 5), 'five open is already full'
+    assert cap_for('Vstack') == 5, 'a label with no row of its own takes the one cap'
     assert urgent({'priority': {'priority_index': 1, 'Priority_Value': 'Urgent'}}), 'index 1'
     assert urgent({'priority': {'Priority_Value': 'Urgent'}}), 'the word'
     assert urgent({'priority': 'urgent'}), 'a plain word'
@@ -114,13 +160,19 @@ def self_test():
     assert starts_work({'section': 'Backlog'}), 'a product backlog starts work'
     assert not starts_work({'section': 'Doing'}), 'Doing is a resume'
     assert not starts_work({'section': 'Checks'}), 'Checks is already started'
+    assert agent_labels({'labels': [{'name': 'Vstack'}, {'name': 'Bug'},
+                                    {'name': 'brain-light'}, {'name': 'vstack'}]}) == ['Vstack'], \
+        'chat labels only, one per label'
+    assert agent_labels({}) == [], 'a card with no label counts against nothing'
 
     def broken(_board_id):
         raise OSError('board unreadable')
 
-    assert board_over_cap(13556, broken) == (False, 0, 10), 'a failed read fails open'
-    assert board_over_cap(13556, lambda _board: None) == (False, 0, 10), 'no rows fails open'
-    assert board_over_cap(13556, lambda _board: [{'section': 'Checks'}] * 11) == (True, 11, 10)
+    assert read_held(13556, ['Vstack'], broken) is None, 'a failed read fails open'
+    assert read_held(13556, ['Vstack'], lambda _board: None) is None, 'no rows fails open'
+    assert read_held(13556, ['Vstack'], lambda _board: rows) is None, 'under cap is not held'
+    assert held_line('Vstack', 5, 5) == ('label Vstack has 5 open tickets in '
+                                        'Doing+Checks+AI Review (cap 5); ship one first')
     print('wip-cap self-test ok')
 
 

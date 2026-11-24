@@ -2393,6 +2393,35 @@ else:
 ''' % NOW
 
 
+class CapPassthroughTest(unittest.TestCase):
+    """The lease counts a start against the card's own labels (VSTA-206)."""
+
+    def refusal(self, labels, cards):
+        task = {'ticketNumber': 'VSTA-206', 'projectId': 13556, 'section': 'Todo',
+                'labels': [{'name': name} for name in labels]}
+        with patch.object(lease.reconcile, 'read_ticket', return_value=task), \
+                patch.object(lease, 'board_tasks', return_value=cards):
+            return lease.cap_refusal('VSTA-206')
+
+    def cards(self, cards, label):
+        return [{'ticketNumber': f'VSTA-{900 + index}', 'projectId': 13556,
+                 'section': 'Doing', 'labels': [{'name': label}]} for index in range(cards)]
+
+    def test_five_open_on_the_cards_label_names_that_label(self):
+        self.assertEqual(self.refusal(['Vstack'], self.cards(5, 'Vstack')),
+                         'lease: VSTA-206 held: label Vstack has 5 open tickets in '
+                         'Doing+Checks+AI Review (cap 5); ship one first')
+
+    def test_four_open_on_the_cards_label_starts_it(self):
+        self.assertIsNone(self.refusal(['Vstack'], self.cards(4, 'Vstack')))
+
+    def test_another_labels_cards_are_not_this_labels_load(self):
+        self.assertIsNone(self.refusal(['Vstack'], self.cards(6, 'Responsive Mode')))
+
+    def test_a_generic_label_carries_no_cap(self):
+        self.assertIsNone(self.refusal(['Bug'], self.cards(9, 'Bug')))
+
+
 class RateLimitTest(unittest.TestCase):
     """A spent GitHub budget stops the run at once, cleanly, with no moves."""
 

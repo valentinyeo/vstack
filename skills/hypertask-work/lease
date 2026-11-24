@@ -108,18 +108,19 @@ def spawn_card(command, env):
 
 LANE_WAITING = 'nothing ran, waiting for a lane'
 # The card's start is refused, not its worker run: nothing runs and the chat must
-# finish what is already in Checks and AI Review first (VSTA-206).
+# ship one of its open tickets first (VSTA-206).
 CAP_HELD = 'lease: {key} held: {line}'
 
 
 def board_tasks(board_id):
-    """The cards in this board's two busy columns, read through the CLI's board read."""
+    """The cards in this board's working columns, read through the CLI's board read."""
     board = reconcile.board_config(board_id)
-    return [task for name in wip.BUSY for task in reconcile.tickets(section=name, board=board)]
+    return [task for name in wip.WORKING
+            for task in reconcile.tickets(section=name, board=board)]
 
 
 def cap_refusal(key):
-    """The line that refuses a start while the board is over cap, or None.
+    """The line that refuses a start while one of the card's labels is at cap, or None.
 
     Reads the card this run would start. A card already in a working column is a
     resume, and an urgent card may start first, so neither is refused. Any read
@@ -130,11 +131,12 @@ def cap_refusal(key):
         if not wip.starts_work(task) or wip.urgent(task):
             return None
         board_id = int(task['projectId'])
+        labels = wip.agent_labels(task)
     except wip.ERRORS as error:
         wip.warn_once(f'{key} read failed ({error})')
         return None
-    over, cards, cap = wip.board_over_cap(board_id, board_tasks)
-    return CAP_HELD.format(key=key, line=wip.held_line(board_id, cards, cap)) if over else None
+    line = wip.read_held(board_id, labels, board_tasks)
+    return CAP_HELD.format(key=key, line=line) if line else None
 
 
 def report(key, code):
