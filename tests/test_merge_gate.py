@@ -323,6 +323,30 @@ class VerifierNameTest(GateCase):
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertEqual(done.stdout.strip(), 'gate missing: valentinyeo/vstack main')
 
+    def test_token_ladder_takes_the_default_name_after_its_rename(self):
+        # token-ladder renamed its verifier job to `pstack-verifier` (token-ladder PR 47),
+        # so it needs no row and the default name satisfies its gate.
+        self.answer([ok_route(PROTECTION, {'strict': False, 'contexts': ['build',
+                                                                       'pstack-verifier']}),
+                     ok_route(RULES, [])])
+        done = self.run_gate('--repo', 'valentinyeo/token-ladder', '--branch', 'main')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate ok: valentinyeo/token-ladder main')
+
+    def test_postbox_requires_verify_verdict(self):
+        self.answer([ok_route(PROTECTION, {'strict': False, 'contexts': ['verify-verdict']}),
+                     ok_route(RULES, [])])
+        done = self.run_gate('--repo', 'valentinyeo/postbox', '--branch', 'main')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate ok: valentinyeo/postbox main')
+
+    def test_postbox_does_not_accept_the_pstack_name(self):
+        self.answer([ok_route(PROTECTION, {'strict': False, 'contexts': ['pstack-verifier']}),
+                     ok_route(RULES, [])])
+        done = self.run_gate('--repo', 'valentinyeo/postbox', '--branch', 'main')
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.stdout.strip(), 'gate missing: valentinyeo/postbox main')
+
     def test_a_repo_that_requires_nothing_fails(self):
         self.answer([ok_route(PROTECTION, {'strict': False, 'contexts': []}),
                      ok_route(RULES, [])])

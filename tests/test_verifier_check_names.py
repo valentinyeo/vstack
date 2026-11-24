@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'skills/hypertask-work/reconcile'
 
 VSTACK = 'valentinyeo/vstack'
+TOKEN_LADDER = 'valentinyeo/token-ladder'
+POSTBOX = 'valentinyeo/postbox'
 HYPER = 'hypertask-ai/hypertask'
 # PR #344's merged head, and the head of the PR that followed it.
 HEAD = 'b5fa03a125b6177d7e04f4001d2f50d1caf9f002'
@@ -90,6 +92,16 @@ class VerifierCheckNames(unittest.TestCase):
 
     def test_the_verifier_name_counts_in_no_other_repo(self):
         self.assertFalse(r.pstack_pass_on_head(pr_344_checks(), HEAD, HYPER))
+
+    def test_token_ladder_takes_the_pstack_name_after_its_rename(self):
+        """token-ladder PR 47 renamed its verifier job, so the default name counts there."""
+        self.assertTrue(r.pstack_pass_on_head([check('pstack-verifier')], HEAD, TOKEN_LADDER))
+        self.assertFalse(r.pstack_pass_on_head([check('verifier')], HEAD, TOKEN_LADDER))
+
+    def test_postbox_counts_verify_verdict_as_the_pass(self):
+        """VSTA-196: postbox posts `verify-verdict` and requires it on main."""
+        self.assertTrue(r.pstack_pass_on_head([check('verify-verdict')], HEAD, POSTBOX))
+        self.assertFalse(r.pstack_pass_on_head([check('pstack-verifier')], HEAD, POSTBOX))
 
     def test_pstack_verifier_still_counts_where_it_is_the_check(self):
         self.assertTrue(r.pstack_pass_on_head([check('pstack-verifier')], HEAD, HYPER))
