@@ -14,7 +14,15 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'skills/excalidraw/excalidraw-share'
 EXAMPLE = ROOT / 'skills/excalidraw/example.excalidraw'
+MINIMAL = ROOT / 'tests/fixtures/excalidraw/minimal-sample.json'
 KEY = 'sk-test-key-do-not-log'
+
+STANDARD_FIELDS = [
+    'angle', 'strokeColor', 'backgroundColor', 'fillStyle', 'strokeWidth',
+    'strokeStyle', 'roughness', 'opacity', 'seed', 'version', 'versionNonce',
+    'isDeleted', 'groupIds', 'frameId', 'roundness', 'boundElements', 'updated',
+    'link', 'locked',
+]
 
 DRAWING = {
     'type': 'excalidraw',
@@ -190,6 +198,69 @@ class ShareTest(unittest.TestCase):
         code, _, err = self.run_main(str(path))
         self.assertEqual(code, 1)
         self.assertEqual(len(err.strip().splitlines()), 1)
+
+    def test_minimal_elements_gain_every_standard_default(self):
+        self.write(json.loads(MINIMAL.read_text(encoding='utf-8')))
+        self.assertEqual(self.run_main(str(self.dir / 'drawing.excalidraw'))[0], 0)
+        elements = {element['id']: element
+                    for element in self.api.calls[1][2]['elements']}
+        for element in elements.values():
+            for field in STANDARD_FIELDS:
+                self.assertIn(field, element, field)
+            self.assertEqual(element['angle'], 0)
+            self.assertEqual(element['strokeWidth'], 2)
+            self.assertEqual(element['strokeStyle'], 'solid')
+            self.assertEqual(element['roughness'], 1)
+            self.assertEqual(element['opacity'], 100)
+            self.assertEqual(element['version'], 1)
+            self.assertFalse(element['isDeleted'])
+            self.assertEqual(element['groupIds'], [])
+            self.assertIsNone(element['frameId'])
+            self.assertIsNone(element['link'])
+            self.assertFalse(element['locked'])
+            self.assertIsInstance(element['seed'], int)
+            self.assertIsInstance(element['versionNonce'], int)
+            self.assertIsInstance(element['updated'], int)
+        for text_id in ('at', 'bt'):
+            text = elements[text_id]
+            self.assertEqual(text['fontFamily'], 6)
+            self.assertEqual(text['lineHeight'], 1.25)
+            self.assertTrue(text['autoResize'])
+            self.assertEqual(text['originalText'], text['text'])
+            self.assertIsNone(text['baseline'])
+        arrow = elements['ar']
+        self.assertEqual(arrow['endArrowhead'], 'arrow')
+        self.assertIsNone(arrow['startArrowhead'])
+        self.assertIsNone(arrow['lastCommittedPoint'])
+        self.assertFalse(arrow['elbowed'])
+
+    def test_fields_the_author_set_are_kept(self):
+        self.write(json.loads(MINIMAL.read_text(encoding='utf-8')))
+        self.assertEqual(self.run_main(str(self.dir / 'drawing.excalidraw'))[0], 0)
+        elements = {element['id']: element
+                    for element in self.api.calls[1][2]['elements']}
+        box = elements['a']
+        self.assertEqual(box['backgroundColor'], '#a5d8ff')
+        self.assertEqual(box['fillStyle'], 'solid')
+        self.assertEqual(box['boundElements'], [{'type': 'text', 'id': 'at'}])
+        self.assertEqual(box['width'], 200)
+        text = elements['at']
+        self.assertEqual(text['fontSize'], 20)
+        self.assertEqual(text['textAlign'], 'center')
+        self.assertEqual(text['verticalAlign'], 'middle')
+        self.assertEqual(text['containerId'], 'a')
+        arrow = elements['ar']
+        self.assertEqual(arrow['points'], [[0, 0], [120, 0]])
+        self.assertEqual(arrow['startBinding']['elementId'], 'a')
+
+    def test_filling_defaults_touches_no_network(self):
+        def refuse(*_args, **_kwargs):
+            raise AssertionError('filling defaults called the network')
+
+        self.module.urlopen = refuse
+        scene = self.module.document(json.loads(MINIMAL.read_text(encoding='utf-8')))
+        self.assertEqual(len(scene['elements']), 5)
+        self.assertTrue(all('seed' in element for element in scene['elements']))
 
     def test_the_shipped_example_is_a_working_document(self):
         scene = self.module.document(json.loads(EXAMPLE.read_text(encoding='utf-8')))
