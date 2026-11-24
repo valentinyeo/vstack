@@ -168,7 +168,9 @@ class VerifyReconcileModel(unittest.TestCase):
                     self.assertEqual(r.target(facts, r.BOARDS[board_id])[0], expected)
                     count += 1
         for column, expected in (('Backlog', 'Backlog'), ('In Progress', 'Backlog'),
-                                 ('AI Review', 'AI Review'), ('UX needed', 'UX needed')):
+                                 ('AI Review', 'AI Review'), ('QA', 'QA'),
+                                 ('UX needed', 'UX needed'), ('Flag: Only Me + QA', 'Flag: Only Me + QA'),
+                                 ('Valentin Review', 'Valentin Review'), ('Done', 'Done')):
             with self.subTest(board=15, column=column):
                 self.assertEqual(r.target(r.Facts(column, 8000), r.BOARDS[15])[0], expected)
                 count += 1
@@ -198,8 +200,8 @@ class VerifyReconcileModel(unittest.TestCase):
                         # merge time is what decides, not the merge itself.
                         fresh = (pull('MERGED', passed=passed, merged_at=NEWER),)
                         # A PASS runs before the merge, so it is proven: Done. A merge
-                        # with no PASS proves nothing, so the card goes back to Todo.
-                        proven = review if board.id == 15 else ('Done' if passed else backlog)
+                        # with no PASS proves nothing, so the card goes back to Todo/Backlog.
+                        proven = 'Done' if passed else backlog
                         self.assertEqual(r.target(r.Facts(backlog, age, False, fresh, column_entered=ENTRY),
                                                   board, names)[0], proven)
                         # A live worker and an open PR are unaffected by the merge time.
@@ -207,9 +209,8 @@ class VerifyReconcileModel(unittest.TestCase):
                                                   board, names)[0], work)
                         self.assertEqual(r.target(r.Facts(work, age, False, (pull(),), column_entered=ENTRY),
                                                   board, names)[0], review)
-                        # Review holds on board 15, whose own model waits for live
-                        # proof. A factory board reads any merge in review as evidence
-                        # and moves the card on: Done with a PASS, Todo without one.
+                        # Every board reads any merge in review as evidence and moves the
+                        # card on: Done with a PASS, Todo/Backlog without one.
                         held = r.Facts(review, r.GRACE_SECONDS + 1, False, stale, column_entered=LATER)
                         self.assertEqual(r.target(held, board, names)[0], proven)
                         # An unknown merge time keeps the old reading: evidence.

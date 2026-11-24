@@ -26,6 +26,9 @@ HYPER = 'hypertask-ai/hypertask'
 HEAD = 'b5fa03a125b6177d7e04f4001d2f50d1caf9f002'
 OTHER_HEAD = '9aa542a1f0e7f0a3c2b0d2b8f5e4a5a5c1d3b7e9'
 RUN = 45390544671
+# Real hypertask-ai/hypertask#3835 merged head and pstack-verifier workflow run.
+HYPER_HEAD = '624ddfc863fce1d78bdf934791dd99d3ff38af78'
+HYPER_RUN = 45482013810
 
 
 def load_reconcile():
@@ -43,6 +46,30 @@ r = load_reconcile()
 def check(name, oid=HEAD, status='COMPLETED', conclusion='SUCCESS', run=RUN):
     return {'__typename': 'CheckRun', 'name': name, 'status': status, 'conclusion': conclusion,
             'checkSuite': {'commit': {'oid': oid}, 'workflowRun': {'databaseId': run}}}
+
+
+def status_context(context, oid=HYPER_HEAD, state='SUCCESS', repo=HYPER, run=HYPER_RUN, attempt=1):
+    """The StatusContext shape hypertask-ai/hypertask posts for pstack-verifier."""
+    return {'__typename': 'StatusContext', 'context': context, 'state': state,
+            'targetUrl': f'https://github.com/{repo}/actions/runs/{run}/attempts/{attempt}',
+            'commit': {'oid': oid}}
+
+
+def hyper_3835_node(with_pass=True):
+    nodes = [check('ci-tests', oid=HYPER_HEAD, run=45481972974),
+             status_context('ai-review')]
+    if with_pass:
+        nodes.append(status_context('pstack-verifier'))
+    return {'url': 'https://github.com/hypertask-ai/hypertask/pull/3835',
+            'state': 'MERGED', 'mergedAt': '2026-11-24T21:02:00Z',
+            'createdAt': '2026-11-24T20:30:00Z',
+            'headRefOid': HYPER_HEAD, 'baseRefOid': '2050d1af5172e0f6bbf07d4411f1a694f169d9f0',
+            'mergeable': 'UNKNOWN', 'author': {'login': 'valentinyeo'},
+            'commits': {'nodes': [{'commit': {'committedDate': '2026-11-24T20:32:00Z'}}]},
+            'statusCheckRollup': {'state': 'SUCCESS',
+                                  'contexts': {'pageInfo': {'hasNextPage': False},
+                                               'nodes': nodes}},
+            'comments': {'totalCount': 0, 'nodes': []}}
 
 
 def pr_344_checks():
@@ -139,6 +166,37 @@ class VerifierCheckNames(unittest.TestCase):
         pull = r.pull_from_node(VSTACK, 344, pr_344_node())
         facts = r.Facts('Checks', 8000, False, (pull,))
         self.assertEqual(r.target(facts, board=r.BOARDS[13556]), ('Done', 'merged with PASS'))
+
+    def test_hypertask_status_context_pass_plans_done_from_qa(self):
+        """hypertask-ai/hypertask posts pstack-verifier as a StatusContext on the head."""
+        pull = r.pull_from_node(HYPER, 3835, hyper_3835_node(with_pass=True))
+        self.assertEqual(pull.state, 'MERGED')
+        self.assertTrue(pull.passed)
+        self.assertEqual(self.runs, [(HYPER, HYPER_RUN)])
+        self.assertEqual(r.target(r.Facts('QA', 8000, False, (pull,)), board=r.BOARDS[15]),
+                         ('Done', 'merged with PASS'))
+
+    def test_hypertask_merged_without_pass_in_qa_plans_backlog(self):
+        pull = r.pull_from_node(HYPER, 3835, hyper_3835_node(with_pass=False))
+        self.assertEqual(pull.state, 'MERGED')
+        self.assertFalse(pull.passed)
+        self.assertEqual(r.target(r.Facts('QA', 8000, False, (pull,)), board=r.BOARDS[15]),
+                         ('Backlog', 'merged without PASS: rule break; owner must verify'))
+
+    def test_status_context_rejects_bad_head_state_repo_name_or_self_hosted(self):
+        self.assertFalse(r.pstack_pass_on_head(
+            [status_context('pstack-verifier', oid=OTHER_HEAD)], HYPER_HEAD, HYPER))
+        self.assertFalse(r.pstack_pass_on_head(
+            [status_context('pstack-verifier', state='FAILURE')], HYPER_HEAD, HYPER))
+        self.assertFalse(r.pstack_pass_on_head(
+            [status_context('pstack-verifier', repo=VSTACK)], HYPER_HEAD, HYPER))
+        self.assertFalse(r.pstack_pass_on_head(
+            [status_context('verifier')], HYPER_HEAD, HYPER))
+        bad_url = {**status_context('pstack-verifier'), 'targetUrl': 'https://example.com/ok'}
+        self.assertFalse(r.pstack_pass_on_head([bad_url], HYPER_HEAD, HYPER))
+        r.jobs_evidence = lambda repo, run_id: {'jobs': True, 'self_hosted': True}
+        self.assertFalse(r.pstack_pass_on_head(
+            [status_context('pstack-verifier')], HYPER_HEAD, HYPER))
 
 
 def gh_comment(body, login='github-actions', when='2026-11-24T12:00:00Z', number=1):
