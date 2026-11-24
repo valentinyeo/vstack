@@ -20,6 +20,17 @@ YAML_COMMAND = re.compile(r'^\s*command:\s*(.+)$', re.M)
 ROOT_REF = re.compile(r'\$ROOT/((?:hooks|skills)/[\w./-]+)')
 INTERPRETERS = {'python', 'python3', 'bash', 'sh', 'node', 'perl', 'ruby'}
 BUILTINS = {'[', 'test', 'echo', 'printf', 'true', 'false', 'exit', ':', 'cd'}
+# Shell grammar that names no file: keywords, declaration builtins and command prefixes.
+CONTROL = {'if', 'then', 'elif', 'else', 'fi', 'case', 'esac', 'for', 'select', 'while',
+           'until', 'do', 'done', 'in', 'function', '!', '{', '}', '[[', ']]'}
+DECLARATIONS = {'export', 'local', 'declare', 'readonly', 'unset', 'set', 'shift', 'trap',
+                'eval', 'source', '.', 'umask', 'ulimit'}
+WRAPPERS = {'exec', 'env', 'command', 'builtin', 'nohup', 'nice', 'time'}
+FILE_TESTS = {'-f', '-e', '-x', '-r', '-d', '-s', '-w', '-L', '-h'}
+ASSIGNMENT = re.compile(r'^\w+=')
+REDIRECT = re.compile(r'^\d*[<>]')
+# An unexpanded variable or a glob names no file in this checkout.
+UNRESOLVED = re.compile(r'[$*?]|\[.*\]')
 SKIP = {'.git', 'node_modules', '__pycache__', '.venv'}
 
 
@@ -81,8 +92,28 @@ def expand(value, variables):
     return value
 
 
+def guarded_files(tokens, variables):
+    """Files this command test -f/-x's before running them: a missing one fails open."""
+    guarded = set()
+    for index, token in enumerate(tokens[:-1]):
+        if token in FILE_TESTS:
+            guarded.add(expand(tokens[index + 1], variables))
+    return guarded
+
+
+def nameable(value):
+    """True when this expanded word can name a file here: not a redirect, number or glob."""
+    return bool(value) and not REDIRECT.match(value) and not value.isdigit() \
+        and not UNRESOLVED.search(value)
+
+
 def command_files(command, variables):
-    """Executable and interpreter/launcher operands, including legacy sh -c wrappers."""
+    """Executable and interpreter/launcher operands, including legacy sh -c wrappers.
+
+    Shell keywords, assignments, redirections, globs and unexpanded `$VAR` words name
+    no file and are not reported. A path the same command test -f/-x's first is left
+    alone: the hook fails open when it is gone instead of breaking the chat.
+    """
     lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()')
     lexer.whitespace_split = True
     lexer.commenters = ''
@@ -94,17 +125,25 @@ def command_files(command, variables):
             groups.append([])
         else:
             groups[-1].append(token)
+    guarded = set()
     for group in groups:
-        while group and re.match(r'^\w+=', group[0]):
+        while group and ASSIGNMENT.match(group[0]):
             name, value = group.pop(0).split('=', 1)
             variables[name] = expand(value, variables)
-        while group and group[0] in ('exec', 'env'):
+        guarded |= guarded_files(group, variables)
+        while group and (ASSIGNMENT.match(group[0]) or group[0] in CONTROL):
             group.pop(0)
-        if not group:
+        while group and group[0] in WRAPPERS:
+            group.pop(0)
+            while len(group) > 1 and group[0].startswith('-') and group[0] != '-':
+                group.pop(0)
+        if not group or group[0] in DECLARATIONS:
             continue
         executable = expand(group[0], variables)
+        if not nameable(executable) or executable.startswith('-'):
+            continue
         name = Path(executable).name
-        if name in BUILTINS:
+        if name in BUILTINS or executable in guarded:
             continue
         yield executable
         args = group[1:]
@@ -116,10 +155,13 @@ def command_files(command, variables):
             if '-m' in args:
                 continue
             operand = next((arg for arg in args if not arg.startswith('-')), None)
-            if operand:
-                yield expand(operand, variables)
+            target = expand(operand, variables) if operand else ''
+            if nameable(target) and target not in guarded:
+                yield target
         elif name == 'run-hook' and args:
-            yield expand(args[0], variables)
+            target = expand(args[0], variables)
+            if nameable(target) and target not in guarded:
+                yield target
 
 
 def resolve_file(value, project, home, repo=None):
