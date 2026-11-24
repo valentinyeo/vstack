@@ -170,8 +170,8 @@ def stage_column_map(board):
 
 
 PRODUCT_PROTECTED = frozenset({'UX needed', 'UX Sign-off', 'Agent Blocked (Infra)',
-    'Valentin Review', 'QA', 'No Flag', 'Flag: Only Me + QA', 'Flag: Everyone', 'Flag: Off'})
-PRODUCT_MANAGED = frozenset({'Backlog', 'In Progress', 'AI Review'})
+    'Valentin Review', 'Done', 'No Flag', 'Flag: Only Me + QA', 'Flag: Everyone', 'Flag: Off'})
+PRODUCT_MANAGED = frozenset({'Backlog', 'In Progress', 'AI Review', 'QA'})
 FACTORY_STAGE_COLUMN = {
     Stage.BACKLOG: 'Todo',
     Stage.VERIFICATION: VERIFICATION_BACKLOG,
@@ -183,8 +183,14 @@ FACTORY_STAGE_COLUMN = {
 FACTORY_COLUMN_STAGE = {name: stage for stage, name in FACTORY_STAGE_COLUMN.items()}
 FACTORY_COLUMN_STAGE['Building'] = Stage.IN_PROGRESS
 FACTORY_COLUMN_STAGE['Verifier'] = Stage.REVIEW
-PRODUCT_STAGE_COLUMN = {Stage.BACKLOG: 'Backlog', Stage.IN_PROGRESS: 'In Progress', Stage.REVIEW: 'AI Review'}
+PRODUCT_STAGE_COLUMN = {
+    Stage.BACKLOG: 'Backlog',
+    Stage.IN_PROGRESS: 'In Progress',
+    Stage.REVIEW: 'AI Review',
+    Stage.DONE: 'Done',
+}
 PRODUCT_COLUMN_STAGE = {name: stage for stage, name in PRODUCT_STAGE_COLUMN.items()}
+PRODUCT_COLUMN_STAGE['QA'] = Stage.REVIEW
 
 
 def make_board(board_id, prefix, managed, protected, stage_column, column_stage, *,
@@ -247,8 +253,6 @@ PLAN_SOURCES = (
     {'stage': Stage.REVIEW, 'reason': 'open PR',
      'pstack': f'{PLAYBOOKS}/autopilot-full.md',
      'quote': 'The owner merges only what you verified, tested on the trunk it lands on.'},
-    {'stage': Stage.REVIEW, 'reason': 'merged PR; live proof pending',
-     'house': 'board-15-live-proof-stage'},
     {'stage': Stage.DONE, 'reason': 'merged with PASS',
      'pstack': f'{PLAYBOOKS}/shipping.md',
      'quote': 'Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.'},
@@ -393,9 +397,6 @@ def plan_stage(facts, here, board):
     if merged and here == Stage.BACKLOG and facts.column_entered is None:
         return None, 'column entry unreadable; kept'
     fresh = [p for p in merged if merged_since_entry(p, facts, here)]
-    if fresh and product_board(board):
-        # The product board runs no verifier gate, so a merge is review evidence alone.
-        return Stage.REVIEW, 'merged PR; live proof pending'
     if fresh and merged_with_pass(fresh):
         # One merged PR carrying the verifier's PASS settles the card (VSTA-189): a PR
         # that only names the key, or one merged before the gate existed, never had a
@@ -1385,16 +1386,15 @@ def serialize_board_facts(board, tasks, pulls, now, probe_since=None, saved=None
         facts_at = now if key in refreshed or not kept else saved_ticket_at(kept, key)
         entry = {'at': facts_at, 'updated_at': task.get('updatedAt'), 'pulls': plist, 'facts': {},
                  'aliases': list(aliases_of(key, board))}
-        if not product_board(board):
-            for pull in plist:
-                repo = pull['repository']['nameWithOwner']
-                ref = (repo, pull['number'])
-                if ref in PULLS:
-                    got = PULLS[ref]
-                    entry['facts'][f'{repo}#{pull["number"]}'] = {
-                        'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed,
-                        'merged_at': got.merged_at, 'activity': got.activity,
-                        'created_at': got.created_at}
+        for pull in plist:
+            repo = pull['repository']['nameWithOwner']
+            ref = (repo, pull['number'])
+            if ref in PULLS:
+                got = PULLS[ref]
+                entry['facts'][f'{repo}#{pull["number"]}'] = {
+                    'url': got.url, 'state': got.state, 'checks': got.checks, 'passed': got.passed,
+                    'merged_at': got.merged_at, 'activity': got.activity,
+                    'created_at': got.created_at}
         tickets[key] = entry
     repos = sorted({pull['repository']['nameWithOwner'] for plist in pulls.values() for pull in plist})
     return {'at': now, 'probe_since': probe_since or format_reset(now),
@@ -2249,28 +2249,44 @@ def verifier_check_names(repo):
     return VERIFIER_CHECKS.get(repo, (PSTACK_VERIFIER_CHECK,))
 
 
+def pstack_status_run_id(target_url, repo):
+    """The workflow run id a verifier StatusContext points at in this repo, else None."""
+    match = re.fullmatch(
+        r'https://github\.com/' + re.escape(repo) + r'/actions/runs/(\d+)(?:/attempts/\d+)?',
+        target_url or '',
+    )
+    return int(match[1]) if match else None
+
+
 def pstack_pass_on_head(checks, head, repo):
     names = verifier_check_names(repo)
     for check in checks:
-        suite = check.get('checkSuite') or {}
-        workflow = suite.get('workflowRun') or {}
-        if (check.get('__typename') != 'CheckRun' or check.get('name') not in names or
-                check.get('status') != 'COMPLETED' or check.get('conclusion') != 'SUCCESS' or
-                (suite.get('commit') or {}).get('oid') != head or not workflow.get('databaseId')):
+        kind = check.get('__typename')
+        if kind == 'CheckRun':
+            suite = check.get('checkSuite') or {}
+            workflow = suite.get('workflowRun') or {}
+            if (check.get('name') not in names or
+                    check.get('status') != 'COMPLETED' or check.get('conclusion') != 'SUCCESS' or
+                    (suite.get('commit') or {}).get('oid') != head or not workflow.get('databaseId')):
+                continue
+            run_id = workflow['databaseId']
+        elif kind == 'StatusContext':
+            if (check.get('context') not in names or check.get('state') != 'SUCCESS' or
+                    (check.get('commit') or {}).get('oid') != head):
+                continue
+            run_id = pstack_status_run_id(check.get('targetUrl'), repo)
+            if not run_id:
+                continue
+        else:
             continue
-        evidence = jobs_evidence(repo, workflow['databaseId'])
+        evidence = jobs_evidence(repo, run_id)
         if evidence['jobs'] and not evidence['self_hosted']:
             return True
     return False
 
 
 def pull_facts(pull, board=DEFAULT):
-    """A product board needs only the state its search already returned; every other
-    board reads checks, base and verifier verdicts in batches of its own.
-    """
-    if product_board(board):
-        return Pull(pull['url'], pull['state'], '', False, moment(pull.get('mergedAt')),
-                    created_at=moment(pull.get('createdAt')))
+    """Read checks, base and verifier verdicts for one pull, in batches."""
     return read_pull(pull['repository']['nameWithOwner'], pull['number'])
 
 
@@ -2278,7 +2294,7 @@ PULL_FIELDS = '''url state mergedAt createdAt updatedAt headRefOid baseRefOid me
  commits(last:1){nodes{commit{committedDate}}}
  statusCheckRollup{state contexts(first:100){pageInfo{hasNextPage} nodes{__typename
  ... on CheckRun{name status conclusion completedAt checkSuite{commit{oid} workflowRun{databaseId}}}
- ... on StatusContext{state}}}}
+ ... on StatusContext{context state targetUrl commit{oid}}}}}
  comments(last:100){totalCount nodes{databaseId body updatedAt author{login}}}'''
 # Open PRs never read verdicts, comments, or workflow runs; skipping checkSuite
 # joins and comments lets a 50-PR GraphQL batch finish without timing out.
@@ -2473,34 +2489,15 @@ def all_comments(repo, number):
     return [comment for page in pages for comment in page]
 
 
-def read_product_pull(pull):
-    """One PR's live state, for an apply preflight that must not trust a search.
-
-    Never read on a dry run: board 15 takes its PR state from the search result
-    it already paid for. The search names the repository, so a PR found in a
-    second repo is read from that repo and not from the product one.
-    """
-    detail = json.loads(run('gh', 'pr', 'view', str(pull['number']), '--repo',
-                            pull['repository']['nameWithOwner'], '--json', 'url,state,createdAt'))
-    return Pull(detail['url'], detail['state'], '', False,
-                created_at=moment(detail.get('createdAt')))
-
-
 def refreshed(pulls, board=DEFAULT):
-    """The pulls an apply preflight acts on, re-read once each, and only when it writes."""
-    if not product_board(board):
-        return pulls
-    return [{**pull, 'state': read_product_pull(pull).state} for pull in pulls]
+    """Apply preflight clears PULLS, so every board re-reads live PR facts through read_pull."""
+    return pulls
 
 
 def prefetch(pulls, board=DEFAULT, clear=True):
     """Read every PR once, a batch at a time. A failed read is retried and reported
     by collect, so it still prints UNKNOWN for its own ticket only.
     """
-    if product_board(board):
-        # The search result already carries the one fact these rules read.
-        return
-
     def load(batch):
         try:
             read_pull_batch(batch)
@@ -2629,7 +2626,7 @@ def collect(task, pulls, now, board=DEFAULT, blockers=None):
                  bool(task.get('waitingOnUserId')),
                  bool(task.get('blockerCommentId')) or bool(blocker),
                  is_verification(task), column_entered(task),
-                 False if product_board(board) else pr_idle(details, now),
+                 pr_idle(details, now),
                  blocker=blocker)
 
 
@@ -3015,6 +3012,13 @@ def board_run():
             pulls = discover_quiet(keys, saved=saved, probe_items=items,
                                    refresh=refreshed, **options)
             reading = {key: pulls[key] for key in refreshed if pulls.get(key)}
+            for key, plist in pulls.items():
+                if key in reading:
+                    continue
+                uncached = [p for p in plist
+                            if (p['repository']['nameWithOwner'], p['number']) not in PULLS]
+                if uncached:
+                    reading[key] = uncached
             if reading:
                 with phase('pulls'):
                     prefetch(reading, clear=False, **options)

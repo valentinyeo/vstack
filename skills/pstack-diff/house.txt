@@ -44,14 +44,6 @@ basis: PR #180, VSTA-4 (9e54f31); PR #233, VSTA-74 (e61ac99)
 approved: 2026-11-20
 expiry: 2027-02-23
 
-id: board-15-live-proof-stage
-pstack: skills/poteto-mode/playbooks/shipping.md
-quote: Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.
-change: Board 15 keeps its own stage model, so a merged PR waits in AI Review for a Done comment with live proof; every other board plans a merged PR with PASS to Done.
-basis: PR #186 (d2cb089); PR #212, VSTA-11 (0883ac5); VSTA-186
-approved: 2026-11-24
-expiry: 2027-02-23
-
 id: cloud-agent-offload
 pstack: docs/harness/claude-code.md
 quote: | `environment: "cloud"` | `isolation: "worktree"`. Name the branch or commit the worker checks out. |

@@ -154,19 +154,6 @@ def normalize_title(title):
     return re.sub(r'\s+', ' ', text)
 
 
-def merged_proof(pulls):
-    for pull in pulls or ():
-        if isinstance(pull, dict):
-            state = (pull.get('state') or '').upper()
-            passed = pull.get('passed')
-        else:
-            state = (pull.state or '').upper()
-            passed = pull.passed
-        if state == 'MERGED' and passed is not False:
-            return True
-    return False
-
-
 def done_comment_proof(comments):
     for row in comments or ():
         kind = (row.get('kind') or '').strip().casefold()
@@ -582,8 +569,6 @@ def check_done_proof(task, pulls, comments, board, breaks):
     if done_comment_proof(comments.get(task['ticketNumber'])):
         return
     ticket_pulls = pulls.get(task['ticketNumber'], ())
-    if reconcile.product_board(board) and merged_proof(ticket_pulls):
-        return
     if reconcile.merged_with_pass(ticket_pulls):
         return
     breaks.append(Break(task['ticketNumber'], 'done-proof', owner_chat(task),
@@ -594,10 +579,9 @@ def check_merged_no_pass(task, pulls, board, breaks):
     """A merge with no PASS on its head is a rule break its owner must verify.
 
     A PASS verdict runs before the merge, so a merge without one proves nothing and
-    the card goes back to Todo. Board 15 keeps its own model: it runs no verifier
-    gate, so a merge is review evidence there and this rule stays quiet.
+    the card goes back to Todo (or Backlog on board 15).
     """
-    if reconcile.product_board(board) or task.get('section') == DONE:
+    if task.get('section') == DONE:
         return
     ticket_pulls = pulls.get(task['ticketNumber'], ())
     if not any(((p.get('state') if isinstance(p, dict) else p.state) or '').upper() == 'MERGED'
