@@ -57,6 +57,7 @@ skills/valentin-mode/no-bare-ids.py | pstack: principle-minimize-reader-load | w
 skills/valentin-mode/context.py | pstack: correct | why: https://app.hypertask.ai/detail/project-13556/110
 skills/valentin-mode/version.sh | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/72
 skills/vps-state/vps-state | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-2060/2935
+skills/vps-tidy/vps-tidy | pstack: poteto-mode | why: https://app.hypertask.ai/detail/project-13556/7
 skills/vstack-feedback/vstack-feedback | pstack: principle-encode-lessons-in-structure | why: https://app.hypertask.ai/detail/project-13556/121
 tools/gh-wrapper/gh | pstack: principle-boundary-discipline | why: https://app.hypertask.ai/detail/project-13556/54
 tools/gh-wrapper/replay.py | pstack: principle-prove-it-works | why: https://app.hypertask.ai/detail/project-13556/90

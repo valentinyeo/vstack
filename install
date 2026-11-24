@@ -122,6 +122,9 @@ for hook in "$ROOT"/hooks/*; do
   link_one "$(basename "$hook")" "$hook" "$HOME/.claude/hooks"
 done
 link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
+# vps-tidy is the one cleaner for temp files, caches, docker leftovers and stray
+# programs. Any chat runs it from its own loop; this script only links the tool.
+link_one vps-tidy "$ROOT/skills/vps-tidy/vps-tidy" "$HOME/.local/bin"
 
 # Chats read one server facts file (VSTA-146). A hand-written tools.md note had
 # the two servers the wrong way round and said only inne runs on Hetzner, and a
@@ -230,8 +233,4 @@ fi
 # Drop retired links from older installs; preserve real files and unrelated hooks.
 for name in "${retired_hooks[@]}"; do
   [ ! -L "$HOME/.claude/hooks/$name" ] || rm -f "$HOME/.claude/hooks/$name"
-done
-[ ! -L "$HOME/.local/bin/vps-tidy" ] || rm -f "$HOME/.local/bin/vps-tidy"
-for dest in "${dests[@]}"; do
-  [ ! -L "$dest/vps-tidy" ] || rm -f "$dest/vps-tidy"
 done
