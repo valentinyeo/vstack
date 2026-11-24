@@ -1,0 +1,13 @@
+name: VSTA-211 focused proof
+on:
+  push:
+    branches: [vsta-211]
+permissions:
+  contents: read
+jobs:
+  pr-park:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - run: timeout 300 python3 -m unittest tests.test_pr_park -v
