@@ -2393,5 +2393,70 @@ class ViewReposTest(unittest.TestCase):
         self.assertEqual(self.gate_sees({'rows': [todo('SOFT-1')]}), set())
 
 
+LABEL = 'Board Drain Loop'
+
+
+def cap_pull(number, *keys, created=None):
+    """One open PR fact, its title naming the tickets it carries."""
+    named = ' '.join(keys) or f'VSTA-{number}'
+    return {'url': f'https://github.com/valentinyeo/vstack/pull/{number}', 'number': number,
+            'state': 'OPEN', 'title': f'fix: {named}', 'headRefName': f'pr-{number}',
+            'body': '', 'createdAt': created or iso(NOW - 60 * number),
+            'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
+
+
+def own_cards(count=5):
+    """This label's cards, each in Checks with its own open PR."""
+    rows = [vsta(f'VSTA-{n}', section='Checks') for n in range(1, count + 1)]
+    pulls = {f'VSTA-{n}': [cap_pull(n)] for n in range(1, count + 1)}
+    return rows, pulls
+
+
+class PrCapTest(CheckTest):
+    """The PR cap counts only the pull requests this chat's own cards carry (VSTA-237)."""
+
+    def drain_cap(self, payload):
+        code, out = self.run_payload(payload, board=13556, label=LABEL)
+        return code, out
+
+    def cap_line(self, out):
+        return next((line for line in out.splitlines()
+                     if line.startswith('agent PR cap:')), '')
+
+    def test_a_pr_naming_another_labels_ticket_is_not_counted(self):
+        # PR 391 names only VSTA-233, a Hypertask Reconciler card, so it never spends
+        # this label's cap however the board read hangs it on one of these cards.
+        rows, pulls = own_cards()
+        foreign = vsta('VSTA-233', section='Checks')
+        foreign['task']['labels'] = [{'name': 'Hypertask Reconciler'}]
+        rows.append(foreign)
+        pulls['VSTA-233'] = [cap_pull(391, 'VSTA-233')]
+        pulls['VSTA-1'].append(cap_pull(391, 'VSTA-233'))
+        code, out = self.drain_cap({'rows': rows, 'pulls': pulls})
+        self.assertNotIn('agent PR cap', out)
+
+    def test_a_pr_naming_both_an_own_and_a_foreign_ticket_counts_once(self):
+        rows, pulls = own_cards()
+        pulls['VSTA-5'].append(cap_pull(6, 'VSTA-5', 'VSTA-233', created=iso(NOW)))
+        code, out = self.drain_cap({'rows': rows, 'pulls': pulls})
+        self.assertEqual(code, 1, out)
+        line = self.cap_line(out)
+        self.assertIn('owns 6 open PRs (cap 5)', line)
+        self.assertEqual(line.count('/pull/6'), 1, line)
+        self.assertIn('VSTA-5 https://github.com/valentinyeo/vstack/pull/6', line)
+
+    def test_own_prs_still_trip_the_cap_at_six(self):
+        rows, pulls = own_cards(5)
+        code, out = self.drain_cap({'rows': rows, 'pulls': pulls})
+        self.assertNotIn('agent PR cap', out)
+        rows, pulls = own_cards(6)
+        code, out = self.drain_cap({'rows': rows, 'pulls': pulls})
+        self.assertEqual(code, 1, out)
+        line = self.cap_line(out)
+        self.assertIn('owns 6 open PRs (cap 5)', line)
+        self.assertIn('/pull/1', line)
+        self.assertNotIn('/pull/2', line)
+
+
 if __name__ == '__main__':
     unittest.main()
