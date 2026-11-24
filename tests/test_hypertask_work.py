@@ -3111,6 +3111,17 @@ class CallBudgetTest(unittest.TestCase):
             self.assertEqual(again[0]['headRefName'], 'mpa/revert-584')
             self.assertEqual(gh.call_count, 1, 'a branch read once is cached for good')
 
+    def test_a_revert_branch_is_no_ticket_key(self):
+        """`mpa/revert-584` names a pull, and read as key REVERT-584 it cost a read.
+
+        The alias learner then asked hypertask about REVERT-584 on every run and
+        remembered the answer (VSTA-256).
+        """
+        self.assertEqual(r.named_keys({'headRefName': 'mpa/revert-584'}), [])
+        self.assertEqual(r.named_keys({'headRefName': 'revert-223-x'}), [])
+        self.assertEqual(r.named_keys({'headRefName': 'revert-223-x', 'title': 'VSTA-1: undo'}),
+                         ['VSTA-1'])
+
     def test_quiet_probe_preserves_product_merge_time(self):
         merged_at = '2026-01-02T00:00:00Z'
         item = {'html_url': 'https://github.com/hypertask-ai/hypertask/pull/1',

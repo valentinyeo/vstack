@@ -1807,7 +1807,9 @@ STRUCT_LINE = re.compile(r'^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:Ticket:|(?:close|cl
 def named_keys(pull):
     """The keys a pull structurally names: title, branch, ticket line, closing line."""
     keys = KEY_TOKEN.findall(pull.get('title') or '')
-    keys += KEY_TOKEN.findall(pull.get('headRefName') or '')
+    # A revert branch names the pull it undoes, `revert-<n>`, which reads like a key
+    # and is nobody's ticket, so it must not cost a read or become an alias (VSTA-256).
+    keys += KEY_TOKEN.findall(REVERT_BRANCH.sub(' ', pull.get('headRefName') or ''))
     for line in (pull.get('body') or '').splitlines():
         if STRUCT_LINE.match(line):
             keys += KEY_TOKEN.findall(line)
