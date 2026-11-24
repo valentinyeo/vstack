@@ -152,7 +152,8 @@ fi
 # is generated as a command shim on a folder plan-pick puts first on a worker's PATH
 # (VSTA-165). The shims come from the config the hook reads, so the two cannot drift.
 python3 "$ROOT/scripts/worker-shims" --dir "$HOME/.local/state/vstack/worker-shims" \
-  --hook "$HOME/.claude/hooks/heavy-local-guard.py" || {
+  --hook "$HOME/.claude/hooks/heavy-local-guard.py" \
+  --pr-cap-hook "$HOME/.claude/hooks/pr-cap-guard.py" || {
   echo "vstack install: worker-shims failed; pacer workers have no guard" >&2
 }
 
