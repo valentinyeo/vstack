@@ -3886,16 +3886,16 @@ class WholeSyncTest(unittest.TestCase):
                     [], 0, json.dumps({'sections': self.VSTA_PROJECT['project']['sections']}), '')
             if 'search/issues' in call:
                 return subprocess.CompletedProcess([], 0, json.dumps({'items': state['probe']}), '')
-            if 'headRefName' in call:
+            if 'search(query' in call:
+                nodes = [shipped] if 'VSTA-289' in call else []
+                page = {'pageInfo': {'hasNextPage': False}, 'nodes': nodes}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'q0': page}}), '')
+            if '{headRefName}' in call:
                 heads = {f'p{n}': {'pullRequest': {'headRefName': item.get('headRefName') or 'mpa/revert-584'}}
                          for n, item in enumerate(state['probe'])}
                 return subprocess.CompletedProcess([], 0, json.dumps({'data': heads}), '')
             if 'expression:' in call:
                 return subprocess.CompletedProcess([], 0, json.dumps({'data': {'p0': {'object': None}}}), '')
-            if 'search(query' in call:
-                nodes = [shipped] if 'VSTA-289' in call else []
-                page = {'pageInfo': {'hasNextPage': False}, 'nodes': nodes}
-                return subprocess.CompletedProcess([], 0, json.dumps({'data': {'q0': page}}), '')
             if 'repository(owner:' in call:
                 keys = list(dict.fromkeys(re.findall(r'p(\d+):repository', call)))
                 verdict = 'pstack-verifier: PASS @' + HEAD
