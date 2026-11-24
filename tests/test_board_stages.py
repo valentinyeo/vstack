@@ -34,6 +34,12 @@ def load_reconcile():
 r = load_reconcile()
 
 
+def reason_template(node):
+    """One f-string reason as its TEMPLATE text, with each filled-in part as `{}`."""
+    return ''.join('{}' if isinstance(part, ast.FormattedValue) else part.value
+                   for part in node.values)
+
+
 def mubo_board():
     stage_column, column_stage = r.dynamic_stage_maps(MUBO_COLUMNS, r.stage_names(sections=MUBO_COLUMNS))
     managed = MUBO_COLUMNS & r.MANAGED
@@ -41,9 +47,17 @@ def mubo_board():
                         stage_column, column_stage, columns=MUBO_COLUMNS)
 
 
-def pull(state='OPEN', checks='green', passed=False, merged_at=None, activity=None):
-    return r.Pull('https://github.com/valentinyeo/vstack/pull/1', state, checks, passed,
-                  merged_at, None, activity)
+def pull(state='OPEN', checks='green', passed=False, merged_at=None, activity=None,
+         created=None, number=1):
+    return r.Pull(f'https://github.com/valentinyeo/vstack/pull/{number}', state, checks, passed,
+                  merged_at, None, activity, created)
+
+
+def merged(number, title, body='', commit='a' * 40, repo='valentinyeo/multiprompt'):
+    """One merged PR row, the shape the search and the open sweep both return."""
+    return {'url': f'https://github.com/{repo}/pull/{number}', 'number': number,
+            'title': title, 'body': body, 'state': 'MERGED',
+            'mergeCommit': {'oid': commit}, 'repository': {'nameWithOwner': repo}}
 
 
 class MuboShapes(unittest.TestCase):
@@ -100,6 +114,66 @@ class MuboShapes(unittest.TestCase):
         self.assertEqual(r.RED_PR_IDLE_SECONDS, 24 * 3600)
 
 
+class NewestPullWins(unittest.TestCase):
+    """VSTA-205: the newest PR linked to a card decides its stage, not its merge.
+
+    The real shape on board 13734: MUBO-289's PR #574 merged with a PASS, was
+    reverted, and a redo PR #584 was opened after it. The merge that was taken back
+    ships nothing, so the card follows the redo and never reads Done.
+    """
+
+    def setUp(self):
+        self.board = mubo_board()
+        self.merge = pull('MERGED', passed=True, created=1000.0, number=574)
+
+    def target(self, column, pulls, **extra):
+        return r.target(r.Facts(column, 8000, False, pulls, **extra), board=self.board)
+
+    def test_a_redo_opened_after_the_merged_pass_keeps_the_card_off_done(self):
+        redo = pull('OPEN', checks='red', created=2000.0, number=584)
+        column, reason = self.target('Doing', (self.merge, redo))
+        self.assertEqual(column, 'Checks')
+        self.assertIn('/pull/584', reason)
+        green = pull('OPEN', created=2000.0, number=584)
+        column, reason = self.target('Doing', (self.merge, green))
+        self.assertEqual(column, 'AI Review')
+        self.assertIn('/pull/584', reason)
+
+    def test_a_single_merged_pass_is_still_done(self):
+        self.assertEqual(self.target('AI Review', (self.merge,)), ('Done', 'merged with PASS'))
+
+    def test_a_redo_with_no_opening_date_keeps_the_old_reading(self):
+        """An unknown date is never newer, so the open PR reads as every open PR did."""
+        redo = pull('OPEN', checks='red', number=584)
+        self.assertEqual(self.target('Doing', (self.merge, redo))[0], 'Checks')
+
+    def test_a_merged_revert_by_title_takes_the_merged_pass_back(self):
+        revert = merged(588, 'Revert "MUBO-289: redo the browser switch"', commit='b' * 40)
+        left = r.undone({'MUBO-289': [merged(574, 'MUBO-289: redo the browser switch')]}, [revert])
+        self.assertEqual(left['MUBO-289'], [])
+        self.assertNotEqual(self.target('Doing', ())[0], 'Done')
+
+    def test_a_reverts_line_takes_the_merged_pass_back(self):
+        ship = merged(574, 'Redo the browser switch')
+        revert = merged(588, 'Back out the browser switch',
+                        body='Reverts valentinyeo/multiprompt#574')
+        left = r.undone({'MUBO-289': [ship]}, [revert])
+        self.assertEqual(left['MUBO-289'], [])
+        self.assertNotEqual(self.target('Doing', ())[0], 'Done')
+
+    def test_the_search_and_the_read_ask_for_the_opening_date(self):
+        for fields in (r.SEARCH_FIELDS, r.PULL_FIELDS, r.OPEN_PULL_FIELDS):
+            self.assertIn('createdAt', fields)
+
+    def test_a_saved_pass_without_an_opening_date_is_read_again(self):
+        entry = {'pulls': [], 'facts': {'o/r#1': {'state': 'MERGED', 'passed': True,
+                                                  'merged_at': 1.0}}}
+        saved = {'at': 1, 'tickets': {'MUBO-1': entry}}
+        self.assertFalse(r.saved_facts_usable(saved))
+        entry['facts']['o/r#1']['created_at'] = 1.0
+        self.assertTrue(r.saved_facts_usable(saved))
+
+
 class PullActivity(unittest.TestCase):
     def test_the_newest_push_check_or_comment_is_the_activity(self):
         node = {'updatedAt': '2026-01-03T00:00:00Z',
@@ -147,11 +221,19 @@ class EveryStageHasASource(unittest.TestCase):
         found, prose = set(), set()
         for node in ast.parse(SOURCE.read_text()).body:
             if isinstance(node, ast.FunctionDef) and node.name in {
-                    'plan_stage', 'target', '_open_pr_reason', '_worker_reason'}:
+                    'plan_stage', 'target', '_open_pr_reason', '_worker_reason',
+                    'newer_open_reason'}:
                 prose.add(ast.get_docstring(node))
+                filled = set()
+                for sub in ast.walk(node):
+                    # A reason that names its PR is an f-string: read it as the
+                    # template its row carries, not as the pieces around the value.
+                    if isinstance(sub, ast.JoinedStr):
+                        found.add(reason_template(sub))
+                        filled |= {id(part) for part in sub.values}
                 found |= {sub.value for sub in ast.walk(node)
                           if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
-                          and ' ' in sub.value}
+                          and ' ' in sub.value and id(sub) not in filled}
         self.assertEqual(found - prose - self.reasons, set(),
                          'a plan reason has no pstack citation and no house id')
         self.assertIn(r.NOTHING_RAN, self.reasons)

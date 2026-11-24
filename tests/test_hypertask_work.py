@@ -3430,13 +3430,14 @@ class WholeSyncTest(unittest.TestCase):
         key = 'VSTA-1'
         shipped_pull = {'title': 'VSTA-1: a board syncs every repo it ships from (#223)', 'body': '',
                         'headRefName': 'vsta-1-repos', 'state': 'MERGED', 'baseRefName': 'main',
-                        'number': 223, 'mergedAt': '2026-11-23T11:51:02Z', 'mergeCommit': {'oid': 'a' * 40},
+                        'number': 223, 'mergedAt': '2026-11-23T11:51:02Z',
+                        'createdAt': '2026-11-23T10:00:00Z', 'mergeCommit': {'oid': 'a' * 40},
                         'url': 'https://github.com/valentinyeo/vstack/pull/223',
                         'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
         revert = {'title': 'Revert "VSTA-1: a board syncs every repo it ships from (#223)" (#282)',
                   'body': 'Reverts #223', 'headRefName': 'revert-223', 'state': 'MERGED',
                   'baseRefName': 'main', 'number': 282, 'mergedAt': '2026-11-25T09:00:00Z',
-                  'mergeCommit': {'oid': 'b' * 40},
+                  'createdAt': '2026-11-25T08:00:00Z', 'mergeCommit': {'oid': 'b' * 40},
                   'url': 'https://github.com/valentinyeo/vstack/pull/282',
                   'repository': {'nameWithOwner': 'valentinyeo/vstack'}}
         state = {'merged': [shipped_pull], 'probe': []}

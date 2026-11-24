@@ -27,8 +27,9 @@ Move the ticket the moment its stage moves. The PR outranks a live worker.
 - worker starts -> Doing or Building
 - PR opened -> Checks
 - checks green -> AI Review or Verifier
-- merged with PASS on the head -> Done
+- merged with PASS on the head -> Done, unless a PR linked to the same ticket was opened after that merge and is still open: the newer PR is the work in flight (a redo after a revert), so the card follows its stage, Checks or AI Review
 - merged without PASS -> Todo, a rule break the owner must verify
+- a merged PR that a later merged revert names (a `Revert "..."` title or a `Reverts owner/repo#n` line) never counts as shipped
 - open PR checks red or missing, no push, check run or comment for 24h, no live worker -> Todo, and it stays there until the PR moves again
 
 A merged PR is evidence only when it merged after the card entered the column it is in now. A card parked or reopened behind an older merge keeps its column, and a card already in review stays there: an old merge is history, never a promotion, and never a demotion. Open PRs and live workers read the same as before.
