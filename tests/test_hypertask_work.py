@@ -4142,5 +4142,205 @@ class LabelLockTest(unittest.TestCase):
                 self.assertEqual(data[f'w{w}-k{i}'], {'w': str(w), 'i': i})
 
 
+class UnlabeledSyncTest(unittest.TestCase):
+    """VSTA-250: --unlabeled selects and moves only cards carrying no agent label."""
+
+    MUBO_SECTIONS = ('Todo', 'Doing', 'Checks', 'AI Review', 'Verification Backlog',
+                     'Valentin Review', 'Done', 'Not now')
+
+    def setUp(self):
+        clear_cache()
+        r.board_config.cache_clear()
+        r.PULLS.clear()
+        r.FAILED.clear()
+        r.FAILED_REPOS.clear()
+        r.reset_github_count()
+        self.addCleanup(r.PULLS.clear)
+        self.addCleanup(r.board_config.cache_clear)
+        for patcher in (
+                patch.object(r, 'process_tickets', return_value=set()),
+                patch.object(r, 'product_workers', return_value=set()),
+                patch.object(r, 'live_lease', return_value=False)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def mubo_project(self):
+        return {'project': {'id': 13734, 'title': 'Multi Bot', 'uniqueIdentifier': 'MUBO',
+                            'sections': [{'section_title': s} for s in self.MUBO_SECTIONS]}}
+
+    def mubo_card(self, key, section='AI Review', labels=(), updated_at=None):
+        return {'ticketNumber': key, 'section': section, 'projectId': 13734,
+                'boardTitle': 'Multi Bot',
+                'updatedAt': NOW - 8000 if updated_at is None else updated_at,
+                'labels': [{'name': name} for name in labels], 'assignees': []}
+
+    def merged_pass_pull(self, number):
+        repo = 'valentinyeo/multiprompt'
+        url = f'https://github.com/{repo}/pull/{number}'
+        search_row = {'url': url, 'number': number, 'state': 'MERGED',
+                      'repository': {'nameWithOwner': repo}}
+        resolved = r.Pull(url, 'MERGED', 'green', True, merged_at=NOW - 3600)
+        return search_row, (repo, number), resolved
+
+    def test_unlabeled_selects_real_ai_review_merged_pass_and_skips_labeled(self):
+        """Board 13734 real shape: unlabeled AI Review card with merged PASS plans Done;
+        cards with another chat's label are never selected or looked up on GitHub."""
+        unlabeled = self.mubo_card('MUBO-101', 'AI Review', labels=())
+        generic_only = self.mubo_card('MUBO-102', 'AI Review', labels=('Bug', 'brain-medium'))
+        other_chat = self.mubo_card('MUBO-103', 'AI Review', labels=('Multi Bot Bugs',))
+        lead_card = self.mubo_card('MUBO-104', 'AI Review', labels=('Multi Bot',))
+        tasks = [unlabeled, generic_only, other_chat, lead_card]
+
+        p1, k1, r1 = self.merged_pass_pull(501)
+        p2, k2, r2 = self.merged_pass_pull(502)
+        p3, k3, r3 = self.merged_pass_pull(503)
+        p4, k4, r4 = self.merged_pass_pull(504)
+        pulls_by_key = {'MUBO-101': [p1], 'MUBO-102': [p2], 'MUBO-103': [p3], 'MUBO-104': [p4]}
+        resolved = {k1: r1, k2: r2, k3: r3, k4: r4}
+
+        def fake_prefetch(found, **_kwargs):
+            r.PULLS.update(resolved)
+
+        def fake_api(*args):
+            if args[:2] == ('project', 'show'):
+                return self.mubo_project()
+            raise AssertionError(f'unexpected api call: {args}')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--board', '13734', '--unlabeled']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'api', side_effect=fake_api), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'discover', side_effect=lambda keys, **_kw: {k: pulls_by_key[k] for k in keys}) as discover, \
+                patch.object(r, 'prefetch', side_effect=fake_prefetch), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(r.main(), 0)
+
+        self.assertEqual(discover.call_args.args[0], ['MUBO-101', 'MUBO-102'])
+        printed = out.getvalue()
+        self.assertIn('PLAN MUBO-101 AI Review -> Done | merged with PASS', printed)
+        self.assertIn('PLAN MUBO-102 AI Review -> Done | merged with PASS', printed)
+        self.assertNotIn('MUBO-103', printed)
+        self.assertNotIn('MUBO-104', printed)
+        self.assertIn('DRY RUN board=13734 tickets=2 unknown=0', printed)
+        self.assertIn('reconcile: board 13734 title=Multi Bot', err.getvalue())
+        self.assertIn('reconcile: unlabeled kept 2 of 4 tickets', err.getvalue())
+
+    def test_unlabeled_apply_moves_only_unlabeled_preserves_facts_and_is_idempotent(self):
+        """Apply moves unlabeled AI Review card to Done, skips one already moved by another
+        chat (idempotent), skips one labeled mid-flight, leaves other-chat cards untouched,
+        and never overwrites whole-board saved facts."""
+        to_move = self.mubo_card('MUBO-201', 'AI Review', labels=())
+        already_moved = self.mubo_card('MUBO-202', 'AI Review', labels=())
+        labeled_midflight = self.mubo_card('MUBO-203', 'AI Review', labels=('Bug',))
+        other_chat = self.mubo_card('MUBO-204', 'AI Review', labels=('Multi Bot Features',))
+        tasks = [to_move, already_moved, labeled_midflight, other_chat]
+
+        p1, k1, r1 = self.merged_pass_pull(601)
+        p2, k2, r2 = self.merged_pass_pull(602)
+        p3, k3, r3 = self.merged_pass_pull(603)
+        pulls_by_key = {'MUBO-201': [p1], 'MUBO-202': [p2], 'MUBO-203': [p3], 'MUBO-204': []}
+        resolved = {k1: r1, k2: r2, k3: r3}
+        moved = []
+
+        live_state = {
+            'MUBO-201': dict(to_move),
+            'MUBO-202': {**already_moved, 'section': 'Done', 'updatedAt': NOW - 10},
+            'MUBO-203': {**labeled_midflight,
+                         'labels': [{'name': 'Bug'}, {'name': 'Multi Bot Features'}]},
+        }
+
+        def fake_api(*args):
+            if args[:2] == ('project', 'show'):
+                return self.mubo_project()
+            if args[:2] == ('task', 'get'):
+                return {'tasks': [live_state[args[2]]]}
+            if args[:2] == ('task', 'move'):
+                moved.append((args[2], args[4]))
+                return {}
+            raise AssertionError(f'unexpected api call: {args}')
+
+        def fake_read_pull(repo, number):
+            return resolved[(repo, number)]
+
+        sentinel = {'at': NOW - 100, 'tickets': {'MUBO-999': {'at': NOW - 100, 'pulls': []}}}
+        r.write_board_facts(13734, sentinel)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)), \
+                patch.object(sys, 'argv', ['reconcile', '--board', '13734', '--unlabeled',
+                                           '--apply', '--limit', '5']), \
+                patch.object(r.time, 'time', return_value=NOW), \
+                patch.object(r, 'api', side_effect=fake_api), \
+                patch.object(r, 'tickets', return_value=tasks), \
+                patch.object(r, 'probe_budget'), \
+                patch.object(r, 'probe_items', return_value=None), \
+                patch.object(r, 'discover', side_effect=lambda keys, **_kw: {k: pulls_by_key[k] for k in keys}), \
+                patch.object(r, 'prefetch', side_effect=lambda found, **_kw: r.PULLS.update(resolved)), \
+                patch.object(r, 'read_pull', side_effect=fake_read_pull), \
+                patch.object(r, 'run', return_value=''), \
+                patch.dict(os.environ, {'SHIP_SESSION_NAME': 'Multi Bot'}), \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(r.main(), 0)
+
+        self.assertEqual(moved, [('MUBO-201', 'Done')])
+        printed = out.getvalue()
+        self.assertIn('MOVE MUBO-201 AI Review -> Done | merged with PASS', printed)
+        self.assertIn('SKIP MUBO-202 | ticket changed since preview', printed)
+        self.assertIn('SKIP MUBO-203 | carries an agent label; unlabeled sync leaves it alone', printed)
+        self.assertNotIn('MUBO-204', printed)
+        self.assertEqual(r.read_board_facts(13734), sentinel,
+                         '--unlabeled is scoped and must not overwrite whole-board facts')
+
+    def test_unlabeled_rejects_conflicting_flags(self):
+        for argv in (['reconcile', '--label', 'Multi Bot', '--unlabeled'],
+                     ['reconcile', '--ticket', 'MUBO-1', '--unlabeled']):
+            with self.subTest(argv=argv), patch.object(sys, 'argv', argv), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as exited:
+                    r.main()
+                self.assertEqual(exited.exception.code, 2)
+
+    def test_unlabeled_lock_coexists_with_label_and_excludes_whole_board(self):
+        board = r.make_board(13734, 'MUBO', r.MANAGED, r.PROTECTED,
+                             r.FACTORY_STAGE_COLUMN, r.FACTORY_COLUMN_STAGE, title='Multi Bot')
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(r.Path, 'home', return_value=Path(directory)):
+            label_handles = r.acquire_locks(board, label='Multi Bot Bugs')
+            unlabeled_handles = r.acquire_locks(board, unlabeled=True)
+            try:
+                self.assertIsNotNone(label_handles)
+                self.assertIsNotNone(unlabeled_handles, 'label and unlabeled apply at once')
+                self.assertIsNone(r.acquire_locks(board, unlabeled=True), 'two unlabeled serialize')
+                self.assertIsNone(r.acquire_locks(board), 'whole board waits for unlabeled')
+                self.assertEqual(r.unlabeled_lock_path(board),
+                                 Path(directory) / '.local/state/fleet/reconcile-13734-unlabeled.lock')
+            finally:
+                for group in (label_handles, unlabeled_handles):
+                    for handle in group or ():
+                        handle.close()
+            whole = r.acquire_locks(board)
+            try:
+                self.assertIsNotNone(whole)
+                self.assertIsNone(r.acquire_locks(board, unlabeled=True),
+                                  'unlabeled waits for whole-board lock')
+            finally:
+                for handle in whole or ():
+                    handle.close()
+
+    def test_board15_non_lead_refused_for_unlabeled_apply(self):
+        mobile = {'connected_agent': {'id': 'agent-mobile', 'displayName': 'Mobile Designer'},
+                  'projects': [{'id': 15, 'title': 'Hypertask'}]}
+        with patch.dict(os.environ, {'HT_TOKEN': 'tok', 'SHIP_SESSION_NAME': 'Mobile Designer'}), \
+                patch.object(sys, 'argv', ['reconcile', '--board', '15', '--unlabeled', '--apply']), \
+                patch.object(r, 'api', return_value=mobile):
+            with self.assertRaises(ValueError) as caught:
+                r.main()
+            self.assertIn('--label', str(caught.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

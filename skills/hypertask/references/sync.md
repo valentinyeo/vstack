@@ -24,6 +24,7 @@ Flags:
 
 - `--board <id>`: the board to sync. A board read at runtime keeps its own columns, prefix and protected columns.
 - `--label <name>`: sync only tickets carrying that label (trimmed, case-insensitive). Always use it, so a session never syncs the whole board.
+- `--unlabeled`: sync only tickets carrying no agent label (generic labels like `Bug` or `brain-*` still match). Cannot be combined with `--label` or `--ticket`. The board's lead chat runs this after its own label via `skills/board-drain/sync`, with the same `--limit`.
 - `--section <name>`: limit a dry run to one column.
 - `--ticket <KEY>`: sync exactly one ticket on the board that ticket belongs to. It takes no `--board`, `--label` or `--section`. The lease uses it as `--ticket KEY --apply --limit 1`.
 - `--apply`: move. It previews first, then permits five moves.

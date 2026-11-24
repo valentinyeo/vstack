@@ -2322,6 +2322,107 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertFalse(loop.sync_state('HT Test')['ok'])
 
+    def run_sync_for(self, board, label, name, answers, *extra):
+        queued, calls = list(answers), []
+
+        def fake(argv, **kwargs):
+            calls.append({'argv': argv, **kwargs})
+            return subprocess.CompletedProcess(argv, *queued.pop(0))
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sync.subprocess, 'run', side_effect=fake), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = sync.main(['--board', str(board), '--label', label, '--name', name, *extra])
+        return code, out.getvalue() + err.getvalue(), calls
+
+    def test_board_lead_runs_unlabeled_after_own_label_with_same_limit(self):
+        self.write_token(name='Multi Bot')
+        answers = [
+            (0, 'DRY RUN board=13734 tickets=1 unknown=0\n', 'reconcile: board 13734 title=Multi Bot\n'),
+            (0, 'PREVIEW board=13734 tickets=1 unknown=0\n', ''),
+            (0, 'PLAN MUBO-101 AI Review -> Done | merged with PASS\n', ''),
+            (0, 'MOVE MUBO-101 AI Review -> Done | merged with PASS\n', ''),
+        ]
+        code, out, calls = self.run_sync_for(13734, 'Multi Bot', 'Multi Bot', answers, '--limit', '7')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], 'sync: ok')
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[0]['argv'][2:], ['--board', '13734', '--label', 'Multi Bot'])
+        self.assertEqual(calls[1]['argv'][2:], ['--board', '13734', '--label', 'Multi Bot',
+                                                '--apply', '--limit', '7'])
+        self.assertEqual(calls[2]['argv'][2:], ['--board', '13734', '--unlabeled'])
+        self.assertEqual(calls[3]['argv'][2:], ['--board', '13734', '--unlabeled',
+                                                '--apply', '--limit', '7'])
+        expected_caller = sync.caller(13734, 'Multi Bot')
+        for call in calls:
+            self.assertEqual(call['env']['HT_TOKEN'], 'tok-from-file')
+            self.assertEqual(call['env']['SHIP_SESSION_NAME'], 'Multi Bot')
+            self.assertEqual(call['env']['GH_CALLER'], expected_caller)
+
+    def test_vstack_lead_runs_unlabeled_after_own_label(self):
+        self.write_token(name='Vstack Maintainer')
+        answers = [(0, 'ok\n', '')] * 4
+        code, out, calls = self.run_sync_for(13556, 'Vstack', 'Vstack Maintainer', answers)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[2]['argv'][2:], ['--board', '13556', '--unlabeled'])
+        self.assertEqual(calls[3]['argv'][2:], ['--board', '13556', '--unlabeled',
+                                                '--apply', '--limit', '5'])
+
+    def test_non_lead_chats_do_not_run_unlabeled(self):
+        self.write_token(name='Multi Bot Bugs')
+        code, out, calls = self.run_sync_for(
+            13734, 'Multi Bot Bugs', 'Multi Bot Bugs',
+            [(0, 'ok\n', 'reconcile: board 13734 title=Multi Bot\n'), (0, 'ok\n', '')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 2)
+
+        self.write_token(name='Hypertask Reconciler')
+        code, out, calls = self.run_sync_for(
+            13556, 'Hypertask Reconciler', 'Hypertask Reconciler',
+            [(0, 'ok\n', 'reconcile: board 13556 title=Vstack\n'), (0, 'ok\n', '')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 2)
+
+    def test_board15_lead_runs_unlabeled_and_non_lead_does_not(self):
+        self.write_token(name='HT Product Lead')
+        code, out, calls = self.run_sync_for(
+            15, 'HT Product Lead', 'HT Product Lead', [(0, 'ok\n', '')] * 4)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[2]['argv'][2:], ['--board', '15', '--unlabeled'])
+
+        self.write_token(name='Mobile Designer')
+        code, out, calls = self.run_sync_for(
+            15, 'Mobile Designer', 'Mobile Designer',
+            [(0, 'ok\n', 'reconcile: board 15 title=Hypertask\n'), (0, 'ok\n', '')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 2)
+
+    def test_lead_stops_before_unlabeled_on_failure(self):
+        self.write_token(name='Multi Bot')
+        code, out, calls = self.run_sync_for(
+            13734, 'Multi Bot', 'Multi Bot',
+            [(0, 'ok\n', 'reconcile: board 13734 title=Multi Bot\n'), (1, '', 'boom\n')])
+        self.assertEqual(code, 1, out)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(loop.sync_state('Multi Bot')['ok'])
+
+    def test_lead_stops_before_unlabeled_on_budget_skip(self):
+        self.write_token(name='Multi Bot')
+        skip_line = 'sync skipped: gh budget (wait until 14:20 UTC)'
+        code, out, calls = self.run_sync_for(
+            13734, 'Multi Bot', 'Multi Bot',
+            [(0, 'ok\n', 'reconcile: board 13734 title=Multi Bot\n'),
+             (0, 'ok\n', ''),
+             (0, skip_line + '\n', '')])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(out.strip().splitlines()[-1], skip_line)
+        record = loop.sync_state('Multi Bot')
+        self.assertTrue(record['ok'])
+        self.assertEqual(record['skipped']['reason'], skip_line)
+
     def test_the_cli_runs_and_refuses_without_a_token(self):
         env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.states),
                    BOARD_DRAIN_CRED_DIR=str(self.creds), HT_TOKEN='', SHIP_SESSION_NAME='')
