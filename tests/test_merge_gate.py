@@ -217,24 +217,6 @@ class VerifierNameTest(GateCase):
             self.assertEqual(gate.required_name('someone/app'), 'own-verifier')
             self.assertEqual(gate.check_names('valentinyeo/vstack'), ('pstack-verifier',))
 
-    def test_fix_adds_the_repo_name_to_its_ruleset(self):
-        ruleset = {'id': 7, 'name': 'main', 'target': 'branch', 'enforcement': 'active',
-                   'conditions': {'ref_name': {'include': ['refs/heads/main'], 'exclude': []}},
-                   'rules': [{'type': 'required_status_checks',
-                              'parameters': {'strict_required_status_checks_policy': True,
-                                             'required_status_checks': [{'context': 'build'}]}}]}
-        self.answer([missing_route(PROTECTION), ok_route(RULES, []),
-                     ok_route('user', {'login': 'valentinyeo'}),
-                     ok_route('repos/valentinyeo/vstack/rulesets/7', ruleset),
-                     ok_route('repos/valentinyeo/vstack/rulesets', [{'id': 7, 'name': 'main'}])])
-        done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
-        self.assertEqual(done.returncode, 1, done.stderr)
-        self.assertIn('now requires verifier in ruleset main (7)', done.stdout)
-        writes = [call for call in self.calls() if call['argv'][:2] == ['api', '-X']]
-        contexts = [check['context'] for check in
-                    writes[0]['input']['rules'][0]['parameters']['required_status_checks']]
-        self.assertEqual(contexts, ['build', 'verifier'])
-
 
 class ReposForBoardTest(GateCase):
     def write_facts(self, facts):
@@ -281,12 +263,12 @@ class FixTest(GateCase):
                      ok_route('user', {'login': 'valentinyeo'})])
         done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
         self.assertEqual(done.returncode, 1, done.stderr)
-        self.assertIn('fixed: valentinyeo/vstack main now requires pstack-verifier '
+        self.assertIn('fixed: valentinyeo/vstack main now requires verifier '
                       'in classic branch protection', done.stdout)
         writes = [call for call in self.calls() if call['argv'][:2] == ['api', '-X']]
         self.assertEqual(len(writes), 1)
         self.assertEqual(writes[0]['input'], {'strict': True,
-                                              'contexts': ['build', 'pstack-verifier']})
+                                              'contexts': ['build', 'verifier']})
 
     def test_fix_updates_the_ruleset_that_already_covers_the_branch(self):
         ruleset = {'id': 7, 'name': 'main', 'target': 'branch', 'enforcement': 'active',
@@ -300,13 +282,13 @@ class FixTest(GateCase):
                      ok_route('repos/valentinyeo/vstack/rulesets', [{'id': 7, 'name': 'main'}])])
         done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
         self.assertEqual(done.returncode, 1, done.stderr)
-        self.assertIn('fixed: valentinyeo/vstack main now requires pstack-verifier '
+        self.assertIn('fixed: valentinyeo/vstack main now requires verifier '
                       'in ruleset main (7)', done.stdout)
         writes = [call for call in self.calls() if call['argv'][:2] == ['api', '-X']]
         self.assertEqual(len(writes), 1)
         contexts = [check['context'] for check in
                     writes[0]['input']['rules'][0]['parameters']['required_status_checks']]
-        self.assertEqual(contexts, ['build', 'pstack-verifier'])
+        self.assertEqual(contexts, ['build', 'verifier'])
         self.assertTrue(writes[0]['input']['rules'][0]['parameters']
                         ['strict_required_status_checks_policy'])
 
@@ -370,7 +352,7 @@ class DrainCheckGateTest(GateCase):
         self.answer([])
         done = self.run_drain({'rows': [doing('VSTA-188')],
                                'gates': [{'repo': 'valentinyeo/vstack', 'branch': 'main',
-                                          'required': ['build', 'pstack-verifier']}]})
+                                          'required': ['build', 'verifier']}]})
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertNotIn('merge gate', done.stdout)
 
@@ -379,14 +361,6 @@ class DrainCheckGateTest(GateCase):
         done = self.run_drain({'rows': [doing('VSTA-188')]})
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(self.calls(), [])
-
-    def test_a_vstack_fixture_passes_on_the_verifier_name(self):
-        self.answer([])
-        done = self.run_drain({'rows': [doing('VSTA-188')],
-                               'gates': [{'repo': 'valentinyeo/vstack', 'branch': 'main',
-                                          'required': ['build', 'verifier']}]})
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertNotIn('merge gate', done.stdout)
 
     def test_a_vstack_fixture_fails_on_the_pstack_name_only(self):
         self.answer([])
