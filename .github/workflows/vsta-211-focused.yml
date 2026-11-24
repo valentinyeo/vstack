@@ -1,0 +1,17 @@
+name: VSTA-211 focused proof
+on:
+  push:
+    branches: [vsta-211]
+permissions:
+  contents: read
+concurrency:
+  group: vsta-211-focused
+  cancel-in-progress: true
+jobs:
+  pr-park:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - run: timeout 300 python3 -m unittest tests.test_pr_park -v
+      - run: timeout 300 python3 -m unittest tests.test_board_drain.RuleBreakTest.test_the_tick_reads_the_board_once_and_shares_its_pr_facts -v

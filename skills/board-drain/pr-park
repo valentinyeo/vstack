@@ -12,11 +12,14 @@ import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
-loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(HERE.parent / 'hypertask-work/reconcile'))
-spec = importlib.util.spec_from_loader(loader.name, loader)
-reconcile = importlib.util.module_from_spec(spec)
-sys.modules[loader.name] = reconcile
-loader.exec_module(reconcile)
+RECONCILE = HERE.parent / 'hypertask-work/reconcile'
+reconcile = sys.modules.get('fleet_reconcile')
+if reconcile is None or getattr(reconcile, '__file__', None) != str(RECONCILE):
+    loader = importlib.machinery.SourceFileLoader('fleet_reconcile', str(RECONCILE))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    reconcile = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = reconcile
+    loader.exec_module(reconcile)
 
 # One table holds the per-label cap: wip-cap's, the same one the ticket cap reads.
 WIP_CAP = HERE / 'wip-cap'

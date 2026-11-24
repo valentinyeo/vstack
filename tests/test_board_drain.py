@@ -1145,6 +1145,8 @@ class RuleBreakTest(CheckTest):
                                            'pulls': [], 'facts': {}}}}
         board = drain.reconcile.BOARDS[2060]
         lint = drain.lint_module()
+        self.assertIs(lint.reconcile, drain.reconcile)
+        self.assertIs(drain.pr_park.reconcile, drain.reconcile)
         gh_calls, board_reads = [], []
 
         def fake_run(*args, **kwargs):
