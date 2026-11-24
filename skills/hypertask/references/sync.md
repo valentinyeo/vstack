@@ -97,13 +97,13 @@ Never patch the card and say nothing: the next run undoes it or repeats it. The 
 - Each run permits at most five moves, even with a higher `--limit`.
 - Worker facts come from the installed Hypertask workers. An active service alone proves no ticket work: its local PID must exist and its queue must name that board's ticket. Claiming, launching and running count as active. Progress expires after 15 minutes. A live lease or a process that names the ticket also counts. Unreadable worker facts refuse all moves.
 - A shell without `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS` gets `/run/user/<uid>` defaults first. If worker facts still cannot be read, the run prints one `reconcile: worker facts unreadable: ...` line, moves nothing and exits non-zero.
-- The script verifies the connected agent before a write. Missing, personal or other agent tokens fail. Never supply Valentin's personal token.
+- The script verifies the connected agent before a write. Missing, personal or other agent tokens fail. Never supply Valentin's personal token. vcc (`Valentins Claude Code`) and HT Product Lead move any card. Any other login needs a board 15 membership and `--label` naming its own agent, and then moves only cards carrying that label: another lead's card and an unlabelled card stay where they are. `--ticket` takes no `--label`, so a lead cannot apply with it.
 
 ## Server timer
 
 The supplied timer runs every fifteen minutes and enables capped board moves after preview. Its environment comes from `~/.config/fleet/reconcile.env`, mode 0600, which supplies `HT_TOKEN`; `SHIP_SESSION_NAME` defaults to Poteto in the service. Runs serialize through the board lock; an overlapping run prints `SKIP` and succeeds.
 
-The board-15 service template installs no timer and reads `~/.config/fleet/reconcile-board15.env`. Use the vcc or HT Product Lead token. The vcc identity is `Valentins Claude Code`.
+The board-15 service template installs no timer and reads `~/.config/fleet/reconcile-board15.env`. A whole-board apply uses the vcc or HT Product Lead token; the vcc identity is `Valentins Claude Code`. A board 15 lead applies on its own label only, for example `--board 15 --label 'Mobile Designer' --apply` as the Mobile Designer agent.
 
 After release approval:
 

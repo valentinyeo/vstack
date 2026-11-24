@@ -791,12 +791,34 @@ def live_product_worker(key, now):
     return key in product_workers(now)
 
 
-def require_board15_agent():
+BOARD15_LEADS = ('Valentins Claude Code', 'HT Product Lead')
+
+
+def board15_member(context):
+    """The agent's own project list proves board 15 membership; nothing else does."""
+    return any(str(project.get('id')) == '15' for project in context.get('projects') or ())
+
+
+def require_board15_agent(label=None):
+    """vcc and HT Product Lead move any board 15 card. Any other login needs a board 15
+    membership and moves only cards carrying the one label that names its agent, so no
+    lead ever touches another lead's cards or an unlabelled card."""
     if not os.environ.get('HT_TOKEN'):
         raise ValueError('board 15 requires HT_TOKEN from its service environment file')
-    agent = api('context').get('connected_agent') or {}
-    if not agent.get('id') or agent.get('displayName') not in ('Valentins Claude Code', 'HT Product Lead'):
+    context = api('context')
+    agent = context.get('connected_agent') or {}
+    name = agent.get('displayName') or ''
+    # Valentin's personal token carries no connected agent, so identity decides, not the user.
+    if not agent.get('id'):
         raise ValueError('board 15 requires the vcc or HT Product Lead agent token')
+    if name in BOARD15_LEADS:
+        return
+    if not board15_member(context):
+        raise ValueError('board 15 requires the vcc or HT Product Lead agent token')
+    if not label:
+        raise ValueError('board 15 requires --label for an agent other than vcc or HT Product Lead')
+    if label.strip().casefold() != name.strip().casefold():
+        raise ValueError(f'board 15 syncs only the label that names the agent ({name!r})')
 
 
 class RateLimit(Exception):
@@ -2375,16 +2397,22 @@ def collect(task, pulls, now, board=DEFAULT):
                  False if product_board(board) else pr_idle(details, now))
 
 
-def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
+def reconcile(task, facts, apply=False, board=DEFAULT, names=None, label=None):
     if str(task['projectId']) != str(board.id):
         raise ValueError(f'ticket outside board {board.id}')
     column, reason = target(facts, board, names)
     key = task['ticketNumber']
+    if apply and board.id == 15 and label and not carries_label(task, label):
+        # A label lead touches its own cards only: another lead's card, and an
+        # unlabelled card, stay where they are.
+        print(f'SKIP {key} | carries no {label!r} label; board 15 label sync leaves it alone',
+              flush=True)
+        return task['section']
     action = 'KEEP' if column == task['section'] else ('MOVE' if apply else 'PLAN')
     line = f'{action} {key} {task["section"]} -> {column} | {reason}'
     if action == 'MOVE':
         if board.id == 15:
-            require_board15_agent()
+            require_board15_agent(label)
         api('task', 'move', key, '--section', column)
         APPLIED[0] += 1
         # Only the column changes: owner and assignees are retained.
@@ -2394,7 +2422,7 @@ def reconcile(task, facts, apply=False, board=DEFAULT, names=None):
     return column
 
 
-def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
+def apply_plan(plans, limit, pulls, board=DEFAULT, names=None, label=None):
     if board.id == 15:
         limit = min(limit, 5)
     options = {} if board.id == BOARD else {'board': board}
@@ -2435,7 +2463,7 @@ def apply_plan(plans, limit, pulls, board=DEFAULT, names=None):
         if target(final, board, names) != target(facts, board, names):
             print(f'SKIP {task["ticketNumber"]} | facts changed during preflight', flush=True)
             continue
-        reconcile(current, final, apply=True, names=names, **options)
+        reconcile(current, final, apply=True, names=names, label=label, **options)
     return 0
 
 
@@ -2685,7 +2713,7 @@ def board_run():
         board = board_config(args.board or BOARD)
     options = {} if board.id == BOARD else {'board': board}
     if args.apply and board.id == 15:
-        require_board15_agent()
+        require_board15_agent(args.label)
     if args.apply and not product_board(board) and (not os.environ.get('SHIP_SESSION_NAME') or session.is_person(os.environ['SHIP_SESSION_NAME'])):
         parser.error('--apply requires SHIP_SESSION_NAME for an agent login')
     # Dry runs write nothing to the board and take no board or label lock.
@@ -2778,7 +2806,7 @@ def board_run():
                                       blocked=bool(task.get('blockerCommentId')))
                     else:
                         facts = collect(task, pulls[task['ticketNumber']], now, **options)
-                    reconcile(task, facts, names=names, **options)
+                    reconcile(task, facts, names=names, label=args.label, **options)
                     plans.append((task, facts))
                 except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError) as error:
                     errors += 1
@@ -2794,7 +2822,7 @@ def board_run():
                                                               probe_since=probe_since, saved=saved,
                                                               refreshed=refreshed))
         if args.apply and not errors:
-            return apply_plan(plans, args.limit, pulls, names=names, **options)
+            return apply_plan(plans, args.limit, pulls, names=names, label=args.label, **options)
         return bool(errors)
 
 

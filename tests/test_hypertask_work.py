@@ -1663,6 +1663,92 @@ else:
                     patch.object(r, 'api', return_value={'connected_agent': {'id': 'agent', 'displayName': name}}):
                 r.require_board15_agent()
 
+    MOBILE = {'id': 'agent-mobile', 'displayName': 'Mobile Designer'}
+
+    def board15_context(self, agent=None, projects=(15,)):
+        """What `hypertask context` answers for a board 15 lead (VSTA-192)."""
+        return {'connected_agent': agent or self.MOBILE,
+                'projects': [{'id': n, 'title': f'project-{n}'} for n in projects]}
+
+    def test_board15_lead_applies_on_the_label_that_names_it(self):
+        """The real board 15 label is 'Mobile Designer', the agent's own name."""
+        with patch.dict(os.environ, {'HT_TOKEN': 'token'}), \
+                patch.object(r, 'api', return_value=self.board15_context()):
+            r.require_board15_agent('Mobile Designer')
+            r.require_board15_agent(' mobile designer ')
+
+    def test_board15_lead_refuses_without_a_label_or_with_another_leads_label(self):
+        for label in (None, '', 'HT Product Lead', '📲MOBILE'):
+            with self.subTest(label=label), patch.dict(os.environ, {'HT_TOKEN': 'token'}), \
+                    patch.object(r, 'api', return_value=self.board15_context()):
+                with self.assertRaises(ValueError):
+                    r.require_board15_agent(label)
+
+    def test_board15_non_member_is_refused_even_with_its_own_label(self):
+        with patch.dict(os.environ, {'HT_TOKEN': 'token'}), \
+                patch.object(r, 'api', return_value=self.board15_context(projects=(2060,))):
+            with self.assertRaises(ValueError) as caught:
+                r.require_board15_agent('Mobile Designer')
+        self.assertIn('vcc or HT Product Lead', str(caught.exception))
+
+    def test_board15_label_apply_moves_its_own_card_and_leaves_the_others(self):
+        own = {**self.card('HTPR-9626', 'Backlog', NOW - 8000),
+               'labels': [{'name': 'Mobile Designer'}]}
+        others_card = {**self.card('HTPR-9600', 'Backlog', NOW - 8000),
+                       'labels': [{'name': 'HT Product Lead'}]}
+        unlabelled = self.card('HTPR-9601', 'Backlog', NOW - 8000)
+        moved = []
+
+        def api(*args):
+            if args[:2] == ('task', 'move'):
+                moved.append(args[2])
+            return {}
+
+        with patch.object(r, 'api', side_effect=api), \
+                patch.object(r, 'run'), \
+                patch.object(r, 'require_board15_agent') as gate, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            for task in (own, others_card, unlabelled):
+                r.reconcile(task, r.Facts('Backlog', 8000, True), apply=True,
+                            board=r.BOARDS[15], label='Mobile Designer')
+        self.assertEqual(moved, ['HTPR-9626'])
+        gate.assert_called_once_with('Mobile Designer')
+        self.assertIn('SKIP HTPR-9600', out.getvalue())
+        self.assertIn('SKIP HTPR-9601', out.getvalue())
+
+    def test_board15_vcc_still_moves_an_unlabelled_card(self):
+        unlabelled = self.card('HTPR-9601', 'Backlog', NOW - 8000)
+        moved = []
+
+        def api(*args):
+            if args[:2] == ('task', 'move'):
+                moved.append(args[2])
+            return {}
+
+        with patch.object(r, 'api', side_effect=api), \
+                patch.object(r, 'run'), \
+                patch.object(r, 'require_board15_agent') as gate, \
+                contextlib.redirect_stdout(io.StringIO()):
+            r.reconcile(unlabelled, r.Facts('Backlog', 8000, True), apply=True, board=r.BOARDS[15])
+        self.assertEqual(moved, ['HTPR-9601'])
+        gate.assert_called_once_with(None)
+
+    def test_board15_label_apply_hands_the_label_to_every_move(self):
+        task = {**self.card('HTPR-9626', 'Backlog', NOW - 8000), 'updatedAt': 1,
+                'labels': [{'name': 'Mobile Designer'}]}
+        plan = (task, r.Facts('Backlog', 8000, True))
+
+        def api(*args):
+            return {'tasks': [task]} if args[:2] == ('task', 'get') else {}
+
+        with patch.object(r, 'api', side_effect=api), \
+                patch.object(r, 'live_product_worker', return_value=True), \
+                patch.object(r, 'run'), \
+                patch.object(r, 'require_board15_agent') as gate, \
+                contextlib.redirect_stdout(io.StringIO()):
+            r.apply_plan([plan], 5, {'HTPR-9626': []}, board=r.BOARDS[15], label='Mobile Designer')
+        gate.assert_called_once_with('Mobile Designer')
+
 
 class AnyBoardTest(unittest.TestCase):
     """Any board a project names: its own prefix and columns, 2060's safe rules."""
