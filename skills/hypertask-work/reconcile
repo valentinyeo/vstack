@@ -2128,9 +2128,13 @@ def jobs_evidence(repo, run_id):
 # github-actions-verifier in skills/pstack-diff/house.txt); every repo that runs the
 # pstack verifier workflow posts `pstack-verifier`, so that name is the default and
 # needs no row. postbox posts its verdict as `verify-verdict` and requires that name
-# on main, so it keeps a row of its own (VSTA-196).
+# on main, so it keeps a row of its own (VSTA-196). house-rules runs the same verifier
+# as a reusable workflow, so GitHub names its check `<caller job> / <job>`, and main
+# requires `skill-lint / pstack-verifier`; without this row `--fix` re-adds the dead
+# `pstack-verifier` name and blocks every house-rules PR.
 VERIFIER_CHECKS = {'valentinyeo/vstack': ('verifier',),
-                   'valentinyeo/postbox': ('verify-verdict',)}
+                   'valentinyeo/postbox': ('verify-verdict',),
+                   'valentinyeo/house-rules': ('skill-lint / pstack-verifier',)}
 PSTACK_VERIFIER_CHECK = 'pstack-verifier'
 
 
