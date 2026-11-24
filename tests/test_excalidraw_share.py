@@ -384,7 +384,8 @@ class KeyCommandTest(unittest.TestCase):
             os.environ.pop('XDG_RUNTIME_DIR', None)
             self.assertEqual(module.read_key(), KEY)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], ['yeo-key', 'Excalidraw', 'credential'])
+        self.assertEqual([Path(calls[0][0][0]).name] + calls[0][0][1:],
+                         ['yeo-key', 'Excalidraw', 'credential'])
         self.assertEqual(calls[0][1]['env']['XDG_RUNTIME_DIR'],
                          '/run/user/%d' % os.getuid())
 

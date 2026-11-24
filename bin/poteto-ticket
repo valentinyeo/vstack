@@ -5,10 +5,12 @@ import html
 import json
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 from urllib.parse import urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from bin_path import find
 
 BOARD = '2060'
 TOKEN = Path.home() / '.config/hypertask-agents/credentials/sessions/poteto-agent-token'
@@ -20,7 +22,7 @@ class Client:
         self.token = TOKEN.read_text().strip()
         if not self.token:
             raise ValueError('Poteto token is empty.')
-        self.binary = shutil.which('hypertask')
+        self.binary = find('hypertask')
         if not self.binary:
             raise ValueError('Install hypertask before using poteto-ticket.')
         self.checked = set()

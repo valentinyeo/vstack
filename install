@@ -145,6 +145,12 @@ link_one vps-tidy "$ROOT/skills/vps-tidy/vps-tidy" "$HOME/.local/bin"
 link_one excalidraw-share "$ROOT/skills/excalidraw/excalidraw-share" "$HOME/.local/bin"
 link_one ci-key-set "$ROOT/tools/ci-key-set" "$HOME/.local/bin"
 
+# pstack's watch-pr runs on bun (VSTA-229); a throwaway HOME skips the download,
+# so tests and verify runs stay off the network.
+if [ "${VSTACK_INSTALL_ANYWHERE:-0}" != 1 ]; then
+  "$ROOT/scripts/install-bun" || echo "vstack install: the bun step did not run; pstack watch-pr will not run" >&2
+fi
+
 # Chats read one server facts file (VSTA-146). A hand-written tools.md note had
 # the two servers the wrong way round and said only inne runs on Hetzner, and a
 # chat repeated it. Link the file every harness already reads reference notes

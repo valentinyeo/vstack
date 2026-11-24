@@ -104,11 +104,23 @@ class MuboShapes(unittest.TestCase):
                          ('AI Review', 'open PR checks green; verifier or merge pending'))
         self.assertEqual(self.target('Todo', pulls=(pull(),))[0], 'AI Review')
 
-    def test_board_15_keeps_its_own_live_proof_stage(self):
+    def test_board_15_follows_default_stage_rules_including_qa(self):
         board = r.BOARDS[15]
-        self.assertEqual(r.target(r.Facts('In Progress', 8000, False, (pull('MERGED', passed=True),)),
-                                  board=board),
-                         ('AI Review', 'merged PR; live proof pending'))
+        merged_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/3835',
+                             'MERGED', 'green', True, 2000.0)
+        merged_no_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/3836',
+                                'MERGED', 'green', False, 2000.0)
+        self.assertEqual(r.target(r.Facts('QA', 8000, False, (merged_pass,)), board=board),
+                         ('Done', 'merged with PASS'))
+        self.assertEqual(r.target(r.Facts('QA', 8000, False, (merged_no_pass,)), board=board),
+                         ('Backlog', 'merged without PASS: rule break; owner must verify'))
+        self.assertEqual(r.target(r.Facts('In Progress', 8000, False, (merged_pass,)), board=board),
+                         ('Done', 'merged with PASS'))
+        for column in ('Flag: Only Me + QA', 'Flag: Everyone', 'Flag: Off', 'No Flag',
+                       'Valentin Review', 'Done'):
+            with self.subTest(column=column):
+                self.assertEqual(r.target(r.Facts(column, 8000, False, (merged_pass,)), board=board),
+                                 (column, 'protected column'))
 
     def test_the_idle_window_is_one_hour(self):
         # VSTA-208: the audit runs every hour, so an owner with nothing new by the

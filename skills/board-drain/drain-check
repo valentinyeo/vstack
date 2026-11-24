@@ -759,17 +759,55 @@ def pull_facts(args, board, rows, data):
         return None
 
 
-def agent_open_pulls(args, board, rows, pulls):
-    if not args.fixture:
-        return pr_park.owned_pulls([row['task'] for row in rows], board)
-    found = {}
+def own_cap_pulls(rows, board, opened, label):
+    """The open PRs this label's own cards carry: only those spend its cap.
+
+    A board read can hand one card another card's pull, and a key can point at a card
+    this label does not own. A pull whose only ticket is someone else's is not this
+    chat's work, so it neither counts toward the cap nor gets parked by it.
+    """
+    own = set()
     for row in rows:
-        key = row['task']['ticketNumber']
-        for pull in (pulls or {}).get(key) or ():
-            if pull.get('state') == 'OPEN':
-                entry = found.setdefault(pull['url'], dict(pull, keys=[]))
-                entry['keys'].append(key)
-    return found
+        task = row['task']
+        if reconcile.carries_label(task, label):
+            own.add(str(task.get('ticketNumber') or '').upper())
+    board_id = str(board.id)
+    kept = {}
+    for url, pull in (opened or {}).items():
+        named_keys, named_urls = reconcile.pull_refs(pull)
+        named = bool(named_keys or named_urls)
+        keys = []
+        for key in pull.get('keys') or ():
+            key = str(key).upper()
+            if key not in own:
+                continue
+            if named:
+                try:
+                    ref = (board_id, reconcile.ticket_index(key, board))
+                except ValueError:
+                    continue
+                if key not in named_keys and ref not in named_urls:
+                    continue
+            if key not in keys:
+                keys.append(key)
+        if keys:
+            kept[url] = dict(pull, keys=sorted(keys))
+    return kept
+
+
+def agent_open_pulls(args, board, rows, pulls):
+    """The open PRs this label owns, read live or from the fixture, counted by label."""
+    if not args.fixture:
+        opened = pr_park.owned_pulls([row['task'] for row in rows], board)
+    else:
+        opened = {}
+        for row in rows:
+            key = row['task']['ticketNumber']
+            for pull in (pulls or {}).get(key) or ():
+                if pull.get('state') == 'OPEN':
+                    entry = opened.setdefault(pull['url'], dict(pull, keys=[]))
+                    entry['keys'].append(key)
+    return own_cap_pulls(rows, board, opened, args.label)
 
 
 def repo_cap_notes(repos, args, data, now):

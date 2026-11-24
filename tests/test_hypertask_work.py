@@ -1366,13 +1366,24 @@ class Board15Test(unittest.TestCase):
                 'createdAt': self.CREATED, 'updatedAt': updated,
                 'assignees': [], 'labels': [], 'pulls': list(pulls)}
 
-    def product_pull(self, number, state):
-        return {'number': number, 'state': state,
-                'url': f'https://github.com/hypertask-ai/hypertask/pull/{number}',
-                'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+    def product_pull(self, number, state, checks='green', passed=False, merged_at=None, created_at=None):
+        row = {'number': number, 'state': state, 'checks': checks, 'passed': passed,
+               'url': f'https://github.com/hypertask-ai/hypertask/pull/{number}',
+               'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
+        if merged_at is not None:
+            row['mergedAt'] = merged_at
+        if created_at is not None:
+            row['createdAt'] = created_at
+        return row
 
     def facts(self, card, now, alive=False):
-        """The facts a board-15 read gives, from the pulls its search already returned."""
+        """The facts a board-15 read gives, with its batched pull cache seeded."""
+        r.PULLS.clear()
+        for p in card['pulls']:
+            repo = p['repository']['nameWithOwner']
+            r.PULLS[(repo, p['number'])] = r.Pull(
+                p['url'], p['state'], p.get('checks', 'green'), bool(p.get('passed', False)),
+                r.moment(p.get('mergedAt')), created_at=r.moment(p.get('createdAt')))
         with patch.object(r, 'worker_alive', return_value=alive):
             return r.collect(card, card['pulls'], now, board=r.BOARDS[15])
 
@@ -1382,25 +1393,58 @@ class Board15Test(unittest.TestCase):
         return [{**self.card(f'HTPR-{n}', column, NOW - 8000), 'createdAt': created}
                 for n in range(1, count + 1)]
 
-    def fixture_github15(self, tasks, state='OPEN', merged_at=None):
+    def fixture_github15(self, tasks, state='OPEN', merged_at=None, passed=False):
         """A board-15 fixture's GitHub: one PR per ticket in that state, nothing else."""
+        head = 'a' * 40
         pulls = {t['ticketNumber']: {'title': f'{t["ticketNumber"]} work', 'body': '',
                                      'headRefName': f'{t["ticketNumber"].lower()}-work',
                                      'state': state, 'mergedAt': merged_at,
-                                     'number': r.ticket_index(t['ticketNumber'], r.BOARDS[15]),
-                                     'url': 'https://github.com/hypertask-ai/hypertask/pull/' + str(n),
+                                     'createdAt': '2026-11-20T09:50:00Z',
+                                     'number': int(r.ticket_index(t['ticketNumber'], r.BOARDS[15])),
+                                     'url': 'https://github.com/hypertask-ai/hypertask/pull/' + str(
+                                         r.ticket_index(t['ticketNumber'], r.BOARDS[15])),
                                      'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
-                 for n, t in enumerate(tasks, 1)}
+                 for t in tasks}
+        by_number = {p['number']: p for p in pulls.values()}
+
+        def pr_node(p):
+            contexts = [{'__typename': 'CheckRun', 'name': 'ci-tests', 'status': 'COMPLETED',
+                         'conclusion': 'SUCCESS', 'completedAt': '2026-11-20T09:55:00Z',
+                         'checkSuite': {'commit': {'oid': head}, 'workflowRun': {'databaseId': 1}}}]
+            if passed:
+                contexts.append({
+                    '__typename': 'StatusContext', 'context': 'pstack-verifier', 'state': 'SUCCESS',
+                    'targetUrl': 'https://github.com/hypertask-ai/hypertask/actions/runs/45482013810/attempts/1',
+                    'commit': {'oid': head},
+                })
+            return {'url': p['url'], 'state': p['state'], 'mergedAt': p['mergedAt'],
+                    'createdAt': p['createdAt'], 'updatedAt': '2026-11-20T10:00:00Z',
+                    'headRefOid': head, 'baseRefOid': 'b' * 40, 'mergeable': 'MERGEABLE',
+                    'author': {'login': 'valentinyeo'},
+                    'commits': {'nodes': [{'commit': {'committedDate': '2026-11-20T09:52:00Z'}}]},
+                    'statusCheckRollup': {'state': 'SUCCESS',
+                                          'contexts': {'pageInfo': {'hasNextPage': False},
+                                                       'nodes': contexts}},
+                    'comments': {'totalCount': 0, 'nodes': []}}
 
         def respond(args, **kwargs):
             call = ' '.join(args)
+            if '/actions/runs/' in call and '/jobs' in call:
+                return subprocess.CompletedProcess(
+                    [], 0, json.dumps([{'jobs': [{'runner_name': 'GitHub Actions 1',
+                                                  'labels': ['ubuntu-latest']}]}]), '')
+            if '.verify/policy.json' in call:
+                aliases = re.findall(r'(p\d+):repository', call)
+                return subprocess.CompletedProcess(
+                    [], 0, json.dumps({'data': {a: {'object': None} for a in aliases}}), '')
+            if 'pullRequest(number:' in call:
+                found = {}
+                for alias, num in re.findall(r'(p\d+):repository[^{]*\{pullRequest\(number:(\d+)\)', call):
+                    found[alias] = {'pullRequest': pr_node(by_number[int(num)])}
+                return subprocess.CompletedProcess([], 0, json.dumps({'data': found}), '')
             if 'is:open' in call or 'is:merged' in call:
                 page = {'issueCount': 0, 'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}
                 return subprocess.CompletedProcess([], 0, json.dumps({'data': {'search': page}}), '')
-            if args[1:3] == ('pr', 'view'):
-                # A per-PR read is what this board must not need on a dry run.
-                return subprocess.CompletedProcess([], 0, json.dumps({
-                    'url': f'https://github.com/hypertask-ai/hypertask/pull/{args[3]}', 'state': 'OPEN'}), '')
             keys = list(dict.fromkeys(re.findall(r'HTPR-\d+', call)))
             body = {'data': {f'q{n}': {'pageInfo': {'hasNextPage': False}, 'nodes': [pulls[key]]}
                              for n, key in enumerate(keys)}}
@@ -1497,25 +1541,31 @@ else:
                 self.assertEqual(self.target('In Progress', pulls=(pull(checks=checks),)), 'AI Review')
                 self.assertEqual(self.target('Backlog', pulls=(pull(checks=checks),)), 'AI Review')
 
-    def test_backlog_stays_and_ai_review_never_demotes(self):
+    def test_backlog_stays_and_merged_follows_pass_gate(self):
         self.assertEqual(self.target('Backlog'), 'Backlog')
         self.assertEqual(self.target('Backlog', pulls=(pull('CLOSED'),)), 'Backlog')
-        # One model: merged evidence promotes backlog the same way on every board.
-        merged = r.Pull('https://github.com/hypertask-ai/hypertask/pull/1', 'MERGED', '', False,
-                        r.stamp('2026-11-20T10:00:00Z'))
-        self.assertEqual(self.target('Backlog', pulls=(merged,)), 'AI Review')
-        for pulls in ((), (pull('MERGED'),), (pull('CLOSED'),)):
+        # One model: merged with PASS plans Done; merged without PASS plans Backlog.
+        merged_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/1', 'MERGED', 'green', True,
+                             r.stamp('2026-11-20T10:00:00Z'))
+        merged_no_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/2', 'MERGED', 'green', False,
+                                r.stamp('2026-11-20T10:00:00Z'))
+        self.assertEqual(self.target('Backlog', pulls=(merged_pass,)), 'Done')
+        self.assertEqual(self.target('Backlog', pulls=(merged_no_pass,)), 'Backlog')
+        for pulls in ((), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
                 self.assertEqual(self.target('AI Review', pulls=pulls), 'AI Review')
-        # A shipped PR is real evidence once the card's entry is readable, so the
-        # card goes to review, never back. With no entry the model does not guess.
+        self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED', passed=True),),
+                                          column_entered=r.stamp('2026-11-20T10:00:00Z')),
+                                   board=r.BOARDS[15]),
+                         ('Done', 'merged with PASS'))
         self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),),
                                           column_entered=r.stamp('2026-11-20T10:00:00Z')),
                                    board=r.BOARDS[15]),
-                         ('AI Review', 'merged PR; live proof pending'))
+                         ('Backlog', 'merged without PASS: rule break; owner must verify'))
         self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),)), board=r.BOARDS[15]),
                          ('Backlog', 'column entry unreadable; kept'))
-        self.assertEqual(self.target('AI Review', pulls=(pull('MERGED'),)), 'AI Review')
+        self.assertEqual(self.target('AI Review', pulls=(pull('MERGED', passed=True),)), 'Done')
+        self.assertEqual(self.target('AI Review', pulls=(pull('MERGED'),)), 'Backlog')
 
     # HTPR-7807 as the board has it: reopened into Backlog on 2026-11-20, behind
     # hypertask-ai/hypertask#3180, merged 2026-11-10. The merge is evidence for the
@@ -1532,22 +1582,22 @@ else:
 
     def test_an_old_merge_never_pulls_a_reopened_card(self):
         now = r.stamp('2026-11-20T16:00:00Z')
-        old = {**self.product_pull(3180, 'MERGED'), 'mergedAt': self.REOPENED['merged']}
-        fresh = {**self.product_pull(3532, 'MERGED'), 'mergedAt': '2026-11-20T11:00:00Z'}
+        old = {**self.product_pull(3180, 'MERGED', passed=True), 'mergedAt': self.REOPENED['merged']}
+        fresh = {**self.product_pull(3532, 'MERGED', passed=True), 'mergedAt': '2026-11-20T11:00:00Z'}
         with self.subTest('the merge is older than the column entry'):
             facts = self.reopened_facts([old], now)
             self.assertEqual(facts.column_entered, r.stamp(self.REOPENED['entry']))
             self.assertEqual(r.target(facts, board=r.BOARDS[15]),
                              ('Backlog', 'merged PR older than column entry; kept'))
-        with self.subTest('a merge after the entry still pulls it'):
+        with self.subTest('a merge after the entry still promotes with PASS'):
             self.assertEqual(r.target(self.reopened_facts([fresh], now), board=r.BOARDS[15])[0],
-                             'AI Review')
+                             'Done')
         with self.subTest('a live worker is unaffected'):
             self.assertEqual(r.target(self.reopened_facts([old], now, alive=True),
                                       board=r.BOARDS[15])[0], 'In Progress')
-        with self.subTest('an old merge holds a card already in review'):
+        with self.subTest('a merge in review resolves to Done with PASS'):
             self.assertEqual(r.target(self.reopened_facts([old], now, column='AI Review'),
-                                      board=r.BOARDS[15])[0], 'AI Review')
+                                      board=r.BOARDS[15])[0], 'Done')
         with self.subTest('column entry comes from staleness, not updatedAt'):
             task = {**self.board15_tasks(count=1)[0],
                     'updatedAt': r.stamp('2026-11-20T18:08:23.579Z'),
@@ -1559,10 +1609,10 @@ else:
         merge_at = '2026-11-20T10:00:00Z'
         entry_at = '2026-11-20T09:00:00Z'
         now = r.stamp('2026-11-20T16:00:00Z')
-        merged = {**self.product_pull(1, 'MERGED'), 'mergedAt': merge_at}
+        merged = {**self.product_pull(1, 'MERGED', passed=True), 'mergedAt': merge_at}
         card = {**self.card('HTPR-9001', 'In Progress', r.stamp('2026-11-20T11:00:00Z'), [merged]),
                 'staleness': {'sectionChangedAt': entry_at}}
-        self.assertEqual(r.target(self.facts(card, now), board=r.BOARDS[15])[0], 'AI Review')
+        self.assertEqual(r.target(self.facts(card, now), board=r.BOARDS[15])[0], 'Done')
 
     def test_a_board_15_dry_run_keeps_a_reopened_card_in_backlog(self):
         tasks = [{**self.board15_tasks(count=1)[0], 'ticketNumber': 'HTPR-7807',
@@ -1645,10 +1695,24 @@ else:
 
     def test_protected_columns_never_move(self):
         for column in ('UX needed', 'UX Sign-off', 'Agent Blocked (Infra)', 'Valentin Review',
-                       'QA', 'Flag: Only Me + QA', 'Flag: Everyone', 'Flag: Off', 'No Flag',
+                       'Done', 'Flag: Only Me + QA', 'Flag: Everyone', 'Flag: Off', 'No Flag',
                        'Flag: Future', 'Future column'):
             with self.subTest(column=column):
                 self.assertEqual(self.target(column, alive=True, pulls=(pull(checks='red'),)), column)
+
+    def test_qa_plans_done_or_backlog_and_flag_columns_stay_protected(self):
+        passed = self.product_pull(3835, 'MERGED', passed=True, merged_at='2026-11-24T21:02:00Z')
+        unpassed = self.product_pull(3836, 'MERGED', passed=False, merged_at='2026-11-24T21:02:00Z')
+        now = r.stamp('2026-11-24T22:00:00Z')
+        qa_pass = self.card('HTPR-8459', 'QA', now - 3600, [passed])
+        qa_no_pass = self.card('HTPR-8460', 'QA', now - 3600, [unpassed])
+        flagged = self.card('HTPR-8461', 'Flag: Only Me + QA', now - 3600, [passed])
+        self.assertEqual(r.target(self.facts(qa_pass, now), board=r.BOARDS[15]),
+                         ('Done', 'merged with PASS'))
+        self.assertEqual(r.target(self.facts(qa_no_pass, now), board=r.BOARDS[15]),
+                         ('Backlog', 'merged without PASS: rule break; owner must verify'))
+        self.assertEqual(r.target(self.facts(flagged, now), board=r.BOARDS[15]),
+                         ('Flag: Only Me + QA', 'protected column'))
 
     def test_two_hour_grace_only_protects_idle_demotion(self):
         self.assertEqual(self.target('In Progress', age=7199), 'In Progress')
@@ -1693,13 +1757,12 @@ else:
             self.assertEqual(r.discover(['HTPR-1'], board=r.BOARDS[15]), {'HTPR-1': [pr]})
             self.assertIn('repo:hypertask-ai/hypertask', run.call_args.args[-1])
 
-    def test_shipped_in_vstack_plans_review_not_backlog(self):
+    def test_shipped_in_vstack_plans_done_with_pass_and_backlog_without(self):
         """HTPR-9521 shipped in valentinyeo/vstack#161, merged into main.
 
         Board 15 used to search only hypertask-ai/hypertask, saw no PR, and
-        planned the card back to Backlog as idle. #161's own title and branch
-        carry no key, so the fixture is a vstack PR that names the ticket the
-        way reconcile attributes one.
+        planned the card back to Backlog as idle. With the default stage rules,
+        a merged vstack PR plans Done with PASS and Backlog without PASS.
         """
         pr = {'title': 'fix(reconcile): board 15 catches cards (HTPR-9521)', 'body': '',
               'headRefName': 'boss/9521-reconcile-board15', 'state': 'MERGED', 'baseRefName': 'main',
@@ -1716,10 +1779,16 @@ else:
         self.assertIn('repo:hypertask-ai/hypertask', query)
         self.assertIn('repo:valentinyeo/vstack', query)
         self.assertEqual(query.count('search('), 1)
-        card = self.card('HTPR-9521', 'In Progress', r.stamp(created) - 60, found['HTPR-9521'])
-        facts = self.facts(card, r.stamp(created) + 3 * 3600)
-        self.assertEqual(r.target(facts, board=r.BOARDS[15]),
-                         ('AI Review', 'merged PR; live proof pending'))
+        passed_card = self.card('HTPR-9521', 'In Progress', r.stamp(created) - 60,
+                                [{**found['HTPR-9521'][0], 'passed': True}])
+        self.assertEqual(r.target(self.facts(passed_card, r.stamp(created) + 3 * 3600),
+                                  board=r.BOARDS[15]),
+                         ('Done', 'merged with PASS'))
+        unpassed_card = self.card('HTPR-9521', 'In Progress', r.stamp(created) - 60,
+                                  [{**found['HTPR-9521'][0], 'passed': False}])
+        self.assertEqual(r.target(self.facts(unpassed_card, r.stamp(created) + 3 * 3600),
+                                  board=r.BOARDS[15]),
+                         ('Backlog', 'merged without PASS: rule break; owner must verify'))
 
     def test_merged_into_a_feature_branch_is_not_shipped(self):
         """HTPR-9387: stacked #3646 merged into #3594's branch, not into production."""
@@ -1746,13 +1815,21 @@ else:
         pr = {'url': 'https://github.com/hypertask-ai/hypertask/pull/1', 'state': 'OPEN',
               'number': 1, 'repository': {'nameWithOwner': 'hypertask-ai/hypertask'}}
         plans = [(t, r.Facts('In Progress', 8000, False, (pull(),)))]
+        closed_node = {'url': pr['url'], 'state': 'CLOSED', 'mergedAt': None,
+                       'createdAt': '2026-11-20T09:00:00Z', 'updatedAt': '2026-11-20T10:00:00Z',
+                       'headRefOid': 'a' * 40, 'baseRefOid': 'b' * 40, 'mergeable': 'UNKNOWN',
+                       'author': {'login': 'valentinyeo'}, 'commits': {'nodes': []},
+                       'statusCheckRollup': {'state': 'SUCCESS',
+                                             'contexts': {'pageInfo': {'hasNextPage': False},
+                                                          'nodes': []}},
+                       'comments': {'totalCount': 0, 'nodes': []}}
         with patch.object(r, 'api', return_value={'tasks': [t]}), \
                 patch.object(r, 'live_product_worker', return_value=False), \
-                patch.object(r, 'run', return_value=json.dumps({'url': pr['url'], 'state': 'CLOSED'})) as run, \
+                patch.object(r, 'run', return_value=json.dumps({'data': {'p0': {'pullRequest': closed_node}}})) as run, \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(r.apply_plan(plans, 5, {'HTPR-1': [pr]}, board=r.BOARDS[15]), 0)
             self.assertIn('facts changed since preview', out.getvalue())
-            self.assertEqual(run.call_args.args[:3], ('gh', 'pr', 'view'))
+            self.assertEqual(run.call_args.args[:3], ('gh', 'api', 'graphql'))
 
     def test_board15_requires_explicit_agent_token(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(r, 'api') as api:
@@ -2425,7 +2502,7 @@ class LeaseTest(unittest.TestCase):
                     json.dumps({'tasks': [{'projectId': 2060, 'assignees': assignees}]}), '')
             return subprocess.CompletedProcess(command, take_code, '', '')
 
-        with patch.object(lease.shutil, 'which', return_value='/bin/hypertask'), \
+        with patch.object(lease, 'find', return_value='/bin/hypertask'), \
                 patch.object(lease.subprocess, 'run', side_effect=fake), \
                 patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
             self.assertEqual(lease.main(), 0)
@@ -3017,7 +3094,7 @@ class CallBudgetTest(unittest.TestCase):
         item = {'html_url': 'https://github.com/hypertask-ai/hypertask/pull/1',
                 'number': 1, 'state': 'closed', 'pull_request': {'merged_at': merged_at}}
         metadata = r.search_item_to_pull(item)
-        self.assertEqual(r.pull_facts(metadata, r.BOARDS[15]).merged_at, r.stamp(merged_at))
+        self.assertEqual(r.moment(metadata['mergedAt']), r.stamp(merged_at))
 
     def test_quiet_sync_uses_one_probe_and_matches_full_plan(self):
         t1 = {**task('Doing'), 'ticketNumber': 'SOFT-1', 'updatedAt': NOW - 8000}

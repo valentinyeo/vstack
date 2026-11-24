@@ -25,6 +25,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from bin_path import find
+
 BASE = 'https://api.excalidraw.com/api/v1'
 COLLECTION = '8nmjwOyvh62'
 WORKSPACE = '1GorMHPWnnO'
@@ -157,7 +160,7 @@ def yeo_key_env() -> dict:
 
 def read_key() -> str:
     try:
-        done = subprocess.run(['yeo-key', 'Excalidraw', 'credential'],
+        done = subprocess.run([find('yeo-key') or 'yeo-key', 'Excalidraw', 'credential'],
                               capture_output=True, text=True, timeout=120,
                               env=yeo_key_env())
     except FileNotFoundError:

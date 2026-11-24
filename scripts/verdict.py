@@ -32,6 +32,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import uncovered_gate
+import video_proof_gate
 
 VERDICTS = ('PASS+NOTES', 'PASS', 'FAIL')
 PASSING = ('PASS', 'PASS+NOTES')
@@ -134,6 +135,12 @@ def main():
                         help='File holding a verifier answer, or - for stdin')
     parser.add_argument('--selection', metavar='PATH',
                         help="the verifier's selection.json; default: the one beside the answer")
+    parser.add_argument('--changed-files', metavar='PATH',
+                        help='newline-separated changed file paths for the UI video proof gate')
+    parser.add_argument('--pr-body', metavar='PATH',
+                        help='pull request body file for the UI video proof gate')
+    parser.add_argument('--event', metavar='PATH', default=os.environ.get('GITHUB_EVENT_PATH'),
+                        help='GitHub event JSON holding pull_request.body')
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     if args.self_test:
@@ -148,6 +155,14 @@ def main():
     selection = find_selection(args.paths, args.selection)
     if verdict in PASSING and selection:
         verdict, demoted = uncovered_gate.gate(uncovered_gate.load(selection), verdict)
+        if demoted:
+            print(verdict, flush=True)
+            print(demoted, file=sys.stderr)
+            return 1
+    if verdict in PASSING and args.changed_files:
+        changed = video_proof_gate.read_changed_files(path=args.changed_files)
+        body = video_proof_gate.read_body(args.pr_body, args.event, allow_missing=True)
+        verdict, demoted = video_proof_gate.gate(changed, body, verdict)
         if demoted:
             print(verdict, flush=True)
             print(demoted, file=sys.stderr)

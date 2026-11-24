@@ -44,14 +44,6 @@ basis: PR #180, VSTA-4 (9e54f31); PR #233, VSTA-74 (e61ac99)
 approved: 2026-11-20
 expiry: 2027-02-23
 
-id: board-15-live-proof-stage
-pstack: skills/poteto-mode/playbooks/shipping.md
-quote: Only a verdict from an agent that did not write the code counts, because an author checks what it meant to build.
-change: Board 15 keeps its own stage model, so a merged PR waits in AI Review for a Done comment with live proof; every other board plans a merged PR with PASS to Done.
-basis: PR #186 (d2cb089); PR #212, VSTA-11 (0883ac5); VSTA-186
-approved: 2026-11-24
-expiry: 2027-02-23
-
 id: cloud-agent-offload
 pstack: docs/harness/claude-code.md
 quote: | `environment: "cloud"` | `isolation: "worktree"`. Name the branch or commit the worker checks out. |
@@ -274,5 +266,13 @@ pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: 3. **Run owners in parallel off trunk, never stacked,** so each PR lands on its own.
 change: Each agent owns at most 5 open tickets at a time, one worker each, and starts a new ticket only after one ships (Valentin, 2026-11-24: "finish before starting"). `skills/board-drain/wip-cap` owns the one per-label cap and counts the cards carrying the agent's label in Doing plus Checks plus AI Review; `skills/hypertask-work/lease` refuses a non-urgent Todo start with exit 75 and names the full label; `drain-check` fails `over cap` for the label it was given. An urgent ticket, and a card already in a working column, may still start.
 basis: VSTA-206; PR #370 (pr-cap) precedent
+approved: 2026-11-24
+expiry: 2027-02-24
+
+id: ui-video-proof-gate
+pstack: docs/guide/06-verify-and-ship.md
+quote: Ask for the proof as an artifact you can inspect yourself: the failing test and then the passing one, a before-and-after video, the trace, the screenshot.
+change: Verifiers run `scripts/video_proof_gate.py` (as a pre-check and behind `scripts/verdict.py`), refusing PASS on diffs touching user-visible UI without a before/after video link in the PR body.
+basis: VSTA-251
 approved: 2026-11-24
 expiry: 2027-02-24

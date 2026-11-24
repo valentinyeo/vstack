@@ -64,7 +64,7 @@ The lease's start sync runs `agent take` for the ticket as the chat's own login 
 
 ## GitHub budget
 
-A run spends GitHub calls, and the account shares one hourly budget. The first response that reports a spent budget stops the run at once: 403 and 429 errors that name a rate limit or a secondary rate limit, and GraphQL's `RATE_LIMITED`. The run prints one line with the reset time from `gh api rate_limit`, applies no move, and exits 0. Only error text counts, so a PR or comment that talks about a rate limit is not one. Every run prints its call count to stderr: `reconcile: github calls=N (graphql=a, rest=b)`. A product board takes a PR's state from the search it already paid for. Every other board reads fifty PRs per call, the verifier policy at each base commit in one call per fifty commits, and the jobs of one verifier run once ever, because a finished run does not change.
+A run spends GitHub calls, and the account shares one hourly budget. The first response that reports a spent budget stops the run at once: 403 and 429 errors that name a rate limit or a secondary rate limit, and GraphQL's `RATE_LIMITED`. The run prints one line with the reset time from `gh api rate_limit`, applies no move, and exits 0. Only error text counts, so a PR or comment that talks about a rate limit is not one. Every run prints its call count to stderr: `reconcile: github calls=N (graphql=a, rest=b)`. Every board reads fifty open PRs (or twenty-five merged PRs) per call, the verifier policy at each base commit in one call per fifty commits, and the jobs of one verifier run once ever, because a finished run does not change.
 
 A chat over its own gh budget skips the tick instead of dying. Reconcile prints exactly one line, `sync skipped: gh budget (wait until HH:MM UTC)`, moves nothing and rewrites no saved fact, and exits 0 whatever step the refusal hit. `sync` prints that same one line, records the tick as skipped, and does not run its apply step. The watcher prints the line and keeps watching, so the next tick inside the budget carries on. `drain-check` never calls a skip a failed sync; it judges the view by the last sync that really read the board, so skips that last over 45 minutes still read as `sync stale`.
 
@@ -89,11 +89,12 @@ Never patch the card and say nothing: the next run undoes it or repeats it. The 
 `skills/hypertask-work/reconcile --board 15` previews Hypertask product moves. Dedicated rules:
 
 - Ticket keys start with `HTPR-`. PRs come from every repo the board ships from: `hypertask-ai/hypertask` (release branch `production`) and `valentinyeo/vstack` (release branch `main`). One search covers them all.
-- Live workers move tickets to In Progress. Open and merged PRs move them to AI Review. An open PR outranks a live worker.
+- Live workers move tickets to In Progress. Open PRs move them to AI Review (or back to Backlog when a red PR sits idle for an hour with no live worker). A merged PR with a verifier PASS moves the card to Done; a merged PR without PASS moves it to Backlog for verification. An open PR outranks a live worker.
 - A merged PR counts only when its base is that repo's release branch. A stacked PR merged into a feature branch is not a ship.
 - An open PR or a live worker moves a ticket even inside the two-hour grace. The grace only protects an idle ticket.
 - An In Progress ticket with no live worker and no shipped PR moves to Backlog after two hours. Tickets in Backlog stay unless a shipped PR now names them.
-- UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, QA and every Flag column stay. No Flag and unknown columns also stay.
+- QA is a known column, not a post-merge hold: a card in QA whose PR merged with PASS moves to Done, and without PASS moves to Backlog.
+- UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, Done, No Flag and every Flag column stay. Unknown columns also stay.
 - Each run permits at most five moves, even with a higher `--limit`.
 - Worker facts come from the installed Hypertask workers. An active service alone proves no ticket work: its local PID must exist and its queue must name that board's ticket. Claiming, launching and running count as active. Progress expires after 15 minutes. A live lease or a process that names the ticket also counts. Unreadable worker facts refuse all moves.
 - A shell without `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS` gets `/run/user/<uid>` defaults first. If worker facts still cannot be read, the run prints one `reconcile: worker facts unreadable: ...` line, moves nothing and exits non-zero.

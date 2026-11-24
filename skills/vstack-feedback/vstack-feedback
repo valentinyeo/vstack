@@ -19,12 +19,14 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
 import unicodedata
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+from bin_path import hypertask
 
 BOARD = '13556'
 LABEL = 'Vstack'
@@ -41,11 +43,7 @@ class Refused(ValueError):
 
 def hypertask_binary():
     """The hypertask CLI on PATH, else the one this server installs in ~/.local/bin."""
-    found = shutil.which('hypertask')
-    if found:
-        return found
-    local = Path.home() / '.local' / 'bin' / 'hypertask'
-    return str(local) if local.is_file() else None
+    return hypertask()
 
 
 def fallback_token(env):

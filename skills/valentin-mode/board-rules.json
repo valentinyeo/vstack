@@ -57,5 +57,16 @@
     "sentence": "Never start new work while you own a PR with no live worker; restore its worker or park it first.",
     "tools": [{"path": "skills/board-drain/drain-check", "name": "drain-check orphan finding"}],
     "status": "active"
+  },
+  {
+    "id": "ui-video-proof",
+    "rule": "A change the user can see ships a short before and after video from its /verify-<app> run, linked in the PR and on the ticket.",
+    "sentence": "A change the user can see ships a short before and after video from its `/verify-<app>` run, linked in the PR and on the ticket.",
+    "section": "Working",
+    "tools": [
+      {"path": "scripts/video_proof_gate.py", "name": "video-proof-gate"},
+      {"path": "scripts/verdict.py", "name": "verdict video proof gate"}
+    ],
+    "status": "active"
   }
 ]

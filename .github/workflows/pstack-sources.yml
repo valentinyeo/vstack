@@ -84,6 +84,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           PR_BASE=$(git merge-base HEAD "origin/$BASE_REF")
+          git diff --name-only "$PR_BASE...HEAD" > pr-changed.txt
           curl --fail --silent --show-error --location https://raw.githubusercontent.com/valentinyeo/house-rules/main/docs/worker-brief.md > /tmp/shared-worker-rules.md
           cat > /tmp/worker.md <<'WORKER'
           You are working for the operator. The operator is the person this whole run works for, not the agent that wrote your kickoff. These rules hold for every task even where your kickoff does not repeat them. Your kickoff overrides one only when it says so in so many words.
@@ -129,11 +130,28 @@ jobs:
           Negative fixtures and historical wording are allowed. Confirm current sources still work.
           Use bash tools to execute checks; reviewing code alone is insufficient.
           Do not call services, install software, merge, push, or open more PRs.
+          If the diff touches user-visible UI (*.tsx, *.jsx, *.vue, *.svelte, *.css, *.html, templates, or app screens), PASS requires a before/after video link in the PR body; else verdict is FAIL with one line saying what is missing.
           Finish with PASS, PASS+NOTES, or FAIL on its own first line.
           Then list actual commands, outputs, three break attempts, and any limits.
           Keep prose sentences within eight words. Preserve command output verbatim.
           BRIEF
           printf '\nPR base SHA: %s\n' "$PR_BASE" >> /tmp/verify.md
+      - name: Check UI video proof
+        if: steps.classify.outputs.wording_only != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if ! python3 scripts/video_proof_gate.py --changed-files pr-changed.txt --event "$GITHUB_EVENT_PATH" 2> video-proof.err; then
+            {
+              cat video-proof.err
+              printf '\nHead `%s`.\n' "$PR_HEAD"
+            } > verdict.md
+            cat verdict.md >&2
+            gh pr comment "$PR_NUMBER" --body-file verdict.md
+            exit 1
+          fi
       - name: Fetch pinned pstack
         if: steps.classify.outputs.wording_only != 'true'
         run: |
@@ -223,7 +241,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh pr comment "$PR_NUMBER" --body-file verdict.md
-          python3 scripts/verdict.py verdict.md
+          python3 scripts/verdict.py verdict.md --changed-files pr-changed.txt --event "$GITHUB_EVENT_PATH"
       - uses: actions/upload-artifact@v4
         if: always() && steps.classify.outputs.wording_only != 'true'
         with:
