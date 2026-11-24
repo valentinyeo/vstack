@@ -1546,14 +1546,108 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(clock.now - NOW, 10)
         self.assertFalse(self.wakes.exists())
 
-    def test_failed_sender_falls_back_to_exit(self):
-        self.sender.write_text('import sys\nsys.exit(1)\n')
-        code, out, _ = self.run_watch(
-            [], '--every', '10', '--cycles', '0',
-            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
-                'failed delivery must exit'))
+    def test_failed_sender_logs_last_stderr_line_and_falls_back_to_exit(self):
+        self.sender.write_text(self.sender.read_text() +
+                               'print("sender diagnostic\\nchat busy", file=sys.stderr)\n'
+                               'sys.exit(7)\n')
+        with patch.object(watch.time, 'sleep') as retry_sleep:
+            code, out, _ = self.run_watch(
+                [], '--every', '10', '--cycles', '0',
+                on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                    'failed delivery must exit'))
         self.assertEqual(code, 0, out)
         self.assertIn('changed: VSTA-80 new in Todo', out)
+        self.assertEqual(out.count('wake: failed (7): chat busy\n'), 2)
+        self.assertNotIn('sender diagnostic', out)
+        self.assertEqual(len(self.wakes.read_text().splitlines()), 2)
+        retry_sleep.assert_called_once_with(5)
+
+    def test_sender_failing_once_then_succeeding_keeps_polling(self):
+        self.sender.write_text(self.sender.read_text() +
+                               f'if len(pathlib.Path({str(self.wakes)!r}).read_text().splitlines()) == 1:\n'
+                               '    print("chat busy", file=sys.stderr)\n'
+                               '    sys.exit(1)\n')
+
+        def on_sleep(tick):
+            if tick == 1:
+                self.rows([vsta('VSTA-80')])
+            elif tick == 2:
+                self.assertEqual(len(self.wakes.read_text().splitlines()), 2)
+                self.assertEqual(watch.loop_state.stored('Watch Test')['watch_pid'], os.getpid())
+
+        with patch.object(watch.time, 'sleep') as retry_sleep:
+            code, out, clock = self.run_watch([], '--every', '10', '--heartbeat', '100',
+                                               '--cycles', '2', on_sleep=on_sleep)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count('wake: failed (1): chat busy\n'), 1)
+        self.assertIn('heartbeat: no change', out)
+        self.assertGreater(clock.now - NOW, 10, 'must keep polling after retry succeeds')
+        retry_sleep.assert_called_once_with(5)
+
+    def test_sender_timeout_logs_partial_stderr_and_falls_back_to_exit(self):
+        self.sender.write_text(self.sender.read_text() +
+                               'import time\n'
+                               'print("sender diagnostic\\nstill busy", file=sys.stderr, flush=True)\n'
+                               'time.sleep(60)\n')
+        run = subprocess.run
+
+        def short_timeout(*args, **kwargs):
+            self.assertEqual(kwargs['timeout'], 30)
+            kwargs['timeout'] = 0.2
+            return run(*args, **kwargs)
+
+        with patch.object(watch.subprocess, 'run', side_effect=short_timeout), \
+                patch.object(watch.time, 'sleep') as retry_sleep:
+            code, out, _ = self.run_watch(
+                [], '--every', '10', '--cycles', '0',
+                on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                    'timed out delivery must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count('wake: failed (timeout): still busy\n'), 2)
+        self.assertNotIn('sender diagnostic', out)
+        self.assertEqual(len(self.wakes.read_text().splitlines()), 2)
+        retry_sleep.assert_called_once_with(5)
+
+    def test_sender_timeout_without_stderr_falls_back_to_exit(self):
+        self.sender.write_text(self.sender.read_text() + 'import time\ntime.sleep(60)\n')
+        run = subprocess.run
+
+        def short_timeout(*args, **kwargs):
+            kwargs['timeout'] = 0.2
+            return run(*args, **kwargs)
+
+        with patch.object(watch.subprocess, 'run', side_effect=short_timeout), \
+                patch.object(watch.time, 'sleep') as retry_sleep:
+            code, out, _ = self.run_watch(
+                [], '--every', '10', '--cycles', '0',
+                on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
+                    'timed out delivery must exit'))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count('wake: failed (timeout): \n'), 2)
+        self.assertEqual(len(self.wakes.read_text().splitlines()), 2)
+        retry_sleep.assert_called_once_with(5)
+
+    def test_enabled_own_config_wins_over_an_earlier_disabled_match(self):
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        (configs / 'a-disabled.config.json').write_text(json.dumps(
+            {'tmux': 'own-tab', 'sid': 'stale-sid', 'enabled': False}))
+        (configs / 'z-enabled.config.json').write_text(json.dumps(
+            {'tmux': 'own-tab', 'sid': 'active-sid', 'enabled': True}))
+        code, out, _ = self.run_watch(
+            [], on_sleep=lambda tick: self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'active-sid'])
+
+    def test_first_matching_config_is_used_when_none_is_enabled(self):
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        (configs / 'a-disabled.config.json').write_text(json.dumps(
+            {'tmux': 'own-tab', 'sid': 'first-sid', 'enabled': False}))
+        code, out, _ = self.run_watch(
+            [], on_sleep=lambda tick: self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'first-sid'])
 
     def test_no_own_tab_never_targets_another_sid(self):
         with patch.dict(os.environ, {'MULTIPROMPT_TAB': '', 'TMUX': ''}):
