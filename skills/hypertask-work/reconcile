@@ -757,6 +757,35 @@ def leased_process_tree(now, proc_dir=None, leases_dir=None):
     return tree
 
 
+BRIEF = 'brief.txt'
+BRIEF_MAX = 64 * 1024
+
+
+def named_tickets(text, board, url, key):
+    """Each ticket this text names, as its full key."""
+    return ({board.prefix + '-' + match[1] for match in url.finditer(text)}
+            | {match[0].upper() for match in key.finditer(text)})
+
+
+def brief_tickets(entry, argv, board, url, key):
+    """The ticket a lane helper works, when its own command line cannot say it.
+
+    plan-pick writes `brief.txt` beside the worker and starts the lane with
+    `"$(cat brief.txt)"`, so the file keeps the ticket after the command line has
+    spent it. An agent CLI that rewrites its own process title leaves nothing else
+    behind. Only a command line that reads that file is asked: a chat keeps no such
+    brief, so this never proves a ticket live on its own.
+    """
+    if not any(BRIEF in word for word in argv):
+        return set()
+    try:
+        directory = Path(os.readlink(entry / 'cwd'))
+        with (directory / BRIEF).open(encoding='utf-8', errors='replace') as brief:
+            return named_tickets(brief.read(BRIEF_MAX), board, url, key)
+    except OSError:
+        return set()
+
+
 @lru_cache(maxsize=2)
 def process_tickets(board=DEFAULT):
     """Fallback liveness for an agent CLI started without the lease wrapper.
@@ -782,18 +811,20 @@ def process_tickets(board=DEFAULT):
             continue
         if not argv or not is_worker(argv):
             continue
-        line = ' '.join(argv)
-        found |= {board.prefix + '-' + match[1] for match in url.finditer(line)}
-        found |= {match[0].upper() for match in key.finditer(line)}
+        found |= named_tickets(' '.join(argv), board, url, key) or brief_tickets(
+            entry, argv, board, url, key)
     return found
 
 
 def worker_alive(key, now, board=DEFAULT):
-    """A lease, a live command line, or a product worker proves a live worker."""
-    if product_board(board):
-        return (live_product_worker(key, now) or live_lease(key, now)
-                or key.upper() in process_tickets(board))
-    return live_lease(key, now) or key.upper() in process_tickets(board)
+    """A lease or a live command line proves a live worker; a product worker also does.
+
+    Both local reads answer first, so a shell with no session bus still knows its
+    worker instead of failing on systemd.
+    """
+    if live_lease(key, now) or key.upper() in process_tickets(board):
+        return True
+    return product_board(board) and live_product_worker(key, now)
 
 
 def worker_state_directory(slug, pid):
@@ -804,10 +835,19 @@ def worker_state_directory(slug, pid):
     return Path.home() / '.local/state' / f'hypertask-{slug}'
 
 
+# A shell without XDG_RUNTIME_DIR answers "Failed to connect to bus". That is a
+# host with no product worker visible, not a board the run cannot read.
+SYSTEMD_DOWN = (OSError, RuntimeError, subprocess.SubprocessError)
+
+
 @lru_cache(maxsize=1)
 def product_workers(now):
-    units = run('systemctl', '--user', 'list-units', '--all', '--plain', '--no-legend',
-                'hypertask-agent-worker@*.service')
+    """Board 15's live workers per systemd, and none when systemd cannot be asked."""
+    try:
+        units = run('systemctl', '--user', 'list-units', '--all', '--plain', '--no-legend',
+                    'hypertask-agent-worker@*.service')
+    except SYSTEMD_DOWN:
+        return set()
     live = set()
     for line in units.splitlines():
         parts = line.split()
@@ -817,8 +857,12 @@ def product_workers(now):
         match = re.fullmatch(r'hypertask-agent-worker@([\w.-]+)\.service', unit)
         if not match:
             raise ValueError('unrecognized product worker unit')
-        properties = dict(line.split('=', 1) for line in run('systemctl', '--user', 'show', unit,
-                          '--property=MainPID', '--property=ActiveState').splitlines() if '=' in line)
+        try:
+            shown = run('systemctl', '--user', 'show', unit,
+                        '--property=MainPID', '--property=ActiveState')
+        except SYSTEMD_DOWN:
+            continue
+        properties = dict(line.split('=', 1) for line in shown.splitlines() if '=' in line)
         pid = int(properties['MainPID'])
         if properties['ActiveState'] != 'active' or not pid_alive(pid):
             continue

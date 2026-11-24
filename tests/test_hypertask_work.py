@@ -1616,9 +1616,32 @@ else:
         card = self.card('HTPR-9514', 'In Progress', now - 3 * 3600)
         self.assertEqual(r.target(self.facts(card, now, alive=True), board=r.BOARDS[15]),
                          ('In Progress', 'live worker'))
-        with patch.object(r, 'live_product_worker', side_effect=ValueError('worker facts unreadable')):
+        with patch.object(r, 'live_product_worker', side_effect=ValueError('worker facts unreadable')), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()):
             with self.assertRaises(ValueError):
                 r.collect(card, [], NOW, board=r.BOARDS[15])
+
+    def test_a_shell_without_a_bus_still_sees_its_worker(self):
+        """A timer shell answers "Failed to connect to bus"; a lease still proves the worker."""
+        bus = RuntimeError('systemctl --user failed: Failed to connect to bus: No medium found')
+        with patch.object(r, 'run', side_effect=bus), \
+                patch.object(r, 'live_lease', return_value=True), \
+                patch.object(r, 'process_tickets', return_value=set()):
+            self.assertTrue(r.worker_alive('HTPR-9514', NOW, r.BOARDS[15]))
+        with patch.object(r, 'run', side_effect=bus), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value=set()):
+            self.assertFalse(r.worker_alive('HTPR-9514', NOW, r.BOARDS[15]))
+
+    def test_a_local_read_answers_before_systemd_is_asked(self):
+        with patch.object(r, 'product_workers', side_effect=AssertionError('systemd was asked')), \
+                patch.object(r, 'live_lease', return_value=True):
+            self.assertTrue(r.worker_alive('HTPR-9514', NOW, r.BOARDS[15]))
+        with patch.object(r, 'product_workers', side_effect=AssertionError('systemd was asked')), \
+                patch.object(r, 'live_lease', return_value=False), \
+                patch.object(r, 'process_tickets', return_value={'HTPR-9514'}):
+            self.assertTrue(r.worker_alive('HTPR-9514', NOW, r.BOARDS[15]))
 
     def test_protected_columns_never_move(self):
         for column in ('UX needed', 'UX Sign-off', 'Agent Blocked (Infra)', 'Valentin Review',
@@ -1961,10 +1984,12 @@ class ProductWorkerTest(unittest.TestCase):
             with self.assertRaises((ValueError, sqlite3.Error)):
                 r.product_workers(NOW)
 
-    def test_service_read_failure_fails_closed(self):
+    def test_a_shell_without_a_session_bus_has_no_product_worker(self):
+        """`systemctl --user` failing is a host with no worker visible, never a failed read."""
+        r.product_workers.cache_clear()
+        self.addCleanup(r.product_workers.cache_clear)
         with patch.object(r, 'run', side_effect=RuntimeError('systemctl failed')):
-            with self.assertRaises(RuntimeError):
-                r.product_workers(NOW)
+            self.assertEqual(r.product_workers(NOW), set())
 
 
 class ProcessLivenessTest(unittest.TestCase):
@@ -1992,11 +2017,13 @@ class ProcessLivenessTest(unittest.TestCase):
             entry.rmdir()
         r.process_tickets.cache_clear()
 
-    def spawn(self, pid, argv, ppid=1):
+    def spawn(self, pid, argv, ppid=1, cwd=None):
         directory = self.proc / str(pid)
         directory.mkdir(parents=True, exist_ok=True)
         (directory / 'stat').write_text(f'{pid} (cmd) S {ppid} {ppid} {ppid}\n')
         (directory / 'cmdline').write_bytes(b'\0'.join(os.fsencode(word) for word in argv) + b'\0')
+        if cwd is not None:
+            os.symlink(cwd, directory / 'cwd')
 
     def write_lease(self, key, pid, now=None):
         now = time.time() if now is None else now
@@ -2052,6 +2079,28 @@ class ProcessLivenessTest(unittest.TestCase):
                           'SOFT-2730', 'run', '--', 'pi', '-p', 'fix the release gate'])
         self.spawn(4002, ['bash', '-c', 'cd /tmp && pi -p https://app.hypertask.ai/detail/project-2060/2731'])
         self.assertEqual(r.process_tickets(), {'SOFT-2730', 'SOFT-2731'})
+
+    def test_a_pi_lane_finds_its_ticket_in_the_brief_it_reads(self):
+        """plan-pick launches the lane with `"$(cat brief.txt)"` and pi blanks its own
+        command line, so the brief beside the helper is the one place its ticket lives."""
+        worktree = self.proc / 'worktree'
+        worktree.mkdir()
+        (worktree / 'brief.txt').write_text(
+            'Rung: low\n\nGoal (MUBO-258): the fresh-start pill stays after the chat reopens.\n'
+            'Ticket: https://app.hypertask.ai/detail/project-2060/258\n')
+        self.spawn(4001, ['bash', '-c',
+                          '~/.npm-global/bin/pi -p --mode json --thinking low '
+                          '-e ~/projects/token-ladder/tools/pi-lane-pins.mjs '
+                          '--provider vercel-ai-gateway --model deepseek/deepseek-v4.1-flash '
+                          '"$(cat brief.txt)" </dev/null'], cwd=worktree)
+        self.assertEqual(r.process_tickets(), {'SOFT-258'})
+
+    def test_a_worker_that_names_its_ticket_is_never_given_a_brief(self):
+        worktree = self.proc / 'worktree'
+        worktree.mkdir()
+        (worktree / 'brief.txt').write_text('Ticket: https://app.hypertask.ai/detail/project-2060/259\n')
+        self.spawn(4001, ['hax', '-p', 'SOFT-2731 fix the pill'], cwd=worktree)
+        self.assertEqual(r.process_tickets(), {'SOFT-2731'})
 
     def test_leased_agent_argv_for_another_key_does_not_count(self):
         now = time.time()
