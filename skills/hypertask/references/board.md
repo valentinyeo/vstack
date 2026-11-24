@@ -12,7 +12,7 @@ Software Factory board 2060:
 | Todo | Ready, nobody on it. |
 | Doing (or Building) | A live worker is on it. |
 | Checks | A PR is open and its checks run, fail or are missing. |
-| AI Review (or Verifier) | Checks are green, or a PR is merged and live proof is pending. |
+| AI Review (or Verifier) | Checks are green, or a PR is merged without a PASS. |
 | Valentin Review | His call. Only he moves a ticket out. |
 | Done | Live, with proof. |
 
@@ -27,8 +27,8 @@ Move the ticket the moment its stage moves. The PR outranks a live worker.
 - worker starts -> Doing or Building
 - PR opened -> Checks
 - checks green -> AI Review or Verifier
-- merged -> AI Review or Verifier, live proof pending
-- live proof -> Done
+- merged without a PASS -> AI Review or Verifier, a fresh worker gets the pass or closes it
+- merged with PASS -> Done
 
 A merged PR is evidence only when it merged after the card entered the column it is in now. A card parked or reopened behind an older merge keeps its column, and a card already in review stays there: an old merge is history, never a promotion, and never a demotion. Open PRs and live workers read the same as before.
 
