@@ -46,7 +46,7 @@ RESULT_WORD = re.compile(
 MEDIA_LINK = re.compile(
     r'https?://\S*(?:screencast2\.com/|loom\.com/|vimeo\.com/|youtu\.?be(?:\.com)?/'
     r'|imgur\.com/|cloudinary\.com/|/attachments?/|/screenshots?/|/videos?/)'
-    r'|https?://\S+\.(?:png|jpe?g|webp|gif|svg|mp4|webm|mov|m4v|mkv)(?:[?#\s"\')]|$)'
+    r'|https?://\S+\.(?:png|jpe?g|webp|gif|svg|mp4|webm|mov|m4v|mkv)(?:[?#\s"\');,.]|$)'
     r'|(?:^|[\s(])screencast2\.com/\S+',
     re.IGNORECASE,
 )

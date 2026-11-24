@@ -75,6 +75,9 @@ BLOCKED_TEXTS = (
     'https://cdn.example.com/after.png',
     'https://cdn.example.com/walkthrough.mp4',
     'https://cdn.example.com/clip.webm?v=1',
+    'https://cdn.example.com/after.png; Next: rebase',
+    'https://cdn.example.com/clip.webm, Next: rebase',
+    'https://cdn.example.com/walkthrough.mp4.',
     'https://www.loom.com/share/abc123',
     'https://app.hypertask.ai/attachments/99',
 )
