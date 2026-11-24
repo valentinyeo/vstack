@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+"""Prove every repo a chat ships from refuses a merge until a verifier has passed it.
+
+pstack `poteto-mode/playbooks/shipping.md` step 1: "Only a verdict from an agent that did
+not write the code counts, because an author checks what it meant to build." Green CI and
+an approving bot review are not verdicts. GitHub enforces that only when the branch a PR
+merges into requires the repo's own verifier check, so this tool reads that requirement.
+The names come from the one per-repo table reconcile judges a merged PR's PASS by.
+
+    merge-gate [--board BOARD] [--repo owner/name ...] [--branch NAME] [--fix]
+
+One line per repo: `gate ok: <repo> <branch>` or `gate missing: <repo> <branch>`.
+Exit 0 when every repo requires the check, 1 when one does not, 2 when a gate cannot be
+read. A read that fails leaves its repo unanswered instead of guessing at it.
+
+A chat's repos come from its board config (the reconcile BoardConfig repos) or, when the
+board names none, from the repos its PRs live in in the saved board facts. drain-check
+calls `gate_findings` for exactly that. Each repo is read at most once an hour, so a
+drain tick stays inside the gh budget.
+
+`--fix` adds the required check through the GitHub API for repos this account owns, and
+prints exactly what changed. It never touches a hypertask-ai repo: those are reported only.
+"""
+import argparse
+import fnmatch
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = Path(__file__).resolve().parent
+# A gate does not change between two ticks; an hour keeps a fleet-wide drain inside budget.
+TTL = 3600
+# Repos under this owner are reported, never changed: another team's rules are theirs.
+REPORT_ONLY = ('hypertask-ai',)
+DEFAULT_BRANCH = 'main'
+ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError)
+# GitHub's own words for a branch it has no protection record for. The third is a
+# protected branch that requires no status checks yet: still nothing required.
+UNPROTECTED = ('Branch not protected', 'Branch not found', 'Required status checks not enabled')
+
+
+def load(name, path):
+    """A sibling script as one module, shared when the caller already imported it."""
+    found = sys.modules.get(name)
+    if found is not None and getattr(found, '__file__', None) == str(path):
+        return found
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+reconcile = load('fleet_reconcile', HERE.parent / 'hypertask-work' / 'reconcile')
+
+
+def check_names(repo):
+    """The check names that count as this repo's verifier, from reconcile's one table.
+
+    vstack answers as `verifier`; every repo that runs the pstack verifier workflow
+    answers as `pstack-verifier`. Importing the table keeps the gate and the board sync
+    from disagreeing about which name is a gate.
+    """
+    return tuple(reconcile.verifier_check_names(repo))
+
+
+def required_name(repo):
+    """The single name `--fix` adds: the first name that counts for this repo."""
+    return check_names(repo)[0]
+
+
+def repo_from_url(url):
+    """`owner/name` from a PR or repo URL, else ''."""
+    parts = (url or '').split('github.com/', 1)
+    if len(parts) != 2:
+        return ''
+    pieces = [piece for piece in parts[1].split('/') if piece]
+    return '/'.join(pieces[:2]) if len(pieces) >= 2 else ''
+
+
+def fact_repos(board_id):
+    """The repos a board's saved PR facts name, each with the branch its PRs merge into."""
+    saved = reconcile.read_board_facts(board_id) or {}
+    branches, seen = {}, []
+    for entry in (saved.get('tickets') or {}).values():
+        for pull in entry.get('pulls') or ():
+            repo = ((pull.get('repository') or {}).get('nameWithOwner')
+                    or repo_from_url(pull.get('url')))
+            if not repo:
+                continue
+            if repo not in seen:
+                seen.append(repo)
+            base = pull.get('baseRefName') or pull.get('base') or ''
+            if base and not branches.get(repo):
+                branches[repo] = base
+    for repo in saved.get('repos') or ():
+        if repo not in seen:
+            seen.append(repo)
+    return tuple((repo, branches.get(repo) or reconcile.FLEET_RELEASES.get(repo)
+                  or DEFAULT_BRANCH) for repo in seen)
+
+
+def repos_for(board):
+    """Every (repo, branch) pair a board ships from: its config first, then its facts."""
+    return tuple(board.repos) if board.repos else fact_repos(board.id)
+
+
+def board_object(board_id):
+    board = reconcile.BOARDS.get(board_id)
+    return board if board is not None else reconcile.board_config(board_id)
+
+
+def gh_json(*args):
+    return json.loads(reconcile.run('gh', 'api', *args))
+
+
+def not_protected(error):
+    """True when GitHub said nothing protects the branch, not that the read failed."""
+    return any(text in str(error) for text in UNPROTECTED)
+
+
+def classic_settings(repo, branch):
+    """Classic branch protection's required contexts and strict flag, or None when it
+    requires none."""
+    try:
+        data = gh_json(f'repos/{repo}/branches/{branch}/protection/required_status_checks')
+    except RuntimeError as error:
+        if not_protected(error):
+            return None
+        raise
+    return {'contexts': [context for context in data.get('contexts') or () if context],
+            'strict': bool(data.get('strict'))}
+
+
+def rule_checks(repo, branch):
+    """Required contexts from every ruleset active on the branch, in rule order."""
+    try:
+        rules = gh_json(f'repos/{repo}/rules/branches/{branch}')
+    except RuntimeError as error:
+        if not_protected(error):
+            return []
+        raise
+    contexts = []
+    for rule in rules or ():
+        if not isinstance(rule, dict) or rule.get('type') != 'required_status_checks':
+            continue
+        for entry in ((rule.get('parameters') or {}).get('required_status_checks') or ()):
+            context = (entry or {}).get('context')
+            if context:
+                contexts.append(context)
+    return contexts
+
+
+def cached(key, read, now):
+    """One repo's gate, read once an hour. A failed read is never cached."""
+    saved = reconcile.cache_read(key)
+    if isinstance(saved, dict) and isinstance(saved.get('at'), (int, float)):
+        if 0 <= now - saved['at'] <= TTL:
+            return saved
+    record = dict(read(), at=now)
+    reconcile.cache_write(key, record)
+    return record
+
+
+def gate(repo, branch, now=None):
+    """The required check names for one repo, and the mode that carries them.
+
+    Classic protection and rulesets are two separate GitHub reads and a repo normally
+    uses one, so both are asked and `mode` names the one that answered.
+    """
+    now = time.time() if now is None else now
+
+    def read():
+        classic = classic_settings(repo, branch)
+        # A classic gate that already requires the check needs no ruleset read, so a
+        # healthy repo costs one call an hour. A missing or partial gate asks both.
+        gated_by_classic = bool(classic and any(name in classic['contexts']
+                                              for name in check_names(repo)))
+        rules = [] if gated_by_classic else rule_checks(repo, branch)
+        if classic is not None:
+            mode = 'classic'
+        elif rules:
+            mode = 'rulesets'
+        else:
+            mode = 'none'
+        contexts = sorted(set((classic or {}).get('contexts') or ()) | set(rules))
+        return {'mode': mode, 'contexts': contexts,
+                'classic': (classic or {}).get('contexts'),
+                'strict': (classic or {}).get('strict', False)}
+
+    return cached(f'merge-gate:{repo}@{branch}', read, now)
+
+
+def requires(record, repo):
+    """True when a check name that counts for this repo is required on its branch."""
+    return any(name in (record.get('contexts') or ()) for name in check_names(repo))
+
+
+def gate_line(repo, branch, record):
+    """The one line a repo contributes."""
+    return (f'gate ok: {repo} {branch}' if requires(record, repo)
+            else f'gate missing: {repo} {branch}')
+
+
+def fix_command(board_id):
+    return f'skills/board-drain/merge-gate --board {board_id} --fix'
+
+
+def missing_gates(pairs, now):
+    """Every (repo, branch) that does not require the check, and every one left unread."""
+    missing, unread = [], []
+    for repo, branch in pairs:
+        try:
+            record = gate(repo, branch, now)
+        except ERRORS + (reconcile.BudgetRefused, reconcile.RateLimit) as error:
+            unread.append((repo, branch, str(error)))
+            continue
+        if not requires(record, repo):
+            missing.append((repo, branch))
+    return missing, unread
+
+
+def fixture_gates(rows):
+    """The missing gates a drain-check fixture names, with no GitHub read."""
+    missing = []
+    for row in rows or ():
+        if not isinstance(row, dict) or not row.get('repo'):
+            continue
+        required = row.get('required') or ()
+        if not any(name in required for name in check_names(row['repo'])):
+            missing.append((row['repo'], row.get('branch') or DEFAULT_BRANCH))
+    return missing
+
+
+def gate_findings(board, now, fixture=None):
+    """drain-check findings for the repos this board ships from.
+
+    A fixture names its own repos and required checks, so tests never reach GitHub.
+    A repo whose gate cannot be read is left alone: an unknown gate is not a missing one.
+    """
+    if fixture is not None:
+        missing = fixture_gates(fixture)
+    else:
+        try:
+            missing = missing_gates(repos_for(board), now)[0]
+        except ERRORS + (reconcile.BudgetRefused, reconcile.RateLimit):
+            return []
+    return [('merge gate', f'merge gate missing: {repo} {branch}; run '
+                           f'{fix_command(board.id)}.')
+            for repo, branch in missing]
+
+
+def default_branch(repo):
+    """The branch a repo merges into, read once and kept: it changes a few times a year."""
+    key = f'merge-gate:default-branch:{repo}'
+    saved = reconcile.cache_read(key)
+    if isinstance(saved, dict) and saved.get('branch'):
+        return saved['branch']
+    branch = (gh_json(f'repos/{repo}') or {}).get('default_branch') or DEFAULT_BRANCH
+    reconcile.cache_write(key, {'branch': branch})
+    return branch
+
+
+def owner_login():
+    """The account these API writes run as. Compared with a repo's owner before --fix."""
+    key = 'merge-gate:login'
+    saved = reconcile.cache_read(key)
+    if isinstance(saved, dict) and saved.get('login') is not None:
+        return saved['login']
+    login = (gh_json('user') or {}).get('login') or ''
+    reconcile.cache_write(key, {'login': login})
+    return login
+
+
+def api_write(method, path, payload):
+    """One GitHub write with a JSON body, so no shell quoting reaches the token call."""
+    with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as handle:
+        json.dump(payload, handle)
+        name = handle.name
+    try:
+        reconcile.run('gh', 'api', '-X', method, path, '--input', name)
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+
+
+def applies(include, branch):
+    """True when a ruleset's ref_name includes this branch."""
+    for ref in include or ():
+        if ref == '~DEFAULT_BRANCH' or ref == f'refs/heads/{branch}':
+            return True
+        if fnmatch.fnmatch(f'refs/heads/{branch}', ref) or ref == '~ALL':
+            return True
+    return False
+
+
+def matching_rulesets(repo, branch):
+    """The rulesets that already apply to this branch, in full detail, in id order."""
+    found = []
+    for summary in gh_json(f'repos/{repo}/rulesets') or ():
+        if not isinstance(summary, dict) or not summary.get('id'):
+            continue
+        ruleset = gh_json(f'repos/{repo}/rulesets/{summary["id"]}')
+        include = ((ruleset.get('conditions') or {}).get('ref_name') or {}).get('include') or []
+        if applies(include, branch):
+            found.append(ruleset)
+    return found
+
+
+def add_to_ruleset(repo, ruleset):
+    """The same ruleset with the check required, or None when it already is."""
+    name = required_name(repo)
+    rules, added = [], False
+    for rule in ruleset.get('rules') or ():
+        if (rule or {}).get('type') != 'required_status_checks':
+            rules.append(rule)
+            continue
+        parameters = dict(rule.get('parameters') or {})
+        checks = list(parameters.get('required_status_checks') or ())
+        if any((check or {}).get('context') == name for check in checks):
+            return None
+        parameters['required_status_checks'] = checks + [{'context': name}]
+        rules.append({**rule, 'parameters': parameters})
+        added = True
+    if not added:
+        rules.append({'type': 'required_status_checks',
+                      'parameters': {'strict_required_status_checks_policy': False,
+                                     'required_status_checks': [{'context': name}]}})
+    payload = {'name': ruleset.get('name') or 'merge gate',
+               'target': ruleset.get('target') or 'branch',
+               'enforcement': ruleset.get('enforcement') or 'active',
+               'conditions': ruleset.get('conditions') or {},
+               'rules': rules}
+    if ruleset.get('bypass_actors'):
+        payload['bypass_actors'] = ruleset['bypass_actors']
+    return payload
+
+
+def fix(repo, branch, record):
+    """Add the required check to one repo, or explain why this tool leaves it alone."""
+    name = required_name(repo)
+    owner = repo.split('/', 1)[0]
+    if owner in REPORT_ONLY:
+        return f'skipped: {repo} {branch} is {owner}; report only'
+    login = owner_login()
+    if not login or owner != login:
+        return f'skipped: {repo} {branch} is not owned by {login or "this account"}'
+    if record.get('mode') == 'classic':
+        api_write('PATCH', f'repos/{repo}/branches/{branch}/protection/required_status_checks',
+                  {'strict': bool(record.get('strict')),
+                   'contexts': list(record.get('classic') or ()) + [name]})
+        return f'fixed: {repo} {branch} now requires {name} in classic branch protection'
+    for ruleset in matching_rulesets(repo, branch):
+        payload = add_to_ruleset(repo, ruleset)
+        if payload is None:
+            return f'skipped: {repo} {branch} ruleset {ruleset.get("name")} already requires {name}'
+        api_write('PUT', f'repos/{repo}/rulesets/{ruleset["id"]}', payload)
+        return (f'fixed: {repo} {branch} now requires {name} in ruleset '
+                f'{ruleset.get("name")} ({ruleset["id"]})')
+    api_write('POST', f'repos/{repo}/rulesets',
+              {'name': 'merge gate', 'target': 'branch', 'enforcement': 'active',
+               'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
+               'rules': [{'type': 'required_status_checks',
+                          'parameters': {'strict_required_status_checks_policy': False,
+                                         'required_status_checks': [{'context': name}]}}]})
+    return f'fixed: {repo} {branch} now requires {name} in a new ruleset "merge gate"'
+
+
+def pairs_from_args(args):
+    """The (repo, branch) pairs to check, each branch from the flag, board or repo."""
+    pairs = list(repos_for(board_object(args.board))) if args.board is not None else []
+    for repo in args.repo or ():
+        branch = args.branch or reconcile.FLEET_RELEASES.get(repo)
+        pairs.append((repo, branch))
+    resolved = []
+    for repo, branch in pairs:
+        pair = (repo, branch or default_branch(repo))
+        if pair not in resolved:
+            resolved.append(pair)
+    return resolved
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board', type=int, help='The board whose repos this chat ships from')
+    parser.add_argument('--repo', action='append', help='An owner/name repo; repeat for several')
+    parser.add_argument('--branch', help='The branch for --repo; default is the release branch')
+    parser.add_argument('--fix', action='store_true',
+                        help='Add the required check to repos this account owns')
+    parser.add_argument('--now', help='Judge cache ages against this ISO time')
+    args = parser.parse_args(argv)
+    if args.board is None and not args.repo:
+        parser.error('name --board or --repo')
+    try:
+        now = reconcile.stamp(args.now) if args.now else time.time()
+        failing = 0
+        for repo, branch in pairs_from_args(args):
+            try:
+                record = gate(repo, branch, now)
+            except ERRORS + (reconcile.BudgetRefused, reconcile.RateLimit) as error:
+                print(f'merge-gate: {repo} {branch}: {error}', file=sys.stderr)
+                failing = 2
+                continue
+            print(gate_line(repo, branch, record))
+            if requires(record, repo):
+                continue
+            failing = max(failing, 1)
+            if args.fix:
+                print(fix(repo, branch, record))
+        print(reconcile.github_summary(), file=sys.stderr, flush=True)
+        return failing
+    except ERRORS as error:
+        print(f'merge-gate: {error}', file=sys.stderr)
+        return 2
+    except Exception as error:  # noqa: BLE001 - a crash must read as 2, never as 1
+        print(f'merge-gate: error: {error}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -63,7 +63,7 @@ Whoever opens a PR carries it to merge (pstack autopilot-full: one owner from bu
 - **Checks:** follow the pstack hillclimb playbook.
 - **Finish line:** tickets waiting on Valentin or BlockedBy stay outside it.
 - **Verification is pstack's:** follow pstack `create-verification-skill`, `maintain-verification-skill` and `poteto-mode/playbooks/shipping.md` step 1; where a bug costs most (money math, sync, retries, queues), `create-formal-verification-skill` and `maintain-formal-verification-skill`. House change: one free GitHub runner, or a cloud agent when a runner cannot. Every AI call in CI goes through Token Ladder `ladder-call` (https://github.com/valentinyeo/token-ladder#ci-model-calls). Every verdict and done note names the verify skill used, as a slash command (`/verify-<app>`).
-- **Shipping is pstack's:** `poteto-mode/playbooks/shipping.md` and `poteto-mode/playbooks/babysit.md` as written, every step.
+- **Shipping is pstack's:** `poteto-mode/playbooks/shipping.md` and `poteto-mode/playbooks/babysit.md` as written, every step; GitHub enforces the verifier through a required check, and `../board-drain/merge-gate` checks it.
 - **Self-audit on load:** run `~/.claude/skills/pstack-diff/pstack-diff .`; clear every EXTRA in one PR until it exits 0. A new CI gate needs a house-file line naming its pstack sentence.
 - **Server load:** before a worker, build or long test, run `~/.local/bin/vps-state --can-launch worker`; on HOLD start nothing and say so. Time-limit long commands.
 - **Open source by default:** repos are public unless client data or secrets keep them private. Start one with `new-public-repo`, never GitHub's template or fork. No commit carries a real email.
