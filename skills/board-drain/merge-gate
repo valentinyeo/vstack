@@ -13,6 +13,12 @@ One line per repo: `gate ok: <repo> <branch>` or `gate missing: <repo> <branch>`
 Exit 0 when every repo requires the check, 1 when one does not, 2 when a gate cannot be
 read. A read that fails leaves its repo unanswered instead of guessing at it.
 
+A private repo whose GitHub Actions will not start because the account's payments failed
+is not a missing gate (VSTA-198, house `valentin-mode` "GitHub billing"): its line reads
+`gate waits: <repo> <branch> (GitHub billing blocks private checks; waits on Valentin)`,
+it is not a drain-check finding, `--fix` leaves it alone, and it does not fail the exit.
+Requiring the check there would block every merge, which is the harm this avoids.
+
 A chat's repos come from its board config (the reconcile BoardConfig repos) or, when the
 board names none, from the repos its PRs live in in the saved board facts. drain-check
 calls `gate_findings` for exactly that. Each repo is read at most once an hour, so a
@@ -43,6 +49,10 @@ ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.Sub
 # GitHub's own words for a branch it has no protection record for. The third is a
 # protected branch that requires no status checks yet: still nothing required.
 UNPROTECTED = ('Branch not protected', 'Branch not found', 'Required status checks not enabled')
+# GitHub's own words on a check run whose job never started because the account's
+# payments failed or its spending limit is reached. A repo that must stay private waits.
+BILLING = ('payments have failed', 'spending limit', 'billing problem', 'billing failure',
+           'github billing')
 
 
 def load(name, path):
@@ -126,6 +136,12 @@ def not_protected(error):
     return any(text in str(error) for text in UNPROTECTED)
 
 
+def actions_off(error):
+    """True when GitHub has no Actions for this repo at all, so billing cannot block it."""
+    text = str(error)
+    return 'Not Found' in text or 'HTTP 404' in text
+
+
 def classic_settings(repo, branch):
     """Classic branch protection's required contexts and strict flag, or None when it
     requires none."""
@@ -158,12 +174,18 @@ def rule_checks(repo, branch):
     return contexts
 
 
-def cached(key, read, now):
-    """One repo's gate, read once an hour. A failed read is never cached."""
+def cached(key, read, now, answered=None):
+    """One repo's gate, read once an hour. A failed read is never cached.
+
+    `answered` says whether a saved record still answers the question asked. A record
+    written before this tool knew about billing cannot tell a wait from a miss, so the
+    first run after the upgrade reads again instead of reporting a fixable gate.
+    """
     saved = reconcile.cache_read(key)
-    if isinstance(saved, dict) and isinstance(saved.get('at'), (int, float)):
-        if 0 <= now - saved['at'] <= TTL:
-            return saved
+    if (isinstance(saved, dict) and isinstance(saved.get('at'), (int, float))
+            and 0 <= now - saved['at'] <= TTL
+            and (answered is None or answered(saved))):
+        return saved
     record = dict(read(), at=now)
     reconcile.cache_write(key, record)
     return record
@@ -191,11 +213,20 @@ def gate(repo, branch, now=None):
         else:
             mode = 'none'
         contexts = sorted(set((classic or {}).get('contexts') or ()) | set(rules))
-        return {'mode': mode, 'contexts': contexts,
-                'classic': (classic or {}).get('contexts'),
-                'strict': (classic or {}).get('strict', False)}
+        record = {'mode': mode, 'contexts': contexts,
+                  'classic': (classic or {}).get('contexts'),
+                  'strict': (classic or {}).get('strict', False)}
+        # Only a missing gate asks GitHub anything more, and the answer is cached with
+        # the gate, so a healthy repo keeps costing one read. A public repo's checks
+        # always run, so `billing` is answered without a read: `billing` present is how
+        # a later run knows this record already asked.
+        if not requires(record, repo):
+            private = repo_meta(repo)['private']
+            record['billing'] = billing_blocked(repo) if private else False
+        return record
 
-    return cached(f'merge-gate:{repo}@{branch}', read, now)
+    return cached(f'merge-gate:{repo}@{branch}', read, now,
+                  answered=lambda saved: requires(saved, repo) or 'billing' in saved)
 
 
 def requires(record, repo):
@@ -203,10 +234,19 @@ def requires(record, repo):
     return any(name in (record.get('contexts') or ()) for name in check_names(repo))
 
 
+def waits(record):
+    """True when GitHub cannot run this repo's checks, so its gate waits on Valentin."""
+    return bool(record.get('billing'))
+
+
 def gate_line(repo, branch, record):
     """The one line a repo contributes."""
-    return (f'gate ok: {repo} {branch}' if requires(record, repo)
-            else f'gate missing: {repo} {branch}')
+    if requires(record, repo):
+        return f'gate ok: {repo} {branch}'
+    if waits(record):
+        return (f'gate waits: {repo} {branch} '
+                '(GitHub billing blocks private checks; waits on Valentin)')
+    return f'gate missing: {repo} {branch}'
 
 
 def fix_command(board_id):
@@ -214,24 +254,30 @@ def fix_command(board_id):
 
 
 def missing_gates(pairs, now):
-    """Every (repo, branch) that does not require the check, and every one left unread."""
-    missing, unread = [], []
+    """Every (repo, branch) that does not require the check, every one left unread, and
+    every one whose private checks GitHub will not run over billing."""
+    missing, unread, waiting = [], [], []
     for repo, branch in pairs:
         try:
             record = gate(repo, branch, now)
         except ERRORS + (reconcile.BudgetRefused, reconcile.RateLimit) as error:
             unread.append((repo, branch, str(error)))
             continue
-        if not requires(record, repo):
-            missing.append((repo, branch))
-    return missing, unread
+        if requires(record, repo):
+            continue
+        (waiting if waits(record) else missing).append((repo, branch))
+    return missing, unread, waiting
 
 
 def fixture_gates(rows):
-    """The missing gates a drain-check fixture names, with no GitHub read."""
+    """The missing gates a drain-check fixture names, with no GitHub read.
+
+    A row marked `"billing": true` is a private repo GitHub will not run checks for, so
+    it waits exactly as a live read would: never a finding.
+    """
     missing = []
     for row in rows or ():
-        if not isinstance(row, dict) or not row.get('repo'):
+        if not isinstance(row, dict) or not row.get('repo') or row.get('billing'):
             continue
         required = row.get('required') or ()
         if not any(name in required for name in check_names(row['repo'])):
@@ -244,6 +290,8 @@ def gate_findings(board, now, fixture=None):
 
     A fixture names its own repos and required checks, so tests never reach GitHub.
     A repo whose gate cannot be read is left alone: an unknown gate is not a missing one.
+    A private repo GitHub will not run checks for over billing is left alone too: it
+    waits on Valentin, so telling the chat to `--fix` it would block every merge.
     """
     if fixture is not None:
         missing = fixture_gates(fixture)
@@ -257,15 +305,51 @@ def gate_findings(board, now, fixture=None):
             for repo, branch in missing]
 
 
+def repo_meta(repo):
+    """A repo's merge branch and whether it is private, read once and kept."""
+    key = f'merge-gate:repo-meta:{repo}'
+    saved = reconcile.cache_read(key)
+    if isinstance(saved, dict) and saved.get('branch') and 'private' in saved:
+        return saved
+    data = gh_json(f'repos/{repo}') or {}
+    meta = {'branch': data.get('default_branch') or DEFAULT_BRANCH,
+            'private': bool(data.get('private'))}
+    reconcile.cache_write(key, meta)
+    return meta
+
+
 def default_branch(repo):
     """The branch a repo merges into, read once and kept: it changes a few times a year."""
-    key = f'merge-gate:default-branch:{repo}'
-    saved = reconcile.cache_read(key)
-    if isinstance(saved, dict) and saved.get('branch'):
-        return saved['branch']
-    branch = (gh_json(f'repos/{repo}') or {}).get('default_branch') or DEFAULT_BRANCH
-    reconcile.cache_write(key, {'branch': branch})
-    return branch
+    return repo_meta(repo)['branch']
+
+
+def billing_blocked(repo):
+    """True when GitHub refuses to start this repo's jobs until the account's bill is paid.
+
+    A blocked repo still gets a check run: GitHub fails the job with an annotation
+    carrying its own words instead of starting it, so that annotation is the signal.
+    The newest Actions run names the check suite to read, and annotations are fetched
+    only for a check run that reports one.
+    """
+    try:
+        runs = gh_json(f'repos/{repo}/actions/runs?per_page=1') or {}
+    except RuntimeError as error:
+        if actions_off(error):
+            return False
+        raise
+    newest = next(iter(runs.get('workflow_runs') or ()), None)
+    suite = (newest or {}).get('check_suite_id')
+    if not suite:
+        return False
+    found = gh_json(f'repos/{repo}/check-suites/{suite}/check-runs?per_page=20') or {}
+    texts = []
+    for run in (found.get('check_runs') or ())[:20]:
+        output = (run or {}).get('output') or {}
+        texts += [str(output.get(field) or '') for field in ('title', 'summary', 'text')]
+        if (output.get('annotations_count') or 0) and run.get('id'):
+            notes = gh_json(f'repos/{repo}/check-runs/{run["id"]}/annotations') or ()
+            texts += [str((note or {}).get('message') or '') for note in notes]
+    return any(word in text.lower() for text in texts for word in BILLING)
 
 
 def owner_login():
@@ -347,6 +431,9 @@ def add_to_ruleset(repo, ruleset):
 
 def fix(repo, branch, record):
     """Add the required check to one repo, or explain why this tool leaves it alone."""
+    if waits(record):
+        return (f'skipped: {repo} {branch} cannot run checks (GitHub billing blocks private '
+                'checks); waits on Valentin')
     name = required_name(repo)
     owner = repo.split('/', 1)[0]
     if owner in REPORT_ONLY:
@@ -412,6 +499,11 @@ def main(argv=None):
                 continue
             print(gate_line(repo, branch, record))
             if requires(record, repo):
+                continue
+            if waits(record):
+                # Valentin's call, not a chat's: report it once and change nothing.
+                if args.fix:
+                    print(fix(repo, branch, record))
                 continue
             failing = max(failing, 1)
             if args.fix:
