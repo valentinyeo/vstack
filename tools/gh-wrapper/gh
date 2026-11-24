@@ -1281,16 +1281,17 @@ def wrap_main(argv=None) -> int:
         return pr_checks_watch(argv, real)
     if cacheable_pr(argv):
         return replay(cached_pr(argv, real))
-    if "--no-cache" in argv:
+    no_cache = "--no-cache" in argv
+    if no_cache:
         argv = [arg for arg in argv if arg != "--no-cache"]
     method, path, jq, flags, fields = _api_path(argv)
     key = request_key(path, fields)
     include = "--include" in flags or "-i" in flags
-    if "api" not in argv[1:] or not path or path == "graphql" or not shares_snapshot(method, flags):
+    if no_cache or "api" not in argv[1:] or not path or path == "graphql" or not shares_snapshot(method, flags):
         env = child_env(path) if path else os.environ.copy()
         bucket = "app" if env.get("GH_TOKEN") else "user"
         marker = "-"
-        if budgeted_read(argv):
+        if budgeted_read(argv) or (no_cache and "api" in argv[1:] and method == "GET"):
             verdict, count = budget_verdict(argv)
             if verdict == "refuse":
                 _log_call(argv, bucket=bucket, marker="refused")

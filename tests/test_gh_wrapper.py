@@ -7,6 +7,7 @@ against a fake gh.real that counts its invocations, so the saving is measured, n
 import importlib.machinery
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -103,6 +104,53 @@ class WrapperCase(unittest.TestCase):
         if not self.call_log.exists():
             return []
         return [line.split("\t") for line in self.call_log.read_text(encoding="utf-8").splitlines() if line]
+
+
+class ApiTests(WrapperCase):
+    def test_write_method_and_input_are_forwarded_unchanged(self):
+        self.real.write_text('''#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+print(json.dumps({"argv": sys.argv[1:],
+                  "body": json.loads(Path(sys.argv[sys.argv.index("--input") + 1]).read_text())}))
+''')
+        payload = {'rules': [{'type': 'required_status_checks'}]}
+        body = self.tmp / 'input body.json'
+        body.write_text(json.dumps(payload))
+        wrapper = self.module()
+        for method in ('PUT', 'POST', 'PATCH'):
+            with self.subTest(method=method):
+                args = ['api', '-X', method, 'repos/valentinyeo/token-ladder/rulesets',
+                        '--input', str(body)]
+                parsed = wrapper._api_path(['gh', *args])
+                self.assertEqual(parsed[:2], (method, args[3]))
+                self.assertIn('--input', parsed[3])
+                for _ in range(2):
+                    done = self.run_gh(*args)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertEqual(json.loads(done.stdout), {'argv': args, 'body': payload})
+
+    def test_api_no_cache_bypasses_a_saved_get(self):
+        path = 'repos/valentinyeo/token-ladder/rules/branches/main'
+        first = self.run_gh('api', path, env=self.env(FAKE_GH_STDOUT='[]'))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        done = self.run_gh('api', path, '--no-cache',
+                           env=self.env(FAKE_GH_STDOUT='[{"type":"required_status_checks"}]'))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), [{'type': 'required_status_checks'}])
+        self.assertEqual(len(self.upstream_calls()), 2)
+        self.assertNotIn('--no-cache', self.upstream_calls()[-1])
+
+    def test_api_no_cache_still_obeys_the_read_budget(self):
+        wrapper = self.module()
+        session = 'gate-verify'
+        target = wrapper.budget_path(session)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f'{int(time.time()) // 60} 600\n')
+        done = self.run_gh('api', 'repos/valentinyeo/token-ladder', '--no-cache',
+                           env=self.env(HT_SESSION_NAME=session))
+        self.assertEqual(done.returncode, 75, done.stderr)
+        self.assertEqual(self.upstream_calls(), [])
 
 
 class CacheTests(WrapperCase):

@@ -175,7 +175,7 @@ def wake(lines):
                 time.sleep(5)
             try:
                 sent = subprocess.run(
-                    [sys.executable, str(sender), '--tmux', tab, 'claude', config['sid'], prompt],
+                    [str(sender), '--tmux', tab, 'claude', config['sid'], prompt],
                     capture_output=True, timeout=30)
                 if sent.returncode == 0:
                     return True

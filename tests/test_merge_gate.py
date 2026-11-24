@@ -36,6 +36,15 @@ routes = json.loads((here / "routes.json").read_text())
 call = " ".join(sys.argv[1:])
 for route in routes:
     if all(part in call for part in route["match"]):
+        if route.get("apply"):
+            payload = entry["input"]
+            if sys.argv[sys.argv.index("-X") + 1] == "PATCH":
+                updated = {"match": ["branches/main/protection/required_status_checks"],
+                           "stdout": json.dumps(payload)}
+            else:
+                updated = {"match": ["rules/branches/main"],
+                           "stdout": json.dumps(payload["rules"])}
+            (here / "routes.json").write_text(json.dumps([updated, *routes]))
         if route.get("stderr"):
             sys.stderr.write(route["stderr"])
         sys.stdout.write(route.get("stdout") or "")
@@ -377,12 +386,59 @@ class FixTest(GateCase):
             self.assertEqual(gate.gate_findings(gate.board_object(13556), gate.time.time() + 1,
                                                 repos={'valentinyeo/vstack'}), [])
 
+    def setUp(self):
+        super().setUp()
+        (self.bin / 'gh').rename(self.bin / 'gh.real')
+        wrapper = self.bin / 'gh'
+        wrapper.write_text((ROOT / 'tools/gh-wrapper/gh').read_text())
+        wrapper.chmod(0o755)
+        self.env.update(GH_REAL=str(self.bin / 'gh.real'),
+                        HT_GH_CACHE_DIR=str(self.directory / 'gh-cache'),
+                        GH_CALL_LOG=str(self.directory / 'calls.tsv'))
+
+    def test_exit_zero_printing_usage_does_not_claim_a_fix(self):
+        for method in ('PATCH', 'PUT', 'POST'):
+            with self.subTest(method=method):
+                Path(self.env['RECONCILE_CACHE']).unlink(missing_ok=True)
+                self.env['HT_GH_CACHE_DIR'] = str(self.directory / f'gh-cache-{method}')
+                classic = (ok_route(PROTECTION, {'strict': False, 'contexts': ['build']})
+                           if method == 'PATCH' else missing_route(PROTECTION))
+                rulesets = ([{'id': 7}] if method == 'PUT' else [])
+                self.answer([
+                    {'match': ['-X'], 'stdout': 'Usage: gh api <endpoint> [flags]\n'},
+                    classic, ok_route(RULES, []),
+                    ok_route('user', {'login': 'valentinyeo'}),
+                    ok_route('repos/valentinyeo/vstack/rulesets/7',
+                             {'id': 7, 'conditions': {'ref_name': {
+                                 'include': ['refs/heads/main']}}, 'rules': []}),
+                    ok_route('repos/valentinyeo/vstack/rulesets', rulesets),
+                ])
+                done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn('failed: valentinyeo/vstack main still does not require verifier',
+                              done.stdout)
+                self.assertNotIn('fixed:', done.stdout)
+                saved = json.loads(Path(self.env['RECONCILE_CACHE']).read_text())
+                self.assertNotIn('merge-gate:valentinyeo/vstack@main', saved)
+
+    def test_fix_caches_the_fresh_record_not_the_expected_write(self):
+        fresh = dict(gate_record('build', 'verifier', 'server-check'), at=NOW)
+        with patch.object(gate, 'owner_login', return_value='valentinyeo'), \
+                patch.object(gate, 'api_write'), \
+                patch.object(gate, 'gate', return_value=fresh) as read, \
+                patch.object(gate.reconcile, 'cache_write') as write:
+            result = gate.fix('valentinyeo/vstack', 'main', gate_record('build'))
+        self.assertTrue(result.startswith('fixed:'), result)
+        read.assert_called_once_with('valentinyeo/vstack', 'main', fresh=True)
+        write.assert_called_once_with('merge-gate:valentinyeo/vstack@main', fresh)
+
     def test_fix_adds_the_check_to_classic_protection(self):
-        self.answer([ok_route(PROTECTION, {'strict': True, 'contexts': ['build']}),
+        self.answer([{'match': ['-X PATCH'], 'apply': True},
+                     ok_route(PROTECTION, {'strict': True, 'contexts': ['build']}),
                      ok_route(RULES, []),
                      ok_route('user', {'login': 'valentinyeo'})])
         done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
-        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn('fixed: valentinyeo/vstack main now requires verifier '
                       'in classic branch protection', done.stdout)
         writes = [call for call in self.calls() if call['argv'][:2] == ['api', '-X']]
@@ -397,12 +453,13 @@ class FixTest(GateCase):
                    'rules': [{'type': 'required_status_checks',
                               'parameters': {'strict_required_status_checks_policy': True,
                                              'required_status_checks': [{'context': 'build'}]}}]}
-        self.answer([missing_route(PROTECTION), ok_route(RULES, []),
+        self.answer([{'match': ['-X PUT'], 'apply': True},
+                     missing_route(PROTECTION), ok_route(RULES, []),
                      ok_route('user', {'login': 'valentinyeo'}),
                      ok_route('repos/valentinyeo/vstack/rulesets/7', ruleset),
                      ok_route('repos/valentinyeo/vstack/rulesets', [{'id': 7, 'name': 'main'}])])
         done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
-        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn('fixed: valentinyeo/vstack main now requires verifier '
                       'in ruleset main (7)', done.stdout)
         writes = [call for call in self.calls() if call['argv'][:2] == ['api', '-X']]
@@ -415,17 +472,29 @@ class FixTest(GateCase):
         self.assert_fixed_gate_cached()
 
     def test_fix_creates_a_ruleset_when_the_repo_has_none(self):
-        self.answer([missing_route(PROTECTION), ok_route(RULES, []),
+        other = {'contexts': ['build'], 'at': NOW}
+        Path(self.env['RECONCILE_CACHE']).write_text(json.dumps({
+            'merge-gate:valentinyeo/other@main': other}))
+        self.answer([{'match': ['-X POST'], 'apply': True},
+                     missing_route(PROTECTION), ok_route(RULES, []),
                      ok_route('user', {'login': 'valentinyeo'}),
                      ok_route('repos/valentinyeo/vstack/rulesets', [])])
         done = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main', '--fix')
-        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn('in a new ruleset "merge gate"', done.stdout)
         writes = [call for call in self.calls() if call['argv'][:2] == ['api', '-X']]
         self.assertEqual(writes[0]['input']['conditions']['ref_name']['include'],
                          ['~DEFAULT_BRANCH'])
         self.assertEqual(writes[0]['input']['rules'][0]['type'], 'required_status_checks')
         self.assert_fixed_gate_cached()
+        saved = json.loads(Path(self.env['RECONCILE_CACHE']).read_text())
+        self.assertEqual(saved['merge-gate:valentinyeo/other@main'], other)
+        self.assertEqual(saved['merge-gate:valentinyeo/vstack@main']['contexts'], ['verifier'])
+        spent = len(self.calls())
+        again = self.run_gate('--repo', 'valentinyeo/vstack', '--branch', 'main')
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn('gate ok:', again.stdout)
+        self.assertEqual(len(self.calls()), spent)
 
     def test_a_failed_fix_does_not_cache_a_passing_gate(self):
         self.answer([{'match': ['-X', 'PATCH'], 'code': 1, 'stderr': 'write failed'},
