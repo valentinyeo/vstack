@@ -25,7 +25,9 @@ calls `gate_findings` for exactly that. Each repo is read at most once an hour, 
 drain tick stays inside the gh budget.
 
 `--fix` adds the required check through the GitHub API for repos this account owns, and
-prints exactly what changed. It never touches a hypertask-ai repo: those are reported only.
+reports success only after a fresh read confirms it is required. Both the local gate cache
+and gh's shared snapshot are bypassed for that read. It never touches a hypertask-ai repo:
+those are reported only.
 """
 import argparse
 import fnmatch
@@ -127,7 +129,9 @@ def board_object(board_id):
     return board if board is not None else reconcile.board_config(board_id)
 
 
-def gh_json(*args):
+def gh_json(*args, fresh=False):
+    if fresh:
+        args += ('--no-cache',)
     return json.loads(reconcile.run('gh', 'api', *args))
 
 
@@ -142,11 +146,12 @@ def actions_off(error):
     return 'Not Found' in text or 'HTTP 404' in text
 
 
-def classic_settings(repo, branch):
+def classic_settings(repo, branch, fresh=False):
     """Classic branch protection's required contexts and strict flag, or None when it
     requires none."""
     try:
-        data = gh_json(f'repos/{repo}/branches/{branch}/protection/required_status_checks')
+        data = gh_json(f'repos/{repo}/branches/{branch}/protection/required_status_checks',
+                       fresh=fresh)
     except RuntimeError as error:
         if not_protected(error):
             return None
@@ -155,10 +160,10 @@ def classic_settings(repo, branch):
             'strict': bool(data.get('strict'))}
 
 
-def rule_checks(repo, branch):
+def rule_checks(repo, branch, fresh=False):
     """Required contexts from every ruleset active on the branch, in rule order."""
     try:
-        rules = gh_json(f'repos/{repo}/rules/branches/{branch}')
+        rules = gh_json(f'repos/{repo}/rules/branches/{branch}', fresh=fresh)
     except RuntimeError as error:
         if not_protected(error):
             return []
@@ -191,7 +196,7 @@ def cached(key, read, now, answered=None):
     return record
 
 
-def gate(repo, branch, now=None):
+def gate(repo, branch, now=None, fresh=False):
     """The required check names for one repo, and the mode that carries them.
 
     Classic protection and rulesets are two separate GitHub reads and a repo normally
@@ -200,12 +205,12 @@ def gate(repo, branch, now=None):
     now = time.time() if now is None else now
 
     def read():
-        classic = classic_settings(repo, branch)
+        classic = classic_settings(repo, branch, fresh=fresh)
         # A classic gate that already requires the check needs no ruleset read, so a
         # healthy repo costs one call an hour. A missing or partial gate asks both.
         gated_by_classic = bool(classic and any(name in classic['contexts']
                                               for name in check_names(repo)))
-        rules = [] if gated_by_classic else rule_checks(repo, branch)
+        rules = [] if gated_by_classic else rule_checks(repo, branch, fresh=fresh)
         if classic is not None:
             mode = 'classic'
         elif rules:
@@ -225,7 +230,14 @@ def gate(repo, branch, now=None):
             record['billing'] = billing_blocked(repo) if private else False
         return record
 
-    return cached(f'merge-gate:{repo}@{branch}', read, now,
+    key = f'merge-gate:{repo}@{branch}'
+    if fresh:
+        # Clear only this gate, and bypass gh's shared snapshot as well as our cache.
+        reconcile.cache_update(lambda saved: saved.pop(key, None))
+        record = dict(read(), at=now)
+        reconcile.cache_write(key, record)
+        return record
+    return cached(key, read, now,
                   answered=lambda saved: requires(saved, repo) or 'billing' in saved)
 
 
@@ -445,21 +457,26 @@ def fix(repo, branch, record):
         api_write('PATCH', f'repos/{repo}/branches/{branch}/protection/required_status_checks',
                   {'strict': bool(record.get('strict')),
                    'contexts': list(record.get('classic') or ()) + [name]})
-        return f'fixed: {repo} {branch} now requires {name} in classic branch protection'
-    for ruleset in matching_rulesets(repo, branch):
-        payload = add_to_ruleset(repo, ruleset)
-        if payload is None:
-            return f'skipped: {repo} {branch} ruleset {ruleset.get("name")} already requires {name}'
-        api_write('PUT', f'repos/{repo}/rulesets/{ruleset["id"]}', payload)
-        return (f'fixed: {repo} {branch} now requires {name} in ruleset '
-                f'{ruleset.get("name")} ({ruleset["id"]})')
-    api_write('POST', f'repos/{repo}/rulesets',
-              {'name': 'merge gate', 'target': 'branch', 'enforcement': 'active',
-               'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
-               'rules': [{'type': 'required_status_checks',
-                          'parameters': {'strict_required_status_checks_policy': False,
-                                         'required_status_checks': [{'context': name}]}}]})
-    return f'fixed: {repo} {branch} now requires {name} in a new ruleset "merge gate"'
+        location = 'classic branch protection'
+    else:
+        for ruleset in matching_rulesets(repo, branch):
+            payload = add_to_ruleset(repo, ruleset)
+            if payload is None:
+                return f'skipped: {repo} {branch} ruleset {ruleset.get("name")} already requires {name}'
+            api_write('PUT', f'repos/{repo}/rulesets/{ruleset["id"]}', payload)
+            location = f'ruleset {ruleset.get("name")} ({ruleset["id"]})'
+            break
+        else:
+            api_write('POST', f'repos/{repo}/rulesets',
+                      {'name': 'merge gate', 'target': 'branch', 'enforcement': 'active',
+                       'conditions': {'ref_name': {'include': ['~DEFAULT_BRANCH'], 'exclude': []}},
+                       'rules': [{'type': 'required_status_checks',
+                                  'parameters': {'strict_required_status_checks_policy': False,
+                                                 'required_status_checks': [{'context': name}]}}]})
+            location = 'a new ruleset "merge gate"'
+    if not requires(gate(repo, branch, fresh=True), repo):
+        return f'failed: {repo} {branch} still does not require {name}'
+    return f'fixed: {repo} {branch} now requires {name} in {location}'
 
 
 def pairs_from_args(args):
@@ -505,9 +522,12 @@ def main(argv=None):
                 if args.fix:
                     print(fix(repo, branch, record))
                 continue
-            failing = max(failing, 1)
             if args.fix:
-                print(fix(repo, branch, record))
+                result = fix(repo, branch, record)
+                print(result)
+                if result.startswith('fixed:'):
+                    continue
+            failing = max(failing, 1)
         print(reconcile.github_summary(), file=sys.stderr, flush=True)
         return failing
     except ERRORS as error:
