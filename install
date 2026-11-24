@@ -95,6 +95,23 @@ for s in "$SRC"/*/; do
   done
 done
 
+# An installed valentin-mode is assembled from links, so its own folder has no
+# git history and version.sh had nothing to count (VSTA-203). Stamp the counts
+# from this checkout next to the installed script; version.sh reads git first
+# and falls back to this file.
+stamp_version() {
+  local dest="$HOME/.local/state/vstack/skills/valentin-mode" count latest
+  [ -d "$dest" ] || return 0
+  count=$(git -C "$ROOT" rev-list --count HEAD -- skills/valentin-mode 2>/dev/null) || count=
+  case "$count" in '' | *[!0-9]*) return 0 ;; esac
+  latest=$(git -C "$ROOT" rev-list --count origin/main -- skills/valentin-mode 2>/dev/null) || latest=
+  case "$latest" in '' | *[!0-9]*) latest=$count ;; esac
+  printf '# written by vstack install; version.sh reads it when git cannot.\ncount=%s\nlatest=%s\n' \
+    "$count" "$latest" > "$dest/VERSION.vstack-tmp"
+  mv "$dest/VERSION.vstack-tmp" "$dest/VERSION"
+}
+stamp_version
+
 # Retired skills that now live inside another skill. Move a real folder to the
 # dupes store; never delete it. A link is the old install, so drop the link.
 for name in ticket hypertask-checkup; do

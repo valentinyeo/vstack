@@ -2,8 +2,10 @@
 
 The version is a plain number: commits that touched the skill folder. version.sh
 lives next to the skill and is run here in throwaway repos: one level with
-origin/main, one a commit behind it, and one with no git at all. The skill's
-context.py hook runs it at the chat's first tool call and hands the line over.
+origin/main, one a commit behind it, and one with no git at all. An installed
+copy has no history, so install writes a VERSION stamp and version.sh reads it
+when git cannot (VSTA-203). The skill's context.py hook runs it at the chat's
+first tool call and hands the line over.
 """
 
 import json
@@ -132,6 +134,46 @@ class VersionScript(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), 'valentin-mode version unknown')
 
+    def write_stamp(self, folder, text):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'VERSION').write_text(text)
+        return folder
+
+    def test_an_installed_copy_reads_the_stamp_install_left(self):
+        """An installed copy has no history, so install stamps the counts."""
+        folder = self.tmp / 'installed/valentin-mode'
+        self.copy_script(folder)
+        self.write_stamp(folder, 'count=7\nlatest=7\n')
+        result = run_version(folder, {'GIT_CEILING_DIRECTORIES': str(self.tmp)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'valentin-mode v7 (latest)')
+
+    def test_a_stamp_behind_says_which_version_is_latest(self):
+        folder = self.tmp / 'installed/valentin-mode'
+        self.copy_script(folder)
+        self.write_stamp(folder, 'count=7\nlatest=9\n')
+        result = run_version(folder, {'GIT_CEILING_DIRECTORIES': str(self.tmp)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            'valentin-mode v7, latest is v9 (update the shared checkout)')
+
+    def test_a_stamp_without_a_number_stays_unknown(self):
+        folder = self.tmp / 'installed/valentin-mode'
+        self.copy_script(folder)
+        self.write_stamp(folder, 'count=soon\n')
+        result = run_version(folder, {'GIT_CEILING_DIRECTORIES': str(self.tmp)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'valentin-mode version unknown')
+
+    def test_git_wins_over_a_stale_stamp(self):
+        work, _origin = self.build_repo()
+        skill = work / 'skills/valentin-mode'
+        self.write_stamp(skill, 'count=99\nlatest=99\n')
+        result = run_version(skill)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'valentin-mode v1 (latest)')
+
     def test_this_checkout_prints_a_number(self):
         result = run_version(SKILL_DIR)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -168,3 +210,35 @@ class LoadLine(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class InstalledCopy(unittest.TestCase):
+    """VSTA-203: the installed copy said "version unknown" every load.
+
+    install assembles valentin-mode from links, so git cannot count that
+    folder's history. Install now writes the counts from the checkout it runs
+    from, and the installed script prints them.
+    """
+
+    def test_install_leaves_a_stamp_the_installed_copy_prints(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ('VSTACK_DIR', 'VSTACK_INSTALL_ANYWHERE')}
+            env['HOME'] = str(home)
+            env['VSTACK_INSTALL_ANYWHERE'] = '1'
+            result = subprocess.run(['bash', str(ROOT / 'install')], env=env,
+                                    capture_output=True, text=True, timeout=240)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed = home / '.local/state/vstack/skills/valentin-mode'
+            stamp = installed / 'VERSION'
+            self.assertTrue(stamp.is_file(), result.stdout + result.stderr)
+
+            count = git(ROOT, 'rev-list', '--count', 'HEAD',
+                        '--', 'skills/valentin-mode').strip()
+            self.assertIn('count=' + count, stamp.read_text())
+
+            line = run_version(installed, {'GIT_CEILING_DIRECTORIES': str(home)})
+            self.assertEqual(line.returncode, 0, line.stderr)
+            self.assertIn('valentin-mode v' + count, line.stdout.strip())
+            self.assertNotIn('unknown', line.stdout)
