@@ -49,7 +49,6 @@ mkdir "$TEST_HOME/.claude/skills/ticket"
 printf 'old ticket skill\n' > "$TEST_HOME/.claude/skills/ticket/SKILL.md"
 ln -s "$TEST_HOME/now-gone" "$TEST_HOME/.claude/skills/hypertask-checkup"
 printf '{"hooks":{"Stop":[]}}\n' > "$TEST_HOME/.claude/settings.json"
-settings=$(sha256sum "$TEST_HOME/.claude/settings.json")
 
 env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
 for dest in "${dests[@]}"; do
@@ -80,9 +79,8 @@ retired=("$TEST_HOME"/.local/state/skill-dupes-*/.claude/skills/ticket/SKILL.md)
 [ "$(cat "${retired[0]}")" = 'old ticket skill' ]
 printf 'PASS retired ticket folder moved, not deleted\n'
 
-# VSTA-207: the reload hook is registered once, globally, so a chat working in any
-# project hears that valentin-mode changed. A re-run adds no second entry and leaves
-# the rest of the file alone.
+# VSTA-204, VSTA-207: both hooks a chat needs wherever it runs are registered once,
+# globally. A re-run adds no second entry and leaves the rest of the file alone.
 settings_before_install=$(sha256sum "$TEST_HOME/.claude/settings.json")
 env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
 [ "$(sha256sum "$TEST_HOME/.claude/settings.json")" = "$settings_before_install" ]
@@ -91,14 +89,19 @@ import json
 from pathlib import Path
 import sys
 data = json.loads(Path(sys.argv[1]).read_text())
-registered = [hook['command'] for group in data['hooks']['UserPromptSubmit']
-              for hook in group['hooks'] if 'skill-update.py' in hook.get('command', '')]
-assert registered == ['"$HOME/.local/share/vstack/hooks/run-hook" '
-                      '"$HOME/.claude/hooks/skill-update.py"'], registered
+reload = [hook['command'] for group in data['hooks']['UserPromptSubmit']
+          for hook in group['hooks'] if 'skill-update.py' in hook.get('command', '')]
+assert reload == ['"$HOME/.local/share/vstack/hooks/run-hook" '
+                  '"$HOME/.claude/hooks/skill-update.py"'], reload
+guard = '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/pr-cap-guard.py"'
+assert [(group.get('matcher'), hook['command'], hook.get('timeout'))
+        for group in data['hooks']['PreToolUse']
+        for hook in group['hooks']] == [('Bash', guard, 30),
+                                        ('mcp__.*create_pull_request', guard, 30)], data
 assert set(data) >= {'hooks'}, data
 assert data['hooks']['Stop'] == [], 'unrelated settings stay put'
 PY
-printf 'PASS skill-update registered globally exactly once, idempotently\n'
+printf 'PASS skill-update and the PR cap guard registered globally exactly once, idempotently\n'
 python3 - "$TEST_HOME/.claude/settings.json" "${retired_hooks[@]}" <<'PY'
 import json
 from pathlib import Path
@@ -119,9 +122,16 @@ import json
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
+guard = {'type': 'command',
+         'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/pr-cap-guard.py"',
+         'timeout': 30}
 assert json.loads(path.read_text()) == {'env': {'KEEP': 'yes'}, 'hooks': {
     'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/skill-update.py"'}]}],
-    'PreToolUse': [{'matcher': '*', 'hooks': [{'type': 'command', 'command': 'echo unrelated', 'timeout': 7}]}],
+    'PreToolUse': [
+        {'matcher': '*', 'hooks': [{'type': 'command', 'command': 'echo unrelated', 'timeout': 7}]},
+        {'matcher': 'Bash', 'hooks': [guard]},
+        {'matcher': 'mcp__.*create_pull_request', 'hooks': [guard]},
+    ],
     'Stop': [{'hooks': []}]
 }}
 assert path.stat().st_mode & 0o777 == 0o600
