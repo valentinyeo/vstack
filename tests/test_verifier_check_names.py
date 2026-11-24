@@ -199,5 +199,86 @@ class VerifierCheckNames(unittest.TestCase):
             [status_context('pstack-verifier')], HYPER_HEAD, HYPER))
 
 
+def gh_comment(body, login='github-actions', when='2026-11-24T12:00:00Z', number=1):
+    return {'author': {'login': login}, 'body': body, 'updatedAt': when, 'databaseId': number}
+
+
+class VerifierCommentVerdicts(unittest.TestCase):
+    """VSTA-230: merged PRs read GitHub Actions verdict comments on the merged head."""
+
+    def setUp(self):
+        self._saved = (r.jobs_evidence, r.verifier_policy)
+        r.jobs_evidence = lambda repo, run_id: {'jobs': True, 'self_hosted': False}
+        r.verifier_policy = lambda repo, ref: None
+
+    def tearDown(self):
+        r.jobs_evidence, r.verifier_policy = self._saved
+
+    def merged_node(self, comments, checks=(), head=HEAD):
+        return {
+            'url': 'https://github.com/valentinyeo/multiprompt/pull/1229',
+            'state': 'MERGED', 'mergedAt': '2026-11-24T12:21:33Z',
+            'headRefOid': head, 'baseRefOid': 'd02e1180000000000000000000000000000000ff',
+            'mergeable': 'UNKNOWN', 'author': {'login': 'valentinyeo'},
+            'commits': {'last': {'nodes': [{'commit': {'committedDate': '2026-11-24T11:59:00Z'}}]}},
+            'statusCheckRollup': {'state': 'FAILURE',
+                                  'contexts': {'pageInfo': {'hasNextPage': False},
+                                               'nodes': list(checks)}},
+            'comments': {'totalCount': len(comments), 'nodes': list(comments)},
+        }
+
+    def test_accepts_vstack_house_rules_multiprompt_and_postbox_pass_shapes(self):
+        cases = (
+            ('vstack PASS', f'PASS\n\nAll green.\n\nVerifier model: opencode-go/glm-5.3-flash. Head `{HEAD}`.'),
+            ('house-rules PASS+NOTES', f'PASS+NOTES\n\nNotes.\n\nVerifier model: opencode-go/deepseek-v4.1-flash. Head {HEAD}.'),
+            ('pstack-verifier PASS+NOTES @ sha', f'pstack-verifier: PASS+NOTES @ {HEAD}\n\n- Journey passed.'),
+            ('pstack-verifier PASS @ short sha', f'pstack-verifier: PASS @ {HEAD[:10]}\n\n- Journey passed.'),
+            ('postbox Commit sha', f'<!-- postbox-verify-verdict -->\n### Verifier verdict\n\nPASS\n\nCommit {HEAD}\n'),
+            ('github-actions[bot] REST login', f'pstack-verifier: PASS+NOTES @ {HEAD}\n'),
+        )
+        for label, body in cases:
+            login = 'github-actions[bot]' if 'REST' in label else 'github-actions'
+            with self.subTest(label=label):
+                node = self.merged_node([gh_comment(body, login=login)])
+                pull = r.pull_from_node('valentinyeo/multiprompt', 1229, node)
+                self.assertTrue(pull.passed)
+
+    def test_later_blocked_run_does_not_erase_pass_on_merged_head(self):
+        comments = [
+            gh_comment(f'pstack-verifier: PASS+NOTES @ {HEAD}\n\n- Journey passed.',
+                       when='2026-11-24T12:00:00Z', number=1),
+            gh_comment(f'pstack-verifier: BLOCKED @ {HEAD}\n\n- Cancelled.',
+                       when='2026-11-24T12:30:00Z', number=2),
+        ]
+        checks = [check('pstack-verifier', conclusion='FAILURE')]
+        pull = r.pull_from_node('valentinyeo/multiprompt', 1229, self.merged_node(comments, checks))
+        self.assertTrue(pull.passed)
+
+    def test_rejects_fail_wrong_head_human_author_and_self_hosted(self):
+        cases = (
+            ('FAIL on merged head', [gh_comment(f'pstack-verifier: FAIL @ {HEAD}\n\nVERDICT: PASS')]),
+            ('PASS then FAIL on merged head', [
+                gh_comment(f'pstack-verifier: PASS @ {HEAD}', when='2026-11-24T12:00:00Z', number=1),
+                gh_comment(f'pstack-verifier: FAIL @ {HEAD}', when='2026-11-24T12:05:00Z', number=2),
+            ]),
+            ('PASS on older head', [gh_comment(f'pstack-verifier: PASS+NOTES @ {OTHER_HEAD}')]),
+            ('PASS without sha', [gh_comment('PASS\n\nNo commit sha.')]),
+            ('PASS from human login', [gh_comment(f'pstack-verifier: PASS @ {HEAD}', login='valentinyeo')]),
+            ('NO VERDICT notice', [gh_comment(f'NO VERDICT: every model lane failed.\n\nHead `{HEAD}`.')]),
+            ('BLOCKED only', [gh_comment(f'pstack-verifier: BLOCKED @ {HEAD}')]),
+        )
+        for label, comments in cases:
+            with self.subTest(label=label):
+                pull = r.pull_from_node('valentinyeo/multiprompt', 1229, self.merged_node(comments))
+                self.assertFalse(pull.passed)
+
+        r.jobs_evidence = lambda repo, run_id: {'jobs': True, 'self_hosted': True}
+        node = self.merged_node(
+            [gh_comment(f'pstack-verifier: PASS @ {HEAD}')],
+            checks=[check('pstack-verifier', conclusion='SUCCESS')],
+        )
+        self.assertFalse(r.pull_from_node('valentinyeo/multiprompt', 1229, node).passed)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,0 +1,43 @@
+{
+  "now": 1763800800,
+  "roster": "Board Drain Loop (live-a, claude, /tmp)\n",
+  "tasks": [
+    {
+      "ticketNumber": "FACT-43",
+      "projectId": 99001,
+      "section": "AI Review",
+      "title": "Merged PR with pstack-verifier PASS+NOTES @ sha verdict",
+      "updatedAt": "2025-11-21T10:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-21T10:00:00.000Z"},
+      "labels": [{"name": "Board Drain Loop"}, {"name": "brain-medium"}],
+      "assignees": [{"type": "agent", "displayName": "Board Drain Loop"}]
+    }
+  ],
+  "pulls": {
+    "FACT-43": [
+      {
+        "url": "https://github.com/valentinyeo/multiprompt/pull/1229",
+        "number": 1229,
+        "state": "MERGED",
+        "mergedAt": "2025-11-21T11:00:00Z",
+        "headRefOid": "c490394bb62d34fb0ba90e7f6a4028c9577ec8c4",
+        "author": {"login": "valentinyeo"},
+        "repository": {"nameWithOwner": "valentinyeo/multiprompt"},
+        "comments": [
+          {
+            "author": {"login": "github-actions"},
+            "updatedAt": "2025-11-21T10:50:00Z",
+            "databaseId": 103,
+            "body": "pstack-verifier: PASS+NOTES @ c490394bb62d34fb0ba90e7f6a4028c9577ec8c4\n\n- The appearance journey passed on head.\n"
+          },
+          {
+            "author": {"login": "github-actions"},
+            "updatedAt": "2025-11-21T11:05:00Z",
+            "databaseId": 104,
+            "body": "pstack-verifier: BLOCKED @ c490394bb62d34fb0ba90e7f6a4028c9577ec8c4\n\n- Verifier run cancelled before recording a verdict.\n"
+          }
+        ]
+      }
+    ]
+  }
+}

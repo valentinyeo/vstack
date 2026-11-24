@@ -16,6 +16,9 @@ printf 'user hook\n' > "$TEST_HOME/.claude/hooks/user-hook.py"
 
 for run in 1 2; do
   env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
+  [ -L "$TEST_HOME/.local/bin/ci-key-set" ]
+  [ "$(readlink -f "$TEST_HOME/.local/bin/ci-key-set")" = "$ROOT/tools/ci-key-set" ]
+  [ -x "$TEST_HOME/.local/bin/ci-key-set" ]
   for dest in "${dests[@]}"; do
     skill="$TEST_HOME/$dest/valentin-mode"
     [ -L "$skill" ]

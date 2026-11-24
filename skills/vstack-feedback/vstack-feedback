@@ -58,6 +58,32 @@ def fallback_token(env):
         return ''
 
 
+def agent_tokens():
+    """Every agent token on this server, longest first, so a redaction leaves no piece."""
+    folder = Path.home() / '.config' / 'hypertask-agents' / 'credentials' / 'sessions'
+    try:
+        paths = list(folder.glob('*-agent-token'))
+    except OSError:
+        return []
+    tokens = []
+    for path in paths:
+        try:
+            token = path.read_text().strip()
+        except OSError:
+            continue
+        if token:
+            tokens.append(token)
+    return sorted(tokens, key=len, reverse=True)
+
+
+def redact(text, token):
+    """The text with every agent token removed, never only the caller's."""
+    for secret in sorted({token, *agent_tokens()}, key=len, reverse=True):
+        if secret:
+            text = text.replace(secret, '[redacted]')
+    return text
+
+
 def load_session():
     path = Path(__file__).resolve().parent.parent / 'hypertask-work' / 'session_login.py'
     spec = importlib.util.spec_from_file_location('session_login', path)
@@ -121,7 +147,10 @@ class Client:
         except ValueError:
             data = None
         if result.returncode or not isinstance(data, dict) or data.get('success') is False:
-            detail = (result.stderr or result.stdout).replace(self.token, '[redacted]').strip()
+            reason = data.get('error') if isinstance(data, dict) else None
+            detail = reason if isinstance(reason, str) and reason.strip() else (
+                result.stderr or result.stdout)
+            detail = redact(detail, self.token).strip()
             message = f'hypertask failed: {detail or "unknown"}'
             raise Refused(message) if REFUSED.search(detail) else ValueError(message)
         return data

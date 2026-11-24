@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set +x +v
+set -euo pipefail
+
+if [[ $# != 2 && $# != 4 ]]; then
+  echo 'Usage: ci-key-set <owner/repo> <SECRET_NAME> [--from-file PATH]' >&2
+  exit 2
+fi
+if [[ $# == 4 && $3 != --from-file ]]; then
+  echo 'Usage: ci-key-set <owner/repo> <SECRET_NAME> [--from-file PATH]' >&2
+  exit 2
+fi
+
+repo=${1,,}
+name=$2
+case "$name" in
+  PSTACK_OPENCODE_API_KEY|OPENCODE_API_KEY|AI_GATEWAY_API_KEY) ;;
+  *)
+    echo 'ci-key-set: only runner plan logins are allowed; see ~/.claude/reference/keys.md.' >&2
+    exit 2
+    ;;
+esac
+if [[ ! $repo =~ ^(valentinyeo|hypertask-ai)/[a-z0-9_.-]+$ ]]; then
+  echo 'ci-key-set: repository must be under valentinyeo/ or hypertask-ai/.' >&2
+  exit 2
+fi
+if [[ $# == 4 ]]; then
+  if [[ ! -f $4 || ! -r $4 ]]; then
+    echo 'ci-key-set: --from-file needs a readable file.' >&2
+    exit 2
+  fi
+elif [[ -t 0 ]]; then
+  echo 'ci-key-set: pipe the login on stdin or use --from-file; see ~/.claude/reference/keys.md.' >&2
+  exit 2
+fi
+
+if ! metadata=$(gh api --method GET "repos/$repo" --jq \
+  '[.full_name, (if .fork == false or (.fork == true and .parent.private == true) then "allowed" else "refused" end)] | @tsv' \
+  </dev/null 2>/dev/null); then
+  echo 'ci-key-set: could not check the repository; no secret was set.' >&2
+  exit 1
+fi
+if [[ ${metadata,,} != "$repo"$'\tallowed' ]]; then
+  echo 'ci-key-set: repository check refused a public-repository fork or an unexpected repository; no secret was set.' >&2
+  exit 1
+fi
+
+if [[ $# == 4 ]]; then
+  if ! gh secret set "$name" --repo "$repo" >/dev/null 2>&1 < "$4"; then
+    echo 'ci-key-set: GitHub could not set the secret.' >&2
+    exit 1
+  fi
+else
+  if ! gh secret set "$name" --repo "$repo" >/dev/null 2>&1; then
+    echo 'ci-key-set: GitHub could not set the secret.' >&2
+    exit 1
+  fi
+fi
+printf 'ci-key-set: repository secret set.\n'
