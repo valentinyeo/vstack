@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECK = ROOT / 'scripts/check-hook-paths'
 LAUNCHER = ROOT / 'hooks/run-hook'
 FIXTURE = ROOT / 'tests/fixtures/hook-paths/skill-update-missing.json'
+ORCA = ROOT / 'tests/fixtures/hook-paths/orca-inline-guard.json'
 
 
 class HookPaths(unittest.TestCase):
@@ -68,6 +69,33 @@ class HookPaths(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(str(self.project / 'missing.py'), result.stderr)
         self.assertNotIn(f'missing {LAUNCHER};', result.stderr)
+
+    def test_inline_script_that_file_tests_its_own_script_passes(self):
+        # Copied verbatim from ~/.claude/settings.json hooks.PostToolBatch[0] (Orca).
+        path = self.home / '.claude/settings.json'
+        path.parent.mkdir()
+        shutil.copyfile(ORCA, path)
+        before = path.read_bytes()
+        result = self.check('--root', self.project)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_sh_c_guard_that_exits_when_its_script_is_absent_passes(self):
+        self.settings(self.project / '.claude/settings.json',
+                      'sh -c \'f="$HOME/.claude/hooks/launch-gate.py"; '
+                      '[ -f "$f" ] || exit 0; exec python3 "$f"\'')
+        self.assertEqual(self.check('--root', self.project).returncode, 0)
+
+    def test_plain_missing_script_still_fails(self):
+        script = self.home / '.claude/hooks/gone.py'
+        for command in (f'python3 {script}', '/abs/missing.sh',
+                        f'[ -f {self.home}/present.sh ] || exit 0; {script}'):
+            with self.subTest(command=command):
+                self.settings(self.project / '.claude/settings.json', command)
+                result = self.check('--root', self.project)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(str(script) if str(script) in command else '/abs/missing.sh',
+                              result.stderr)
 
     def test_deleted_hook_allows_prompt_and_logs_once(self):
         hook = self.home / 'skill-update.py'
