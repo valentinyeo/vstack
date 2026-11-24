@@ -178,6 +178,8 @@ class ParkingTests(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output), \
                 patch.object(drain, 'pull_facts', return_value={}), \
+                patch.object(drain, 'ticket_comments', return_value=[]), \
+                patch.object(drain, 'ticket_relations', return_value=[]), \
                 patch.object(drain, 'rule_breaks', return_value=[]), \
                 patch.object(drain, 'alive', return_value=True), \
                 patch.object(drain, 'live_worker', return_value=True), \
@@ -381,12 +383,14 @@ class ParkingTests(unittest.TestCase):
 
     def test_five_open_does_not_ask_to_start_a_parked_todo(self):
         self.assertEqual(self.run_park('--apply').returncode, 0)
-        with patch.object(drain, 'ticket_comments', return_value=[]), \
-                patch.object(drain, 'ticket_relations', return_value=[]):
-            code, text = self.run_check()
-        self.assertEqual(code, 0, text)
+        code, text = self.run_check()
+        # Five open tickets is wip-cap's own finding, not a start nudge: parking keeps
+        # the loop and stale advice quiet, and the PR cap itself has nothing to park.
+        self.assertEqual(code, 1, text)
+        self.assertIn('over cap:', text)
         self.assertNotIn('loop off:', text)
         self.assertNotIn('stale:', text)
+        self.assertNotIn('agent PR cap:', text)
 
     def test_missing_creation_time_fails_open_with_one_warning(self):
         data = self.data()
