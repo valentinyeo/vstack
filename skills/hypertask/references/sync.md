@@ -52,6 +52,8 @@ A sync writes one status record per board and label: `~/.local/state/reconcile-a
 
 The lease writes one card record per phase: `<board>-<ticket>-<phase>.json`, with `phase` `start` or `end` from `RECONCILE_CARD_PHASE`. It has the same fields, plus `worker_exit` from `RECONCILE_WORKER_EXIT` and `worker_note`, which reads `nothing ran, waiting for a lane` when that exit is 75.
 
+An end sync with `worker_exit` 75 puts the card back with `nothing ran, waiting for a lane`, even inside the two-hour grace. The start moved it to Doing because a lease existed; the 75 says no worker ran, so the card waits instead of reading as started.
+
 A card sync that cannot read its ticket writes no record; its one line goes to `failures.jsonl`.
 
 The watcher records its last sync in this chat's board-drain state. `drain-check` rejects a failed sync or one older than 45 minutes. A lease record with `exit` 0 and `unknown` 0 is healthy.

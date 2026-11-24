@@ -910,6 +910,25 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(record['worker_exit'], 75)
         self.assertEqual(record['worker_note'], 'nothing ran, waiting for a lane')
+        self.assertEqual(r.NOTHING_RAN, record['worker_note'],
+                         'the record and the column line say the same thing')
+
+    def test_a_run_that_ran_nothing_puts_the_card_back_waiting(self):
+        """VSTA-182: the lease start moved the card to Doing, then plan-pick exited 75,
+        and the end sync held Doing for two hours as if a worker were in there."""
+        recent = {**task('Doing'), 'updatedAt': NOW - 60}
+        with patch.dict(os.environ, {'RECONCILE_CARD_PHASE': 'end'}, clear=False):
+            os.environ.pop('RECONCILE_WORKER_EXIT', None)
+            _code, held, _calls = self.ticket_run(['--ticket', 'SOFT-1'], recent)
+        self.assertIn('KEEP SOFT-1 Doing -> Doing | touched within 2h', held)
+
+        with patch.dict(os.environ, {'RECONCILE_CARD_PHASE': 'end',
+                                     'RECONCILE_WORKER_EXIT': '75'}):
+            code, printed, calls = self.ticket_run(
+                ['--ticket', 'SOFT-1', '--apply', '--limit', '1'], recent)
+        self.assertEqual(code, 0)
+        self.assertIn('PLAN SOFT-1 Doing -> Todo | nothing ran, waiting for a lane', printed)
+        self.assertEqual(calls['moves'], ['SOFT-1'], 'the card says waiting, not started')
 
     def test_a_card_sync_without_a_worker_exit_claims_no_run(self):
         temp = tempfile.TemporaryDirectory()

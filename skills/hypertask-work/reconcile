@@ -240,6 +240,10 @@ def plan_stage(facts, here, board):
         return Stage.REVIEW, 'merged PR with PASS; live proof pending'
     if fresh:
         return Stage.REVIEW, 'merged PR missing PASS on current head'
+    if here == Stage.IN_PROGRESS and nothing_ran():
+        # plan-pick exited 75: every lane was used up and no worker ran (VSTA-182).
+        # Say so and wait, instead of leaving the card reading as started for 2h.
+        return Stage.BACKLOG, NOTHING_RAN
     if facts.alive:
         return Stage.IN_PROGRESS, _worker_reason(board)
     if here == Stage.VERIFICATION and not facts.verification:
@@ -2358,6 +2362,9 @@ def card_phase():
     return session.slug(os.environ.get('RECONCILE_CARD_PHASE') or '')
 
 
+NOTHING_RAN = 'nothing ran, waiting for a lane'
+
+
 def worker_exit():
     """The worker's own exit code, when a lease ran one and recorded it."""
     raw = os.environ.get('RECONCILE_WORKER_EXIT')
@@ -2365,6 +2372,11 @@ def worker_exit():
         return int(raw) if raw is not None and raw.strip() else None
     except ValueError:
         return None
+
+
+def nothing_ran():
+    """A lease run that ended with plan-pick's 75 started no worker at all."""
+    return worker_exit() == 75
 
 
 def write_card_record(tee, code):
@@ -2382,7 +2394,7 @@ def write_card_record(tee, code):
         'at': time.time(), 'session_name': os.environ.get('SHIP_SESSION_NAME') or '',
         'board': board, 'label': None, 'ticket': ticket, 'phase': phase,
         'exit': int(code), 'worker_exit': ran,
-        'worker_note': 'nothing ran, waiting for a lane' if ran == 75 else None,
+        'worker_note': NOTHING_RAN if ran == 75 else None,
         'moved': moved, 'unknown': unknown,
         'summary_line': summary, 'log': str(log)})
 
