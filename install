@@ -143,6 +143,7 @@ link_one vps-state "$ROOT/skills/vps-state/vps-state" "$HOME/.local/bin"
 # programs. Any chat runs it from its own loop; this script only links the tool.
 link_one vps-tidy "$ROOT/skills/vps-tidy/vps-tidy" "$HOME/.local/bin"
 link_one excalidraw-share "$ROOT/skills/excalidraw/excalidraw-share" "$HOME/.local/bin"
+link_one ci-key-set "$ROOT/tools/ci-key-set" "$HOME/.local/bin"
 
 # Chats read one server facts file (VSTA-146). A hand-written tools.md note had
 # the two servers the wrong way round and said only inne runs on Hetzner, and a

@@ -39,6 +39,24 @@ Any other model: paste the body of a `SKILL.md` (below the frontmatter) as the s
 
 By Valentin Yeo, https://valentinyeo.com
 
+## Runner plan logins
+
+`./install` links `ci-key-set` into `~/.local/bin`. It needs an authenticated `gh`
+with permission to set repository secrets, plus `gh`'s built-in JSON filtering.
+Pass the login through stdin or a file, never as a command argument:
+
+```bash
+ci-key-set valentinyeo/vstack PSTACK_OPENCODE_API_KEY < /path/to/plan-login
+ci-key-set hypertask-ai/example OPENCODE_API_KEY --from-file /path/to/plan-login
+```
+
+Only `PSTACK_OPENCODE_API_KEY`, `OPENCODE_API_KEY`, and `AI_GATEWAY_API_KEY` are
+allowed. These names come from vstack's `pstack-sources.yml` and house-rules'
+verifier workflows. Other keys still follow `~/.claude/reference/keys.md`.
+The tool refuses repositories outside `valentinyeo/` and `hypertask-ai/`, forks
+of public repositories, and repositories whose safety check fails. It does not
+print the login or create temporary files. It leaves an input file unchanged.
+
 ## Shared checks
 
 pstack holds workflow rules. vstack holds shared checks.
