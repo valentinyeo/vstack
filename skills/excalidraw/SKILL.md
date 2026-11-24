@@ -2,8 +2,9 @@
 name: excalidraw
 description: >-
   Draw a diagram for Valentin as a shared Excalidraw scene and hand him the
-  https link. Use when he asks for a diagram, a drawing, a flow, a sketch or a
-  picture of how parts fit together.
+  https link, or read a shared drawing back as a plain outline. Use when he asks
+  for a diagram, a drawing, a flow, a sketch or a picture of how parts fit
+  together, or asks what a shared drawing says.
 disable-model-invocation: true
 ---
 
@@ -22,6 +23,20 @@ It prints one line: the link. Send him that line as plain text.
 Never put the link inside bold: `**https://...**` breaks the URL in his client.
 
 Working drawing to copy: [example.excalidraw](example.excalidraw) (rectangles, text, arrows, diamonds bound together).
+
+## Read a drawing
+
+Anyone's share link, or a bare scene id, comes back as a plain outline:
+
+```bash
+timeout 60 ~/.local/bin/excalidraw-share --read https://app.excalidraw.com/s/1GorMHPWnnO/8w5c4H009mf
+timeout 60 ~/.local/bin/excalidraw-share --read 8w5c4H009mf --json
+```
+
+It prints one line per box, ellipse, diamond or free text, labelled by the text bound to it,
+sorted by y then x; then one `arrow: start -> end` line per arrow. An end with no bound text
+is labelled by its element id. `--json` prints the raw scene instead.
+The same key and `Authorization: Bearer` header are used, and the key is never printed.
 
 ## What the helper does
 
