@@ -38,7 +38,7 @@ Unsure: `brain-medium`. Keep every other label and replace only the `brain-*` on
 
 ## Two lanes
 
-**Human lane:** a title, a description, or a comment with `--kind question|qa|done`, and any comment that @mentions a person.
+**Human lane:** a title, a description, or a comment with `--kind question|qa|done`, and any comment that @mentions a person. Evidence, proof, results, verdicts and done summaries always go here (`comment add --kind done` or `--kind qa`), in plain words, with screenshot or video links.
 
 - Run `pospeak` on it first.
 - Max 8 words per sentence. The guard bounces over 12.
@@ -55,7 +55,7 @@ Mention markup, until the CLI has a flag (https://app.hypertask.ai/detail/projec
 
 Get `<userId>` from `creatorId` in `hypertask comment list <ticket>`, or from an existing mention. Read the comment back: `name-<userId>` must be there.
 
-**Agent lane:** `hypertask activity add <ticket> --text`, or a plain comment with no `--kind` and no mention, from an agent login. Claims, `Next:`, `Branch/PR:`, `Outputs:`, resume commands, paths, logs and evidence go here. Verbose is fine. Never post an agent note under a person's login.
+**Agent lane:** `hypertask activity add <ticket> --text` from an agent login. Only agent-to-agent coordination chatter no person needs: claims, `Next:`, branch or PR names, and resume commands. Plain text, no HTML tags. Never put evidence, proof, results, verdicts, or done summaries here — those always go in a people comment (`comment add --kind done` or `--kind qa`) in plain words with screenshot or video links. `hooks/agent-lane-guard.py` refuses result-like text in `activity add`, including `vcc activity add` and `poteto-ticket log`. Structured column-move notes are coordination; result prose or media links added to them still block. Never post an agent note under a person's login.
 
 ## Comment rules that break rendering or notifications
 
@@ -121,7 +121,7 @@ Bold outcome first. Proof in one line. "Nothing to decide." The change link.
 4. Post this session's resume string once, to the ticket's agent log:
 
    ```bash
-   hypertask activity add <PREFIX-NNN> --text "<p><code>claude --resume $CLAUDE_CODE_SESSION_ID</code></p>"
+   hypertask activity add <PREFIX-NNN> --text "claude --resume $CLAUDE_CODE_SESSION_ID"
    ```
 
 5. Print the ready-to-paste `/rename` line: `/rename PREFIX-NNN | <Full Title>`.

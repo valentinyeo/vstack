@@ -178,7 +178,8 @@ fi
 # (VSTA-165). The shims come from the config the hook reads, so the two cannot drift.
 python3 "$ROOT/scripts/worker-shims" --dir "$HOME/.local/state/vstack/worker-shims" \
   --hook "$HOME/.claude/hooks/heavy-local-guard.py" \
-  --pr-cap-hook "$HOME/.claude/hooks/pr-cap-guard.py" || {
+  --pr-cap-hook "$HOME/.claude/hooks/pr-cap-guard.py" \
+  --agent-lane-hook "$HOME/.claude/hooks/agent-lane-guard.py" || {
   echo "vstack install: worker-shims failed; pacer workers have no guard" >&2
 }
 
@@ -257,6 +258,7 @@ PY
 # settings through run-hook, once however often this runs.
 SKILL_UPDATE_HOOK='{"type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/skill-update.py\""}'
 PR_CAP_HOOK='{"type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/pr-cap-guard.py\"", "timeout": 30}'
+AGENT_LANE_HOOK='{"type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/agent-lane-guard.py\"", "timeout": 10}'
 python3 "$ROOT/scripts/register-user-hook.py" --event UserPromptSubmit \
   --entry "$SKILL_UPDATE_HOOK" || {
   echo "vstack install: could not register skill-update in ~/.claude/settings.json" >&2
@@ -266,6 +268,12 @@ python3 "$ROOT/scripts/register-user-hook.py" --event PreToolUse \
   --matcher Bash --matcher 'mcp__.*create_pull_request' \
   --entry "$PR_CAP_HOOK" || {
   echo "vstack install: could not register pr-cap-guard in ~/.claude/settings.json" >&2
+  exit 1
+}
+python3 "$ROOT/scripts/register-user-hook.py" --event PreToolUse \
+  --matcher Bash \
+  --entry "$AGENT_LANE_HOOK" || {
+  echo "vstack install: could not register agent-lane-guard in ~/.claude/settings.json" >&2
   exit 1
 }
 
