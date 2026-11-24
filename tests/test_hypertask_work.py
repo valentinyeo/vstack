@@ -3881,6 +3881,9 @@ class WholeSyncTest(unittest.TestCase):
 
         def respond(args, **kwargs):
             call = ' '.join(args)
+            if 'project sections' in call:
+                return subprocess.CompletedProcess(
+                    [], 0, json.dumps({'sections': self.VSTA_PROJECT['project']['sections']}), '')
             if 'search/issues' in call:
                 return subprocess.CompletedProcess([], 0, json.dumps({'items': state['probe']}), '')
             if 'headRefName' in call:
@@ -3952,11 +3955,16 @@ class WholeSyncTest(unittest.TestCase):
                           'body': '', 'headRefName': branch}
                 self.assertEqual(r.undone_urls([pull, revert]), {pull['url'], revert['url']})
         with self.subTest('a branch that only carries the word undoes nothing'):
-            for branch in ('feature/revert-button-12', 'not-a-revert-223-x', 'revert-2234'):
+            for branch in ('feature/revert-button-12', 'not-a-revert-223-x'):
                 revert = {'url': 'https://github.com/valentinyeo/vstack/pull/282', 'state': 'MERGED',
                           'number': 282, 'repository': repo, 'title': 'MUBO-453: undo the follow',
                           'body': '', 'headRefName': branch}
                 self.assertEqual(r.undone_urls([pull, revert]), set(), branch)
+        with self.subTest('a branch naming another pull undoes only that pull'):
+            revert = {'url': 'https://github.com/valentinyeo/vstack/pull/282', 'state': 'MERGED',
+                      'number': 282, 'repository': repo, 'title': 'MUBO-453: undo the follow',
+                      'body': '', 'headRefName': 'revert-2234'}
+            self.assertEqual(r.undone_urls([pull, revert]), {revert['url']})
         with self.subTest('prose that only mentions a ticket undoes nothing'):
             self.assertEqual(r.undone_urls([pull]), set())
             self.assertEqual(r.undone_urls([pull, {**pull, 'state': 'OPEN', 'body': 'Reverts #223'}]),
