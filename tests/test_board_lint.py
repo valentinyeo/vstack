@@ -7,6 +7,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -715,6 +717,83 @@ class PullFactsTest(unittest.TestCase):
         pulls, calls = self.load(None, probe_only=True)
         self.assertIsNone(pulls)
         self.assertEqual(calls, [])
+
+
+class CollectCommentsTest(unittest.TestCase):
+    """VSTA-293: a whole board's comments are read side by side, and never twice."""
+
+    BOARD = 99002
+    TICKETS = 20
+    CALL_SECONDS = 0.2
+    SEQUENTIAL = TICKETS * CALL_SECONDS
+
+    def setUp(self):
+        self.lint = load_board_lint()
+        self.args = mock.Mock(fixture=None, skip_comments=False)
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def human_board(self):
+        """A board the lint reads every non-Done ticket's comments on."""
+        human = mock.patch.object(self.lint, 'HUMAN_BOARDS', frozenset({self.BOARD}))
+        human.start()
+        self.addCleanup(human.stop)
+
+    def tasks(self, section='Todo', count=None):
+        return [{'ticketNumber': f'COMM-{index}', 'section': section}
+                for index in range(1, (count or self.TICKETS) + 1)]
+
+    def collect(self, tasks, data=None, seconds=0.0, fail=None):
+        def api(*argv):
+            with self.lock:
+                self.calls.append(argv)
+            if seconds:
+                time.sleep(seconds)
+            if fail is not None and argv[2] == fail[0]:
+                raise fail[1]('unreadable')
+            return {'comments': [{'id': f'{argv[2]}-1'}]}
+
+        with mock.patch.object(self.lint.reconcile, 'api', api):
+            return self.lint.collect_comments(tasks, data or {}, self.args, self.BOARD)
+
+    def test_twenty_tickets_are_read_together_not_one_after_another(self):
+        self.human_board()
+        began = time.monotonic()
+        out = self.collect(self.tasks(), seconds=self.CALL_SECONDS)
+        spent = time.monotonic() - began
+        self.assertLess(spent, self.SEQUENTIAL / 2, f'{spent:.1f}s for {len(self.calls)} calls')
+        self.assertEqual(len(self.calls), self.TICKETS)
+        self.assertEqual(sorted(out), sorted(task['ticketNumber'] for task in self.tasks()))
+        self.assertEqual(out['COMM-3'], [{'id': 'COMM-3-1'}])
+
+    def test_a_ticket_the_caller_already_read_is_not_read_again(self):
+        self.human_board()
+        tasks = self.tasks()
+        held = {task['ticketNumber']: [{'id': 'held'}] for task in tasks[:10]}
+        out = self.collect(tasks, {'comments': held})
+        self.assertEqual(len(self.calls), self.TICKETS - 10)
+        self.assertEqual(out['COMM-1'], [{'id': 'held'}])
+        self.assertEqual(out['COMM-20'], [{'id': 'COMM-20-1'}])
+
+    def test_one_ticket_listed_twice_is_read_once(self):
+        self.human_board()
+        self.collect(self.tasks(count=3) + self.tasks(count=3))
+        self.assertEqual(len(self.calls), 3)
+
+    def test_an_unreadable_ticket_is_no_comments_and_the_rest_still_read(self):
+        self.human_board()
+        out = self.collect(self.tasks(count=3), fail=('COMM-2', OSError))
+        self.assertEqual(out['COMM-2'], [])
+        self.assertEqual(out['COMM-3'], [{'id': 'COMM-3-1'}])
+
+    def test_a_done_ticket_on_a_board_of_agents_is_still_read(self):
+        # The board-lint rule that reads Done cards needs their comments on any board.
+        self.collect(self.tasks(section='Done', count=2))
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_todo_ticket_on_a_board_of_agents_is_left_to_its_chat(self):
+        self.assertEqual(self.collect(self.tasks()), {})
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == '__main__':

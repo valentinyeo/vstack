@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prove a chat's board drain loop is alive: workable Todo by priority, live Doing, waits, blocked links, armed loop."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 import importlib.machinery
@@ -93,6 +94,9 @@ LISTING_FIELDS = ('url title headRefName commits(last:1){nodes{commit{committedD
 VALENTIN_USER_ID = 6
 WAITING_COLUMNS = frozenset({'waiting', 'waiting on valentin', 'human review'})
 URGENT_IDLE = 600
+# Comments and links are separate CLI calls per ticket; a labelled read costs its
+# slowest ticket, not their sum.
+FETCH_WORKERS = 8
 FRESH = 1800
 STALE = 7200
 # Board-rule breaks warn until a rule is promoted here: list a rule id and its
@@ -723,6 +727,19 @@ def ticket_comments(key):
         seen.add(cursor)
 
 
+def ticket_facts(task):
+    key = task['ticketNumber']
+    return ticket_comments(key), ([] if waiting(task) else ticket_relations(key))
+
+
+def fetched_facts(tasks):
+    """A failure surfaces as the same error type as a sequential read."""
+    if not tasks:
+        return []
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        return list(pool.map(ticket_facts, tasks))
+
+
 def rows_for(args):
     """Open tickets carrying the label, each Todo ticket with its comments and links.
 
@@ -742,13 +759,12 @@ def rows_for(args):
         task = row['task']
         if 'projectId' in task and str(task['projectId']) != str(args.board):
             raise ValueError(f'ticket outside board {args.board}')
-        if not reconcile.carries_label(task, args.label):
-            continue
-        if not args.fixture and needs_comments(task):
-            key = task['ticketNumber']
-            row = {'task': task, 'comments': ticket_comments(key),
-                   'relations': [] if waiting(task) else ticket_relations(key)}
-        kept.append(row)
+        if reconcile.carries_label(task, args.label):
+            kept.append(row)
+    if not args.fixture:
+        wanted = [row for row in kept if needs_comments(row['task'])]
+        for row, (comments, relations) in zip(wanted, fetched_facts([row['task'] for row in wanted])):
+            row['comments'], row['relations'] = comments, relations
     return board, kept, loaded, extra, [row['task'] for row in rows]
 
 
@@ -960,7 +976,11 @@ def rule_breaks(view, args, now):
     that chat's finding, and no chat reads the board twice to say so.
     """
     lint = lint_module()
-    rows, data = view['rows'], view.get('data') or {}
+    rows = view['rows']
+    data = dict(view.get('data') or {})
+    # The comments this tick already holds, so the board rules never read them twice.
+    data['comments'] = {row['task']['ticketNumber']: row['comments']
+                        for row in rows if 'comments' in row}
     fixture = bool(args.fixture)
     shared = {'board': view['board'], 'tasks': [row['task'] for row in rows],
               'data': data, 'now': now, 'probe_only': True,

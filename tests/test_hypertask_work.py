@@ -747,6 +747,27 @@ class ReconcileTest(unittest.TestCase):
         self.assertEqual(r.github_calls(), (2, 1))
         self.assertEqual(r.github_summary(), 'reconcile: github calls=3 (graphql=2, rest=1)')
 
+    def test_the_call_count_holds_when_reads_run_from_many_threads(self):
+        # drain-check reads a ticket's comments and links from a thread pool (VSTA-293),
+        # so two reads land at once: the counter behind the summary must still be exact.
+        ok = subprocess.CompletedProcess([], 0, '{}', '')
+        readers, per_thread = 8, 5
+
+        def read():
+            for _ in range(per_thread):
+                r.run('gh', 'api', 'graphql', '-f', 'query=x')
+
+        before = sum(count for _, count in r.TIMING.values())
+        with patch.object(r.subprocess, 'run', return_value=ok):
+            threads = [threading.Thread(target=read) for _ in range(readers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(r.github_calls(), (readers * per_thread, 0))
+        self.assertEqual(sum(count for _, count in r.TIMING.values()) - before,
+                         readers * per_thread)
+
     def test_every_run_prints_its_github_call_count(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(r.Path, 'home', return_value=Path(directory)), \

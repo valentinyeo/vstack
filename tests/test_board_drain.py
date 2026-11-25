@@ -1,6 +1,8 @@
 import argparse
 import contextlib
 from datetime import datetime, timezone
+import threading
+import time
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -2994,6 +2996,121 @@ class MergeAskTest(unittest.TestCase):
                      'https://github.com/valentinyeo/multiprompt-android/pull/524.'):
             with self.subTest(text=text):
                 self.assertTrue(drain.merge_ask.asks(text))
+
+
+class FastTicketReadTest(unittest.TestCase):
+    """VSTA-293: a labelled read pays its slowest ticket's calls, not their sum."""
+
+    BOARD = 13734
+    LABEL = 'Multi Bot Bugs'
+    TICKETS = 20
+    CALL_SECONDS = 0.2
+    SEQUENTIAL = TICKETS * CALL_SECONDS * 2
+
+    def tasks(self, count=None):
+        return [{'ticketNumber': f'MUBO-{index}', 'projectId': self.BOARD, 'section': 'Todo',
+                 'labels': [{'name': self.LABEL}], 'updatedAt': iso(NOW - 3600),
+                 'waitingOnUserId': None, 'blockerCommentId': None}
+                for index in range(1, (count or self.TICKETS) + 1)]
+
+    def board(self, tasks):
+        return drain.fixture_board(self.BOARD, [{'task': task} for task in tasks])
+
+    def args(self, **extra):
+        return argparse.Namespace(board=self.BOARD, label=self.LABEL, fixture=None,
+                                 state_name=self.LABEL, skip_comments=False, **extra)
+
+    def fake_api(self, calls, seconds=0.0, fail=None):
+        lock = threading.Lock()
+
+        def api(*argv):
+            with lock:
+                calls.append(argv)
+            if seconds:
+                time.sleep(seconds)
+            if fail is not None and argv[:2] == fail[0] and argv[2] == fail[1]:
+                raise fail[2](fail[2].__name__)
+            if argv[:2] == ('comment', 'list'):
+                return {'comments': [{'id': f'{argv[2]}-1', 'body': 'a comment'}]}
+            if argv[:2] == ('task', 'relations'):
+                return {'relations': []}
+            raise AssertionError(f'unexpected call {argv}')
+
+        return api
+
+    def read(self, calls, seconds=0.0, fail=None, tasks=None):
+        tasks = tasks or self.tasks()
+        with patch.object(drain.reconcile, 'board_config', return_value=self.board(tasks)), \
+                patch.object(drain.reconcile, 'tickets', return_value=tasks), \
+                patch.object(drain.reconcile, 'api', self.fake_api(calls, seconds, fail)):
+            return drain.rows_for(self.args())
+
+    def test_twenty_tickets_are_read_together_not_one_after_another(self):
+        calls = []
+        began = time.monotonic()
+        board, rows, loaded, data, board_tasks = self.read(calls, self.CALL_SECONDS)
+        spent = time.monotonic() - began
+        self.assertLess(spent, self.SEQUENTIAL / 2, f'{spent:.1f}s for {len(calls)} calls')
+        self.assertEqual(len(calls), self.TICKETS * 2)
+        self.assertEqual([row['task']['ticketNumber'] for row in rows],
+                         [task['ticketNumber'] for task in self.tasks()])
+        for row in rows:
+            self.assertEqual(row['comments'], [{'id': f'{row["task"]["ticketNumber"]}-1',
+                                                'body': 'a comment'}])
+            self.assertEqual(row['relations'], [])
+
+    def test_the_rows_are_what_a_sequential_read_gave(self):
+        together = self.read([])[1]
+        one_by_one = []
+        with patch.object(drain.reconcile, 'api', self.fake_api([])):
+            for task in self.tasks():
+                row = {'task': task}
+                row['comments'] = drain.ticket_comments(task['ticketNumber'])
+                row['relations'] = drain.ticket_relations(task['ticketNumber'])
+                one_by_one.append(row)
+        self.assertEqual(together, one_by_one)
+
+    def test_the_board_rules_read_no_comment_a_tick_already_held(self):
+        tasks = self.tasks()
+        calls = []
+        args = self.args()
+        _, rows, _, _, _ = self.read(calls)
+        self.assertEqual(len(calls), self.TICKETS * 2)
+        lint = drain.lint_module()
+        held = {}
+
+        def lint_stub(lint_args, shared=None):
+            held.update(shared)
+            lint.adopt(shared)
+            lint.collect_comments(shared['tasks'], shared['data'], lint_args, shared['board'].id)
+            return []
+
+        # Board 13734 is no human board, so the lint would read only Done tickets. On a
+        # human board it reads every one of them.
+        human = patch.object(lint, 'HUMAN_BOARDS', frozenset({self.BOARD}))
+        human.start()
+        self.addCleanup(human.stop)
+        calls.clear()
+        with patch.object(lint.reconcile, 'api', self.fake_api(calls)):
+            lint.collect_comments([{'ticketNumber': task['ticketNumber'], 'section': 'Todo'}
+                                   for task in tasks], {}, args, self.BOARD)
+        self.assertEqual(len(calls), self.TICKETS, 'the guard needs a fetch to prevent')
+        calls.clear()
+        view = {'board': self.board(tasks), 'rows': rows, 'data': {}, 'pulls': {}}
+        with patch.object(lint, 'lint', lint_stub), \
+                patch.object(drain.reconcile, 'api', self.fake_api(calls)):
+            drain.rule_breaks(view, args, NOW)
+        self.assertEqual(calls, [], 'the board rules read a comment the tick already held')
+        self.assertEqual(sorted(held['data']['comments']),
+                         sorted(task['ticketNumber'] for task in tasks))
+
+    def test_a_failed_comment_read_raises_as_before(self):
+        with self.assertRaises(RuntimeError):
+            self.read([], 0.0, (('comment', 'list'), 'MUBO-7', RuntimeError))
+
+    def test_a_failed_relations_read_raises_as_before(self):
+        with self.assertRaises(ValueError):
+            self.read([], 0.0, (('task', 'relations'), 'MUBO-9', ValueError))
 
 
 if __name__ == '__main__':
