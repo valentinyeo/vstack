@@ -81,7 +81,7 @@ class GuardTest(unittest.TestCase):
         self.hook = load_hook()
 
     def write_state(self, name='Multi Bot Bugs', beat_hours_ago=3, watch_pid=None,
-                    owner_pid=None, board=13734, label='Multi Bot Bugs', now=NOW):
+                    owner_pid=None, board=13734, label='Multi Bot Bugs', now=NOW, paused=None):
         """The record a chat leaves: armed, and its watcher last seen `beat_hours_ago`."""
         beat = iso(now - int(beat_hours_ago * 3600))
         record = {
@@ -93,6 +93,7 @@ class GuardTest(unittest.TestCase):
             'watch_pid': watch_pid, 'watch_started': beat,
             'watch_beat': beat, 'watch_every': 180,
         }
+        record.update(paused or {})
         slug = name.lower().replace(' ', '-')
         (self.state / f'{slug}.json').write_text(json.dumps(record))
         return record
@@ -178,6 +179,21 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.prompt({'HOME': str(self.home),
                                        'BOARD_DRAIN_STATE_DIR': str(self.state)}), {},
                          'no tab, no verdict')
+
+    def test_a_paused_chat_is_never_nagged_or_held(self):
+        """VSTA-309: told to go idle, the chat must still be able to stop."""
+        self.write_state(beat_hours_ago=3, paused={'paused_at': iso(NOW - 3600),
+                                                  'paused_until': iso(NOW + 6 * 3600),
+                                                  'paused_reason': 'Claude budget pause'})
+        self.assertEqual(self.prompt(), {})
+        self.assertEqual(self.stop(), {}, 'Stop never blocks a paused chat')
+
+    def test_an_expired_pause_nags_again(self):
+        self.write_state(beat_hours_ago=3, paused={'paused_at': iso(NOW - 3600),
+                                                  'paused_until': iso(NOW - 60),
+                                                  'paused_reason': 'Claude budget pause'})
+        self.assertIn('watcher is dead since', self.context(self.prompt()))
+        self.assertEqual(self.stop().get('decision'), 'block')
 
     def test_a_broken_record_never_holds_the_turn(self):
         (self.state / 'multi-bot-bugs.json').write_text('{not json')

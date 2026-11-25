@@ -14,6 +14,7 @@ and it fails open: any problem prints nothing and the turn runs.
 The decision, in order:
 1. No own name, or no loop record for it: nothing to say.
 2. `loop-state status` says armed (or expires soon): the watcher is pulsing, so nothing to say.
+   It says paused: this chat was told to go idle, so nothing to say either, and no push goes out.
 3. It says `watcher dead since <time>`, or the loop is not armed: the chat has nothing to wake it.
    A prompt gets that fact as context; a Stop blocks, up to MAX_BLOCKS times, until the chat starts
    a fresh watcher or says what blocks it.
@@ -318,6 +319,15 @@ def self_test():
             state_path.write_text(json.dumps(record))
             off = answer(prompt, env, home, now)['hookSpecificOutput']['additionalContext']
             assert 'not armed' in off and 'Re-arm now' in off, off
+
+            paused = loop.pause('Guard Test', until=loop.iso(now + 6 * 3600),
+                                reason='Claude budget pause', now=now)
+            assert loop.status('Guard Test', now=now) == (loop.PAUSED, loop.pause_line(paused))
+            assert answer(prompt, env, home, now) == {}, 'a paused chat is told nothing'
+            assert answer(stop, env, home, now) == {}, 'a paused chat is never held'
+            loop.resume('Guard Test')
+            assert answer(stop, env, home, now).get('decision') == 'block', (
+                'a resumed chat with a dead loop is held again')
 
             # The blocks are capped, so a chat cannot be trapped in the turn.
             for _ in range(MAX_BLOCKS - 1):

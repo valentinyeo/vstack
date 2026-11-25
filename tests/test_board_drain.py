@@ -1080,6 +1080,36 @@ class CheckTest(unittest.TestCase):
         self.assertIn('drain-check: PASS', out)
         self.assertNotIn('sync stale', out)
 
+    def test_a_paused_chat_passes_the_loop_off_line(self):
+        """VSTA-309: a chat told to go idle prints one paused line instead of failing."""
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_sync('HT Test', True, '', now=NOW)
+        paused = loop.pause('HT Test', until=iso(NOW + 6 * 3600),
+                            reason='Claude budget pause', now=NOW)
+        code, out = self.run_check([todo('SOFT-2922')], '--state-name', 'HT Test')
+        self.assertEqual(code, 0, out)
+        self.assertIn(f'paused: {loop.pause_line(paused)}', out)
+        self.assertNotIn('loop off', out)
+        self.assertNotIn('loop state:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_a_paused_chat_still_fails_its_other_checks(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.record_sync('HT Test', False, 'usage: no token', now=NOW)
+        loop.pause('HT Test', reason='go idle', now=NOW)
+        code, out = self.run_check([todo('SOFT-2923')], '--state-name', 'HT Test')
+        self.assertEqual(code, 1, out)
+        self.assertIn('paused: paused until further notice: go idle', out)
+        self.assertIn('sync failed: usage: no token.', out)
+
+    def test_an_unpaused_chat_still_fails_the_loop_off_line(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.pause('HT Test', until=iso(NOW - 60), now=NOW)
+        code, out = self.run_check([todo('SOFT-2924')], '--state-name', 'HT Test')
+        self.assertEqual(code, 1, out)
+        self.assertIn('loop off:', out)
+        self.assertNotIn('paused:', out)
+
     def test_a_failed_sync_fails_the_check(self):
         loop.arm('HT Test', every='15m', now=NOW)
         loop.record_sync('HT Test', False, 'usage: --apply requires SHIP_SESSION_NAME', now=NOW)
@@ -1936,6 +1966,65 @@ class LoopStateTest(unittest.TestCase):
         self.assertNotIn('dead_notice', loop.stored('HT Test'))
         self.assertEqual(loop.notice_status('HT Test', now=NOW + 800), ('none', 'no notice'))
 
+    def test_pause_reports_paused_with_its_own_code_and_line(self):
+        """VSTA-309: a chat told to go idle cannot stop while every turn is blocked."""
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.pause('HT Test', until=iso(NOW + 6 * 3600), reason='Claude budget pause', now=NOW)
+        self.assertEqual(loop.status('HT Test', now=NOW),
+                         (4, f'paused until {iso(NOW + 6 * 3600)}: Claude budget pause'))
+        self.assertFalse(loop.is_armed('HT Test', now=NOW), 'a pause is not an armed loop')
+        self.assertEqual(loop.dead_since('HT Test', now=NOW), (None, ''),
+                         'a paused chat is never dead and never pushed')
+
+    def test_a_pause_without_an_end_holds_until_resumed(self):
+        loop.pause('HT Test', reason='go idle', now=NOW)
+        self.assertEqual(loop.status('HT Test', now=NOW), (4, 'paused until further notice: go idle'))
+        self.assertEqual(loop.status('HT Test', now=NOW + 30 * 86400)[0], 4)
+
+    def test_a_duration_sets_the_end_time(self):
+        loop.pause('HT Test', until='6h', reason='', now=NOW)
+        self.assertEqual(loop.stored('HT Test')['paused_until'], iso(NOW + 6 * 3600))
+        loop.pause('HT Test', until='90m', now=NOW)
+        self.assertEqual(loop.stored('HT Test')['paused_until'], iso(NOW + 5400))
+
+    def test_an_expired_pause_counts_as_not_paused(self):
+        loop.arm('HT Test', every='15m', now=NOW)
+        loop.pause('HT Test', until=iso(NOW + 60), now=NOW)
+        self.assertEqual(loop.status('HT Test', now=NOW)[0], loop.PAUSED)
+        code, line = loop.status('HT Test', now=NOW + 61)
+        self.assertEqual(code, 0)
+        self.assertTrue(line.startswith('armed, expires in 6d23h'), line)
+        self.assertEqual(loop.pause_state('HT Test', now=NOW + 61), {})
+
+    def test_resume_and_arm_clear_the_pause(self):
+        loop.pause('HT Test', reason='go idle', now=NOW)
+        loop.resume('HT Test')
+        self.assertEqual(loop.status('HT Test', now=NOW), (2, 'not armed'))
+        self.assertNotIn('paused_at', loop.stored('HT Test'))
+        loop.pause('HT Test', reason='go idle', now=NOW)
+        loop.arm('HT Test', every='15m', now=NOW + 60)
+        self.assertNotIn('paused_at', loop.stored('HT Test'))
+        self.assertEqual(loop.status('HT Test', now=NOW + 60), (0, 'armed, expires in 7d0h'))
+
+    def test_the_cli_pauses_and_resumes(self):
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory))
+        command = [sys.executable, str(SKILL / 'loop-state')]
+        pause = subprocess.run(command + ['pause', '--name', 'HT Test', '--until', '6h',
+                                         '--reason', 'Claude budget pause'],
+                               capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(pause.returncode, 0, pause.stderr)
+        self.assertIn('paused until', pause.stdout)
+        status = subprocess.run(command + ['status', '--name', 'HT Test'],
+                                capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(status.returncode, 4, status.stderr)
+        self.assertIn('Claude budget pause', status.stdout)
+        resumed = subprocess.run(command + ['resume', '--name', 'HT Test'],
+                                 capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertEqual(subprocess.run(command + ['status', '--name', 'HT Test'],
+                                        capture_output=True, text=True, env=env,
+                                        timeout=30).returncode, 2)
+
 
 class WatchTest(unittest.TestCase):
     """The watcher wakes its own chat on changes and keeps polling when delivery works."""
@@ -1979,6 +2068,14 @@ class WatchTest(unittest.TestCase):
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = watch.main(argv, clock=clock.time, sleep=clock.sleep)
         return code, out.getvalue() + err.getvalue(), clock
+
+    def test_a_paused_chat_stops_waking_itself(self):
+        """VSTA-309: go idle means the watcher leaves instead of waking the chat."""
+        loop.pause('Watch Test', until=iso(NOW + 6 * 3600), reason='Claude budget pause', now=NOW)
+        code, out, _clock = self.run_watch([vsta('VSTA-11')])
+        self.assertEqual(code, 0, out)
+        self.assertIn('paused: leaving this chat idle', out)
+        self.assertFalse(self.wakes.exists(), 'a paused chat is never woken')
 
     def test_a_beat_that_lands_inside_the_read_keeps_the_helper_alive(self):
         # VSTA-257: the watcher holds one `now` for a whole read, and a slow read (a

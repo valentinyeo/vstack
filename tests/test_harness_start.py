@@ -171,6 +171,23 @@ class HarnessStartTest(unittest.TestCase):
                                     self.home, self.state, self.repo).stdout)
         self.assertEqual(armed, '', 'an armed chat is not nagged')
 
+    def test_a_paused_chat_is_not_nagged_to_rearm(self):
+        """VSTA-309: told to go idle, the chat is not told its loop is off."""
+        loop = loop_state_module(self.state)
+        loop.arm(CHAT, every='2h', job='cron-old', board=BOARD, label=LABEL)
+        loop.state_path(CHAT).write_text(json.dumps({
+            **json.loads(loop.state_path(CHAT).read_text()),
+            'owner_pid': 2_000_000_000,
+            'paused_at': '2027-01-15T08:00:00Z',
+            'paused_until': '2027-01-15T14:00:00Z',
+            'paused_reason': 'Claude budget pause',
+        }))
+        hook = ours(self.codex, 'UserPromptSubmit', 'codex')[0]['command']
+        payload = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'sid-paused',
+                   'cwd': str(self.repo)}
+        told = context_of(run_hook(hook, payload, self.home, self.state, self.repo).stdout)
+        self.assertEqual(told, '', f'a paused chat is left alone: {told!r}')
+
     def test_install_keeps_foreign_codex_hooks(self):
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)

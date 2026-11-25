@@ -62,7 +62,10 @@ echo "{line}"
         script.write_text(
             f"""#!/usr/bin/env python3
 import sys
-print("armed" if {code} == 0 else "not armed")
+if {code} == 4:
+    print("paused until 2027-01-15T14:00:00Z: Claude budget pause")
+else:
+    print("armed" if {code} == 0 else "not armed")
 sys.exit({code})
 """,
             encoding="utf-8",
@@ -268,6 +271,29 @@ sys.exit({code})
         row = rows[0]
         self.assertIn("LOOP OFF", row["verdict"])
         self.assertIn("/board-drain", row["action"])
+
+    def test_a_paused_chat_is_not_reported_as_looped_off(self):
+        """VSTA-309: a chat told to go idle shows PAUSED, not LOOP OFF and a re-arm action."""
+        self.fake_version_script("valentin-mode v4 (latest)")
+        self.fake_loop_state(4)
+        self.fake_pstack_diff(0, 0)
+        repo = self.home / "paused"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "CLAUDE.md").write_text("Hypertask board: 15, label: Demo\n", encoding="utf-8")
+        self.write_transcript(
+            str(repo),
+            "sid-paused",
+            '{"message":{"content":"valentin-mode v4 (latest)"}}\n',
+        )
+        rows = self.run_report(
+            [dict(name="Pauser", harness="claude", cwd=str(repo), sid="sid-paused",
+                  tmux="live-paused")]
+        )
+        row = rows[0]
+        self.assertIn("PAUSED", row["verdict"])
+        self.assertNotIn("LOOP OFF", row["verdict"])
+        self.assertNotIn("/board-drain", row["action"])
 
     def test_loop_not_checked_without_board_line(self):
         self.fake_version_script("valentin-mode v4 (latest)")

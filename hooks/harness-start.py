@@ -158,11 +158,12 @@ def own_chat(env, home, cwd=None):
     return name, board, label
 
 
-def armed(name):
+def not_nagged(name):
     if not name:
         return False
     try:
-        return loop_state().is_armed(name)
+        state = loop_state()
+        return state.is_armed(name) or bool(state.pause_state(name))
     except Exception:  # noqa: BLE001
         return False
 
@@ -209,14 +210,14 @@ def start_text(env, home, harness, cwd=None):
              f'in full now, before your first reply; the hook hands you the mode a switched chat '
              f'used to drop, and your first reply names that version line.')
     name, board, label = own_chat(env, home, cwd)
-    if name and (board or label) and not armed(name):
+    if name and (board or label) and not not_nagged(name):
         text += '\n\n' + rearm_text(name, board, label, harness)
     return text
 
 
 def prompt_text(env, home, harness, cwd=None):
     name, board, label = own_chat(env, home, cwd)
-    if not name or not (board or label) or armed(name):
+    if not name or not (board or label) or not_nagged(name):
         return ''
     return rearm_text(name, board, label, harness)
 
