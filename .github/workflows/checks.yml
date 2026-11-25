@@ -32,25 +32,7 @@ jobs:
       - name: Valentin mode board rule contract
         run: timeout 300 python3 -m unittest discover -s tests -p test_valentin_mode_rules.py -v
       - name: Removing a board rule must fail
-        run: |
-          set -euo pipefail
-          skill=skills/valentin-mode/SKILL.md
-          cp "$skill" "$RUNNER_TEMP/board-skill.md"
-          trap 'cp "$RUNNER_TEMP/board-skill.md" skills/valentin-mode/SKILL.md' EXIT
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          path = Path('skills/valentin-mode/SKILL.md')
-          sentence = json.loads(Path('skills/valentin-mode/board-rules.json').read_text())[0]['sentence']
-          path.write_text(path.read_text().replace(sentence, '', 1))
-          PY
-          if timeout 300 python3 -m unittest discover -s tests -p test_valentin_mode_rules.py -v > "$RUNNER_TEMP/board-deletion.log" 2>&1; then
-            cat "$RUNNER_TEMP/board-deletion.log"
-            echo 'Deleting a rule sentence unexpectedly passed' >&2
-            exit 1
-          fi
-          cat "$RUNNER_TEMP/board-deletion.log"
-          grep -F 'Missing sentence for pr-owner' "$RUNNER_TEMP/board-deletion.log"
+        run: timeout 300 python3 scripts/board-rule-guard.py
       - run: timeout 900 python3 -m unittest discover -s tests
       - run: python3 -m unittest discover -s tests -p test_verify_reconcile.py -v
       - run: bash tests/install.sh
