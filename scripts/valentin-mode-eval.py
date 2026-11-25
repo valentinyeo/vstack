@@ -84,9 +84,20 @@ def judge_request(questions, answers, guidance):
     ], 'max_tokens': 3000}
 
 
+def verdict_json(text):
+    """The judge's JSON object, even inside a code fence or a sentence."""
+    body = re.sub(r'^```(?:json)?\s*\n?(.*?)\n?```$', r'\1', text.strip(), flags=re.S).strip()
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        start, end = body.find('{'), body.rfind('}')
+        if start < 0 or end <= start:
+            raise ValueError('No JSON object in the judge answer') from None
+        return json.loads(body[start:end + 1])
+
+
 def require_pass(text, ids):
-    text = re.sub(r'^```(?:json)?\s*\n(.*?)\n```$', r'\1', text.strip(), flags=re.S)
-    verdict = json.loads(text)
+    verdict = text if isinstance(text, dict) else verdict_json(text)
     if not isinstance(verdict, dict) or set(verdict) != set(ids):
         raise ValueError('Missing or unexpected scenario verdicts')
     for key, result in verdict.items():
@@ -145,6 +156,18 @@ def ask_candidate(request, out, ladder, pi):
     return None
 
 
+def ask_judge(request, out, ladder, excluded, pi):
+    """(response, verdict) from the first judge answer with valid JSON, or None after TRIES."""
+    for attempt in range(1, TRIES + 1):
+        label = 'judge' if attempt == 1 else f'judge-try{attempt}'
+        response = call(request, label, out, ladder, excluded=excluded, pi=pi)
+        try:
+            return response, verdict_json(content(response))
+        except ValueError as error:
+            print(f'No verdict in try {attempt} of {TRIES}: {error}')
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ladder', type=Path, required=True)
@@ -171,10 +194,20 @@ def main():
                          f'FAIL): {detail}')
     family = model_family(answer['model'])
     request = judge_request(questions, content(answer), guidance)
-    verdict = call(request, 'judge', args.out, args.ladder, excluded=family, pi=args.pi)
+    graded = ask_judge(request, args.out, args.ladder, family, args.pi)
+    if graded is None:
+        detail = (f'judge gave no valid JSON after {TRIES} tries: every reply was empty or '
+                  'unparseable, so there is no verdict to read')
+        (args.out / 'no-verdict.json').write_text(json.dumps({
+            'error': 'no verdict', 'kind': 'infrastructure error',
+            'tries': TRIES, 'detail': detail,
+        }, indent=2) + '\n')
+        raise SystemExit(f'NO VERDICT after {TRIES} tries (infrastructure error, not a rule '
+                         f'FAIL): {detail}')
+    verdict, parsed = graded
     if model_family(verdict['model']) == family:
         raise ValueError('The judge must use another model family')
-    results = require_pass(content(verdict), questions)
+    results = require_pass(parsed, questions)
     for key, result in results.items():
         print(f'Scenario {key}: PASS. {result["reason"]}')
     print(f'PASS: {answer["model"]} read the skills; {verdict["model"]} graded Chat A.')
