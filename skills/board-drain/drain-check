@@ -75,8 +75,8 @@ STUCK_AFTER = 3600
 STUCK_FIX = 'Start a fresh plan-pick owner to fix or close it.'
 # The PR owner rule: a card with a red PR idle an hour and no helper holds the owner
 # back from any new ticket, so this finding outranks the advice to start on a fresh
-# Todo. Pending, green or unknown checks, or a push inside the hour, mean the worker
-# just exited and CI or the owner is still moving (VSTA-292, VSTA-298).
+# Todo. Pending or green checks, or a push inside the hour, mean the worker just exited
+# and CI or the owner is still moving (VSTA-292, VSTA-298).
 ORPHAN_FIX = ('red and idle an hour with no live helper; '
               'start a helper on this PR before any new ticket')
 # A PR the tick cannot date: no checks state, or red with no push time. The card's
@@ -290,9 +290,9 @@ def orphan_finding(row, pulls, loaded, now, board):
     inside the hour, are someone still moving and not an orphan. A card blocked by
     work already in flight, or one waiting on Valentin, has a reason to idle;
     starting a helper on it would work around that reason. Facts, locks and links
-    come from the tick's board facts, so a red row costs no GitHub read; a row with
-    no checks state or no push time keeps the old rule only past the hour by the
-    card's own clock.
+    come from the tick's board facts, so a row carrying its checks and push time
+    costs no GitHub read; one missing either costs at most one, and then the card's
+    own clock keeps the old rule only past the hour.
     """
     task = row['task']
     if task.get('section') in (DONE, NOT_NOW) or waits_on_valentin(task):
@@ -451,9 +451,10 @@ def pull_now(pull, now, seen, budget):
     """A PR's state, checks and push time as the tick knows them, plus the moment.
 
     A row the tick loaded answers without GitHub. A read only fills a row still
-    missing checks or its push time, one read per card, recorded in `budget`; a read
-    that fails leaves the row unknown rather than guessing at it. A pull read live is
-    judged against now, one taken from a listing against the moment it was taken.
+    missing state, checks or its push time, one read per card, recorded in `budget`;
+    a read that fails leaves the row unknown rather than guessing at it. A pull read
+    live is judged against now, one taken from a listing against the moment it was
+    taken.
     """
     url = pull_field(pull, 'url') or ''
     state = (pull_field(pull, 'state') or '').upper()
