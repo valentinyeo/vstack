@@ -26,7 +26,7 @@ A repo above the 10-open-PR cap from `scripts/pr-cap.py` prints a warning in dra
 Session crons die with the chat; recurring ones expire in 7 days. Arm at session start, restart, handover, valentin-mode load, or any drain-check fail:
 
 1. `./loop-state status --name "<your Multibot name>"`. Exit 0: already armed.
-2. **Claude Code:** `./watch --board <id> --label <label> --name "<name>"` as a background Bash job (`run_in_background`, 7200000 ms). It pulses `loop-state` every 3m and keeps polling across changes and heartbeats until it exits 0 just before the 2h job limit, printing `lifetime: exiting before the 2h job limit; restart me`, and the chat restarts it; `board-drain-guard` holds Stop and pushes Valentin after 10m dead (VSTA-151).
+2. **Claude Code:** `./watch --board <id> --label <label> --name "<name>"` as a background Bash job (`run_in_background`, 7200000 ms). A newer watcher retires the older one, which exits without waking. It pulses `loop-state` every 3m and keeps polling across changes and heartbeats until it exits 0 just before the 2h job limit, printing `lifetime: exiting before the 2h job limit; restart me`, and the chat restarts it; `board-drain-guard` holds Stop and pushes Valentin after 10m dead (VSTA-151).
 3. Arm a safety cron at the larger of 6h and `~/.local/bin/plan-pick --loop-interval` (at least 2h) with the loop prompt. Record: `./loop-state arm --name "<name>" --every <interval> --job <id> --board <id> --label <label>`.
 4. **Codex or chats without background jobs:** one recurring job on `~/.local/bin/plan-pick --loop-interval` (at least 2h) with the loop prompt; record with `loop-state arm`.
 5. If a crash or restart kills the watcher, restart step 2.
