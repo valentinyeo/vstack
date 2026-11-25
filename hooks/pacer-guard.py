@@ -8,6 +8,11 @@ In a valentin-mode chat, Bash that runs tests, builds, linters, installs, git me
 reads, hypertask, plan-pick, vps-state and board-drain scripts always pass. PACER_GUARD_INLINE=off disables
 heavy-Bash blocking.
 
+The rule follows a chat to Codex and Antigravity, which name their tools and send their payloads
+their own way: `--harness codex` and `--harness agy` translate one call into the Claude shape and
+answer in the harness's blocking format (Codex: exit 2 and stderr; agy: JSON decision on stdout).
+Workers stay allowed because plan-pick unsets MULTIPROMPT_TAB for them, on every harness.
+
 pacer-guard.py --self-test"""
 import importlib.util
 import json
@@ -46,6 +51,18 @@ GIT_READ = frozenset({"log", "status", "diff", "show"})
 GIT_BLOCK = frozenset({"rebase", "merge", "cherry-pick"})
 GH_READ = frozenset({"view", "list", "checks"})
 UNTIL_WAIT = re.compile(r"\buntil\b[^;]*;\s*do\s+(sleep|wait)\b")
+CODEX = 'codex'
+AGY = 'agy'
+HARNESSES = (CODEX, AGY)
+COMMAND_KEYS = frozenset({'command', 'cmd', 'commandline', 'command_line', 'commands', 'argv'})
+PATCH_KEYS = frozenset({'patch', 'patch_text', 'input', 'diff', 'content', 'text', 'code'})
+PATCH_FILE = re.compile(r'^\*\*\* (?:Add|Update|Delete) File: (.+)$', re.M)
+PATCH_MOVE = re.compile(r'^\*\*\* Move to: (.+)$', re.M)
+DIFF_FILE = re.compile(r'^(?:\+\+\+ b/|--- a/)(.+)$', re.M)
+# Antigravity names a write tool rather than a tool family, and passes the file under its own key.
+AGY_WRITE = frozenset({'write_file', 'create_file', 'replace_file_content', 'multi_replace_file_content',
+                       'edit_file', 'apply_patch', 'insert_content', 'delete_file', 'move_file'})
+PATH_KEYS = frozenset({'targetfile', 'target_file', 'file_path', 'filepath', 'path', 'absolutepath', 'file'})
 _here = Path(__file__).resolve()
 _spec = importlib.util.spec_from_file_location("book_check", _here.with_name("book-check.py"))
 book = importlib.util.module_from_spec(_spec)
@@ -381,6 +398,76 @@ def helper_allowed():
     return answered.returncode == 0
 
 
+def command_of(tool_input):
+    """The shell command one harness call carries, or None when it carries no command."""
+    if not isinstance(tool_input, dict):
+        return None
+    for key, value in tool_input.items():
+        if str(key).lower() not in COMMAND_KEYS:
+            continue
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, list) and value and all(isinstance(part, str) for part in value):
+            return shlex.join(value)
+    return None
+
+
+def patch_paths(tool_input):
+    """Every file an apply_patch call touches, whatever key or harness carries the patch."""
+    if isinstance(tool_input, str):
+        texts = [tool_input]
+    elif isinstance(tool_input, dict):
+        texts = [value for key, value in tool_input.items()
+                 if str(key).lower() in PATCH_KEYS and isinstance(value, str)]
+    else:
+        return []
+    found = []
+    for text in texts:
+        found += PATCH_FILE.findall(text) + PATCH_MOVE.findall(text) + DIFF_FILE.findall(text)
+    return [clean(path) for path in found if clean(path)]
+
+
+def task_paths(tool_input):
+    """The file an Antigravity write tool names under its own argument key."""
+    if not isinstance(tool_input, dict):
+        return []
+    lowered = {str(key).lower(): value for key, value in tool_input.items()}
+    return [clean(lowered[key]) for key in PATH_KEYS
+            if isinstance(lowered.get(key), str) and clean(lowered[key])]
+
+
+def normalized(tool_name, tool_input):
+    """One harness call as Claude-shaped (tool, input) calls, by what it does, not by its name."""
+    command = command_of(tool_input)
+    if command is not None:
+        return [('Bash', {'command': command})]
+    paths = patch_paths(tool_input)
+    if not paths and str(tool_name or '').lower() in AGY_WRITE:
+        paths = task_paths(tool_input)
+    return [('Write', {'file_path': path}) for path in paths]
+
+
+def harness_call(payload, harness):
+    """The tool name, input and transcript one harness payload carries."""
+    if harness == AGY:
+        call = payload.get('toolCall') if isinstance(payload.get('toolCall'), dict) else {}
+        return call.get('name') or '', call.get('args'), payload.get('transcriptPath')
+    return payload.get('tool_name') or '', payload.get('tool_input'), payload.get('transcript_path')
+
+
+def harness_verdict(payload, harness):
+    """Why this harness call is refused, or None. Workers pass because plan-pick unsets MULTIPROMPT_TAB."""
+    if not isinstance(payload, dict):
+        return None
+    tool_name, tool_input, transcript = harness_call(payload, harness)
+    for tool, call in normalized(tool_name, tool_input):
+        why = gate({'tool_name': tool, 'tool_input': call, 'transcript_path': transcript,
+                    'agent_id': payload.get('agent_id'), 'agent_type': payload.get('agent_type')})
+        if why:
+            return why
+    return None
+
+
 def gate(payload):
     if not isinstance(payload, dict):
         return None
@@ -456,6 +543,35 @@ def self_test():
         assert pace_bash_verdict(cmd), f"valentin-mode must block: {cmd}"
     for cmd in allowed_cmds:
         assert pace_bash_verdict(cmd) is None, f"valentin-mode must allow: {cmd}"
+    codex_edit = {'tool_name': 'exec_command', 'tool_input': {
+        'command': 'cat > app.ts <<EOF\nexport const a = 1\nEOF'}}
+    codex_patch = {'tool_name': 'apply_patch',
+                   'tool_input': {'patch': '*** Begin Patch\n*** Update File: hooks/pacer-guard.py\n'
+                                           '@@ -1 +1 @@\n*** End Patch\n'}}
+    agy_edit = {'toolCall': {'id': 't1', 'name': 'run_command',
+                             'args': {'CommandLine': 'printf x > run.sh'}}}
+    agy_write = {'toolCall': {'id': 't2', 'name': 'write_file',
+                              'args': {'TargetFile': 'web/app.tsx', 'CodeContent': 'export {}\n'}}}
+    assert normalized('exec_command', codex_edit['tool_input'])[0][0] == 'Bash', "a codex shell is a Bash"
+    assert [path for _tool, call in normalized('apply_patch', codex_patch['tool_input'])
+            for path in call.values()] == ['hooks/pacer-guard.py'], "a codex patch names its files"
+    assert normalized('write_file', agy_write['toolCall']['args']) == [
+        ('Write', {'file_path': 'web/app.tsx'})], "an agy write names its file"
+    os.environ['MULTIPROMPT_TAB'] = 'self-test'
+    try:
+        assert harness_verdict(codex_edit, CODEX) == MESSAGE, "an owner codex shell into code is blocked"
+        assert harness_verdict(codex_patch, CODEX) == MESSAGE, "an owner codex patch is blocked"
+        assert harness_verdict(agy_edit, AGY) == MESSAGE, "an owner agy shell into code is blocked"
+        assert harness_verdict(agy_write, AGY) == MESSAGE, "an owner agy file write is blocked"
+        assert harness_verdict({'tool_name': 'exec_command',
+                                'tool_input': {'command': 'npm test'}}, CODEX) is None, "a codex read passes"
+        assert harness_verdict({'toolCall': {'name': 'view_file',
+                                             'args': {'AbsolutePath': '/tmp/x.py'}}}, AGY) is None, \
+            "an agy read passes"
+    finally:
+        os.environ.pop('MULTIPROMPT_TAB', None)
+    assert harness_verdict(codex_edit, CODEX) is None, "a worker's codex run is never blocked"
+    assert harness_verdict(agy_write, AGY) is None, "a worker's agy run is never blocked"
     with tempfile.TemporaryDirectory() as where:
         loaded = Path(where, "loaded.jsonl")
         loaded.write_text('{"type":"user","message":{"content":'
@@ -521,15 +637,44 @@ def self_test():
     print('pacer-guard self-test ok')
 
 
+def arguments(argv):
+    """The harness this registration serves (None means Claude Code) and the flags left."""
+    rest, harness, index = [], None, 0
+    while index < len(argv):
+        word = argv[index]
+        if word == '--harness' and index + 1 < len(argv):
+            harness = argv[index + 1]
+            index += 2
+            continue
+        if word.startswith('--harness='):
+            harness = word.split('=', 1)[1]
+            index += 1
+            continue
+        rest.append(word)
+        index += 1
+    return harness, rest
+
+
 def main():
-    if sys.argv[1:] == ['--self-test']:
+    harness, rest = arguments(sys.argv[1:])
+    if rest == ['--self-test']:
         self_test()
         return 0
     try:
         payload = json.load(sys.stdin)
     except ValueError:
         return 0
-    why = gate(payload)
+    if harness not in HARNESSES:
+        why = gate(payload)
+        if not why:
+            return 0
+        print(why, file=sys.stderr)
+        return 2
+    why = harness_verdict(payload, harness)
+    if harness == AGY:
+        # Antigravity blocks on a JSON decision, not on an exit status.
+        print(json.dumps({'decision': 'deny', 'reason': why} if why else {}))
+        return 0
     if not why:
         return 0
     print(why, file=sys.stderr)
