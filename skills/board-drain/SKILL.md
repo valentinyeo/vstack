@@ -33,7 +33,7 @@ Session crons die with the chat; recurring ones expire in 7 days. Arm at session
 
 `watch` arms independent 15-minute sync via `board-sync@<name-slug>.timer`; for `sync timer off`, run `./loop-state timer --board <id> --label <label> --name "<name>"`.
 
-On changes, sync failures or heartbeats, `watch` sends its own tab the change and `run drain-check` via `mp-send`, matching its tmux to agent-host `sid`. It keeps polling, coalescing wakes to one per 60s, and leaves before the 2h job limit so the chat restarts it. If delivery is unavailable or fails, it prints and exits 0; the tracked job wakes the chat. Re-arm step 2.
+On changes, sync failures or heartbeats, `watch` sends its own tab the change and `run drain-check` via `mp-send`, matching its tmux to agent-host `sid` and sending with that config's own `provider` (or the `switched_to` of a switched chat). It keeps polling, coalescing wakes to one per 60s, and leaves before the 2h job limit so the chat restarts it. If delivery is unavailable or fails, it prints and exits 0; the tracked job wakes the chat. Re-arm step 2.
 
 Never delete the loop for an empty Todo; a tick with nothing new stays quiet.
 
