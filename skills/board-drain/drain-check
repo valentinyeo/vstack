@@ -73,9 +73,15 @@ WORKING = frozenset({'Doing', 'Building', CHECKS, 'AI Review', 'Verifier'})
 # is stuck (VSTA-208).
 STUCK_AFTER = 3600
 STUCK_FIX = 'Start a fresh plan-pick owner to fix or close it.'
-# The PR owner rule: a card with an open PR and no helper holds the owner back from
-# any new ticket, so this finding outranks the advice to start on a fresh Todo.
-ORPHAN_FIX = 'start a helper on this PR before any new ticket'
+# The PR owner rule: a card with a red PR idle an hour and no helper holds the owner
+# back from any new ticket, so this finding outranks the advice to start on a fresh
+# Todo. Pending or green checks, or a push inside the hour, mean the worker just exited
+# and CI or the owner is still moving (VSTA-292, VSTA-298).
+ORPHAN_FIX = ('red and idle an hour with no live helper; '
+              'start a helper on this PR before any new ticket')
+# A PR the tick cannot date: no checks state, or red with no push time. The card's
+# own idle time decides then, and only an hour of it counts.
+ORPHAN_UNKNOWN = 'no live helper; start a helper on this PR before any new ticket'
 PR_URL = re.compile(r'github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)')
 # An idle Checks card often carries no PR link, and the board's saved facts cover
 # only recently changed tickets, so its PR comes from one open listing per board.
@@ -278,11 +284,15 @@ def in_flight(key, pulls, now, board):
 
 
 def orphan_finding(row, pulls, loaded, now, board):
-    """An open PR with no helper: the owner resumes that PR before a new ticket.
+    """An open PR red and idle an hour with no helper: the owner resumes it first.
 
-    A card blocked by work already in flight, or one waiting on Valentin, has a
-    reason to idle; starting a helper on it would work around that reason. Files,
-    locks and links come from the tick's board facts; no card costs a GitHub read.
+    A worker pushes, updates its PR and exits, so checks pending or green, or a push
+    inside the hour, are someone still moving and not an orphan. A card blocked by
+    work already in flight, or one waiting on Valentin, has a reason to idle;
+    starting a helper on it would work around that reason. Facts, locks and links
+    come from the tick's board facts, so a row carrying its checks and push time
+    costs no GitHub read; one missing either costs at most one, and then the card's
+    own clock keeps the old rule only past the hour.
     """
     task = row['task']
     if task.get('section') in (DONE, NOT_NOW) or waits_on_valentin(task):
@@ -293,8 +303,16 @@ def orphan_finding(row, pulls, loaded, now, board):
     blockers = open_blockers(row.get('relations'), loaded)
     if any(in_flight(key, pulls, now, board) for key in blockers):
         return None
-    return ('orphan PR', f'orphan PR: {task["ticketNumber"]} {pull_field(own[0], "url")} '
-                         f'has no live helper; {ORPHAN_FIX}')
+    pull = own[0]
+    facts = pull_now(pull, now, now, {'used': False})
+    if red_and_idle(facts):
+        said = f'is {ORPHAN_FIX}'
+    elif undated(facts) and (age(task, now) or 0) > STUCK_AFTER:
+        said = f'has {ORPHAN_UNKNOWN}'
+    else:
+        return None
+    return ('orphan PR', f'orphan PR: {task["ticketNumber"]} '
+                         f'{pull_field(pull, "url")} {said}')
 
 
 def agent_assigned(task):
@@ -427,6 +445,48 @@ def read_pull_facts(url):
     return {'state': (node.get('state') or '').upper(),
             'checks': reconcile.ROLLUP_STATE.get((rollup.get('state') or '').upper(), ''),
             'pushed': stamp_of(target.get('committedDate'))}
+
+
+def pull_now(pull, now, seen, budget):
+    """A PR's state, checks and push time as the tick knows them, plus the moment.
+
+    A row the tick loaded answers without GitHub. A read only fills a row still
+    missing state, checks or its push time, one read per card, recorded in `budget`;
+    a read that fails leaves the row unknown rather than guessing at it. A pull read
+    live is judged against now, one taken from a listing against the moment it was
+    taken.
+    """
+    url = pull_field(pull, 'url') or ''
+    state = (pull_field(pull, 'state') or '').upper()
+    checks = pull_field(pull, 'checks') or ''
+    pushed = stamp_of(pull_field(pull, 'pushedAt'))
+    if pushed is None:
+        pushed = stamp_of(pull_field(pull, 'pushed'))
+    facts = {'state': state, 'checks': checks, 'pushed': pushed, 'seen': seen}
+    if (state and state != 'OPEN') or (checks and checks != 'red'):
+        return facts
+    if state and checks and pushed is not None:
+        return facts
+    if budget.get('used'):
+        return facts
+    budget['used'] = True
+    read = read_pull_facts(url)
+    return {'state': read.get('state') or state,
+            'checks': read.get('checks') or checks,
+            'pushed': read.get('pushed') if read.get('pushed') is not None else pushed,
+            'seen': now}
+
+
+def red_and_idle(facts):
+    """Open, red checks and no push for an hour: the rule both PR findings share."""
+    pushed = facts['pushed']
+    return (facts['state'] == 'OPEN' and facts['checks'] == 'red'
+            and pushed is not None and facts['seen'] - pushed > STUCK_AFTER)
+
+
+def undated(facts):
+    """No checks state, or red with no push time: the card's own clock has to decide."""
+    return not facts['checks'] or (facts['checks'] == 'red' and facts['pushed'] is None)
 
 
 def linked_pulls(task, pulls):
@@ -603,31 +663,16 @@ def stuck_finding(task, pulls, now, board, listing=(), listing_at=None):
     """
     if task.get('section') != CHECKS or alive(task, now, board):
         return None
-    read_used = False
+    budget = {'used': False}
     linked = linked_pulls(task, pulls)
     seen = now if linked or listing_at is None else listing_at
     for pull in linked or card_pulls(task.get('ticketNumber'), listing, board):
-        url = pull_field(pull, 'url') or ''
-        state = (pull_field(pull, 'state') or '').upper()
-        checks = pull_field(pull, 'checks') or ''
-        pushed = stamp_of(pull_field(pull, 'pushedAt'))
-        if (state and state != 'OPEN') or (checks and checks != 'red'):
+        facts = pull_now(pull, now, seen, budget)
+        if not red_and_idle(facts):
             continue
-        if not (state and checks and pushed is not None):
-            if read_used:
-                continue
-            read_used = True
-            facts = read_pull_facts(url)
-            state = facts.get('state') or state
-            checks = facts.get('checks') or checks
-            pushed = facts.get('pushed') if facts.get('pushed') is not None else pushed
-            seen = now
-        if state != 'OPEN' or checks != 'red' or pushed is None:
-            continue
-        if seen - pushed <= STUCK_AFTER:
-            continue
-        return ('stuck', f'stuck: {task["ticketNumber"]} in Checks, PR {url} red and idle '
-                         f'since {moment_utc(pushed)}, no live owner. {STUCK_FIX}')
+        return ('stuck', f'stuck: {task["ticketNumber"]} in Checks, PR '
+                         f'{pull_field(pull, "url") or ""} red and idle since '
+                         f'{moment_utc(facts["pushed"])}, no live owner. {STUCK_FIX}')
     return None
 
 
