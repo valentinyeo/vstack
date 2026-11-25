@@ -276,3 +276,11 @@ change: Verifiers run `scripts/video_proof_gate.py` (as a pre-check and behind `
 basis: VSTA-251
 approved: 2026-11-24
 expiry: 2027-02-24
+
+id: human-progress
+pstack: skills/poteto-mode/playbooks/autopilot-full.md
+quote: **Reply:** catch the operator up per the **ketchup** skill, covering each PR's state and verdict, what merged, countersigns and why, open operator gates, and parked follow-ups, with links to each PR and the trails.
+change: Every real step on a ticket (work started, PR opened, checks green or red, verifier verdict, merged and live, blocked or waiting) gets one short plain people comment on the ticket, and board-lint rule `silent-ticket` names every card in a working column, or moved to Done that day, with no comment since it entered that column.
+basis: VSTA-253
+approved: 2026-11-24
+expiry: 2027-02-24

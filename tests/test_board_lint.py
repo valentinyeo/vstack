@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 LINT = ROOT / 'skills/hypertask-work/board-lint'
 FIXTURES = ROOT / 'tests/fixtures/board-lint'
 BOARD = 99001
+
+
+def iso(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def fake_token(agent_id):
@@ -527,6 +532,56 @@ class BoardLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assert_rule(result.stdout, 'view-filter', present=False)
         self.assert_rule(result.stdout, 'view-owner', present=False)
+
+    SILENT_NOW = 1763800800
+
+    def silent_fixture(self, section, entered, last_comment=None):
+        stale = {'sectionChangedAt': iso(entered)}
+        if last_comment is not None:
+            stale['lastCommentAt'] = iso(last_comment)
+        task = {'ticketNumber': 'FACT-77', 'projectId': BOARD, 'section': section,
+                'title': 'A ticket a person can follow', 'updatedAt': iso(entered),
+                'labels': [{'name': 'Board Drain Loop'}],
+                'assignees': [{'type': 'agent', 'displayName': 'Board Drain Loop'}],
+                'staleness': stale}
+        return {'now': self.SILENT_NOW, 'tasks': [task]}
+
+    def run_silent_lint(self, section, entered, last_comment=None):
+        data = self.silent_fixture(section, entered, last_comment)
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Path(temp) / 'silent.json'
+            fixture.write_text(json.dumps(data))
+            return self.run_lint(fixture)
+
+    def test_silent_ticket_names_a_working_card_with_no_comment(self):
+        result = self.run_silent_lint('Doing', self.SILENT_NOW - 2 * 3600)
+        self.assert_rule(result.stdout, 'silent-ticket')
+        self.assertIn('no comment since it entered Doing', result.stdout)
+        self.assertIn('hypertask comment add <ticket> --kind qa', result.stdout)
+
+    def test_silent_ticket_skips_a_card_commented_since_it_entered(self):
+        result = self.run_silent_lint('Checks', self.SILENT_NOW - 2 * 3600,
+                                      self.SILENT_NOW - 3600)
+        self.assert_rule(result.stdout, 'silent-ticket', present=False)
+
+    def test_silent_ticket_flags_a_comment_from_before_the_move(self):
+        result = self.run_silent_lint('AI Review', self.SILENT_NOW - 2 * 3600,
+                                      self.SILENT_NOW - 5 * 3600)
+        self.assert_rule(result.stdout, 'silent-ticket')
+
+    def test_silent_ticket_flags_a_card_moved_to_done_today(self):
+        result = self.run_silent_lint('Done', self.SILENT_NOW - 3 * 3600)
+        self.assert_rule(result.stdout, 'silent-ticket')
+        self.assertIn('moved to Done with no Done comment', result.stdout)
+        self.assertIn('--kind done', result.stdout)
+
+    def test_silent_ticket_leaves_a_long_done_card_alone(self):
+        result = self.run_silent_lint('Done', self.SILENT_NOW - 3 * 86400)
+        self.assert_rule(result.stdout, 'silent-ticket', present=False)
+
+    def test_silent_ticket_leaves_a_todo_card_alone(self):
+        result = self.run_silent_lint('Todo', self.SILENT_NOW - 2 * 3600)
+        self.assert_rule(result.stdout, 'silent-ticket', present=False)
 
     def test_view_owner_flags_person_owned_view(self):
         result = self.run_view_lint('view-owner-person.json')

@@ -1051,6 +1051,23 @@ class RuleBreakTest(CheckTest):
         self.assertIn('drain-check: PASS', out)
         self.assertEqual(code, 0, out)
 
+    def test_a_working_card_with_no_comment_prints_the_fix(self):
+        row = doing('SOFT-2937')
+        row['task']['staleness'] = {'sectionChangedAt': iso(NOW - 3600)}
+        code, out = self.run_payload(self.payload([row], workers={'SOFT-2937': True}), alive=True)
+        self.assertIn('rule-break: SOFT-2937 silent-ticket: no comment since it entered Doing', out)
+        self.assertIn('hypertask comment add <ticket> --kind qa', out)
+        self.assertIn('drain-check: PASS', out)
+        self.assertEqual(code, 0, out)
+
+    def test_a_working_card_with_a_fresh_comment_is_quiet(self):
+        row = doing('SOFT-2938')
+        row['task']['staleness'] = {'sectionChangedAt': iso(NOW - 3600),
+                                    'lastCommentAt': iso(NOW - 600)}
+        code, out = self.run_payload(self.payload([row], workers={'SOFT-2938': True}), alive=True)
+        self.assertNotIn('silent-ticket', out)
+        self.assertEqual(code, 0, out)
+
     def test_a_promoted_rule_fails_the_check(self):
         row = todo('SOFT-2932')
         row['task']['assignees'] = [{'id': 6, 'displayName': 'Valentin Yeo', 'type': 'user'}]
