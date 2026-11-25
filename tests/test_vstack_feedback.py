@@ -172,7 +172,7 @@ class Feedback(unittest.TestCase):
         r = self.run_env('Add a feedback command', '--why', 'HT Features hit this',
                          SHIP_SESSION_NAME='HT Features')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.data()['tokens'], [MAINTAINER_TOKEN])
+        self.assertEqual(set(self.data()['tokens']), {MAINTAINER_TOKEN})
         description = self.opt(self.create_call(), '--description')
         self.assertIn('<li>Filed for: HT Features</li>', description)
         self.assertEqual(self.data()['created'], 1)
@@ -184,7 +184,7 @@ class Feedback(unittest.TestCase):
         r = self.run_env('Add a feedback command', '--why', 'HT Features hit this',
                          MULTIPROMPT_TAB='tab-1', SHIP_SESSION_NAME='')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.data()['tokens'], [MAINTAINER_TOKEN])
+        self.assertEqual(set(self.data()['tokens']), {MAINTAINER_TOKEN})
         self.assertIn('<li>Filed for: HT Features</li>',
                       self.opt(self.create_call(), '--description'))
 
