@@ -130,5 +130,55 @@ class LoginForSession(unittest.TestCase):
         self.assertEqual(session.name_login(self.env(MULTIPROMPT_TAB='live-test')), '')
 
 
+class BorrowedLogin(unittest.TestCase):
+    """VSTA-306: a chat never acts as a login the environment names for another chat."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        path = session.roster_path(self.home)
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'rows': [{'tmux': 'live-htf', 'multibot': 'HT Features'}]}))
+
+    def env(self, **values):
+        return {'HOME': str(self.home), **values}
+
+    def token(self, name):
+        path = session.token_path(self.home, name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('secret\n')
+        return path
+
+    def test_another_chats_ship_session_name_is_borrowed(self):
+        self.assertEqual(session.borrowed(self.env(MULTIPROMPT_TAB='live-htf',
+                                                  SHIP_SESSION_NAME='HT Product Lead')),
+                         ('HT Product Lead', 'HT Features'))
+
+    def test_another_chats_token_file_is_borrowed_by_its_own_name(self):
+        path = self.token('HT Product Lead')
+        self.assertEqual(session.borrowed(self.env(MULTIPROMPT_TAB='live-htf',
+                                                  HYPERTASK_AGENT_TOKEN_FILE=str(path))),
+                         ('ht product lead', 'HT Features'))
+
+    def test_the_tabs_own_login_is_never_borrowed(self):
+        for values in ({'SHIP_SESSION_NAME': 'HT Features'},
+                       {'SHIP_SESSION_NAME': 'ht-features'},
+                       {}):
+            with self.subTest(values=values):
+                self.assertIsNone(session.borrowed(self.env(MULTIPROMPT_TAB='live-htf', **values)))
+
+    def test_no_tab_known_keeps_todays_order(self):
+        self.assertIsNone(session.borrowed(self.env(SHIP_SESSION_NAME='HT Product Lead')))
+        self.assertIsNone(session.borrowed(
+            self.env(MULTIPROMPT_TAB='live-unknown', SHIP_SESSION_NAME='HT Product Lead')))
+
+    def test_a_login_is_still_resolved_the_way_it_was(self):
+        path = self.token('HT Product Lead')
+        ship = self.env(MULTIPROMPT_TAB='live-htf', SHIP_SESSION_NAME='HT Product Lead')
+        self.assertEqual(session.login_for_session(ship), ('HT Product Lead', path),
+                         'the resolver still names the environment login; the lease refuses it')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -2732,6 +2732,76 @@ class LeaseTest(unittest.TestCase):
         with patch.object(lease.session, 'login_for_session', return_value=None):
             self.assertFalse(lease.sync_card('SOFT-1', 'start', {'HOME': str(self.directory)}))
 
+    def tab_home(self, tab, chat):
+        """A HOME with one roster row: this `tab` is this `chat`."""
+        home = self.directory / 'home'
+        roster = lease.session.roster_path(home)
+        roster.parent.mkdir(parents=True, exist_ok=True)
+        roster.write_text(json.dumps({'rows': [{'tmux': tab, 'multibot': chat}]}))
+        return home
+
+    def add_token(self, home, name):
+        path = lease.session.token_path(home, name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('own-secret\n')
+        return path
+
+    def test_a_login_the_environment_names_for_another_chat_never_assigns(self):
+        """VSTA-306: the HT Features tab's leases assigned board 15 tickets as HT Product Lead."""
+        home = self.tab_home('live-htf', 'HT Features')
+        self.add_token(home, 'HT Features')
+        another = self.add_token(home, 'HT Product Lead')
+        said = io.StringIO()
+        with patch.object(lease, 'board_cli', return_value='/bin/hypertask') as cli, \
+                contextlib.redirect_stderr(said):
+            for named, read_as in (({'SHIP_SESSION_NAME': 'HT Product Lead'}, 'HT Product Lead'),
+                                   ({'HYPERTASK_AGENT_TOKEN_FILE': str(another)},
+                                    'ht product lead')):
+                with self.subTest(named=named):
+                    said.seek(0), said.truncate()
+                    self.assertFalse(lease.sync_card('SOFT-1', 'start', {
+                        'HOME': str(home), 'MULTIPROMPT_TAB': 'live-htf', **named}))
+                    self.assertEqual(
+                        said.getvalue().strip(),
+                        f'lease: SOFT-1 left unassigned: this tab is "HT Features", '
+                        f'so it cannot use the login "{read_as}" from the environment')
+        cli.assert_not_called()
+        self.assertEqual(self.spawned, [], 'nothing is synced or assigned as another chat')
+
+    def test_the_tabs_own_login_still_assigns_as_today(self):
+        home = self.tab_home('live-htf', 'HT Features')
+        token = self.add_token(home, 'HT Features')
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append((command, kwargs.get('env', {})))
+            if command[1:3] == ['--json', 'task']:
+                return subprocess.CompletedProcess(
+                    command, 0, json.dumps({'tasks': [{'projectId': 15, 'assignees': []}]}), '')
+            return subprocess.CompletedProcess(command, 0, '', '')
+
+        with patch.object(lease.session, 'login_for_session',
+                          return_value=('HT Features', token)), \
+                patch.object(lease, 'board_cli', return_value='/bin/hypertask'), \
+                patch.object(lease.subprocess, 'run', side_effect=fake):
+            self.assertTrue(lease.sync_card('SOFT-1', 'start', {
+                'HOME': str(home), 'MULTIPROMPT_TAB': 'live-htf'}))
+        take = [command for command, _env in calls if command[1:3] == ['agent', 'take']]
+        self.assertEqual(take, [['/bin/hypertask', 'agent', 'take', 'SOFT-1', '--project', '15']])
+        for _command, env in calls:
+            self.assertEqual(env['SHIP_SESSION_NAME'], 'HT Features')
+
+    def test_the_tabs_own_name_with_no_token_still_says_no_login(self):
+        home = self.tab_home('live-htf', 'HT Features')
+        said = io.StringIO()
+        with patch.object(lease.session, 'login_for_session', return_value=None), \
+                contextlib.redirect_stderr(said):
+            self.assertFalse(lease.sync_card('SOFT-1', 'start', {
+                'HOME': str(home), 'MULTIPROMPT_TAB': 'live-htf',
+                'SHIP_SESSION_NAME': 'HT Features'}))
+        self.assertEqual(said.getvalue().strip(),
+                         'lease: SOFT-1 left unassigned: this chat has no agent login')
+
     def test_a_failed_spawn_never_fails_the_lease(self):
         with patch.object(lease, 'spawn_card', side_effect=OSError('no fork')), \
                 patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):

@@ -185,6 +185,7 @@ LANE_WAITING = 'nothing ran, waiting for a lane'
 # plain line and the worker still starts (VSTA-260).
 UNASSIGNED = 'lease: {key} left unassigned: {why}'
 NO_LOGIN = 'this chat has no agent login'
+BORROWED = 'this tab is "{tab}", so it cannot use the login "{name}" from the environment'
 # The card's start is refused, not its worker run: nothing runs and the chat must
 # ship one of its open tickets first (VSTA-206), or the board must ship or review one
 # until its review debt is back under its cap (VSTA-271).
@@ -298,10 +299,19 @@ def sync_card(key, phase, env=None, worker_exit=None):
 
     The run is `reconcile --ticket KEY --apply --limit 1`, fully detached, and it
     writes its own status record. No login, no token, or no reconcile script
-    starts nothing: a lease never blocks and never fails on a sync.
+    starts nothing: a lease never blocks and never fails on a sync. A login the
+    environment names for another chat is refused the same way, so a lease never
+    writes as a chat that is not this tab (VSTA-306).
     """
     env = dict(os.environ if env is None else env)
     try:
+        borrowed = session.borrowed(env)
+        if borrowed:
+            if phase == 'start':
+                print(UNASSIGNED.format(key=key, why=BORROWED.format(name=borrowed[0],
+                                                                    tab=borrowed[1])),
+                      file=sys.stderr, flush=True)
+            return False
         name, token = session.login_for_session(env) or ('', None)
         if not token or not Path(token).is_file():
             if phase == 'start':
