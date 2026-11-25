@@ -37,6 +37,7 @@ THRESHOLDS = {
     "add_io_full_avg60": 5.0,
     "add_memory_full_avg60": 2.0,
     "add_disk_free_gb": 80.0,
+    "add_disk_free_frac": 0.20,
     "add_disk_used_pct": 90.0,
     "hold_load_per_core": 1.5,
     "hold_cpu_some_avg60": 40.0,
@@ -44,6 +45,7 @@ THRESHOLDS = {
     "hold_memory_full_avg60": 5.0,
     "hold_mem_avail_gb": 12.0,
     "hold_disk_free_gb": 30.0,
+    "hold_disk_free_frac": 0.075,
     "hold_disk_used_pct": 95.0,
     "hold_counter_pct": 90.0,
     "reserve_gb": 24.0,
@@ -185,6 +187,7 @@ def read_disk(statvfs_json=None):
     return {
         "path": "/",
         "total_bytes": total,
+        "total_gb": round(total / 1073741824, 2),
         "free_bytes": free,
         "free_gb": round(free / 1073741824, 2),
         "used_pct": round(used_pct, 1),
@@ -402,6 +405,18 @@ def format_counter(name, counter):
     return "{} {}/{}".format(name, counter["used"], max_text)
 
 
+def disk_limits(disk):
+    total_gb = disk["total_gb"] if disk else 0
+    add = THRESHOLDS["add_disk_free_gb"]
+    hold = THRESHOLDS["hold_disk_free_gb"]
+    if total_gb <= 0:
+        return {"add_free_gb": add, "hold_free_gb": hold}
+    return {
+        "add_free_gb": round(min(add, THRESHOLDS["add_disk_free_frac"] * total_gb), 6),
+        "hold_free_gb": round(min(hold, THRESHOLDS["hold_disk_free_frac"] * total_gb), 6),
+    }
+
+
 def evaluate(facts):
     limits = THRESHOLDS
     cores = facts["cores"]
@@ -411,6 +426,7 @@ def evaluate(facts):
     io = facts["io_pressure"]
     mem_pressure = facts["memory_pressure"]
     disk = facts["disk"]
+    disk_floor = disk_limits(disk)
 
     holds = []
     if load is not None and load["ratio"] > limits["hold_load_per_core"]:
@@ -426,7 +442,7 @@ def evaluate(facts):
             and mem_pressure["full_avg60"] > limits["hold_memory_full_avg60"]):
         holds.append("memory full60 {:.1f}%".format(mem_pressure["full_avg60"]))
     if disk:
-        if disk["free_gb"] < limits["hold_disk_free_gb"]:
+        if disk["free_gb"] < disk_floor["hold_free_gb"]:
             holds.append("only {:.0f}G disk free".format(disk["free_gb"]))
         if disk["used_pct"] > limits["hold_disk_used_pct"]:
             holds.append("disk {:.0f}% used".format(disk["used_pct"]))
@@ -439,7 +455,7 @@ def evaluate(facts):
     if disk is None:
         disk_blocks.append("disk unknown")
     else:
-        if disk["free_gb"] <= limits["add_disk_free_gb"]:
+        if disk["free_gb"] <= disk_floor["add_free_gb"]:
             disk_blocks.append("only {:.0f}G disk free".format(disk["free_gb"]))
         if disk["used_pct"] >= limits["add_disk_used_pct"]:
             disk_blocks.append("disk {:.0f}% used".format(disk["used_pct"]))
