@@ -144,6 +144,12 @@ def sync_reason(args):
     return record.get('reason') or f'sync exited {code}', None
 
 
+def wake_failed(status, stderr):
+    """One line: why delivery failed, from the sender's last stderr line."""
+    last = (stderr or b'').decode(errors='replace').splitlines()
+    print(f'wake: failed ({status}): {last[-1] if last else ""}', flush=True)
+
+
 def wake(lines):
     """Send a prompt only to this process's own tab; False means use the job-exit wake."""
     try:
@@ -179,16 +185,34 @@ def wake(lines):
                 sent = subprocess.run(
                     [str(sender), '--tmux', tab, 'claude', config['sid'], prompt],
                     capture_output=True, timeout=30)
-                if sent.returncode == 0:
-                    return True
-                status, stderr = sent.returncode, sent.stderr
             except subprocess.TimeoutExpired as error:
-                status, stderr = 'timeout', error.stderr
-            last = (stderr or b'').decode(errors='replace').splitlines()
-            print(f'wake: failed ({status}): {last[-1] if last else ""}', flush=True)
+                # The sender may have delivered before it hung, so a retry can send the
+                # same wake twice; one attempt and let the job exit cover the rest (VSTA-270).
+                wake_failed('timeout', error.stderr)
+                return False
+            if sent.returncode == 0:
+                return True
+            wake_failed(sent.returncode, sent.stderr)
     except (OSError, subprocess.SubprocessError):
         pass
     return False
+
+
+def superseded(name):
+    """True when a newer watcher owns this chat's loop, so this one must stop waking.
+
+    A restart or a safety tick starts a fresh watcher while the old job keeps polling, and
+    each of them would wake the chat for the same move. The loop state already names the
+    newest watcher, so the older one reads that and leaves it alone (VSTA-270).
+    """
+    try:
+        pid = int(loop_state.stored(name).get('watch_pid'))
+    except (TypeError, ValueError):
+        return False
+    if pid == os.getpid():
+        return False
+    print(f'watch: superseded by pid {pid}; exiting', flush=True)
+    return True
 
 
 def follow(args, clock=time.time, sleep=time.sleep):
@@ -203,6 +227,8 @@ def follow(args, clock=time.time, sleep=time.sleep):
     max_cycles = getattr(args, 'cycles', 0) or 0
     while True:
         lines = []
+        if superseded(args.name):
+            return 0
         # The pulse comes first: a watcher that stops here is dead, and its last pulse says when.
         try:
             loop_state.beat(args.name, now=clock())
@@ -241,6 +267,9 @@ def follow(args, clock=time.time, sleep=time.sleep):
                     pending.append(line)
             reported += 1
         if pending and (last_wake is None or clock() - last_wake >= 60):
+            # A change both watchers saw must still send only one wake.
+            if superseded(args.name):
+                return 0
             if not wake(pending):
                 return 0
             pending.clear()

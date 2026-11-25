@@ -1895,10 +1895,10 @@ class WatchTest(unittest.TestCase):
                 on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
                     'timed out delivery must exit'))
         self.assertEqual(code, 0, out)
-        self.assertEqual(out.count('wake: failed (timeout): still busy\n'), 2)
+        self.assertEqual(out.count('wake: failed (timeout): still busy\n'), 1)
         self.assertNotIn('sender diagnostic', out)
-        self.assertEqual(len(self.wakes.read_text().splitlines()), 2)
-        retry_sleep.assert_called_once_with(5)
+        self.assertEqual(len(self.wakes.read_text().splitlines()), 1)
+        retry_sleep.assert_not_called()
 
     def test_sender_timeout_without_stderr_falls_back_to_exit(self):
         self.sender.write_text(self.sender.read_text() + 'import time\ntime.sleep(60)\n')
@@ -1915,9 +1915,9 @@ class WatchTest(unittest.TestCase):
                 on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else self.fail(
                     'timed out delivery must exit'))
         self.assertEqual(code, 0, out)
-        self.assertEqual(out.count('wake: failed (timeout): \n'), 2)
-        self.assertEqual(len(self.wakes.read_text().splitlines()), 2)
-        retry_sleep.assert_called_once_with(5)
+        self.assertEqual(out.count('wake: failed (timeout): \n'), 1)
+        self.assertEqual(len(self.wakes.read_text().splitlines()), 1)
+        retry_sleep.assert_not_called()
 
     def test_enabled_own_config_wins_over_an_earlier_disabled_match(self):
         configs = self.directory / '.local/state/multiprompt/agent-host'
@@ -2113,6 +2113,57 @@ class WatchTest(unittest.TestCase):
         state = json.loads((self.directory / 'state/watch-test.json').read_text())
         self.assertEqual(state['watch_pid'], replacement_pid)
         self.assertEqual(state['watch_started'], iso(NOW + 180))
+
+    def watch_args(self):
+        return argparse.Namespace(board=13556, label='Board Drain Loop', name='Watch Test',
+                                  fixture=str(self.fixture), no_sync=True, every=10,
+                                  heartbeat=100, sync_every=900, cycles=2)
+
+    def test_a_superseded_watcher_exits_without_waking(self):
+        """VSTA-270: a restart left three watchers on one chat, so one move woke it 3 times."""
+        newer = os.getpid() + 1
+        loop.record_watch('Watch Test', os.getpid(), now=NOW, every=10)
+        loop.record_watch('Watch Test', newer, now=NOW + 1, every=10)
+        self.rows([vsta('VSTA-80')])
+        clock = Clock()
+        clock.on_sleep = lambda tick: self.fail('a superseded watcher must exit on its first poll')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = watch.follow(self.watch_args(), clock=clock.time, sleep=clock.sleep)
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(out.getvalue(), f'watch: superseded by pid {newer}; exiting\n')
+        self.assertFalse(self.wakes.exists(), 'the stale watcher must not wake the chat')
+        # The newer watcher still sends exactly one wake for the change both saw.
+        code, out, _ = self.run_watch(
+            [], '--every', '10', '--heartbeat', '100', '--cycles', '2',
+            on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else None)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.wakes.read_text().splitlines()), 1)
+
+    def test_a_handover_after_the_change_sends_no_wake(self):
+        """VSTA-270: the newer watcher may appear between the poll and the wake."""
+        newer = os.getpid() + 1
+        loop.record_watch('Watch Test', os.getpid(), now=NOW, every=10)
+        self.rows([])
+        seen, real = [], watch.snapshot
+
+        def snapshot_then_handover(args, now):
+            current = real(args, now)
+            seen.append(now)
+            if len(seen) == 2:
+                loop.record_watch('Watch Test', newer, now=now, every=10)
+            return current
+
+        clock = Clock()
+        clock.on_sleep = lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else None
+        out = io.StringIO()
+        with patch.object(watch, 'snapshot', side_effect=snapshot_then_handover), \
+                contextlib.redirect_stdout(out):
+            code = watch.follow(self.watch_args(), clock=clock.time, sleep=clock.sleep)
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn('changed: VSTA-80 new in Todo', out.getvalue())
+        self.assertIn(f'watch: superseded by pid {newer}; exiting', out.getvalue())
+        self.assertFalse(self.wakes.exists(), 'the change must wake the chat once, from the new watcher')
 
     def test_the_watcher_pulses_on_every_poll(self):
         """VSTA-151: the pulse is the marker a dead watcher leaves behind."""
