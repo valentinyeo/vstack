@@ -51,7 +51,8 @@ MEDIA_LINK = re.compile(
     re.IGNORECASE,
 )
 URL = re.compile(r'https?://\S+')
-COLUMN = r'(?:Todo|Backlog|Verification Backlog|Doing|Building|In Progress|Checks|AI Review|Verifier|QA|Done)'
+COLUMN = (r'(?:Todo|Backlog|Verification Backlog|Doing|Building|In Progress|Checks|AI Review'
+          r'|Verifier|QA|Done|No Flag)')
 MOVE = rf'{COLUMN} -> {COLUMN}'
 MOVE_NOTES = (
     re.compile(rf'fleet/reconcile: (?P<reason>[^\n]*); {MOVE}\.'),

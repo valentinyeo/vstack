@@ -316,8 +316,8 @@ class WorkerShim(unittest.TestCase):
             (2060, 'Doing', (merged, newer), False, 'AI Review', 'than the merged PASS'),
             (2060, 'Todo', (), True, 'Doing', 'live worker'),
             (2060, 'Doing', (), False, 'Todo', 'no live worker and no PR'),
-            (15, 'In Progress', (merged,), False, 'Done', 'merged with PASS'),
-            (15, 'QA', (merged,), False, 'Done', 'merged with PASS'),
+            (15, 'In Progress', (merged,), False, 'No Flag', 'merged with PASS'),
+            (15, 'QA', (merged,), False, 'No Flag', 'merged with PASS'),
             (15, 'Backlog', (), True, 'In Progress', 'live worker'),
         )
         for board_id, column, pulls, alive, expected, reason in cases:
