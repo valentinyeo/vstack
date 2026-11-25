@@ -24,6 +24,30 @@ Wait for this PR's checks with `~/.local/share/vstack/tools/gh-wrapper/wait-chec
 
 `skill-update.py` keeps the shared checkout current on its own, so a merged rule reaches this chat within ten minutes of a prompt. Run the update by hand from `~/.local/share/vstack` when you need it now: `git fetch && git checkout --detach origin/main && ./install`. Never run an install from a worktree to repoint other chats at an unmerged branch.
 
+## The pacer rule on every harness
+
+An owner chat, the one Valentin talks to, only writes briefs and starts code workers through `~/.local/bin/plan-pick --run`. `hooks/pacer-guard.py` refuses a code edit in the chat itself, and allows the workers plan-pick starts because plan-pick unsets `MULTIPROMPT_TAB` for them. `./install` puts that rule in front of every harness a chat can switch to, from one rule text, `skills/valentin-mode/references/pacer-rule.md`.
+
+| Harness | Rule file | Hook wiring | Blocking format |
+|---|---|---|---|
+| Claude Code | none | `PreToolUse` in `~/.claude/settings.json`, `pacer-guard.py` | exit 2 + stderr |
+| Codex | `~/.codex/AGENTS.md` | `PreToolUse` in `~/.codex/hooks.json`, `pacer-guard.py --harness codex` | exit 2 + stderr |
+| Antigravity (`agy`) | `~/.gemini/GEMINI.md` | `PreToolUse` matcher `*` in `~/.gemini/config/hooks.json`, `pacer-guard.py --harness agy` | `{"decision": "deny"}` on stdout |
+
+`scripts/install-pacer-rules.py` writes the rule into a marked block:
+
+```
+<!-- vstack:pacer-rule:begin (written by vstack install ...) -->
+...
+<!-- vstack:pacer-rule:end -->
+```
+
+A second install replaces that block and nothing else; whatever else is in those files stays. It merges `config/codex-hooks.json` into `~/.codex/hooks.json`, appending the guard once and keeping every hook already registered there. Antigravity's entry ships in `config/antigravity-hooks.json`.
+
+Codex's `PreToolUse` payload and exit codes match Claude Code's, so the only translation is tool names: `exec_command` is a shell and `apply_patch` names its files in a patch. Antigravity sends `{"toolCall": {"name", "args"}}` in camelCase and blocks on a JSON decision, so the guard reads `run_command`'s `CommandLine` and a write tool's `TargetFile`, and prints the decision agy acts on. Unknown tools pass, as they do on Claude Code.
+
+Heavy-Bash pacing and the other entries in the hook table above stay Claude Code only: on Codex and Antigravity they key off a Claude transcript, which those harnesses do not write.
+
 ## Google Antigravity (`agy`)
 
 Antigravity loads customizations from [Customization discovery](https://antigravity.google/docs/customization-discovery/) and [Hooks](https://antigravity.google/docs/hooks/). `./install` links vstack skills into `~/.agents/skills/`, `~/.gemini/antigravity-cli/skills/` (CLI priority), and `~/.gemini/config/skills/`, then merges `config/antigravity-hooks.json` into `~/.gemini/config/hooks.json`. Slash `/valentin-mode` comes from the linked `SKILL.md`.
@@ -31,9 +55,10 @@ Antigravity loads customizations from [Customization discovery](https://antigrav
 | Event | Hook | Notes |
 |---|---|---|
 | PreToolUse | valentin-mode context.py | Version line + responsive rules once |
+| PreToolUse | pacer-guard.py `--harness agy` | An owner chat's code edit is denied, a plan-pick worker passes |
 | Stop | said-started, no-bare-ids, idle-stop | Same scripts as Claude skill frontmatter |
 
-**Hooks agy does not run today** (Claude Code only): `long-chat.py` (`UserPromptSubmit`, `PreCompact`), `pacer-guard.py`, `test-timeout-guard.py`, `pstack-new-gates.py`, `launch-gate.py`, `vps-state` SessionStart, and every other entry in `~/.claude/settings.json`. Handoff before context fills still needs a human move or Multibot; agy has no `PreCompact`.
+**Hooks agy does not run today** (Claude Code only): `long-chat.py` (`UserPromptSubmit`, `PreCompact`), `test-timeout-guard.py`, `pstack-new-gates.py`, `launch-gate.py`, `vps-state` SessionStart, and every other entry in `~/.claude/settings.json`. Handoff before context fills still needs a human move or Multibot; agy has no `PreCompact`.
 
 After a Multibot handover into agy, start with `/valentin-mode` when the old chat had it loaded. Proof: the first assistant reply names the `valentin-mode v…` line from `context.py`.
 

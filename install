@@ -173,6 +173,14 @@ else
   echo "vstack install: skip antigravity hooks (no $ROOT/scripts/merge-antigravity-hooks.py)" >&2
 fi
 
+# The pacer rule follows a chat to Codex and Antigravity: an owner chat there reads the rule
+# from its own rule file and is refused by the same guard, whatever harness it switched to
+# (VSTA-283). One rule text, marked blocks, and a hooks merge that keeps every entry already there.
+python3 "$ROOT/scripts/install-pacer-rules.py" || {
+  echo "vstack install: install-pacer-rules failed; Codex and Antigravity chats have no pacer rule" >&2
+  exit 1
+}
+
 # Pacer workers on OpenCode and Antigravity never run Claude hooks, so the same refusal
 # is generated as a command shim on a folder plan-pick puts first on a worker's PATH
 # (VSTA-165). The shims come from the config the hook reads, so the two cannot drift.
