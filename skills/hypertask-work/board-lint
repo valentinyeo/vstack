@@ -915,7 +915,6 @@ def lint(args, shared=None):
             check_merged_no_pass(task, pulls, board, breaks, facts=facts)
         check_label_assignee(task, chat_names, breaks, own=own,
                              own_label=getattr(args, 'label', '') or '')
-        # The label this chat armed with owns its cards, generic or not (VSTA-291).
         check_no_owner_label(task, breaks, getattr(args, 'label', '') or '')
         check_unnamed_identity(task, breaks)
         check_stale(task, now, breaks)
