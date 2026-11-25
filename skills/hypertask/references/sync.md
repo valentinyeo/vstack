@@ -61,7 +61,7 @@ The watcher records its last sync in this chat's board-drain state. `drain-check
 
 ## Assignment on the lease start
 
-The lease's start sync runs `agent take` for the ticket as the chat's own login when the ticket has no agent assignee. It leaves an existing agent assignee alone, and it never assigns a person. A ticket with only a person assignee gets the agent added next to the person. This is what makes ownership visible on a board nobody assigned.
+The lease's start sync runs `agent take` for the ticket as the chat's own login when nobody is assigned to it. A ticket that already has an assignee is left exactly as it is: a person on it is a manual override, and another agent already owns it. A ticket that stays unassigned prints one plain line, `lease: <KEY> left unassigned: <why>` (no login for this chat, or the board call's own reason), and the worker still runs. This is what makes ownership visible on a board nobody assigned.
 
 ## GitHub budget
 
