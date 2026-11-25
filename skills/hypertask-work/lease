@@ -3,7 +3,8 @@
 
 A run refuses to start in a shared checkout: a worker edits in a git worktree only.
 It counts a start against the starting chat's own board label and nothing else
-(VSTA-266).
+(VSTA-266), and it refuses a non-urgent start on a board over its review-debt cap
+(VSTA-271).
 """
 import argparse
 import fcntl
@@ -185,7 +186,8 @@ LANE_WAITING = 'nothing ran, waiting for a lane'
 UNASSIGNED = 'lease: {key} left unassigned: {why}'
 NO_LOGIN = 'this chat has no agent login'
 # The card's start is refused, not its worker run: nothing runs and the chat must
-# ship one of its open tickets first (VSTA-206).
+# ship one of its open tickets first (VSTA-206), or the board must ship or review one
+# until its review debt is back under its cap (VSTA-271).
 CAP_HELD = 'lease: {key} held: {line}'
 # Other chats read the shared checkout live, so a worker never starts in one. The
 # launch line's `cd` can fail and bash carries on in the shared checkout (VSTA-259).
@@ -206,13 +208,14 @@ def board_tasks(board_id):
 
 
 def cap_refusal(key):
-    """The line that refuses a start while the starting chat's own label is at cap.
+    """The line that refuses a start while the label is at cap or the board holds.
 
     A card carries every label its work touches, so only the starting chat's own
-    label counts (`wip.cap_labels`, VSTA-266). Reads the card this run would start.
-    A card already in a working column is a resume, and an urgent card may start
-    first, so neither is refused. Any read that fails answers None: a board outage
-    never stops a worker.
+    label counts (`wip.cap_labels`, VSTA-266). Reads the card this run would start
+    and the board it sits on. A card already in a working column is a resume, and an
+    urgent card may start first, so neither is refused; those two exemptions stand
+    before the board's review-debt freeze as well (VSTA-271). Any read that fails
+    answers None: a board outage never stops a worker.
     """
     try:
         task = reconcile.read_ticket(key)
@@ -223,9 +226,14 @@ def cap_refusal(key):
     except wip.ERRORS as error:
         wip.warn_once(f'{key} read failed ({error})')
         return None
-    if not labels:
+    try:
+        tasks = board_tasks(board_id)
+    except wip.ERRORS as error:
+        wip.warn_once(f'board {board_id} read failed ({error})')
         return None
-    line = wip.read_held(board_id, labels, board_tasks)
+    line = wip.read_held(board_id, labels, lambda _board: tasks) if labels else None
+    if line is None:
+        line = wip.review_debt_held(board_id, tasks)
     return CAP_HELD.format(key=key, line=line) if line else None
 
 

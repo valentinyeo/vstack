@@ -16,6 +16,9 @@ refuses with exit 75.
 Only the starting chat's own label counts against it, never a product label that
 sits on most of a board's cards (VSTA-266).
 
+A second table freezes new starts on a whole board while its review debt is over a
+cap (VSTA-271): the cards in Checks and AI Review, every label.
+
 A read that fails fails open with one warning line: a board outage must never stop
 work.
 
@@ -37,6 +40,9 @@ GENERIC_PREFIX = 'brain-'
 # None covers every label with no row of its own, so moving the fleet's cap is this
 # one number.
 CAPS = {None: 5}
+# A board's review-debt freeze: no new start while it holds more of these than its cap.
+REVIEW_DEBT_CAPS = {13734: 10}
+_REVIEWING = frozenset({'checks', 'ai review'})
 # One table reads Hypertask priority: index 0 is No Priority, 1 Urgent, 2 High,
 # 3 Medium, 4 Low. A smaller index is higher, so the rank below is urgent first and
 # a card with no priority is last.
@@ -149,6 +155,38 @@ def held_line(label, cards, cap):
     return f'label {label} has {cards} open tickets in {WORKING_LABEL} (cap {cap}); ship one first'
 
 
+def review_debt(board_tasks):
+    """The board's review debt: its cards in Checks and AI Review, every label."""
+    return sum(1 for task in board_tasks or () if section(task) in _REVIEWING)
+
+
+def review_debt_cap(board_id):
+    """This board's review-debt cap, or None when the board has no row."""
+    try:
+        return REVIEW_DEBT_CAPS.get(int(board_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def review_debt_over(board_id, board_tasks):
+    """(cards, cap) while this board is over its review debt, else None."""
+    cap = review_debt_cap(board_id)
+    if cap is None:
+        return None
+    cards = review_debt(board_tasks)
+    return (cards, cap) if cards > cap else None
+
+
+def review_debt_held(board_id, board_tasks):
+    """The one sentence the lease prints holding a start on this board, or None."""
+    over = review_debt_over(board_id, board_tasks)
+    if over is None:
+        return None
+    cards, cap = over
+    return (f'board {board_id} review debt {cards} > {cap} (Checks + AI Review); '
+            'ship or review first')
+
+
 def warn_once(detail):
     """One line per run; a repeated failure in the same tick stays quiet."""
     if detail in _warned:
@@ -227,6 +265,21 @@ def self_test():
     assert read_held(13556, ['Vstack'], lambda _board: rows) is None, 'under cap is not held'
     assert held_line('Vstack', 5, 5) == ('label Vstack has 5 open tickets in '
                                         'Doing+Checks+AI Review (cap 5); ship one first')
+    debt = [{'section': 'Checks'}, {'section': 'AI Review'}]
+    assert review_debt(debt * 5) == 10, 'Checks and AI Review are the debt, every label'
+    assert review_debt([{'section': 'Doing'}, {'section': 'Todo'}]) == 0, 'other columns owe nothing'
+    at_cap_debt = debt * 5
+    over_cap_debt = at_cap_debt + [{'section': 'Checks'}]
+    assert review_debt_cap(13734) == 10, 'board 13734 carries a review-debt cap'
+    assert review_debt_cap('13734') == 10, 'a board id reads as text too'
+    assert review_debt_cap(13556) is None, 'a board with no row is never frozen'
+    assert review_debt_over(13556, over_cap_debt) is None, 'no row, no hold'
+    assert review_debt_over(13734, at_cap_debt) is None, 'at the cap is not over'
+    assert review_debt_over(13734, over_cap_debt) == (11, 10), 'one card over the cap is over'
+    assert review_debt_held(13734, at_cap_debt) is None, 'a board at its cap holds nothing'
+    assert review_debt_held(13734, over_cap_debt) == (
+        'board 13734 review debt 11 > 10 (Checks + AI Review); ship or review first'), \
+        'the held line names the board, the debt and the cap'
     print('wip-cap self-test ok')
 
 

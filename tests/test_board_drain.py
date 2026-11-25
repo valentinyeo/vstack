@@ -89,6 +89,22 @@ def doing(key, age=300, section='Doing', assignees=None):
     return {'task': task, 'comments': []}
 
 
+def multi_bot_todo(key, age=3 * 3600, priority=None):
+    row = todo(key, age=age, priority=priority)
+    row['task'].update({'projectId': 13734, 'labels': [{'name': 'Multi Bot'}]})
+    return row
+
+
+def review_card(index, column='Checks', label='Multiprompt Android', board=13734, age=600):
+    row = doing(f'MUBO-{800 + index}', age=age, section=column)
+    row['task'].update({'projectId': board, 'labels': [{'name': label}]})
+    return row
+
+
+def review_cards(count, column='Checks', board=13734):
+    return [review_card(index, column, board=board) for index in range(count)]
+
+
 def vsta4():
     """VSTA-4 as `hypertask --json task get VSTA-4` sent it: an agent holds it."""
     task = json.loads((FIXTURES / 'VSTA-4.task.json').read_text())['tasks'][0]
@@ -712,6 +728,49 @@ class CheckTest(unittest.TestCase):
         self.assertIn('held: no worker lane since', out)
         self.assertNotIn('stale:', out)
         self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_board_over_its_review_debt_holds_the_idle_loop_and_passes(self):
+        rows = review_cards(11) + [multi_bot_todo('MUBO-701')]
+        code, out = self.run_check(rows, board=13734, label='Multi Bot')
+        self.assertEqual(code, 0, out)
+        self.assertIn('held: review debt 11 > 10; 1 workable Todo wait', out)
+        self.assertNotIn('loop off', out)
+        self.assertNotIn('stale:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_a_board_at_its_review_debt_cap_still_reports_the_idle_loop(self):
+        rows = review_cards(10) + [multi_bot_todo('MUBO-702')]
+        code, out = self.run_check(rows, board=13734, label='Multi Bot')
+        self.assertEqual(code, 1, out)
+        self.assertNotIn('held:', out)
+        self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
+        self.assertIn('stale: MUBO-702 workable in Todo for 3h.', out)
+
+    def test_a_board_review_debt_hold_never_hides_an_urgent_ticket(self):
+        rows = review_cards(11) + [multi_bot_todo('MUBO-703', priority=URGENT)]
+        code, out = self.run_check(rows, board=13734, label='Multi Bot')
+        self.assertEqual(code, 1, out)
+        self.assertIn('urgent: MUBO-703 is urgent and waiting in Todo; start it before any '
+                      'other ticket.', out)
+        self.assertIn('held: review debt 11 > 10; 1 workable Todo wait', out)
+        self.assertNotIn('stale: MUBO-703', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_server_hold_still_wins_over_a_board_review_debt_hold(self):
+        rows = review_cards(11) + [multi_bot_todo('MUBO-704', priority=URGENT)]
+        code, out = self.run_check(rows, board=13734, label='Multi Bot', probe=(2, HOLD_LINE))
+        self.assertEqual(code, 1, out)
+        self.assertIn(f'held: {HOLD_LINE}; 1 workable Todo wait for the server', out)
+        self.assertNotIn('review debt', out)
+        self.assertIn('urgent: MUBO-704', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_board_with_no_review_debt_row_is_unchanged(self):
+        rows = review_cards(11) + [vsta('VSTA-206', age=3 * 3600)]
+        code, out = self.run_check(rows, board=13556, label='Board Drain Loop')
+        self.assertEqual(code, 1, out)
+        self.assertNotIn('held:', out)
+        self.assertIn('stale: VSTA-206 workable in Todo for 3h.', out)
 
     def test_loop_off_names_the_urgent_ticket_over_a_much_older_one(self):
         code, out = self.run_check([todo('SOFT-3119', age=3 * 3600, priority=MEDIUM),

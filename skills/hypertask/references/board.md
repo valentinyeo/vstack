@@ -68,6 +68,12 @@ worktree on a branch first` line, before any lease is taken. A linked `git workt
 a feature branch starts normally; a directory outside git starts only when it holds
 `brief.txt`.
 
+A start on a board over its review-debt cap is refused the same way: exit 75 and one
+`lease: <KEY> held: board <id> review debt <N> > <cap> (Checks + AI Review); ship or
+review first` line, where the cap is `wip-cap`'s `REVIEW_DEBT_CAPS` row for that board
+(the cards in Checks and AI Review, every label). An urgent ticket and a card already
+in a working column still start, and a board with no row is unchanged.
+
 An already running worker:
 
 ```bash

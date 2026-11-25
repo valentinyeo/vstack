@@ -64,6 +64,21 @@ def open_rows(cards, column='Checks', label=LABEL):
     return [{'task': task, 'comments': []} for task in open_cards(cards, column, label)]
 
 
+DEBT_BOARD = 13734
+DEBT_LABEL = 'Multiprompt Android'
+
+
+def debt_card(index, column='Checks', board=DEBT_BOARD):
+    return {'ticketNumber': f'MUBO-{900 + index}', 'projectId': board, 'section': column,
+            'labels': [{'name': DEBT_LABEL}],
+            'assignees': [{'type': 'agent', 'displayName': DEBT_LABEL + ' Agent'}],
+            'updatedAt': iso(NOW - 600)}
+
+
+def debt_cards(count, column='Checks', board=DEBT_BOARD):
+    return [debt_card(index, column, board) for index in range(count)]
+
+
 def card(key, section='Todo', priority=None, age=3 * 3600, labels=None):
     task = {'ticketNumber': key, 'projectId': 13556, 'section': section, 'status': 'Normal',
             'labels': [{'name': name} for name in (labels or [LABEL])],
@@ -219,6 +234,69 @@ class LeaseRefusalTest(unittest.TestCase):
         self.assertEqual(said.count('cap not enforced'), 1, said)
         self.assertIn('wip-cap: board 13556 read failed (board unreadable); cap not enforced', said)
         started.assert_called_once()
+
+    def test_a_todo_start_on_a_board_over_its_review_debt_is_refused(self):
+        task = dict(card('MUBO-538')['task'], projectId=DEBT_BOARD)
+        code, said, started, written = self.run_lease(task, debt_cards(11))
+        self.assertEqual(code, 75, said)
+        self.assertIn('lease: MUBO-538 held: board 13734 review debt 11 > 10 '
+                      '(Checks + AI Review); ship or review first', said)
+        started.assert_not_called()
+        written.assert_not_called()
+
+    def test_a_todo_start_at_the_review_debt_cap_is_allowed(self):
+        task = dict(card('MUBO-538')['task'], projectId=DEBT_BOARD)
+        code, said, started, _written = self.run_lease(task, debt_cards(10))
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('held:', said)
+        started.assert_called_once()
+
+    def test_an_urgent_todo_start_is_allowed_over_review_debt(self):
+        task = dict(card('MUBO-538', priority=URGENT)['task'], projectId=DEBT_BOARD)
+        code, said, started, _written = self.run_lease(task, debt_cards(11))
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('held:', said)
+        started.assert_called_once()
+
+    def test_a_doing_resume_is_allowed_over_review_debt(self):
+        task = dict(card('MUBO-538', section='Doing')['task'], projectId=DEBT_BOARD)
+        code, said, started, _written = self.run_lease(task, debt_cards(11))
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('held:', said)
+        started.assert_called_once()
+
+    def test_a_board_with_no_review_debt_row_is_unchanged(self):
+        code, said, started, _written = self.run_lease(card('VSTA-206')['task'],
+                                                      debt_cards(11, board=13556))
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('held:', said)
+        started.assert_called_once()
+
+
+class ReviewDebtTest(unittest.TestCase):
+    """A board over its review debt starts nothing new until someone ships (VSTA-271)."""
+
+    def test_the_debt_is_every_card_in_the_two_review_columns(self):
+        rows = (debt_cards(6, 'Checks') + debt_cards(6, 'AI Review')
+                + debt_cards(2, 'Doing') + debt_cards(2, 'Done'))
+        self.assertEqual(wip.review_debt(rows), 12)
+
+    def test_an_empty_board_owes_nothing(self):
+        self.assertEqual(wip.review_debt([]), 0)
+        self.assertEqual(wip.review_debt(None), 0)
+
+    def test_at_the_cap_is_not_over_and_one_card_past_it_is(self):
+        self.assertIsNone(wip.review_debt_over(DEBT_BOARD, debt_cards(10)))
+        self.assertEqual(wip.review_debt_over(DEBT_BOARD, debt_cards(11)), (11, 10))
+
+    def test_a_board_with_no_row_is_never_held(self):
+        self.assertIsNone(wip.review_debt_cap(13556))
+        self.assertIsNone(wip.review_debt_held(13556, debt_cards(30)))
+
+    def test_the_held_line_names_the_board_the_debt_and_the_cap(self):
+        self.assertEqual(wip.review_debt_held(DEBT_BOARD, debt_cards(14)),
+                         'board 13734 review debt 14 > 10 (Checks + AI Review); '
+                         'ship or review first')
 
 
 class OwnLabelTest(unittest.TestCase):

@@ -106,6 +106,8 @@ ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.Sub
 # The load probe: only these findings are about work the server is too busy to take.
 VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
 LOAD_FINDINGS = frozenset({'loop off', 'stale', 'orphan PR'})
+# A board over its review-debt cap holds new starts: these findings wait behind one line.
+REVIEW_DEBT_FINDINGS = frozenset({'loop off', 'stale'})
 # The lane probe: plan-pick's own record of never finding a free worker lane.
 PLAN_PICK_LOG = Path(os.environ.get('PLAN_PICK_LAUNCHES')
                      or os.path.expanduser('~/.local/state/token-ladder/launches.jsonl'))
@@ -932,8 +934,9 @@ def read_view(args, now):
         if not loop_state.timer_enabled(state_name):
             findings.append(('sync timer', 'sync timer off: re-arm this chat with ./loop-state timer.'))
         findings += [('sync', line) for line in sync_findings(state_name, now)]
-    return {'board': board, 'rows': rows, 'workable': workable, 'data': data,
-            'pulls': pulls, 'notes': waiting_lines + blocked_lines, 'findings': findings}
+    return {'board': board, 'rows': rows, 'tasks': board_tasks, 'workable': workable,
+            'data': data, 'pulls': pulls, 'notes': waiting_lines + blocked_lines,
+            'findings': findings}
 
 
 def lint_module():
@@ -991,7 +994,7 @@ def check(args, now):
     workable, findings = view['workable'], view['findings']
     for line in view['notes']:
         print(line)
-    held = hold_line(workable, findings, args, now)
+    held = hold_line(workable, findings, args, now, view.get('tasks'))
     shown, printed_hold, failing = [], False, 0
     for kind, text in findings:
         if held is not None and kind in held[0]:
@@ -1017,27 +1020,33 @@ def check(args, now):
     return 0 if not failing else 1
 
 
-def hold_line(workable, findings, args, now):
+def hold_line(workable, findings, args, now, tasks=None):
     """(findings to collapse, one held line) when the loop holds on purpose, else None.
 
     Valentin's rule is to launch nothing while the server is overloaded, and
     plan-pick launches nothing while no worker lane is free, so an idle drain in
     either state is holding on purpose, not a broken loop. The server HOLD wins.
-    Unassigned, answered, loop-state and sync findings always stand.
+    A board over its review-debt cap also holds new starts until someone ships or
+    reviews (VSTA-271), after the server and lane holds. Unassigned, answered, urgent,
+    loop-state and sync findings always stand.
     """
-    if args.no_load:
-        return None
     kinds = {kind for kind, _ in findings}
-    if kinds & LOAD_FINDINGS:
-        code, line = probe_load()
-        if code == 2 and line:
-            return LOAD_FINDINGS, (f'held: {line}; '
-                                   f'{len(workable)} workable Todo wait for the server')
-    if kinds & LANE_FINDINGS:
-        moment = probe_lane(now)
-        if moment is not None:
-            return LANE_FINDINGS, (f'held: no worker lane since {clock_utc(moment)}; '
-                                   f'{len(workable)} workable Todo wait for a lane')
+    if not args.no_load:
+        if kinds & LOAD_FINDINGS:
+            code, line = probe_load()
+            if code == 2 and line:
+                return LOAD_FINDINGS, (f'held: {line}; '
+                                       f'{len(workable)} workable Todo wait for the server')
+        if kinds & LANE_FINDINGS:
+            moment = probe_lane(now)
+            if moment is not None:
+                return LANE_FINDINGS, (f'held: no worker lane since {clock_utc(moment)}; '
+                                       f'{len(workable)} workable Todo wait for a lane')
+    over = wip.review_debt_over(args.board, tasks)
+    if over is not None:
+        cards, cap = over
+        return REVIEW_DEBT_FINDINGS, (f'held: review debt {cards} > {cap}; '
+                                      f'{len(workable)} workable Todo wait')
     return None
 
 
