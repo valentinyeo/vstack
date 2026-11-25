@@ -17,6 +17,8 @@ ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
 # A tick over the gh budget is skipped, not failed: reconcile prints this one line
 # and exits 0, and the watcher keeps watching.
 SKIP_PREFIX = 'sync skipped:'
+# A failed step's reason carries the last stderr line, cut to this many characters.
+DETAIL_LIMIT = 200
 BOARD_TITLE = re.compile(r'^reconcile:\s+board\s+(\d+)\s+title=(.+)$')
 
 loader = importlib.machinery.SourceFileLoader('board_drain_loop_state', str(HERE / 'loop-state'))
@@ -135,8 +137,24 @@ def run_with_output(step, args, env):
     if offending:
         return 'failed', f'{step} printed: {offending[0]}', text
     if done.returncode:
-        return 'failed', f'{step} exited {done.returncode}', text
+        return 'failed', f'{step} exited {done.returncode}{failure_detail(done)}', text
     return 'ok', '', text
+
+
+def failure_detail(done):
+    """': <last non-empty stderr line>', else the last stdout line, trimmed.
+
+    A bare exit code tells a watcher nothing; the line that explains it does.
+    """
+    line = last_line(done.stderr) or last_line(done.stdout)
+    return f': {line[:DETAIL_LIMIT]}' if line else ''
+
+
+def last_line(text):
+    for line in reversed((text or '').splitlines()):
+        if line.strip():
+            return line.strip()
+    return ''
 
 
 def run(step, args, env):
@@ -152,8 +170,8 @@ def steps(board, label, limit):
 
 def unlabeled_steps(board, limit):
     base = ['--board', str(board), '--unlabeled']
-    return (('unlabeled-preview', base),
-            ('unlabeled-apply', [*base, '--apply', '--limit', str(limit)]))
+    # The apply already plans, so a preview ahead of it only doubles the GitHub calls.
+    return (('unlabeled-apply', [*base, '--apply', '--limit', str(limit)]),)
 
 
 def main(argv=None):
