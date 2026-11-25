@@ -2823,13 +2823,19 @@ else:
 ''' % NOW
 
 
-class CapPassthroughTest(unittest.TestCase):
-    """The lease counts a start against the card's own labels (VSTA-206)."""
+PRODUCT = 'Multiprompt'
+OWN = 'Multi Bot Verification'
 
-    def refusal(self, labels, cards):
+
+class CapPassthroughTest(unittest.TestCase):
+    """The lease counts a start against the starting chat's own label (VSTA-206, VSTA-266)."""
+
+    def refusal(self, labels, cards, own='Vstack', known=frozenset({'vstack'})):
         task = {'ticketNumber': 'VSTA-206', 'projectId': 13556, 'section': 'Todo',
                 'labels': [{'name': name} for name in labels]}
         with patch.object(lease.reconcile, 'read_ticket', return_value=task), \
+                patch.object(lease, 'own_label', return_value=own), \
+                patch.object(lease, 'chat_labels', return_value=known), \
                 patch.object(lease, 'board_tasks', return_value=cards):
             return lease.cap_refusal('VSTA-206')
 
@@ -2850,6 +2856,25 @@ class CapPassthroughTest(unittest.TestCase):
 
     def test_a_generic_label_carries_no_cap(self):
         self.assertIsNone(self.refusal(['Bug'], self.cards(9, 'Bug')))
+
+    def test_a_product_label_at_cap_never_blocks_the_start(self):
+        """MUBO-538: 14 cards carry the app's label, one carries the chat's (VSTA-266)."""
+        cards = (self.cards(14, PRODUCT) + self.cards(1, OWN))
+        self.assertIsNone(self.refusal([PRODUCT, OWN], cards, own=OWN,
+                                      known=frozenset({PRODUCT.casefold(), OWN.casefold()})))
+
+    def test_the_chats_own_label_at_cap_is_refused_by_name(self):
+        cards = self.cards(14, PRODUCT) + self.cards(5, OWN)
+        self.assertEqual(self.refusal([PRODUCT, OWN], cards, own=OWN,
+                                     known=frozenset({PRODUCT.casefold(), OWN.casefold()})),
+                         f'lease: VSTA-206 held: label {OWN} has 5 open tickets in '
+                         'Doing+Checks+AI Review (cap 5); ship one first')
+
+    def test_an_unreadable_own_label_still_never_blocks_on_a_product_label(self):
+        cards = self.cards(14, PRODUCT) + self.cards(1, OWN)
+        self.assertIsNone(self.refusal([PRODUCT, OWN], cards, own='',
+                                      known=frozenset({OWN.casefold()})))
+        self.assertIsNone(self.refusal([PRODUCT], self.cards(14, PRODUCT), own='', known=frozenset()))
 
 
 class RateLimitTest(unittest.TestCase):

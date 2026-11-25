@@ -2,6 +2,8 @@
 """Write worker leases. fleet/lease KEY run -- COMMAND beats until COMMAND ends.
 
 A run refuses to start in a shared checkout: a worker edits in a git worktree only.
+It counts a start against the starting chat's own board label and nothing else
+(VSTA-266).
 """
 import argparse
 import fcntl
@@ -34,6 +36,34 @@ def load(name, path):
 reconcile = load('fleet_reconcile', Path(__file__).with_name('reconcile'))
 session = load('fleet_session', Path(__file__).with_name('session_login.py'))
 wip = load('board_drain_wip_cap', Path(__file__).resolve().parents[1] / 'board-drain' / 'wip-cap')
+LOOP_STATE = Path(__file__).resolve().parents[1] / 'board-drain' / 'loop-state'
+LOOP_ERRORS = (*wip.ERRORS, ImportError)
+_loop_state = None
+
+
+def loop_state():
+    """The one owner of loop state, loaded on first use, the way the hook loads it."""
+    global _loop_state
+    if _loop_state is None:
+        _loop_state = (sys.modules.get('board_drain_loop_state')
+                       or load('board_drain_loop_state', LOOP_STATE))
+    return _loop_state
+
+
+def own_label():
+    """The board label of the chat starting this worker, or '' when it cannot be read."""
+    try:
+        return loop_state().own_label()
+    except LOOP_ERRORS:
+        return ''
+
+
+def chat_labels():
+    """The labels chats here drain; a label outside these is no start's cap."""
+    try:
+        return loop_state().chat_labels()
+    except LOOP_ERRORS:
+        return frozenset()
 
 
 def write(key, action, pid, directory=None, now=None):
@@ -176,20 +206,24 @@ def board_tasks(board_id):
 
 
 def cap_refusal(key):
-    """The line that refuses a start while one of the card's labels is at cap, or None.
+    """The line that refuses a start while the starting chat's own label is at cap.
 
-    Reads the card this run would start. A card already in a working column is a
-    resume, and an urgent card may start first, so neither is refused. Any read
-    that fails answers None: a board outage never stops a worker.
+    A card carries every label its work touches, so only the starting chat's own
+    label counts (`wip.cap_labels`, VSTA-266). Reads the card this run would start.
+    A card already in a working column is a resume, and an urgent card may start
+    first, so neither is refused. Any read that fails answers None: a board outage
+    never stops a worker.
     """
     try:
         task = reconcile.read_ticket(key)
         if not wip.starts_work(task) or wip.urgent(task):
             return None
         board_id = int(task['projectId'])
-        labels = wip.agent_labels(task)
+        labels = wip.cap_labels(task, own_label(), chat_labels())
     except wip.ERRORS as error:
         wip.warn_once(f'{key} read failed ({error})')
+        return None
+    if not labels:
         return None
     line = wip.read_held(board_id, labels, board_tasks)
     return CAP_HELD.format(key=key, line=line) if line else None
