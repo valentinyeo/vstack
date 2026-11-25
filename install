@@ -32,6 +32,18 @@ if [ "$ROOT" != "$SHARE_REAL" ]; then
   fi
 fi
 
+# A timer and a hand-run install both link here (VSTA-314). One lock covers
+# both, so two installs never write the same links at once. The self-update
+# passes VSTACK_LOCK_HELD=1 because it already holds this lock.
+if [ "${VSTACK_LOCK_HELD:-0}" != 1 ] && command -v flock >/dev/null 2>&1; then
+  mkdir -p "$HOME/.local/state/vstack"
+  exec 9>"$HOME/.local/state/vstack/self-update.lock"
+  if ! flock -n 9; then
+    echo "vstack install: an install or self-update is already running; nothing to do" >&2
+    exit 0
+  fi
+fi
+
 if [ ! -d "$SRC" ]; then
   echo "vstack install: no skills dir at $SRC" >&2
   exit 1
@@ -325,3 +337,18 @@ fi
 for name in "${retired_hooks[@]}"; do
   [ ! -L "$HOME/.claude/hooks/$name" ] || rm -f "$HOME/.claude/hooks/$name"
 done
+
+# Nothing moved the shared checkout after a merge, so one server lagged the other
+# by two merges (VSTA-314). Every install arms a user timer that fetches and
+# installs origin/main every 15 minutes. A test checkout writes the units but
+# never talks to systemd, and keeps them inside its throwaway HOME.
+if [ -f "$ROOT/scripts/vstack-self-update" ]; then
+  units=(--dir "$ROOT")
+  if [ "${VSTACK_INSTALL_ANYWHERE:-0}" = 1 ]; then
+    export XDG_CONFIG_HOME="$HOME/.config"
+    units+=(--no-enable)
+  fi
+  python3 "$ROOT/scripts/vstack-self-update" --write-units "${units[@]}" || {
+    echo "vstack install: could not write the vstack-update timer" >&2
+  }
+fi

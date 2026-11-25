@@ -33,6 +33,8 @@ cd vstack
 
 Safe to run again. Each harness entry is a symlink to this checkout, so there is one copy of each skill. A stale symlink is replaced. A real folder with the same skill name is moved to `~/.local/state/skill-dupes-<epoch>/` and kept.
 
+`./install` also arms a systemd `--user` timer, `vstack-update.timer`, that runs `scripts/vstack-self-update` every 15 minutes. After a merge lands on `origin/main`, the server that runs it moves the shared checkout to that commit and re-runs `./install` within 15 minutes, without anyone typing a command. Each run adds one line to `~/.local/state/vstack/self-update.log` (old commit, new commit, ok or fail) and adds nothing when the checkout is already current. A checkout with local changes is left alone. Running `./install` by hand still works; it takes the same lock, so a timer run and a manual run never overlap.
+
 Then call a skill by name, for example `/web-writing` or `/valentin-mode`.
 
 Any other model: paste the body of a `SKILL.md` (below the frontmatter) as the system prompt, followed by your text.
