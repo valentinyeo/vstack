@@ -162,9 +162,44 @@ class Feedback(unittest.TestCase):
         self.assertEqual(self.opt(create, '--labels'), 'Vstack')
         self.assertEqual(self.data()['created'], 1)
 
-    def test_refuses_without_agent_token(self):
-        r = self.run_env('x', '--why', 'y', SHIP_SESSION_NAME='Missing Agent')
-        self.assertNotEqual(r.returncode, 0)
+    def test_no_chat_name_and_no_token_exits_two(self):
+        r = self.run_env('x', '--why', 'y', SHIP_SESSION_NAME='', MULTIPROMPT_TAB='')
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('no agent token', r.stderr)
+        self.assertEqual(self.data()['calls'], [])
+
+    def test_a_named_chat_with_no_token_file_files_through_the_fallback(self):
+        r = self.run_env('Add a feedback command', '--why', 'HT Features hit this',
+                         SHIP_SESSION_NAME='HT Features')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(set(self.data()['tokens']), {MAINTAINER_TOKEN})
+        description = self.opt(self.create_call(), '--description')
+        self.assertIn('<li>Filed for: HT Features</li>', description)
+        self.assertEqual(self.data()['created'], 1)
+        for token in (CHAT_TOKEN, MAINTAINER_TOKEN):
+            self.assertNotIn(token, r.stdout + r.stderr)
+
+    def test_a_tab_named_chat_with_no_token_file_files_through_the_fallback(self):
+        self.chat_names('tab-1', 'HT Features')
+        r = self.run_env('Add a feedback command', '--why', 'HT Features hit this',
+                         MULTIPROMPT_TAB='tab-1', SHIP_SESSION_NAME='')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(set(self.data()['tokens']), {MAINTAINER_TOKEN})
+        self.assertIn('<li>Filed for: HT Features</li>',
+                      self.opt(self.create_call(), '--description'))
+
+    def test_a_named_chat_with_no_token_stays_off_another_board(self):
+        r = self.run_env('Add a feedback command', '--why', 'x', '--board', '1234',
+                         SHIP_SESSION_NAME='HT Features')
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.data()['calls'], [])
+
+    def test_the_maintainer_name_with_no_token_file_still_exits_two(self):
+        (self.home / TOKENS / 'vstack-maintainer-agent-token').unlink()
+        r = self.run_env('Add a feedback command', '--why', 'x',
+                         SHIP_SESSION_NAME='Vstack Maintainer')
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('Vstack Maintainer', r.stderr)
         self.assertEqual(self.data()['calls'], [])
 
     def chat_names(self, tab, name):

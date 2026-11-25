@@ -10,8 +10,9 @@ A repeat of the same title updates that open ticket with a count instead of fili
 one, when `--count` is given. `--board` picks the board (default 13556).
 
 A chat that board 13556 refuses, or an agent that is not a member of it, files through the
-Vstack Maintainer login instead, and the ticket carries `Filed for: <chat name>`. A person's
-login is never used, and no token is ever printed.
+Vstack Maintainer login instead, and the ticket carries `Filed for: <chat name>`. A chat whose
+name this server knows but whose token file is missing files the same way. A person's login is
+never used, and no token is ever printed.
 """
 import argparse
 import html
@@ -192,15 +193,22 @@ def seen_count(text):
 
 
 def resolve_login(env):
-    """(chat name, token) for this chat's own login, or ('', '') when it has none."""
+    """(chat name, token) for this chat's own login.
+
+    The name can arrive without a token: the chat is known here but its token
+    file is missing. Such a chat files through the fallback login instead. An
+    explicit HYPERTASK_AGENT_TOKEN_FILE that is gone stays a setup error.
+    """
     found = load_session().login(env)
     if not found:
-        return '', ''
+        return load_session().name_login(env), ''
     name, path, source = found
     if not path.is_file():
-        raise ValueError(
-            f'no agent token for {name}, from {source} ({path}); '
-            'run the session login flow first')
+        if source == 'HYPERTASK_AGENT_TOKEN_FILE':
+            raise ValueError(
+                f'no agent token for {name}, from {source} ({path}); '
+                'run the session login flow first')
+        return name, ''
     return name, path.read_text().strip()
 
 
@@ -250,9 +258,30 @@ def main(argv=None):
     except ValueError as exc:
         print(f'vstack-feedback: {exc}', file=sys.stderr)
         return 2
+    spare = '' if name == FALLBACK or board != BOARD else fallback_token(os.environ)
     if not token:
-        print('vstack-feedback: this chat has no agent token; never use a person token', file=sys.stderr)
-        return 2
+        if not name:
+            print('vstack-feedback: this chat has no agent token; never use a person token',
+                  file=sys.stderr)
+            return 2
+        if not spare:
+            if name == FALLBACK:
+                reason = f'this chat is {FALLBACK} and has no token of its own'
+            elif board != BOARD:
+                reason = f'the {FALLBACK} login is used on board {BOARD} only'
+            else:
+                reason = f'this server has no {FALLBACK} login'
+            print(f'vstack-feedback: no agent token for {name}; {reason}', file=sys.stderr)
+            return 2
+        try:
+            print(file_with(Client(spare, board), title, why,
+                            facts + [f'Filed for: {name}'], labels, board,
+                            args.done, args.count, args.now))
+            return 0
+        except ValueError as exc:
+            print(f'vstack-feedback: no agent token for {name} and the {FALLBACK} '
+                  f'login failed ({exc})', file=sys.stderr)
+            return 1
     try:
         print(file_with(Client(token, board), title, why, facts, labels, board,
                         args.done, args.count, args.now))
@@ -262,7 +291,6 @@ def main(argv=None):
     except ValueError as exc:
         print(f'vstack-feedback: {exc}', file=sys.stderr)
         return 1
-    spare = '' if name == FALLBACK or board != BOARD else fallback_token(os.environ)
     if not spare:
         print(f'vstack-feedback: {refused}', file=sys.stderr)
         return 1
