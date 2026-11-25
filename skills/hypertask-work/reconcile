@@ -363,16 +363,18 @@ def merged_since_entry(pull, facts, here):
     """A merge counts as evidence by stage.
 
     Reopened backlog cards ignore merges that landed before the column entry.
-    Verification backlog uses the same clock. Work and review columns treat a merged
-    PR as evidence regardless of entry time. A missing merge time keeps the old
-    reading; a missing entry on backlog or verification is not a guess.
+    Verification backlog and work both use that same clock, so a card reopened into
+    Doing is not carried to Done by the merge that landed before it was reopened
+    (VSTA-315); review columns treat a merged PR as evidence regardless of entry time.
+    A missing merge time keeps the old reading, and so does a missing entry on work.
+    A missing entry on backlog or verification is not a guess.
     """
-    if here in (Stage.IN_PROGRESS, Stage.CHECKS, Stage.REVIEW):
+    if here in (Stage.CHECKS, Stage.REVIEW):
         return True
     if pull.merged_at is None:
         return True
     if facts.column_entered is None:
-        return False
+        return here == Stage.IN_PROGRESS
     return pull.merged_at > facts.column_entered
 
 
