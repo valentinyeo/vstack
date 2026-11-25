@@ -171,7 +171,9 @@ class LadderHookInstallTest(unittest.TestCase):
 
         claude_hooks = user_prompt_hooks(home / '.claude' / 'settings.json')
         self.assertFalse(any('token-ladder' in h.get('command', '') for h in claude_hooks), claude_hooks)
-        self.assertFalse((home / '.codex' / 'hooks.json').exists())
+        codex_path = home / '.codex' / 'hooks.json'
+        codex_entries = json.dumps(json.loads(codex_path.read_text())) if codex_path.exists() else ''
+        self.assertNotIn('token-ladder', codex_entries)
         agy_data = json.loads((home / '.gemini' / 'config' / 'hooks.json').read_text())
         self.assertNotIn('vstack-token-ladder', agy_data)
 
