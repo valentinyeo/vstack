@@ -128,9 +128,26 @@ def own_agent(args, data):
         return ''
 
 
-def chat_labels(task):
-    return [(label.get('name') or '').strip() for label in task.get('labels') or ()
-            if isinstance(label, dict) and not owners.is_generic(label.get('name') or '')]
+def chat_labels(task, own=''):
+    """The ticket's chat labels, plus the one this chat armed with even when generic.
+
+    A generic label classifies work and never names a chat, so a card carrying only
+    those has no owner. The label a chat armed with is the exception: it names that
+    chat on its own board, and cards it drains under it are its own (VSTA-291).
+    """
+    armed = (own or '').strip().casefold()
+    names, seen = [], set()
+    for label in task.get('labels') or ():
+        if not isinstance(label, dict):
+            continue
+        name = (label.get('name') or '').strip()
+        if not name or name.casefold() in seen:
+            continue
+        if name.casefold() != armed and owners.is_generic(name):
+            continue
+        seen.add(name.casefold())
+        names.append(name)
+    return names
 
 
 def owner_chat(task):
@@ -666,10 +683,10 @@ def check_label_assignee(task, chat_names, breaks, own='', own_label=''):
             return
 
 
-def check_no_owner_label(task, breaks):
+def check_no_owner_label(task, breaks, own=''):
     if task.get('section') != TODO:
         return
-    if chat_labels(task):
+    if chat_labels(task, own):
         return
     breaks.append(Break(task['ticketNumber'], 'no-owner-label', '(none)',
                         'add your chat label so your view shows this ticket'))
@@ -898,7 +915,7 @@ def lint(args, shared=None):
             check_merged_no_pass(task, pulls, board, breaks, facts=facts)
         check_label_assignee(task, chat_names, breaks, own=own,
                              own_label=getattr(args, 'label', '') or '')
-        check_no_owner_label(task, breaks)
+        check_no_owner_label(task, breaks, getattr(args, 'label', '') or '')
         check_unnamed_identity(task, breaks)
         check_stale(task, now, breaks)
         check_silent_ticket(task, now, breaks)

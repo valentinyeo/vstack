@@ -60,6 +60,14 @@ def todo(key, age=1800, waiting_on=None, blocker=None, comments=(), priority=Non
     return {'task': task, 'comments': list(comments)}
 
 
+def triage(key, labels, age=1800):
+    """One card on the generic label a chat drains under its own armed name (VSTA-291)."""
+    task = {'ticketNumber': key, 'projectId': 2060, 'section': 'Todo',
+            'labels': [{'name': name} for name in labels], 'waitingOnUserId': None,
+            'blockerCommentId': None, 'updatedAt': iso(NOW - age)}
+    return {'task': task, 'comments': []}
+
+
 def priority_row(index=None, name=None):
     row = {}
     if index is not None:
@@ -1215,6 +1223,18 @@ class RuleBreakTest(CheckTest):
             board=13734, label='Multi Bot Android Verifiy')
         self.assertEqual(code, 0, out)
         self.assertIn('rule-break: (sync) sync-record: sync failed: apply exited 1.', out)
+
+    def test_a_generic_label_the_chat_armed_with_owns_its_todo(self):
+        """Triage LC drains --label Triage; Triage is generic, and its cards still have an owner."""
+        rows = [triage('SOFT-3068', ['Triage', 'brain-hard']),
+                triage('SOFT-3074', ['Triage', 'verification', 'brain-medium'])]
+        # A person on one card is the control: the lint really ran on these cards.
+        rows[1]['task']['assignees'] = [{'id': 6, 'displayName': 'Valentin Yeo', 'type': 'user'}]
+        payload = {'rows': rows, 'roster': 'Triage LC (live-t, claude, /tmp)\n',
+                   'chats': ['Triage LC']}
+        code, out = self.run_payload(payload, label='Triage')
+        self.assertIn('rule-break: SOFT-3074 agent-assignee:', out)
+        self.assertNotIn('no-owner-label', out)
 
     def test_one_break_prints_one_warning_line_and_still_passes(self):
         row = todo('SOFT-2930')

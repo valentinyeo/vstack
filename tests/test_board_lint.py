@@ -201,6 +201,13 @@ class BoardLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assert_rule(result.stdout, 'no-owner-label')
 
+    def test_the_label_the_chat_armed_with_owns_its_cards(self):
+        """Triage is generic, yet a chat armed with it still owns its Triage cards (VSTA-291)."""
+        result = self.run_lint('armed-generic-label.json', label='Triage')
+        self.assertNotIn('SOFT-3068 | no-owner-label', result.stdout)
+        self.assertNotIn('SOFT-3074 | no-owner-label', result.stdout)
+        self.assertIn('SOFT-3079 | no-owner-label', result.stdout)
+
     def test_unnamed_identity(self):
         result = self.run_lint('unnamed-identity.json')
         self.assertEqual(result.returncode, 1)
