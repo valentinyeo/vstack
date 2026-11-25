@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/board-drain'
 FIXTURES = ROOT / 'tests/fixtures/board_drain'
 NOW = 1800000000
+# Tests never touch the real ~/.cache: the tick's own cache gets a temp directory.
+os.environ['BOARD_DRAIN_CACHE_DIR'] = tempfile.mkdtemp(prefix='board-drain-cache-')
 
 
 def load(name, path):
@@ -3111,6 +3113,144 @@ class FastTicketReadTest(unittest.TestCase):
     def test_a_failed_relations_read_raises_as_before(self):
         with self.assertRaises(ValueError):
             self.read([], 0.0, (('task', 'relations'), 'MUBO-9', ValueError))
+
+
+class ListingHoldsTheFactsTest(unittest.TestCase):
+    """VSTA-293: the facts a listing already carries save the calls that made a tick slow."""
+
+    BOARD = 13734
+    LABEL = 'Multi Bot Bugs'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        env = patch.dict(os.environ, {'BOARD_DRAIN_CACHE_DIR': str(self.directory / 'cache')})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tasks(self, count=5):
+        return [{'ticketNumber': f'MUBO-{index}', 'projectId': self.BOARD, 'section': 'Todo',
+                 'labels': [{'name': self.LABEL}], 'updatedAt': iso(NOW - 3600),
+                 'commentCount': 2, 'waitingOnUserId': None, 'blockerCommentId': None,
+                 'blockingTasks': []}
+                for index in range(1, count + 1)]
+
+    def args(self):
+        return argparse.Namespace(board=self.BOARD, label=self.LABEL, fixture=None,
+                                  state_name=self.LABEL, skip_comments=False)
+
+    def fake_api(self, calls, relations=()):
+        def api(*argv):
+            calls.append(argv)
+            if argv[:2] == ('comment', 'list'):
+                return {'comments': [{'id': f'{argv[2]}-1', 'createdAt': iso(NOW - 60)}]}
+            if argv[:2] == ('task', 'relations'):
+                return {'relations': list(relations)}
+            raise AssertionError(f'unexpected call {argv}')
+        return api
+
+    def read(self, tasks, calls, relations=()):
+        board = drain.fixture_board(self.BOARD, [{'task': task} for task in tasks])
+        with patch.object(drain.reconcile, 'board_config', return_value=board), \
+                patch.object(drain.reconcile, 'tickets', return_value=tasks), \
+                patch.object(drain.reconcile, 'api', self.fake_api(calls, relations)):
+            return drain.rows_for(self.args())
+
+    def listed_blocker(self, **changes):
+        """MUBO-1 BlockedBy MUBO-2, as `task list` sends it."""
+        tasks = self.tasks()
+        tasks[1].update(section='Doing', blockingTasks=[], assignees=[agent_assignee()])
+        tasks[0].update(blockingTasks=[{'id': 2, 'ticketNumber': 'MUBO-2', 'status': 'Normal',
+                                        'section': 'Doing', 'projectId': self.BOARD}],
+                        **changes)
+        return tasks
+
+    def test_a_listing_with_blockers_asks_no_card_for_its_links(self):
+        calls = []
+        _, rows, loaded, _, _ = self.read(self.listed_blocker(), calls)
+        self.assertEqual([call for call in calls if call[:2] == ('task', 'relations')], [])
+        blocked = [row for row in rows if row['task']['ticketNumber'] == 'MUBO-1'][0]
+        stuck = drain.open_blockers(blocked['relations'], loaded)
+        self.assertEqual(stuck, ['MUBO-2'])
+        self.assertEqual(f'blocked: MUBO-1 by {", ".join(stuck)}', 'blocked: MUBO-1 by MUBO-2')
+
+    def test_a_links_read_gives_the_same_blocked_line_the_listing_gives(self):
+        link_relation = [{'relationType': 'BlockedBy', 'direction': 'outgoing',
+                          'otherTask': {'ticketNumber': 'MUBO-2', 'status': 'Normal'}}]
+        _, listed_rows, loaded, _, _ = self.read(self.listed_blocker(), [])
+        plain = self.listed_blocker()
+        del plain[0]['blockingTasks']
+        links = []
+        _, link_rows, _, _, _ = self.read(plain, links, relations=link_relation)
+        self.assertEqual([call for call in links if call[:2] == ('task', 'relations')],
+                         [('task', 'relations', 'MUBO-1')])
+        listed_row = [row for row in listed_rows if row['task']['ticketNumber'] == 'MUBO-1'][0]
+        link_row = [row for row in link_rows if row['task']['ticketNumber'] == 'MUBO-1'][0]
+        self.assertEqual(drain.open_blockers(listed_row['relations'], loaded),
+                         drain.open_blockers(link_row['relations'], loaded))
+
+    def test_a_second_unchanged_tick_reads_no_comment(self):
+        tasks = self.tasks()
+        calls = []
+        self.read(tasks, calls)
+        self.assertEqual(len(calls), len(tasks), 'the first tick pays one comment read per card')
+        calls.clear()
+        _, rows, _, _, _ = self.read(tasks, calls)
+        self.assertEqual([call for call in calls if call[:2] == ('comment', 'list')], [])
+        self.assertEqual(rows[0]['comments'], [{'id': 'MUBO-1-1', 'createdAt': iso(NOW - 60)}])
+
+    def test_a_new_comment_on_one_card_rereads_only_that_card(self):
+        tasks = self.tasks()
+        self.read(tasks, [])
+        tasks[2]['commentCount'] = 3
+        calls = []
+        _, rows, _, _, _ = self.read(tasks, calls)
+        self.assertEqual([call[:3] for call in calls if call[:2] == ('comment', 'list')],
+                         [('comment', 'list', 'MUBO-3')])
+        self.assertEqual(rows[0]['comments'], [{'id': 'MUBO-1-1', 'createdAt': iso(NOW - 60)}])
+
+    def test_a_moved_updated_at_rereads_the_card_too(self):
+        tasks = self.tasks()
+        self.read(tasks, [])
+        tasks[0]['updatedAt'] = iso(NOW - 60)
+        calls = []
+        self.read(tasks, calls)
+        self.assertEqual([call[:3] for call in calls if call[:2] == ('comment', 'list')],
+                         [('comment', 'list', 'MUBO-1')])
+
+    def test_a_corrupt_cache_reads_every_card_and_does_not_crash(self):
+        tasks = self.tasks()
+        self.read(tasks, [])
+        path = drain.reconcile.board_cache_path(drain.reconcile.TICKETS_CACHE)
+        path.write_text('{not json')
+        calls = []
+        _, rows, _, _, _ = self.read(tasks, calls)
+        self.assertEqual(len([call for call in calls if call[:2] == ('comment', 'list')]),
+                         len(tasks))
+        self.assertEqual(len(rows), len(tasks))
+
+    def test_a_card_whose_listing_has_no_count_is_read_every_tick(self):
+        tasks = [task for task in self.tasks()]
+        for task in tasks:
+            del task['commentCount']
+        self.read(tasks, [])
+        calls = []
+        self.read(tasks, calls)
+        self.assertEqual(len([call for call in calls if call[:2] == ('comment', 'list')]),
+                         len(tasks))
+
+    def test_the_board_rules_share_the_same_comment_cache(self):
+        tasks = [dict(task, section='Done') for task in self.tasks()]
+        lint = drain.lint_module()
+        calls = []
+        with patch.object(lint.reconcile, 'api', self.fake_api(calls)):
+            first = lint.collect_comments(tasks, {}, self.args(), self.BOARD)
+            self.assertEqual(len(calls), len(tasks))
+            calls.clear()
+            second = lint.collect_comments(tasks, {}, self.args(), self.BOARD)
+        self.assertEqual(calls, [])
+        self.assertEqual(first, second)
 
 
 if __name__ == '__main__':

@@ -713,8 +713,13 @@ def needs_column_entry(task, pulls, board):
 
 
 def fill_section_changed(candidates, pulls, board):
-    """One task read per reopened backlog card that still carries a merged PR."""
+    """One task read per reopened backlog card that still carries a merged PR.
+
+    The read's answer is cached under the card's updatedAt: a listing that has not
+    moved on cannot have moved the card's column either, so a second tick pays no call.
+    """
     SECTION_CHANGED.clear()
+    cache, fresh = board_cache_read(SECTION_CHANGED_CACHE), {}
     for task in candidates:
         if not needs_column_entry(task, pulls, board):
             continue
@@ -723,11 +728,21 @@ def fill_section_changed(candidates, pulls, board):
         if direct is not None:
             SECTION_CHANGED[key] = direct
             continue
+        moved = task.get('updatedAt')
+        entry = cache.get(key) if moved is not None else None
+        if isinstance(entry, dict) and str(entry.get('updatedAt')) == str(moved):
+            SECTION_CHANGED[key] = entry.get('sectionChangedAt')
+            continue
         try:
             row = api('task', 'get', key)['tasks'][0]
-            SECTION_CHANGED[key] = moment((row.get('staleness') or {}).get('sectionChangedAt'))
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError):
             SECTION_CHANGED[key] = None
+            continue
+        value = moment((row.get('staleness') or {}).get('sectionChangedAt'))
+        SECTION_CHANGED[key] = value
+        if moved is not None:
+            fresh[key] = {'updatedAt': str(moved), 'sectionChangedAt': value}
+    board_cache_update(SECTION_CHANGED_CACHE, fresh)
 
 
 def pid_alive(pid):
@@ -1242,6 +1257,89 @@ def cache_write_many(updates):
 def cache_write(key, value):
     """Best effort: a broken or racing cache costs calls, never correctness."""
     cache_write_many({key: value})
+
+
+TICKETS_CACHE = 'tickets.json'
+SECTION_CHANGED_CACHE = 'section-changed.json'
+CACHE_ENTRIES = 5000
+
+
+def board_cache_path(name):
+    directory = Path(os.environ.get('BOARD_DRAIN_CACHE_DIR')
+                     or Path.home() / '.cache/vstack/board-drain')
+    return directory / name
+
+
+def board_cache_read(name):
+    """Every cached entry of one file; an unreadable or corrupt one is no entries."""
+    try:
+        data = json.loads(board_cache_path(name).read_text())
+    except (OSError, TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def board_cache_update(name, entries):
+    """Best effort atomic merge: a lost cache costs calls, never a verdict."""
+    if not entries:
+        return
+    path = board_cache_path(name)
+    with CACHE_LOCK:
+        temporary = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.with_name(f'{path.name}.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    data = json.loads(path.read_text())
+                    if not isinstance(data, dict):
+                        data = {}
+                except (OSError, TypeError, ValueError):
+                    data = {}
+                data.update(entries)
+                if len(data) > CACHE_ENTRIES:
+                    data = dict(list(data.items())[-CACHE_ENTRIES:])
+                temporary = path.with_name(
+                    f'{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
+                temporary.write_text(json.dumps(data))
+                os.replace(temporary, path)
+                temporary = None
+        except OSError:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+def listing_state(task):
+    """The (commentCount, updatedAt) a cached comment list must match, else None."""
+    count, stamp = task.get('commentCount'), task.get('updatedAt')
+    if count is None or stamp is None:
+        return None
+    return str(count), str(stamp)
+
+
+def comments_cached(task, cache, fetch, fresh):
+    """One ticket's comments: the cache while the listing has not moved on.
+
+    Only a ticket whose listing carries both fields can be served from the cache;
+    a fixture or an older API that carries neither always reads the comments.
+    `fresh` collects the entries that file needs, so a tick writes what it read.
+    """
+    key = task['ticketNumber']
+    state = listing_state(task)
+    if state is not None:
+        entry = cache.get(key)
+        if (isinstance(entry, dict) and str(entry.get('commentCount')) == state[0]
+                and str(entry.get('updatedAt')) == state[1]
+                and isinstance(entry.get('comments'), list)):
+            return entry['comments']
+    comments = fetch(key)
+    if state is not None:
+        fresh[key] = {'commentCount': state[0], 'updatedAt': state[1],
+                      'comments': comments}
+    return comments
 
 
 def board_facts_key(board_id):
@@ -1845,6 +1943,36 @@ def read_ticket(key):
                                  and (relation.get('relationType') or '').casefold() == 'blockedby'
                                  and (relation.get('direction') or '').casefold() == 'outgoing']
     return task
+
+
+COMMENT_PAGE = 100
+
+
+def ticket_comments(key, limit=COMMENT_PAGE):
+    """Every comment on one ticket, one page after another."""
+    rows, cursor, seen = [], None, set()
+    while True:
+        args = ['comment', 'list', key, '--limit', str(limit)]
+        if cursor:
+            args += ['--cursor', cursor]
+        page = api(*args)
+        rows += page.get('comments') or []
+        cursor = page.get('nextCursor')
+        if not cursor:
+            return rows
+        if cursor in seen:
+            raise ValueError('repeated comment cursor')
+        seen.add(cursor)
+
+
+def blocking_links(task):
+    """A listed card's BlockedBy links in the shape `task relations` sends them.
+
+    `task list` carries blockingTasks on every card, so only a listing without the
+    key asks for a card's links (VSTA-293).
+    """
+    return [{'relationType': 'blockedby', 'direction': 'outgoing', 'otherTask': row}
+            for row in task.get('blockingTasks') or () if isinstance(row, dict)]
 
 
 def card_ident(row):

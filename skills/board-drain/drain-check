@@ -712,32 +712,32 @@ def ticket_relations(key):
 
 
 def ticket_comments(key):
-    rows, cursor, seen = [], None, set()
-    while True:
-        args = ['comment', 'list', key, '--limit', '100']
-        if cursor:
-            args += ['--cursor', cursor]
-        page = reconcile.api(*args)
-        rows += page.get('comments') or []
-        cursor = page.get('nextCursor')
-        if not cursor:
-            return rows
-        if cursor in seen:
-            raise ValueError('repeated comment cursor')
-        seen.add(cursor)
+    return reconcile.ticket_comments(key)
 
 
-def ticket_facts(task):
+def ticket_facts(task, cache, fresh):
+    """One ticket's comments and links, spending a call only where the listing is short.
+
+    A listed card carries its blockers and the commentCount/updatedAt its comments
+    were last read at, so an unchanged card costs nothing and a changed one costs
+    one comment read (VSTA-293).
+    """
     key = task['ticketNumber']
-    return ticket_comments(key), ([] if waiting(task) else ticket_relations(key))
+    if waiting(task):
+        relations = []
+    elif 'blockingTasks' in task:
+        relations = reconcile.blocking_links(task)
+    else:
+        relations = ticket_relations(key)
+    return reconcile.comments_cached(task, cache, ticket_comments, fresh), relations
 
 
-def fetched_facts(tasks):
+def fetched_facts(tasks, cache, fresh):
     """A failure surfaces as the same error type as a sequential read."""
     if not tasks:
         return []
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
-        return list(pool.map(ticket_facts, tasks))
+        return list(pool.map(lambda task: ticket_facts(task, cache, fresh), tasks))
 
 
 def rows_for(args):
@@ -762,9 +762,12 @@ def rows_for(args):
         if reconcile.carries_label(task, args.label):
             kept.append(row)
     if not args.fixture:
+        cache, fresh = reconcile.board_cache_read(reconcile.TICKETS_CACHE), {}
         wanted = [row for row in kept if needs_comments(row['task'])]
-        for row, (comments, relations) in zip(wanted, fetched_facts([row['task'] for row in wanted])):
+        for row, (comments, relations) in zip(
+                wanted, fetched_facts([row['task'] for row in wanted], cache, fresh)):
             row['comments'], row['relations'] = comments, relations
+        reconcile.board_cache_update(reconcile.TICKETS_CACHE, fresh)
     return board, kept, loaded, extra, [row['task'] for row in rows]
 
 

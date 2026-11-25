@@ -812,8 +812,7 @@ def check_human_writes(board_id, tasks_by_key, comments_by_ticket, breaks):
 def ticket_comments(key):
     """An unreadable page is no comments, never a break."""
     try:
-        page = reconcile.api('comment', 'list', key, '--limit', '50')
-        return page.get('comments') or []
+        return reconcile.ticket_comments(key)
     except ERRORS:
         return []
 
@@ -831,10 +830,16 @@ def collect_comments(tasks, data, args, board_id):
         if key in out or key in seen:
             continue
         seen.add(key)
-        wanted.append(key)
-    if wanted:
-        with ThreadPoolExecutor(max_workers=COMMENT_WORKERS) as pool:
-            out.update(zip(wanted, pool.map(ticket_comments, wanted)))
+        wanted.append(task)
+    if not wanted:
+        return out
+    cache, fresh = reconcile.board_cache_read(reconcile.TICKETS_CACHE), {}
+    with ThreadPoolExecutor(max_workers=COMMENT_WORKERS) as pool:
+        rows = list(pool.map(
+            lambda task: reconcile.comments_cached(task, cache, ticket_comments, fresh),
+            wanted))
+    reconcile.board_cache_update(reconcile.TICKETS_CACHE, fresh)
+    out.update({task['ticketNumber']: comments for task, comments in zip(wanted, rows)})
     return out
 
 

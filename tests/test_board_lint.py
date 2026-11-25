@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LINT = ROOT / 'skills/hypertask-work/board-lint'
 FIXTURES = ROOT / 'tests/fixtures/board-lint'
 BOARD = 99001
+# Tests never touch the real ~/.cache: the tick's own cache gets a temp directory.
+os.environ['BOARD_DRAIN_CACHE_DIR'] = tempfile.mkdtemp(prefix='board-drain-cache-')
 
 
 def iso(seconds):
