@@ -239,7 +239,9 @@ class DrainCheckCapTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn(f'over cap: {HELD}', out)
         self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
-        self.assertIn('drain-check: FAIL (2 findings)', out)
+        self.assertIn('urgent: VSTA-206 is urgent and waiting in Todo; start it before any '
+                      'other ticket.', out)
+        self.assertIn('drain-check: FAIL (3 findings)', out)
 
 
 if __name__ == '__main__':
