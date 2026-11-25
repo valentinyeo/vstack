@@ -59,6 +59,7 @@ Whoever owns a ticket owns its PR until it merges (pstack autopilot-full: one ow
 
 ## Board rules
 
+- Start the highest-priority workable ticket first; urgent before anything else. `../board-drain/drain-check` fails `urgent: <KEY> ...` when an urgent Todo idles (VSTA-262).
 - One owner carries each PR from build to merge, following pstack autopilot-full.
 - Never merge without the verifier's PASS on the current head.
   Under `/hypertask`, a merged PR without that PASS goes back to Todo for verification, never Done.
