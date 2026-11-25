@@ -90,12 +90,12 @@ Never patch the card and say nothing: the next run undoes it or repeats it. The 
 `skills/hypertask-work/reconcile --board 15` previews Hypertask product moves. Dedicated rules:
 
 - Ticket keys start with `HTPR-`. PRs come from every repo the board ships from: `hypertask-ai/hypertask` (release branch `production`) and `valentinyeo/vstack` (release branch `main`). One search covers them all.
-- Live workers move tickets to In Progress. Open PRs move them to AI Review (or back to Backlog when a red PR sits idle for an hour with no live worker). A merged PR with a verifier PASS moves the card to Done; a merged PR without PASS moves it to Backlog for verification. An open PR outranks a live worker.
+- Live workers move tickets to In Progress. Open PRs move them to AI Review (or back to Backlog when a red PR sits idle for an hour with no live worker). A merged PR with a verifier PASS moves the card to No Flag (board 15 has no Done column, VSTA-267); a merged PR without PASS moves it to Backlog for verification. An open PR outranks a live worker.
 - A merged PR counts only when its base is that repo's release branch. A stacked PR merged into a feature branch is not a ship.
 - An open PR or a live worker moves a ticket even inside the two-hour grace. The grace only protects an idle ticket.
 - An In Progress ticket with no live worker and no shipped PR moves to Backlog after two hours. Tickets in Backlog stay unless a shipped PR now names them.
-- QA is a known column, not a post-merge hold: a card in QA whose PR merged with PASS moves to Done, and without PASS moves to Backlog.
-- UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, Done, No Flag and every Flag column stay. Unknown columns also stay.
+- QA is a known column, not a post-merge hold: a card in QA whose PR merged with PASS moves to No Flag, and without PASS moves to Backlog.
+- UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, No Flag and every Flag column stay. Unknown columns also stay.
 - Each run permits at most five moves, even with a higher `--limit`.
 - Worker facts come from the installed Hypertask workers. An active service alone proves no ticket work: its local PID must exist and its queue must name that board's ticket. Claiming, launching and running count as active. Progress expires after 15 minutes. A live lease or a process that names the ticket also counts. Unreadable worker facts refuse all moves.
 - A shell without `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS` gets `/run/user/<uid>` defaults first. If worker facts still cannot be read, the run prints one `reconcile: worker facts unreadable: ...` line, moves nothing and exits non-zero.

@@ -1544,12 +1544,13 @@ else:
     def test_backlog_stays_and_merged_follows_pass_gate(self):
         self.assertEqual(self.target('Backlog'), 'Backlog')
         self.assertEqual(self.target('Backlog', pulls=(pull('CLOSED'),)), 'Backlog')
-        # One model: merged with PASS plans Done; merged without PASS plans Backlog.
+        # One model: merged with PASS plans the board's done column (No Flag here);
+        # merged without PASS plans Backlog.
         merged_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/1', 'MERGED', 'green', True,
                              r.stamp('2026-11-20T10:00:00Z'))
         merged_no_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/2', 'MERGED', 'green', False,
                                 r.stamp('2026-11-20T10:00:00Z'))
-        self.assertEqual(self.target('Backlog', pulls=(merged_pass,)), 'Done')
+        self.assertEqual(self.target('Backlog', pulls=(merged_pass,)), 'No Flag')
         self.assertEqual(self.target('Backlog', pulls=(merged_no_pass,)), 'Backlog')
         for pulls in ((), (pull('CLOSED'),)):
             with self.subTest(pulls=pulls):
@@ -1557,14 +1558,14 @@ else:
         self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED', passed=True),),
                                           column_entered=r.stamp('2026-11-20T10:00:00Z')),
                                    board=r.BOARDS[15]),
-                         ('Done', 'merged with PASS'))
+                         ('No Flag', 'merged with PASS'))
         self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),),
                                           column_entered=r.stamp('2026-11-20T10:00:00Z')),
                                    board=r.BOARDS[15]),
                          ('Backlog', 'merged without PASS: rule break; owner must verify'))
         self.assertEqual(r.target(r.Facts('Backlog', 8000, pulls=(pull('MERGED'),)), board=r.BOARDS[15]),
                          ('Backlog', 'column entry unreadable; kept'))
-        self.assertEqual(self.target('AI Review', pulls=(pull('MERGED', passed=True),)), 'Done')
+        self.assertEqual(self.target('AI Review', pulls=(pull('MERGED', passed=True),)), 'No Flag')
         self.assertEqual(self.target('AI Review', pulls=(pull('MERGED'),)), 'Backlog')
 
     # HTPR-7807 as the board has it: reopened into Backlog on 2026-11-20, behind
@@ -1591,13 +1592,13 @@ else:
                              ('Backlog', 'merged PR older than column entry; kept'))
         with self.subTest('a merge after the entry still promotes with PASS'):
             self.assertEqual(r.target(self.reopened_facts([fresh], now), board=r.BOARDS[15])[0],
-                             'Done')
+                             'No Flag')
         with self.subTest('a live worker is unaffected'):
             self.assertEqual(r.target(self.reopened_facts([old], now, alive=True),
                                       board=r.BOARDS[15])[0], 'In Progress')
-        with self.subTest('a merge in review resolves to Done with PASS'):
+        with self.subTest('a merge in review resolves to No Flag with PASS'):
             self.assertEqual(r.target(self.reopened_facts([old], now, column='AI Review'),
-                                      board=r.BOARDS[15])[0], 'Done')
+                                      board=r.BOARDS[15])[0], 'No Flag')
         with self.subTest('column entry comes from staleness, not updatedAt'):
             task = {**self.board15_tasks(count=1)[0],
                     'updatedAt': r.stamp('2026-11-20T18:08:23.579Z'),
@@ -1612,7 +1613,7 @@ else:
         merged = {**self.product_pull(1, 'MERGED', passed=True), 'mergedAt': merge_at}
         card = {**self.card('HTPR-9001', 'In Progress', r.stamp('2026-11-20T11:00:00Z'), [merged]),
                 'staleness': {'sectionChangedAt': entry_at}}
-        self.assertEqual(r.target(self.facts(card, now), board=r.BOARDS[15])[0], 'Done')
+        self.assertEqual(r.target(self.facts(card, now), board=r.BOARDS[15])[0], 'No Flag')
 
     def test_a_board_15_dry_run_keeps_a_reopened_card_in_backlog(self):
         tasks = [{**self.board15_tasks(count=1)[0], 'ticketNumber': 'HTPR-7807',
@@ -1630,6 +1631,22 @@ else:
         self.assertIn('KEEP HTPR-7807 Backlog -> Backlog | merged PR older than column entry; kept',
                       printed)
         self.assertIn('DRY RUN board=15 tickets=1 unknown=0', printed)
+
+    def test_a_finished_qa_card_plans_the_board_15_done_column(self):
+        """VSTA-267: board 15 has no Done column, so a merged PASS card plans No Flag."""
+        now = r.stamp('2026-11-24T22:00:00Z')
+        passed = self.product_pull(9613, 'MERGED', passed=True,
+                                   merged_at='2026-11-24T21:02:00Z')
+        qa = self.card('HTPR-9613', 'QA', now - 3600, [passed])
+        flagged = self.card('HTPR-9614', 'Flag: Everyone', now - 3600, [passed])
+        self.assertEqual(r.target(self.facts(qa, now), board=r.BOARDS[15]),
+                         ('No Flag', 'merged with PASS'))
+        self.assertEqual(r.target(self.facts(flagged, now), board=r.BOARDS[15]),
+                         ('Flag: Everyone', 'protected column'))
+        # The target is protected too, so a second run leaves a finished card alone.
+        self.assertEqual(r.target(r.Facts('No Flag', 8000, False, (passed,)),
+                                  board=r.BOARDS[15]),
+                         ('No Flag', 'protected column'))
 
     def test_stale_in_progress_cards_move_to_backlog(self):
         now = r.stamp(self.CREATED) + 3 * 3600
@@ -1708,7 +1725,7 @@ else:
         qa_no_pass = self.card('HTPR-8460', 'QA', now - 3600, [unpassed])
         flagged = self.card('HTPR-8461', 'Flag: Only Me + QA', now - 3600, [passed])
         self.assertEqual(r.target(self.facts(qa_pass, now), board=r.BOARDS[15]),
-                         ('Done', 'merged with PASS'))
+                         ('No Flag', 'merged with PASS'))
         self.assertEqual(r.target(self.facts(qa_no_pass, now), board=r.BOARDS[15]),
                          ('Backlog', 'merged without PASS: rule break; owner must verify'))
         self.assertEqual(r.target(self.facts(flagged, now), board=r.BOARDS[15]),
@@ -1831,7 +1848,7 @@ else:
                                 [{**found['HTPR-9521'][0], 'passed': True}])
         self.assertEqual(r.target(self.facts(passed_card, r.stamp(created) + 3 * 3600),
                                   board=r.BOARDS[15]),
-                         ('Done', 'merged with PASS'))
+                         ('No Flag', 'merged with PASS'))
         unpassed_card = self.card('HTPR-9521', 'In Progress', r.stamp(created) - 60,
                                   [{**found['HTPR-9521'][0], 'passed': False}])
         self.assertEqual(r.target(self.facts(unpassed_card, r.stamp(created) + 3 * 3600),

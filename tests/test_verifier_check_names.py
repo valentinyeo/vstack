@@ -174,7 +174,7 @@ class VerifierCheckNames(unittest.TestCase):
         self.assertTrue(pull.passed)
         self.assertEqual(self.runs, [(HYPER, HYPER_RUN)])
         self.assertEqual(r.target(r.Facts('QA', 8000, False, (pull,)), board=r.BOARDS[15]),
-                         ('Done', 'merged with PASS'))
+                         ('No Flag', 'merged with PASS'))
 
     def test_hypertask_merged_without_pass_in_qa_plans_backlog(self):
         pull = r.pull_from_node(HYPER, 3835, hyper_3835_node(with_pass=False))

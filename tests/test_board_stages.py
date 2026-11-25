@@ -111,12 +111,13 @@ class MuboShapes(unittest.TestCase):
                              'MERGED', 'green', True, merged_at)
         merged_no_pass = r.Pull('https://github.com/hypertask-ai/hypertask/pull/3836',
                                 'MERGED', 'green', False, merged_at)
+        # VSTA-267: board 15 has no Done column, so a finished card lands in No Flag.
         self.assertEqual(r.target(r.Facts('QA', 8000, False, (merged_pass,)), board=board),
-                         ('Done', 'merged with PASS'))
+                         ('No Flag', 'merged with PASS'))
         self.assertEqual(r.target(r.Facts('QA', 8000, False, (merged_no_pass,)), board=board),
                          ('Backlog', 'merged without PASS: rule break; owner must verify'))
         self.assertEqual(r.target(r.Facts('In Progress', 8000, False, (merged_pass,)), board=board),
-                         ('Done', 'merged with PASS'))
+                         ('No Flag', 'merged with PASS'))
         for column in ('Flag: Only Me + QA', 'Flag: Everyone', 'Flag: Off', 'No Flag',
                        'Valentin Review', 'Done'):
             with self.subTest(column=column):

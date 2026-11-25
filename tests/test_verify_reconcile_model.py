@@ -201,7 +201,8 @@ class VerifyReconcileModel(unittest.TestCase):
                         fresh = (pull('MERGED', passed=passed, merged_at=NEWER),)
                         # A PASS runs before the merge, so it is proven: Done. A merge
                         # with no PASS proves nothing, so the card goes back to Todo/Backlog.
-                        proven = 'Done' if passed else backlog
+                        proven = (r.resolve_column(r.Stage.DONE, board, names)
+                                  if passed else backlog)
                         self.assertEqual(r.target(r.Facts(backlog, age, False, fresh, column_entered=ENTRY),
                                                   board, names)[0], proven)
                         # A live worker and an open PR are unaffected by the merge time.
