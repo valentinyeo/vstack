@@ -2285,6 +2285,35 @@ class WatchTest(unittest.TestCase):
         wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
         self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'first-sid'])
 
+    def test_enabled_codex_config_wakes_as_codex(self):
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        (configs / 'own.config.json').write_text(json.dumps({
+            'tmux': 'own-tab', 'provider': 'codex', 'sid': 'codex-sid', 'enabled': True,
+            'switched_from': {'provider': 'claude', 'sid': 'own-sid'}}))
+        code, out, _ = self.run_watch(
+            [], on_sleep=lambda tick: self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'codex', 'codex-sid'])
+
+    def test_a_switched_to_config_wakes_the_chat_it_switched_to(self):
+        configs = self.directory / '.local/state/multiprompt/agent-host'
+        (configs / 'own.config.json').write_text(json.dumps({
+            'tmux': 'own-tab', 'provider': 'claude', 'sid': 'old-claude-sid', 'enabled': False,
+            'switched_to': {'provider': 'codex', 'sid': 'codex-sid'}}))
+        code, out, _ = self.run_watch(
+            [], on_sleep=lambda tick: self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'codex', 'codex-sid'])
+
+    def test_a_plain_claude_config_wakes_as_claude(self):
+        code, out, _ = self.run_watch(
+            [], on_sleep=lambda tick: self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(wakes[0][:4], ['--tmux', 'own-tab', 'claude', 'own-sid'])
+
     def test_no_own_tab_never_targets_another_sid(self):
         with patch.dict(os.environ, {'MULTIPROMPT_TAB': '', 'TMUX': ''}):
             code, out, _ = self.run_watch(

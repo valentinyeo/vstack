@@ -144,6 +144,39 @@ def sync_reason(args):
     return record.get('reason') or f'sync exited {code}', None
 
 
+# The providers mp-send delivers to.
+PROVIDERS = ('claude', 'codex', 'pi', 'hax', 'cursor')
+
+
+def wake_target(matches):
+    """(provider, sid) owning this tab, or None when no config names one.
+
+    A chat that switched AI leaves its old config disabled with a `switched_to`, and
+    the new one enabled with its own provider, so send with the provider the chosen
+    config actually runs and fall back to a `switched_to` when nothing is enabled.
+    """
+    def usable(provider, sid):
+        return provider in PROVIDERS and isinstance(sid, str) and bool(sid)
+
+    def provider_or_claude(config):
+        provider = config.get('provider')
+        return provider if provider in PROVIDERS else 'claude'
+
+    for config in matches:
+        if config.get('enabled') and usable(provider_or_claude(config), config.get('sid')):
+            return provider_or_claude(config), config['sid']
+    for config in matches:
+        switched = config.get('switched_to')
+        if config.get('enabled') or not isinstance(switched, dict):
+            continue
+        if usable(switched.get('provider'), switched.get('sid')):
+            return switched['provider'], switched['sid']
+    for config in matches:
+        if usable(provider_or_claude(config), config.get('sid')):
+            return provider_or_claude(config), config['sid']
+    return None
+
+
 def wake_failed(status, stderr):
     """One line: why delivery failed, from the sender's last stderr line."""
     last = (stderr or b'').decode(errors='replace').splitlines()
@@ -170,20 +203,18 @@ def wake(lines):
                 continue
             if not isinstance(config, dict) or config.get('tmux') != tab:
                 continue
-            sid = config.get('sid')
-            if not isinstance(sid, str) or not sid:
-                continue
             matches.append(config)
-        if not matches:
+        target = wake_target(matches) if matches else None
+        if not target:
             return False
-        config = next((config for config in matches if config.get('enabled')), matches[0])
+        provider, sid = target
         prompt = '; '.join(lines) + '; run drain-check'
         for attempt in range(2):
             if attempt:
                 time.sleep(5)
             try:
                 sent = subprocess.run(
-                    [str(sender), '--tmux', tab, 'claude', config['sid'], prompt],
+                    [str(sender), '--tmux', tab, provider, sid, prompt],
                     capture_output=True, timeout=30)
             except subprocess.TimeoutExpired as error:
                 # The sender may have delivered before it hung, so a retry can send the
