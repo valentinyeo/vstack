@@ -766,7 +766,13 @@ class CheckTest(unittest.TestCase):
         self.assertIn('drain-check: FAIL (1 findings)', out)
 
     def test_a_board_with_no_review_debt_row_is_unchanged(self):
-        rows = review_cards(11) + [vsta('VSTA-206', age=3 * 3600)]
+        rows = []
+        for index in range(11):
+            row = vsta(f'VSTA-{900 + index}', section='Checks',
+                       assignees=[agent_assignee('Responsive Mode Dev')])
+            row['task']['labels'] = [{'name': 'Responsive Mode'}]
+            rows.append(row)
+        rows.append(vsta('VSTA-206', age=3 * 3600))
         code, out = self.run_check(rows, board=13556, label='Board Drain Loop')
         self.assertEqual(code, 1, out)
         self.assertNotIn('held:', out)
