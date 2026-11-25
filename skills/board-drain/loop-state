@@ -529,6 +529,11 @@ def status(name, now=None):
         else f'armed, expires in {window(remaining)}')
 
 
+def is_armed(name, now=None):
+    """True when this chat's loop will wake it: armed, or expiring soon."""
+    return status(name, now)[0] in (0, 3)
+
+
 def record_sync(name, ok, reason, now=None, skipped=False):
     """Record this chat's last board sync. A record alone never arms the loop.
 

@@ -277,6 +277,14 @@ basis: VSTA-251
 approved: 2026-11-24
 expiry: 2027-02-24
 
+id: switch-keeps-mode
+pstack: docs/harness/claude-code.md
+quote: In Claude Code, read this file once per session, then map each Cursor name in a skill with the tables below.
+change: Codex, Antigravity and Pi run no skill frontmatter hook, so `hooks/harness-start.py` (installed by `scripts/install-mode-start-hook.py`, loaded by `skills/valentin-mode/pi-start.ts`) hands every switched chat valentin-mode's version line, the order to read the skill, and the board-drain arm command at session start and on each prompt.
+basis: PR #434, VSTA-305
+approved: 2026-11-25
+expiry: 2027-02-25
+
 id: human-progress
 pstack: skills/poteto-mode/playbooks/autopilot-full.md
 quote: **Reply:** catch the operator up per the **ketchup** skill, covering each PR's state and verdict, what merged, countersigns and why, open operator gates, and parked follow-ups, with links to each PR and the trails.

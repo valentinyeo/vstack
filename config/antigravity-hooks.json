@@ -1,5 +1,12 @@
 {
   "vstack-valentin-mode": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/harness-start.py\" --harness agy --event start",
+        "timeout": 5
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",

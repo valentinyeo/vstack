@@ -304,6 +304,18 @@ if [ -f "$ROOT/scripts/install-ladder-hook.py" ]; then
   }
 fi
 
+# Only Claude runs a skill's frontmatter hook, so a chat switched to Codex, Antigravity or Pi
+# dropped valentin-mode and its board drain loop (VSTA-305).
+if [ -f "$ROOT/scripts/install-mode-start-hook.py" ]; then
+  python3 "$ROOT/scripts/install-mode-start-hook.py" || {
+    echo "vstack install: could not wire the Codex valentin-mode start hook" >&2
+    exit 1
+  }
+fi
+if [ -f "$ROOT/skills/valentin-mode/pi-start.ts" ]; then
+  link_one vstack-valentin-mode.ts "$ROOT/skills/valentin-mode/pi-start.ts" "$HOME/.pi/agent/extensions"
+fi
+
 # Migrate only this checkout's registered hooks, after their files are installed.
 if [ -f "$ROOT/scripts/install-hook-config.py" ]; then
   python3 "$ROOT/scripts/install-hook-config.py"
