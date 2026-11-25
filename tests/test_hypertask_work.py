@@ -2388,8 +2388,18 @@ class LeaseTest(unittest.TestCase):
             r.live_lease('SOFT-1', NOW, self.directory)
         self.seed(host='other-host', last_beat=NOW - 900)
         self.assertFalse(r.live_lease('SOFT-1', NOW, self.directory))
+        # VSTA-257: a beat that lands while a slow read is running is later than the
+        # read's own `now`, and still proves the worker alive.
         self.seed(last_beat=NOW + 1)
-        self.assertFalse(r.live_lease('SOFT-1', NOW, self.directory))
+        self.assertTrue(r.live_lease('SOFT-1', NOW, self.directory))
+        self.seed(last_beat=NOW + 60)
+        self.assertTrue(r.live_lease('SOFT-1', NOW, self.directory))
+        self.seed(last_beat=NOW + 900)
+        self.assertFalse(r.live_lease('SOFT-1', NOW, self.directory),
+                         'a beat past the whole window is no proof of life')
+        self.seed(started=NOW + 60)
+        self.assertTrue(r.live_lease('SOFT-1', NOW, self.directory),
+                        'a helper that started during the read is alive too')
 
     def test_running_process_with_lease_reads_live(self):
         worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
@@ -2426,6 +2436,15 @@ class LeaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'another live worker'):
             lease.write('SOFT-1', 'start', os.getpid(), self.directory, NOW)
         self.assertEqual(json.loads(self.path.read_text())['host'], 'other-host')
+        # A beat that lands while this write runs is later than `now`, and that owner
+        # is still live (VSTA-257): the same window live_lease reads.
+        live = os.getppid()
+        self.seed(pid=live, last_beat=NOW + 30)
+        with self.assertRaisesRegex(ValueError, 'another live worker'):
+            lease.write('SOFT-1', 'start', os.getpid(), self.directory, NOW)
+        self.seed(pid=live, last_beat=NOW + 900)
+        lease.write('SOFT-1', 'start', os.getpid(), self.directory, NOW)
+        self.assertEqual(json.loads(self.path.read_text())['pid'], os.getpid())
         self.seed(pid=999999999)
         lease.write('SOFT-1', 'start', os.getpid(), self.directory, NOW)
         self.assertEqual(json.loads(self.path.read_text())['pid'], os.getpid())
