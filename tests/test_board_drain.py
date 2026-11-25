@@ -2052,6 +2052,18 @@ class WatchTest(unittest.TestCase):
             'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
         env.start()
         self.addCleanup(env.stop)
+        # VSTA-312: no host tool sets the pace. A plan-pick on the box answers the
+        # loop-interval read, and its call lands in the same patched subprocess.run
+        # the sender tests count, so the default heartbeat must be the floor.
+        plan_pick = patch.object(watch.loop_state, 'PLAN_PICK',
+                                 self.directory / 'absent/plan-pick')
+        plan_pick.start()
+        self.addCleanup(plan_pick.stop)
+
+    @staticmethod
+    def sender_call(argv):
+        """True only for the mp-send wake, not for any other program the watcher runs."""
+        return bool(argv) and os.path.basename(str(argv[0])) == 'mp-send'
 
     def rows(self, rows):
         self.fixture.write_text(json.dumps(rows))
@@ -2227,10 +2239,12 @@ class WatchTest(unittest.TestCase):
                                'time.sleep(60)\n')
         run = subprocess.run
 
-        def short_timeout(*args, **kwargs):
+        def short_timeout(argv, **kwargs):
+            if not self.sender_call(argv):
+                return run(argv, **kwargs)
             self.assertEqual(kwargs['timeout'], 30)
             kwargs['timeout'] = 0.2
-            return run(*args, **kwargs)
+            return run(argv, **kwargs)
 
         with patch.object(watch.subprocess, 'run', side_effect=short_timeout), \
                 patch.object(watch.time, 'sleep') as retry_sleep:
@@ -2248,9 +2262,12 @@ class WatchTest(unittest.TestCase):
         self.sender.write_text(self.sender.read_text() + 'import time\ntime.sleep(60)\n')
         run = subprocess.run
 
-        def short_timeout(*args, **kwargs):
+        def short_timeout(argv, **kwargs):
+            if not self.sender_call(argv):
+                return run(argv, **kwargs)
+            self.assertEqual(kwargs['timeout'], 30)
             kwargs['timeout'] = 0.2
-            return run(*args, **kwargs)
+            return run(argv, **kwargs)
 
         with patch.object(watch.subprocess, 'run', side_effect=short_timeout), \
                 patch.object(watch.time, 'sleep') as retry_sleep:
