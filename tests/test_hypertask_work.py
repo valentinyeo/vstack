@@ -1674,7 +1674,8 @@ else:
 
     def test_a_merge_before_a_reopened_doing_card_leaves_its_live_worker_alone(self):
         facts = self.doing_facts(self.VSTA_281['merged'], r.stamp(self.VSTA_281['entry']), alive=True)
-        self.assertEqual(r.target(facts, board=r.BOARDS[13556]), ('Doing', 'live worker'))
+        self.assertEqual(r.target(facts, board=r.BOARDS[13556]),
+                         ('Doing', 'live worker: lease or process'))
 
     def test_a_merge_after_the_doing_entry_still_finishes_the_card(self):
         facts = self.doing_facts('2026-11-25T13:00:00Z', r.stamp(self.VSTA_281['entry']))
