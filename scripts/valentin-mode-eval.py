@@ -24,6 +24,15 @@ REPLACEMENTS = {
     'candidate': 'chat', 'arena': 'workspace',
 }
 BLIND = re.compile('|'.join(REPLACEMENTS), re.I)
+TRIES = 3
+# Vendors put a tool call in the content string: DeepSeek DSML, bare tool_call tags, or
+# Anthropic antml blocks. That is an action, not an answer, so the judge never sees it.
+CALL_MARKUP = (
+    re.compile(r'<\uff5cDSML\uff5c.*</\uff5cDSML\uff5c[^>]*>', re.S),
+    re.compile(r'<\|tool_calls?\|>.*<\|/tool_calls?\|>', re.S),
+    re.compile(r'<(?:antml:)?(?:tool_calls?|function_calls?|invoke)\b[^>]*>.*'
+               r'</(?:antml:)?(?:tool_calls?|function_calls?|invoke)>', re.S | re.I),
+)
 
 
 def organic_request(root=ROOT):
@@ -43,11 +52,21 @@ def organic_request(root=ROOT):
     return request
 
 
-def content(response):
-    text = response['choices'][0]['message']['content']
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError('Empty model answer')
+def answer_text(response):
+    """The prose a chat sent, or '' when it sent no text at all."""
+    text = response['choices'][0]['message'].get('content')
+    if not isinstance(text, str):
+        return ''
+    for markup in CALL_MARKUP:
+        text = markup.sub('', text)
     return text.strip()
+
+
+def content(response):
+    text = answer_text(response)
+    if not text:
+        raise ValueError('Empty model answer')
+    return text
 
 
 def judge_request(questions, answers, guidance):
@@ -112,8 +131,18 @@ def call(request, label, out, ladder, excluded='', pi=None):
         process.check_returncode()
         response = json.loads(process.stdout)
     (out / f'{label}-response.json').write_text(json.dumps(response, indent=2) + '\n')
-    content(response)
     return response
+
+
+def ask_candidate(request, out, ladder, pi):
+    """The response that carried text, or None after TRIES calls with no text."""
+    for attempt in range(1, TRIES + 1):
+        label = 'chat-a' if attempt == 1 else f'chat-a-try{attempt}'
+        response = call(request, label, out, ladder, pi=pi)
+        if answer_text(response):
+            return response
+        print(f'No answer in try {attempt} of {TRIES}: the chat sent no text to grade.')
+    return None
 
 
 def main():
@@ -130,7 +159,16 @@ def main():
     guidance = json.loads((CASES / 'judge-only.json').read_text())
     if set(guidance['expected']) != set(questions):
         raise ValueError('Every scenario needs a judge-only expected answer')
-    answer = call(organic_request(), 'chat-a', args.out, args.ladder, pi=args.pi)
+    answer = ask_candidate(organic_request(), args.out, args.ladder, args.pi)
+    if answer is None:
+        detail = (f'no answer after {TRIES} tries: every reply was empty, whitespace, or '
+                  'tool calls only, so the judge had nothing to read')
+        (args.out / 'no-answer.json').write_text(json.dumps({
+            'error': 'no answer', 'kind': 'infrastructure error',
+            'tries': TRIES, 'detail': detail,
+        }, indent=2) + '\n')
+        raise SystemExit(f'NO ANSWER after {TRIES} tries (infrastructure error, not a rule '
+                         f'FAIL): {detail}')
     family = model_family(answer['model'])
     request = judge_request(questions, content(answer), guidance)
     verdict = call(request, 'judge', args.out, args.ladder, excluded=family, pi=args.pi)
