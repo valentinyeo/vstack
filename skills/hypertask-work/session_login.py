@@ -176,6 +176,39 @@ def name_login(env=None):
     return '' if is_person(name) else name
 
 
+def tab_chat_name(env=None):
+    """This chat's own Multibot name read from its tab alone, or '' when no tab names it."""
+    env = os.environ if env is None else env
+    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
+    if not tab:
+        return ''
+    name = session_name(home(env), tab)
+    return '' if not name or is_person(name) else name
+
+
+def env_login_name(env, where):
+    """The login name the environment names, read the way `login` reads it."""
+    found = token_file_login(env, where)
+    return found[0] if found else ship_name(env)
+
+
+def borrowed(env=None):
+    """(name, tab name) when the environment names a login for a chat other than this tab's.
+
+    The lease asks this before it assigns or syncs anything (VSTA-306: the HT
+    Features tab's leases assigned board 15 tickets as HT Product Lead). With no
+    tab name known there is nothing to compare against and this is None.
+    """
+    env = os.environ if env is None else env
+    tab = tab_chat_name(env)
+    if not tab:
+        return None
+    name = env_login_name(env, home(env))
+    if not name or slug(name) == slug(tab):
+        return None
+    return (name, tab)
+
+
 def login(env=None):
     """(name, token path, source) for this chat's own login, or None when it has none.
 
