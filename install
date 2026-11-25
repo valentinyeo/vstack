@@ -290,6 +290,13 @@ python3 "$ROOT/scripts/register-user-hook.py" --event PreToolUse \
   exit 1
 }
 
+if [ -f "$ROOT/scripts/install-ladder-hook.py" ]; then
+  python3 "$ROOT/scripts/install-ladder-hook.py" || {
+    echo "vstack install: could not wire token-ladder prompt hook" >&2
+    exit 1
+  }
+fi
+
 # Migrate only this checkout's registered hooks, after their files are installed.
 if [ -f "$ROOT/scripts/install-hook-config.py" ]; then
   python3 "$ROOT/scripts/install-hook-config.py"

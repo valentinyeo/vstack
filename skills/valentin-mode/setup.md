@@ -48,12 +48,25 @@ Codex's `PreToolUse` payload and exit codes match Claude Code's, so the only tra
 
 Heavy-Bash pacing and the other entries in the hook table above stay Claude Code only: on Codex and Antigravity they key off a Claude transcript, which those harnesses do not write.
 
+## Token Ladder prompt hook
+
+When `token-ladder` is installed (resolved on `PATH` or in `~/.local/bin`), `./install` wires its prompt hook with a 5-second timeout through `scripts/install-ladder-hook.py`, preserving unrelated hooks and skipping cleanly when `token-ladder` is absent.
+
+| Harness | Config | Event | Command |
+|---|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `UserPromptSubmit` | `run-hook <token-ladder> hook-prompt` |
+| Codex | `~/.codex/hooks.json` | `UserPromptSubmit` | `run-hook token-ladder-prompt.py --harness codex --ladder <token-ladder>` |
+| Antigravity (`agy`) | `~/.gemini/config/hooks.json` (`vstack-token-ladder`) | `PreInvocation` | `run-hook token-ladder-prompt.py --harness agy --ladder <token-ladder>` |
+
+Claude reads plain stdout from `token-ladder hook-prompt`. Codex expects `hookSpecificOutput.additionalContext` JSON and Antigravity expects `injectSteps` JSON; `hooks/token-ladder-prompt.py` wraps stdout into each harness's shape and fails open to `{}`. Because Antigravity fires `PreInvocation` before every model call in a turn, the `agy` adapter deduplicates by `(conversationId, initialNumSteps)` so each prompt gets the usage line once.
+
 ## Google Antigravity (`agy`)
 
 Antigravity loads customizations from [Customization discovery](https://antigravity.google/docs/customization-discovery/) and [Hooks](https://antigravity.google/docs/hooks/). `./install` links vstack skills into `~/.agents/skills/`, `~/.gemini/antigravity-cli/skills/` (CLI priority), and `~/.gemini/config/skills/`, then merges `config/antigravity-hooks.json` into `~/.gemini/config/hooks.json`. Slash `/valentin-mode` comes from the linked `SKILL.md`.
 
 | Event | Hook | Notes |
 |---|---|---|
+| PreInvocation | token-ladder-prompt.py `--harness agy` | Token Ladder prompt line once per turn when installed |
 | PreToolUse | valentin-mode context.py | Version line + responsive rules once |
 | PreToolUse | pacer-guard.py `--harness agy` | An owner chat's code edit is denied, a plan-pick worker passes |
 | Stop | said-started, no-bare-ids, idle-stop | Same scripts as Claude skill frontmatter |
