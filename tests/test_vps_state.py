@@ -262,6 +262,44 @@ class RunnerGate(unittest.TestCase):
         self.assertEqual(got["verdict"]["worker"], "ADD")
 
 
+class DiskLimitScalesToTheDisk(unittest.TestCase):
+    def verdict(self, total_gb, free_gb):
+        module = load_script()
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="vps-state-diskscale-"))
+        proc, ps, disk = write_proc(tmp, 4.0, 70 * 1024 * MB,
+                                    free=int(free_gb * GB), total=int(total_gb * GB))
+        return module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk,
+                                              cores=CORES))
+
+    def disk_reasons(self, result):
+        return [reason for reason in result["reasons"]["worker"] if "disk" in reason]
+
+    def test_small_disk_with_room_is_not_blocked_and_not_held(self):
+        result = self.verdict(75, 17)
+        self.assertEqual(result["verdict"]["worker"], "ADD")
+        self.assertEqual(result["verdict"]["chat"], "ADD")
+        self.assertEqual(self.disk_reasons(result), [])
+
+    def test_small_disk_nearly_full_holds(self):
+        result = self.verdict(75, 4)
+        self.assertEqual(result["verdict"]["worker"], "HOLD")
+        self.assertIn("disk", " ".join(result["reasons"]["worker"]).lower())
+
+    def test_big_disk_keeps_the_configured_limits(self):
+        module = load_script()
+        self.assertEqual(module.disk_limits({"total_gb": 678})["add_free_gb"], 80.0)
+        self.assertEqual(module.disk_limits({"total_gb": 678})["hold_free_gb"], 30.0)
+        self.assertNotEqual(self.verdict(400, 70)["verdict"]["worker"], "ADD")
+        self.assertEqual(self.verdict(400, 25)["verdict"]["worker"], "HOLD")
+
+    def test_disk_fact_carries_the_total(self):
+        module = load_script()
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="vps-state-disktotal-"))
+        proc, ps, disk = write_proc(tmp, 4.0, 70 * 1024 * MB, total=75 * GB)
+        facts = module.collect(proc, ps_file=ps, statvfs_json=disk, cores=CORES)
+        self.assertEqual(facts["disk"]["total_gb"], 75.0)
+
+
 class CoreSeam(unittest.TestCase):
     """A fixture that says 18 cores must say 18 on a 4 core runner too."""
 
