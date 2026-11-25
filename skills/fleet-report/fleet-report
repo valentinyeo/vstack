@@ -32,6 +32,8 @@ PSTACK_WARN_BEHIND = re.compile(r"^WARN checkout is (\d+) commits behind")
 HYPERTASK_BOARD = re.compile(r"Hypertask board:", re.I)
 WATCHER_LINE = re.compile(r"^watcher (dead since .+|ok)$")
 NOTICE_LINE = re.compile(r"^notice (sent .+|not sent)$")
+# skills/board-drain/loop-state status: 0 armed, 3 expires soon, 4 paused, 2 not armed.
+LOOP_PAUSED = 4
 
 
 def home() -> Path:
@@ -719,11 +721,13 @@ def verdict(
         tags.append("BEHIND")
         notes.append("updates on its next message")
 
-    if has_board and board_exit not in (0, None):
+    if has_board and board_exit == LOOP_PAUSED:
+        tags.append("PAUSED")
+    elif has_board and board_exit not in (0, None):
         tags.append("LOOP OFF")
         actions.append("re-arm /board-drain")
 
-    if watcher.startswith("dead since"):
+    if watcher.startswith("dead since") and board_exit != LOOP_PAUSED:
         tags.append("WATCHER DEAD")
         actions.append("re-arm the watcher in this chat (/board-drain)")
 

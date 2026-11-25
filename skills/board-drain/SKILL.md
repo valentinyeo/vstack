@@ -37,6 +37,10 @@ On changes, sync failures or heartbeats, `watch` sends its own tab the change an
 
 Never delete the loop for an empty Todo; a tick with nothing new stays quiet.
 
+## Paused
+
+Told to go idle (for example a budget pause)? `./loop-state pause --name "<name>" --reason "<why>"`, adding `--until 6h` when the pause has an end. Nothing nags you to re-arm while paused, and `drain-check` prints one `paused:` line instead of failing on **loop off**. Told to resume? `./loop-state resume --name "<name>"`, then Arm. `./loop-state arm` clears the pause too; a pause past its `--until` needs no resume.
+
 ## Each tick adds
 
 1. **Sync.** `./sync --board <id> --label <label> --name "<name>"` (references/sync.md): preview, then `--apply --limit 5`. Usage or non-zero exit prints `sync: FAIL` until it works.

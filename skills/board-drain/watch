@@ -227,6 +227,9 @@ def follow(args, clock=time.time, sleep=time.sleep):
         lines = []
         if superseded(args.name):
             return 0
+        if loop_state.pause_state(args.name, now=clock()):
+            print('paused: leaving this chat idle; resume its loop to re-arm me', flush=True)
+            return 0
         # The pulse comes first: a watcher that stops here is dead, and its last pulse says when.
         try:
             loop_state.beat(args.name, now=clock())

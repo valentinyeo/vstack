@@ -5,7 +5,9 @@ One record per chat holds the armed loop, the last sync, and the watcher's pulse
 reader of "is anything going to wake this chat" goes through here, so drain-check, the
 chat's own hook and the fleet report cannot disagree (VSTA-151).
 
-    loop-state status --name <chat>    # 0 armed, 3 expires soon, 2 not armed or watcher dead
+    loop-state status --name <chat>    # 0 armed, 3 expires soon, 4 paused, 2 not armed or watcher dead
+    loop-state pause --name <chat> [--until <ISO or 6h>] [--reason "<text>"]
+    loop-state resume --name <chat>    # clears a pause; so does arm
     loop-state watcher --name <chat>   # one line: watcher ok / watcher dead since <time>
     loop-state notice --name <chat>    # one line: notice sent <time> (<via>) / notice not sent
     loop-state beat --name <chat>      # refresh this chat's heartbeat in the same loop record
@@ -42,6 +44,11 @@ PACER_FLOOR = 7200
 DEFAULT_EVERY = 180
 BEAT_FLOOR = 300
 DEAD_NOTICE_AFTER = 10 * 60
+# A paused chat was told to go idle, so it is neither armed nor nagged (VSTA-309).
+PAUSED = 4
+PAUSE_FIELDS = ('paused_at', 'paused_until', 'paused_reason')
+DURATION = re.compile(r'^(\d+)([smhdw])$')
+PAUSE_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': WEEK}
 PLAN_PICK = Path.home() / '.local/bin' / 'plan-pick'
 ERRORS = (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError)
 
@@ -312,6 +319,8 @@ def dead_since(name, now=None):
     state = stored(name)
     if not state:
         return None, ''
+    if pause_state(name, moment):
+        return None, ''
     kind, _line = watch_health(name, moment)
     if kind == 'dead':
         for key in ('watch_beat', 'watch_started'):
@@ -498,12 +507,68 @@ def arm(name, every='2h', expires=None, job=None, now=None, board=None, label=No
         state['board'] = board
     if label is not None:
         state['label'] = label
-    return store(name, state, drop=('dead_notice',))
+    return store(name, state, drop=('dead_notice',) + PAUSE_FIELDS)
+
+
+def until_moment(text, now=None):
+    """Epoch seconds for an ISO time or a duration like 6h, 90m or 2d."""
+    moment = time.time() if now is None else now
+    value = str(text or '').strip()
+    match = DURATION.match(value.lower())
+    if match:
+        return moment + int(match.group(1)) * PAUSE_UNITS[match.group(2)]
+    return reconcile.stamp(value)
+
+
+def pause(name, until=None, reason='', now=None):
+    """Record that this chat was told to go idle, so no hook nags it to re-arm.
+
+    No `until` means the pause holds until someone runs resume or arm.
+    """
+    moment = time.time() if now is None else now
+    ends = iso(until_moment(until, moment)) if str(until or '').strip() else None
+    return store(name, {'paused_at': iso(moment), 'paused_until': ends,
+                        'paused_reason': str(reason or '').strip()},
+                 drop=('dead_notice',))
+
+
+def resume(name):
+    """Clear this chat's pause, so its loop may be armed again from here."""
+    if not any(field in stored(name) for field in PAUSE_FIELDS):
+        return stored(name)
+    return store(name, {}, drop=PAUSE_FIELDS)
+
+
+def pause_state(name, now=None):
+    """This chat's pause record, {} when it is not paused or its end time has passed."""
+    moment = time.time() if now is None else now
+    state = stored(name)
+    if not state.get('paused_at'):
+        return {}
+    ends = state.get('paused_until')
+    if ends:
+        try:
+            if moment >= reconcile.stamp(ends):
+                return {}
+        except ERRORS:
+            return {}
+    return state
+
+
+def pause_line(state):
+    """One line naming the pause and its reason, for status and drain-check."""
+    ends = state.get('paused_until')
+    head = f'paused until {ends}' if ends else 'paused until further notice'
+    reason = str(state.get('paused_reason') or '').strip()
+    return f'{head}: {reason}' if reason else head
 
 
 def status(name, now=None):
-    """(0 armed, 3 expires within a day, 2 not armed or watcher dead) with its line."""
+    """(0 armed, 3 expires within a day, 4 paused, 2 not armed or watcher dead) with its line."""
     moment = time.time() if now is None else now
+    pause = pause_state(name, moment)
+    if pause:
+        return PAUSED, pause_line(pause)
     state = stored(name)
     if not state:
         return 2, 'not armed'
@@ -530,7 +595,7 @@ def status(name, now=None):
 
 
 def is_armed(name, now=None):
-    """True when this chat's loop will wake it: armed, or expiring soon."""
+    """True when this chat's loop will wake it: armed, or expiring soon. A pause is not armed."""
     return status(name, now)[0] in (0, 3)
 
 
@@ -565,7 +630,8 @@ def clear(name):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for command in ('arm', 'status', 'clear', 'watch', 'watcher', 'beat', 'notice', 'timer'):
+    for command in ('arm', 'status', 'clear', 'watch', 'watcher', 'beat', 'notice', 'timer',
+                    'pause', 'resume'):
         sub = commands.add_parser(command)
         if command in ('watcher', 'beat', 'notice'):
             sub.add_argument('--name', required=True, help="This chat's Multibot name")
@@ -577,6 +643,9 @@ def main(argv=None):
         if command == 'watch':
             sub.add_argument('--pid', type=int, required=True, help='The watcher process id')
             sub.add_argument('--every', type=int, help='Seconds between the watcher\'s polls')
+        if command == 'pause':
+            sub.add_argument('--until', help='ISO time or a duration like 6h; default no end')
+            sub.add_argument('--reason', default='', help='Why this chat is idle')
         if command == 'arm':
             sub.add_argument('--every', default='2h')
             sub.add_argument('--expires', help='ISO expiry; default is 7 days (recurring cron limit)')
@@ -598,6 +667,13 @@ def main(argv=None):
         if args.command == 'clear':
             clear(args.name)
             print('cleared')
+            return 0
+        if args.command == 'pause':
+            print(pause_line(pause(args.name, args.until, args.reason)))
+            return 0
+        if args.command == 'resume':
+            resume(args.name)
+            print('resumed')
             return 0
         if args.command == 'watch':
             state = record_watch(args.name, args.pid, every=args.every)
