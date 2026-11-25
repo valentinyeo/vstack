@@ -120,6 +120,7 @@ class Feedback(unittest.TestCase):
             FAKE_REFUSE='',
             SHIP_SESSION_NAME='Vstack Maintainer',
             MULTIPROMPT_TAB='',
+            HYPERTASK_AGENT_TOKEN_FILE='',
         )
 
     def run_env(self, *args, **changes):
@@ -165,6 +166,45 @@ class Feedback(unittest.TestCase):
         r = self.run_env('x', '--why', 'y', SHIP_SESSION_NAME='Missing Agent')
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.data()['calls'], [])
+
+    def chat_names(self, tab, name):
+        path = self.home / '.local/state/multiprompt/chat-names.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({tab: {'name': name}}))
+
+    def test_ship_session_name_wins_when_the_tab_name_has_no_token(self):
+        self.chat_names('tab-1', 'HT Mobile Design')
+        r = self.run_env('Add a feedback command', '--why', 'x',
+                         MULTIPROMPT_TAB='tab-1', SHIP_SESSION_NAME='Demo Chat')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(set(self.data()['tokens']), {CHAT_TOKEN})
+        self.assertNotIn('HT Mobile Design', r.stderr)
+
+    def test_an_explicit_token_file_wins_over_every_name(self):
+        self.chat_names('tab-1', 'HT Mobile Design')
+        explicit = self.home / 'given-agent-token'
+        explicit.write_text(CHAT_TOKEN)
+        r = self.run_env('Add a feedback command', '--why', 'x',
+                         MULTIPROMPT_TAB='tab-1', SHIP_SESSION_NAME='Vstack Maintainer',
+                         HYPERTASK_AGENT_TOKEN_FILE=str(explicit))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(set(self.data()['tokens']), {CHAT_TOKEN})
+
+    def test_a_missing_explicit_token_file_names_its_source(self):
+        missing = self.home / 'gone-agent-token'
+        r = self.run_env('Add a feedback command', '--why', 'x',
+                         HYPERTASK_AGENT_TOKEN_FILE=str(missing))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('HYPERTASK_AGENT_TOKEN_FILE', r.stderr)
+        self.assertIn(str(missing), r.stderr)
+        self.assertEqual(self.data()['calls'], [])
+
+    def test_the_chat_name_still_names_the_login_when_neither_var_is_set(self):
+        self.chat_names('tab-1', 'Demo Chat')
+        r = self.run_env('Add a feedback command', '--why', 'x',
+                         MULTIPROMPT_TAB='tab-1', SHIP_SESSION_NAME='')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(set(self.data()['tokens']), {CHAT_TOKEN})
 
     def test_finds_hypertask_in_local_bin_when_path_has_none(self):
         local = self.home / '.local/bin'

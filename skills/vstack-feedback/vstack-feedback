@@ -193,12 +193,14 @@ def seen_count(text):
 
 def resolve_login(env):
     """(chat name, token) for this chat's own login, or ('', '') when it has none."""
-    login = load_session().login_for_session(env)
-    if not login:
+    found = load_session().login(env)
+    if not found:
         return '', ''
-    name, path = login
+    name, path, source = found
     if not path.is_file():
-        raise ValueError(f'no agent token for {name}; run the session login flow first')
+        raise ValueError(
+            f'no agent token for {name}, from {source} ({path}); '
+            'run the session login flow first')
     return name, path.read_text().strip()
 
 

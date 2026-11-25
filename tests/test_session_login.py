@@ -1,4 +1,4 @@
-"""Who a chat's board login is: its tab's name, else SHIP_SESSION_NAME."""
+"""The shared login resolver the tools read (skills/hypertask-work/session_login.py)."""
 import importlib.util
 import json
 from pathlib import Path
@@ -46,19 +46,69 @@ class LoginForSession(unittest.TestCase):
                 self.token(name)
                 self.assertIsNone(session.login_for_session(self.env(SHIP_SESSION_NAME=name)))
 
-    def test_a_tab_wins_over_ship_session_name(self):
+    def test_a_tab_does_not_beat_ship_session_name(self):
+        self.roster('live-test', 'HT Mobile Design')
+        self.token('HT Mobile Design')
+        ship_token = self.token('Mobile Designer')
+        login = session.login_for_session(
+            self.env(MULTIPROMPT_TAB='live-test', SHIP_SESSION_NAME='Mobile Designer'))
+        self.assertEqual(login, ('Mobile Designer', ship_token))
+
+    def test_a_tab_with_no_token_still_yields_to_ship_session_name(self):
+        self.roster('live-test', 'HT Mobile Design')
+        ship_token = self.token('Mobile Designer')
+        login = session.login_for_session(
+            self.env(MULTIPROMPT_TAB='live-test', SHIP_SESSION_NAME='Mobile Designer'))
+        self.assertEqual(login, ('Mobile Designer', ship_token))
+
+    def test_the_tab_names_the_login_when_ship_session_name_is_unset(self):
         self.roster('live-test', 'Test Chat')
         tab_token = self.token('Test Chat')
-        self.token('HT Other')
-        login = session.login_for_session(
-            self.env(MULTIPROMPT_TAB='live-test', SHIP_SESSION_NAME='HT Other'))
+        login = session.login_for_session(self.env(MULTIPROMPT_TAB='live-test'))
         self.assertEqual(login, ('Test Chat', tab_token))
 
-    def test_a_tab_wins_even_when_ship_session_name_is_a_persons(self):
+    def test_a_tab_still_names_the_login_when_ship_session_name_is_a_persons(self):
         self.roster('live-test', 'Test Chat')
         login = session.login_for_session(
             self.env(MULTIPROMPT_TAB='live-test', SHIP_SESSION_NAME='Valentins Claude Code'))
         self.assertEqual(login, ('Test Chat', session.token_path(self.home, 'Test Chat')))
+
+    def test_a_token_file_wins_over_ship_session_name_and_the_tab(self):
+        self.roster('live-test', 'Test Chat')
+        self.token('Test Chat')
+        self.token('Mobile Designer')
+        explicit = self.home / 'given-agent-token'
+        explicit.write_text('secret\n')
+        found = session.login(self.env(MULTIPROMPT_TAB='live-test',
+                                       SHIP_SESSION_NAME='Mobile Designer',
+                                       HYPERTASK_AGENT_TOKEN_FILE=str(explicit)))
+        self.assertEqual(found, ('Mobile Designer', explicit, 'HYPERTASK_AGENT_TOKEN_FILE'))
+        self.assertEqual(session.login_for_session(
+            self.env(HYPERTASK_AGENT_TOKEN_FILE=str(explicit))), ('given', explicit))
+
+    def test_a_token_file_names_itself_from_its_own_file_name(self):
+        explicit = self.token('Mobile Designer')
+        found = session.login(self.env(HYPERTASK_AGENT_TOKEN_FILE=str(explicit)))
+        self.assertEqual(found, ('mobile designer', explicit, 'HYPERTASK_AGENT_TOKEN_FILE'))
+
+    def test_a_missing_token_file_is_still_the_answer(self):
+        missing = self.home / 'gone-agent-token'
+        found = session.login(self.env(HYPERTASK_AGENT_TOKEN_FILE=str(missing)))
+        self.assertEqual(found, ('gone', missing, 'HYPERTASK_AGENT_TOKEN_FILE'))
+
+    def test_a_persons_shortcut_name_never_names_a_token_file(self):
+        explicit = self.token('Mobile Designer')
+        found = session.login(self.env(HYPERTASK_AGENT_TOKEN_FILE=str(explicit),
+                                       SHIP_SESSION_NAME='Valentin Yeo'))
+        self.assertEqual(found, ('mobile designer', explicit, 'HYPERTASK_AGENT_TOKEN_FILE'))
+
+    def test_the_source_names_where_the_login_came_from(self):
+        path = self.token('HT Test Agent')
+        self.assertEqual(session.login(self.env(SHIP_SESSION_NAME='HT Test Agent')),
+                         ('HT Test Agent', path, 'SHIP_SESSION_NAME'))
+        self.roster('live-test', 'Test Chat')
+        self.assertEqual(session.login(self.env(MULTIPROMPT_TAB='live-test'))[2], 'MULTIPROMPT_TAB')
+        self.assertIsNone(session.login(self.env()))
 
     def test_no_tab_and_no_name_is_none(self):
         self.assertIsNone(session.login_for_session(self.env()))

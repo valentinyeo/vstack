@@ -1,9 +1,8 @@
 """A chat's own board login and the status store its card syncs write.
 
-One rule, one place: a Multibot chat's tmux session names it in the house-rules
-fleet roster, and its login is that name's agent token. A chat with no tab (a
-headless test run, a scripted run) is named by SHIP_SESSION_NAME instead. The
-after-turn hook and the lease both read it from here; neither keeps its own copy.
+One rule, one place: the after-turn hook, the lease and vstack-feedback all read
+a chat's login from here; none keeps its own copy. `login` holds the order the
+three lookups run in.
 """
 import base64
 import json
@@ -16,6 +15,7 @@ TOKENS = '.config/hypertask-agents/credentials/sessions'
 STATE = '.local/state/reconcile-auto'
 # The environment keys a chat's own process carries its Multibot tab in.
 TAB_KEYS = ('MULTIPROMPT_TAB', 'ZSB_SESSION', 'MULTIBOT_SESSION')
+TOKEN_FILE = 'HYPERTASK_AGENT_TOKEN_FILE'
 # The owner is a person, not an agent. A login named after him writes as him, so
 # no session resolves to one: "Valentins Claude Code", "Valentin Yeo" and
 # "Valentin's Chat" all refuse.
@@ -81,8 +81,8 @@ def own_agent_id(name, env=None):
     if not token:
         token = str(env.get('HT_TOKEN') or '').strip()
     if not token:
-        login = login_for_session(env)
-        path = login[1] if login else None
+        found = login_for_session(env)
+        path = found[1] if found else None
         if path is None or not path.is_file():
             return ''
         try:
@@ -111,28 +111,68 @@ def session_name(home, tab):
     return str(entry.get('name') or '').strip() if isinstance(entry, dict) else ''
 
 
-def login_for_session(env=None):
-    """(name, token path) for this chat's own login, or None when it has none.
+def agent_name(path):
+    stem = Path(path).name
+    if stem.endswith('-agent-token'):
+        stem = stem[: -len('-agent-token')]
+    return ' '.join(stem.replace('-', ' ').split())
 
-    A tab names the chat through the roster, then the chat-name file. It wins
-    over SHIP_SESSION_NAME, which names a chat with no tab (a headless run) and
-    applies only when that name's token exists. A person's name never resolves.
 
-    A path that came from a tab may not exist yet: the caller decides whether a
-    missing token is its own setup gap (the hook) or a reason to stay quiet (the
-    lease).
+def token_file_login(env, where):
+    """(name, path, source) for HYPERTASK_AGENT_TOKEN_FILE, or None when it is unset.
+
+    An explicit file wins over every name lookup. A path that does not exist is
+    still the answer: the caller names the file in its own error rather than
+    quietly filing under another login.
     """
-    env = os.environ if env is None else env
-    where = home(env)
-    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
-    name = session_name(where, tab) if tab else ''
-    if name:
-        return (name, token_path(where, name))
+    raw = str(env.get(TOKEN_FILE) or '').strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    name = str(env.get('SHIP_SESSION_NAME') or '').strip()
+    if not name or is_person(name):
+        name = agent_name(path)
+    if not name:
+        return None
+    return (name, path, TOKEN_FILE)
+
+
+def ship_name_login(env, where):
+    """(name, path, source) for SHIP_SESSION_NAME, or None when it names no agent login."""
     name = str(env.get('SHIP_SESSION_NAME') or '').strip()
     if not name or is_person(name):
         return None
     path = token_path(where, name)
-    return (name, path) if path.is_file() else None
+    return (name, path, 'SHIP_SESSION_NAME') if path.is_file() else None
+
+
+def tab_login(env, where):
+    """(name, path, source) for the chat's tab name, or None when no tab names the chat."""
+    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
+    name = session_name(where, tab) if tab else ''
+    if not name:
+        return None
+    return (name, token_path(where, name), 'MULTIPROMPT_TAB')
+
+
+def login(env=None):
+    """(name, token path, source) for this chat's own login, or None when it has none.
+
+    The order is HYPERTASK_AGENT_TOKEN_FILE, then SHIP_SESSION_NAME, then the tab
+    name; `source` names which one the path came from. A path may not exist yet:
+    the caller decides whether a missing token is its own setup gap (the hook) or
+    a reason to stay quiet (the lease).
+    """
+    env = os.environ if env is None else env
+    where = home(env)
+    return (token_file_login(env, where) or ship_name_login(env, where)
+            or tab_login(env, where))
+
+
+def login_for_session(env=None):
+    """(name, token path) for this chat's own login, or None when it has none."""
+    found = login(env)
+    return found[:2] if found else None
 
 
 def state_dir(home):
