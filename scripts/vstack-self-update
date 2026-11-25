@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Move the shared vstack checkout to origin/main and re-run its install (VSTA-314).
+
+Nothing updated the shared checkout after a merge, so a server lagged two merges
+behind the other: someone had to run git fetch, checkout --detach origin/main and
+./install by hand. ./install now writes a systemd --user timer that runs this
+script every 15 minutes on whichever server installed it.
+
+Run by the timer:
+  1. one flock, shared with a hand-run ./install, so two installs never overlap;
+  2. only in the shared checkout, ~/.local/share/vstack;
+  3. git fetch with a timeout, silent exit 0 when HEAD is already origin/main;
+  4. one log line and exit 0 when the checkout has local changes;
+  5. checkout --detach origin/main, then ./install, logged as old -> new ok/fail.
+
+Run by ./install:
+  scripts/vstack-self-update --write-units --dir DIR [--no-enable]
+"""
+import datetime
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+UNIT = 'vstack-update'
+FETCH_TIMEOUT = 60
+INSTALL_TIMEOUT = 900
+DIR = Path(__file__).resolve().parents[1]
+
+
+def shared_dir():
+    return Path(os.environ.get('VSTACK_DIR') or Path.home() / '.local/share/vstack')
+
+
+def resolved(path):
+    return Path(path).expanduser().resolve()
+
+
+def state_dir():
+    return Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'vstack'
+
+
+def log(line):
+    path = state_dir() / 'self-update.log'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    with path.open('a') as out:
+        out.write(f'{stamp} {line}\n')
+
+
+def git(directory, *args, timeout=FETCH_TIMEOUT):
+    return subprocess.run(['git', '-C', str(directory), *args], capture_output=True,
+                          text=True, timeout=timeout)
+
+
+def head(directory, ref='HEAD'):
+    done = git(directory, 'rev-parse', '--verify', '--quiet', ref)
+    return done.stdout.strip() if done.returncode == 0 else ''
+
+
+def changes(directory):
+    done = git(directory, 'status', '--porcelain')
+    rows = [row.strip() for row in done.stdout.splitlines() if row.strip()]
+    return rows
+
+
+def update():
+    directory = resolved(shared_dir())
+    if DIR != directory:
+        print(f'vstack self-update: refusing to run in {DIR}; '
+              f'the shared checkout is {shared_dir()}', file=sys.stderr)
+        return 2
+    state_dir().mkdir(parents=True, exist_ok=True)
+    with (state_dir() / 'self-update.lock').open('a') as held:
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+        try:
+            return refresh(directory)
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+
+
+def refresh(directory):
+    old = head(directory)
+    try:
+        fetched = git(directory, 'fetch', '-q', 'origin')
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f'{directory} {old[:10]} fetch failed: {type(error).__name__}')
+        return 0
+    if fetched.returncode != 0:
+        reason = (fetched.stderr.strip() or f'exit {fetched.returncode}').splitlines()[-1]
+        log(f'{directory} {old[:10]} fetch failed: {reason}')
+        return 0
+    new = head(directory, 'origin/main')
+    if not old or not new:
+        log(f'{directory} cannot read HEAD or origin/main; left as it is')
+        return 0
+    if old == new:
+        return 0
+    dirty = changes(directory)
+    if dirty:
+        log(f'{directory} {old[:10]} -> {new[:10]} skipped: local changes ({"; ".join(dirty[:3])})')
+        return 0
+    try:
+        checked = git(directory, 'checkout', '-q', '--detach', 'origin/main')
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f'{directory} {old[:10]} -> {new[:10]} fail: checkout {type(error).__name__}')
+        return 0
+    if checked.returncode != 0:
+        reason = (checked.stderr.strip() or f'exit {checked.returncode}').splitlines()[-1]
+        log(f'{directory} {old[:10]} -> {new[:10]} fail: checkout {reason}')
+        return 0
+    installer = directory / 'install'
+    if not installer.is_file():
+        log(f'{directory} {old[:10]} -> {new[:10]} fail: no install at {installer}')
+        return 0
+    try:
+        done = subprocess.run(['bash', str(installer)], cwd=str(directory), capture_output=True,
+                              text=True, timeout=INSTALL_TIMEOUT,
+                              env={**os.environ, 'VSTACK_LOCK_HELD': '1'})
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f'{directory} {old[:10]} -> {new[:10]} fail: install {type(error).__name__}')
+        return 0
+    if done.returncode != 0:
+        reason = (done.stderr.strip() or f'exit {done.returncode}').splitlines()[-1]
+        log(f'{directory} {old[:10]} -> {new[:10]} fail: install {reason}')
+        return 0
+    log(f'{directory} {old[:10]} -> {new[:10]} ok')
+    return 0
+
+
+def quoted(value):
+    """Quote systemd syntax, including specifiers; ExecStart also escapes dollars."""
+    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace(
+        '%', '%%').replace('\n', '\\n').replace('\r', '\\r') + '"'
+
+
+def bus_environment():
+    runtime = f'/run/user/{os.getuid()}'
+    return {'XDG_RUNTIME_DIR': runtime, 'DBUS_SESSION_BUS_ADDRESS': f'unix:path={runtime}/bus'}
+
+
+def systemctl(*args):
+    try:
+        return subprocess.run(['systemctl', '--user', *args], capture_output=True, text=True,
+                              timeout=30, env={**os.environ, **bus_environment()})
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def unit_text(directory, timeout):
+    environment = ''.join('Environment=' + quoted(f'{key}={value}') + '\n' for key, value in {
+        'PATH': f'/usr/local/bin:/usr/bin:/bin:{Path.home()}/.local/bin',
+        'VSTACK_DIR': str(directory),
+    }.items())
+    command = ' '.join(quoted(part.replace('$', '$$')) for part in (
+        '/usr/bin/timeout', str(timeout), str(directory / 'scripts/vstack-self-update')))
+    service = (
+        '[Unit]\n'
+        'Description=Update the shared vstack checkout from origin/main\n'
+        '\n[Service]\n'
+        'Type=oneshot\n'
+        + environment
+        + f'ExecStart={command}\n')
+    timer = (
+        '[Unit]\n'
+        'Description=Update the shared vstack checkout from origin/main every 15 minutes\n'
+        '\n[Timer]\n'
+        'OnStartupSec=3min\n'
+        'OnUnitActiveSec=15min\n'
+        'Persistent=true\n'
+        'RandomizedDelaySec=60s\n'
+        f'Unit={UNIT}.service\n'
+        '\n[Install]\n'
+        'WantedBy=timers.target\n')
+    return service, timer
+
+
+def write_units(directory, enable=True):
+    directory = resolved(directory)
+    config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'systemd/user'
+    config.mkdir(parents=True, exist_ok=True)
+    service, timer = unit_text(directory, INSTALL_TIMEOUT + 60)
+    for name, content in ((f'{UNIT}.timer', timer), (f'{UNIT}.service', service)):
+        target = config / name
+        if target.exists() and target.read_text() == content:
+            continue
+        with tempfile.NamedTemporaryFile(mode='w', dir=config, delete=False) as out:
+            temporary = Path(out.name)
+            out.write(content)
+        temporary.replace(target)
+    if not enable:
+        return 0
+    systemctl('daemon-reload')
+    enabled = systemctl('is-enabled', '--quiet', f'{UNIT}.timer')
+    if enabled is not None and enabled.returncode == 0:
+        return 0
+    systemctl('enable', '--now', f'{UNIT}.timer')
+    return 0
+
+
+def main(argv):
+    if argv[:1] == ['--write-units']:
+        options = argv[1:]
+        directory = shared_dir()
+        enable = True
+        while options:
+            option = options.pop(0)
+            if option == '--dir' and options:
+                directory = options.pop(0)
+            elif option == '--no-enable':
+                enable = False
+            else:
+                print(f'vstack self-update: unknown option {option}', file=sys.stderr)
+                return 2
+        return write_units(directory, enable)
+    if argv:
+        print(f'vstack self-update: unknown option {argv[0]}', file=sys.stderr)
+        return 2
+    return update()
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
