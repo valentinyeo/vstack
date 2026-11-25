@@ -1,0 +1,34 @@
+{
+  "now": 1763800800,
+  "roster": "Triage LC (live-t, claude, /tmp)\n",
+  "chats": ["Triage LC"],
+  "tasks": [
+    {
+      "ticketNumber": "SOFT-3068",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Runs stall when the queue drains",
+      "updatedAt": "2025-11-22T07:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-22T07:00:00.000Z"},
+      "labels": [{"name": "Triage"}, {"name": "brain-hard"}]
+    },
+    {
+      "ticketNumber": "SOFT-3074",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Runs report the wrong owner",
+      "updatedAt": "2025-11-22T07:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-22T07:00:00.000Z"},
+      "labels": [{"name": "Triage"}, {"name": "verification"}, {"name": "brain-medium"}]
+    },
+    {
+      "ticketNumber": "SOFT-3079",
+      "projectId": 99001,
+      "section": "Todo",
+      "title": "Verification sweep",
+      "updatedAt": "2025-11-22T07:00:00.000Z",
+      "staleness": {"sectionChangedAt": "2025-11-22T07:00:00.000Z"},
+      "labels": [{"name": "verification"}]
+    }
+  ]
+}

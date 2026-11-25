@@ -40,6 +40,7 @@ A ticket you file or work carries your label, so your view shows it.
 - `task create --labels "<your name>,brain-medium"`
 - `hypertask task update <ticket> --labels ...` only adds or replaces the labels you name; keep the others.
 - A ticket of yours found on another view gets your label.
+- The label you armed with owns your cards even when it classifies work too: a `--label Triage` loop owns its Triage cards, and no `no-owner-label` break fires on them.
 - A ticket another chat owns moves to that chat's label. Tell that chat.
 
 Never invent a label for a person, and never use Valentin's name as a label.

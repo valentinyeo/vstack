@@ -92,17 +92,36 @@ def carries(task, label):
     return any(name_of(item).casefold() == wanted for item in task.get('labels') or ())
 
 
+def own_labels(task, own):
+    """The card's own copies of this label, one per label, generic or not.
+
+    A label a chat armed with names that chat on its own board even when GENERIC
+    lists it: a chat may drain a classification label like Triage (VSTA-291).
+    """
+    folded = (own or '').strip().casefold()
+    names, seen = [], set()
+    if not folded:
+        return names
+    for label in task.get('labels') or ():
+        name = name_of(label)
+        if name.casefold() != folded or name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        names.append(name)
+    return names
+
+
 def cap_labels(task, own='', known=None):
     """The labels a start counts against: the starting chat's own label only.
 
-    With `own` unreadable, a label counts only when a chat here drains it (`known`,
-    casefolded), so a product label no chat drains never blocks a start.
+    The label a chat armed with always counts, even a GENERIC label or a brain-
+    tier: it names that chat's board, so a card carrying it spends that chat's cap
+    (VSTA-291). With `own` unreadable, a label counts only when a chat here drains
+    it (`known`, casefolded), so a product label no chat drains never blocks a start.
     """
-    labels = agent_labels(task)
-    folded = (own or '').strip().casefold()
-    if folded:
-        return [name for name in labels if name.casefold() == folded]
-    return [name for name in labels if name.casefold() in (known or frozenset())]
+    if (own or '').strip():
+        return own_labels(task, own)
+    return [name for name in agent_labels(task) if name.casefold() in (known or frozenset())]
 
 
 def cap_for(label):
@@ -256,6 +275,12 @@ def self_test():
         'a product label alone counts against nothing'
     assert cap_labels(shared, 'Vstack', {'multi bot verification'}) == [], \
         'a label the card does not carry counts nothing'
+    triage = {'labels': [{'name': 'Triage'}, {'name': 'brain-hard'}]}
+    assert agent_labels(triage) == [], 'a generic label is not an agent label'
+    assert cap_labels(triage, 'Triage', frozenset()) == ['Triage'], \
+        'the label a chat armed with counts even when it is generic'
+    assert cap_labels(triage, 'brain-hard', frozenset()) == ['brain-hard'], \
+        'and so does a brain tier it armed with'
 
     def broken(_board_id):
         raise OSError('board unreadable')

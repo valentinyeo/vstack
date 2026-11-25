@@ -15,7 +15,7 @@ Each chat also runs it inside its own drain check, on its own label, where each 
 | `human-board-write` | On boards 15 or 4060, Valentin user wrote where an agent did the work | none yet when author type missing |
 | `label-assignee` | A label that names a live chat or armed loop label does not match the agent assignee; app or classification labels are ignored (`views.md`) | board-lint |
 | `sync-record` | Missing or stale board-drain sync record (`sync.md` checkup) | board-lint |
-| `no-owner-label` | Open Todo with no chat label (`views.md` label every ticket) | board-lint |
+| `no-owner-label` | Open Todo with no chat label (`views.md` label every ticket). The label the chat armed with owns its cards even when it is a classification label such as `Triage` (VSTA-291) | board-lint |
 | `unnamed-identity` | Agent assignee is ship-identity fallback `Valentins Claude Code CLI` (`identity.md`) | board-lint |
 | `view-filter` | A label that names a chat has no view, or its view does not filter on that label: missing filter shows the whole board (`views.md`) | board-lint; fix with `hypertask view update <view id> --label "<label>"` as the chat's own login |
 | `view-owner` | A chat's view is owned by a person, not the chat's agent (`views.md`) | board-lint; report only, recreate the view as the agent login |

@@ -116,6 +116,14 @@ class CapRuleTest(unittest.TestCase):
         self.assertEqual(wip.agent_labels({'labels': [{'name': 'Bug'}, {'name': 'brain-light'},
                                                        {'name': LABEL}]}), [LABEL])
 
+    def test_the_label_a_chat_armed_with_counts_even_when_generic(self):
+        """Triage classifies work for other boards, yet a Triage loop still caps (VSTA-291)."""
+        triage = {'labels': [{'name': 'Triage'}, {'name': 'brain-hard'}]}
+        self.assertEqual(wip.agent_labels(triage), [], 'generic stays generic')
+        self.assertEqual(wip.cap_labels(triage, 'Triage', frozenset()), ['Triage'])
+        self.assertEqual(wip.cap_labels(triage, 'triage', frozenset()), ['Triage'],
+                         'the armed label reads case-insensitively')
+
     def test_only_the_starting_chats_own_label_is_counted(self):
         shared = {'labels': [{'name': PRODUCT}, {'name': OWN}]}
         known = frozenset({PRODUCT.casefold(), OWN.casefold()})
@@ -194,6 +202,16 @@ class LeaseRefusalTest(unittest.TestCase):
         self.assertEqual(code, 0, said)
         self.assertNotIn('held:', said)
         started.assert_called_once()
+
+    def test_a_generic_label_the_chat_armed_with_still_caps_it(self):
+        """Triage is generic, and the loop armed with it still refuses its 6th start (VSTA-291)."""
+        task = card('SOFT-3068', labels=['Triage', 'brain-hard'])['task']
+        code, said, started, written = self.run_lease(task, open_cards(5, label='Triage'),
+                                                     own='Triage')
+        self.assertEqual(code, 75, said)
+        self.assertIn('lease: SOFT-3068 held: label Triage has 5 open tickets', said)
+        started.assert_not_called()
+        written.assert_not_called()
 
     def test_an_urgent_todo_start_is_allowed(self):
         code, said, started, _written = self.run_lease(card('VSTA-206', priority=URGENT)['task'],
@@ -354,11 +372,11 @@ class DrainCheckCapTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def run_check(self, rows):
+    def run_check(self, rows, label=LABEL):
         fixture = self.directory / 'fixture.json'
         fixture.write_text(json.dumps(rows))
         out = io.StringIO()
-        argv = ['--board', '13556', '--label', LABEL, '--fixture', str(fixture),
+        argv = ['--board', '13556', '--label', label, '--fixture', str(fixture),
                 '--now', iso(NOW)]
         with patch.object(drain, 'probe_load', return_value=(0, 'ADD worker, ADD chat')), \
                 patch.object(drain, 'probe_lane', return_value=None), \
@@ -389,6 +407,17 @@ class DrainCheckCapTest(unittest.TestCase):
         self.assertNotIn('over cap', out)
         self.assertIn('loop off: 1 workable Todo, nothing in Doing.', out)
         self.assertIn('drain-check: FAIL (2 findings)', out)
+
+    def test_a_generic_label_the_chat_armed_with_counts_its_cards(self):
+        """A Triage loop counts its own Triage cards, though Triage is generic (VSTA-291)."""
+        triage = [{'task': open_card(index, label='Triage'), 'comments': []}
+                  for index in range(5)]
+        code, out = self.run_check(triage + [card('SOFT-3068', labels=['Triage', 'brain-hard'])],
+                                   label='Triage')
+        self.assertEqual(code, 1, out)
+        self.assertIn('over cap: label Triage has 5 open tickets in Doing+Checks+AI Review '
+                      '(cap 5); ship one first', out)
+        self.assertNotIn('loop off', out)
 
     def test_an_urgent_card_still_gets_its_nudge_at_cap(self):
         code, out = self.run_check(open_rows(5) + [card('VSTA-206', priority=URGENT, age=1800)])
