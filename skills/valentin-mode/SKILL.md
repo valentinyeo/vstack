@@ -43,7 +43,7 @@ Prior art: pstack `poteto-mode` covers the work loop; only his rules and their h
 
 ### Subscription pacer
 
-Start code workers and reviewers through `~/.local/bin/plan-pick --run`, brief in brief.txt, from the worktree on a branch behind `cd <worktree> || exit 1`: the lease refuses a launch in a shared checkout with exit 2, because a failed `cd` without `|| exit 1` leaves bash there; reviews add `--not-vendor <author vendor>`. Hooks per [setup.md](setup.md). His Claude chat only writes briefs, reads one result line and answers him; code, tests, rebases, log reading and PR babysitting go to workers. pstack's models rule holds; every brief starts with pstack `worker.md`'s kickoff line and includes house-rules docs/worker-brief.md. Use Claude subagents only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Bring the free option; never ask him to pay.
+Start code workers and reviewers through `~/.local/bin/plan-pick --run`, brief in brief.txt, from the worktree on a branch behind `cd <worktree> || exit 1`: the lease refuses a launch in a shared checkout with exit 2, because a failed `cd` without `|| exit 1` leaves bash there; reviews add `--not-vendor <author vendor>`. Hooks per [setup.md](setup.md). His Claude chat only writes briefs, reads one result line and answers him; code, tests, rebases, log reading and PR babysitting go to workers. pstack's models rule holds; every brief starts with pstack `worker.md`'s kickoff line and includes house-rules docs/worker-brief.md. Use Claude subagents only when `~/.local/bin/plan-pick --claude-helper` exits 0, otherwise a plan-pick worker. Bring the free option; never ask him to pay. Usage of any plan: run `~/.local/bin/plan-pick --plans`; it is the one source, quote it, never guess.
 
 ### Board work
 
@@ -83,7 +83,6 @@ Whoever owns a ticket owns its PR until it merges (pstack autopilot-full: one ow
 - **GitHub billing:** it blocks only private repos. When checks fail with "recent account payments have failed", scan for secrets and client data, then make it public. A repo that must stay private: note it once on the ticket; never verify or merge around it.
 - **Cloudflare:** host everything new there. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
 - **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
-- **Plan usage:** plan usage comes only from the Token Ladder line shown on each prompt. Never quote usage from memory or skill text.
 - **Own chat only:** run vstack tools only on your own chat; `tests/test_own_chat_only.py` enforces it, allowlist `config/cross-chat-allowlist.txt`.
 
 ## Designing

@@ -44,11 +44,21 @@ def agy_state_file(home, conversation_id):
     return Path(home) / '.local' / 'state' / 'vstack' / 'ladder-prompt-agy' / f'{digest}.step'
 
 
+def as_int(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip('-').isdigit():
+        return int(value.strip())
+    return None
+
+
 def should_emit_agy(payload, home):
     conversation_id = payload.get('conversationId')
-    initial_steps = payload.get('initialNumSteps')
+    initial_steps = as_int(payload.get('initialNumSteps'))
     if (isinstance(conversation_id, str) and conversation_id.strip()
-            and isinstance(initial_steps, int) and not isinstance(initial_steps, bool)):
+            and initial_steps is not None):
         marker = agy_state_file(home, conversation_id.strip())
         step_text = str(initial_steps)
         try:
@@ -59,8 +69,8 @@ def should_emit_agy(payload, home):
         except OSError:
             pass
         return True
-    invocation = payload.get('invocationNum')
-    if isinstance(invocation, int) and not isinstance(invocation, bool) and invocation > 1:
+    invocation = as_int(payload.get('invocationNum'))
+    if invocation is not None and invocation > 1:
         return False
     return True
 
@@ -157,6 +167,16 @@ def self_test():
                                 ladder=str(fake), home=home)
         if agy_repeat != {}:
             bad.append(f'agy repeat in same turn should be empty: {agy_repeat!r}')
+
+        agy_string_first = run_prompt(AGY, {'conversationId': 'c2', 'initialNumSteps': '4', 'invocationNum': 1},
+                                      ladder=str(fake), home=home)
+        if not agy_string_first.get('injectSteps'):
+            bad.append(f'agy numeric-string steps should emit once: {agy_string_first!r}')
+
+        agy_string_repeat = run_prompt(AGY, {'conversationId': 'c2', 'initialNumSteps': '4', 'invocationNum': 1},
+                                       ladder=str(fake), home=home)
+        if agy_string_repeat != {}:
+            bad.append(f'agy numeric-string steps should dedupe: {agy_string_repeat!r}')
 
         agy_next = run_prompt(AGY, {'conversationId': 'c1', 'initialNumSteps': 9, 'invocationNum': 1},
                               ladder=str(fake), home=home)

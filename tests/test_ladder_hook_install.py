@@ -222,9 +222,27 @@ class LadderHookInstallTest(unittest.TestCase):
 
     def test_valentin_mode_skill_requires_token_ladder_prompt_source(self):
         skill = (ROOT / 'skills' / 'valentin-mode' / 'SKILL.md').read_text()
-        working = skill.split('## Working\n', 1)[1].split('\n## ', 1)[0]
-        self.assertIn('Token Ladder line shown on each prompt', working)
-        self.assertIn('never quote usage from memory or skill text', working.lower())
+        pacer = skill.split('### Subscription pacer\n', 1)[1].split('\n### ', 1)[0]
+        self.assertIn('Usage of any plan: run `~/.local/bin/plan-pick --plans`; '
+                      'it is the one source, quote it, never guess.', pacer)
+
+    def test_agy_dedupes_once_per_turn_when_initial_steps_arrive_as_a_string(self):
+        home = self.scratch()
+        ladder = plant_ladder(home / '.local' / 'bin' / 'token-ladder')
+        hook = str(ROOT / 'hooks' / 'token-ladder-prompt.py')
+        env = {'PATH': BARE_PATH, 'HOME': str(home)}
+        payload = json.dumps({'conversationId': 'g5', 'initialNumSteps': '4', 'invocationNum': 1})
+
+        first = subprocess.run([hook, '--harness', 'agy', '--ladder', str(ladder)], input=payload,
+                               capture_output=True, text=True, env=env, timeout=15)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_json = json.loads(first.stdout)
+        self.assertIn('sid=g5', first_json['injectSteps'][0]['systemMessage']['systemMessage'])
+
+        second = subprocess.run([hook, '--harness', 'agy', '--ladder', str(ladder)], input=payload,
+                                capture_output=True, text=True, env=env, timeout=15)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(json.loads(second.stdout), {})
 
 
 if __name__ == '__main__':
