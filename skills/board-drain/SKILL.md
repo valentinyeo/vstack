@@ -43,7 +43,7 @@ Told to go idle (for example a budget pause)? `./loop-state pause --name "<name>
 
 ## Each tick adds
 
-1. **Sync.** `./sync --board <id> --label <label> --name "<name>"` (references/sync.md): preview, then `--apply --limit 5`. Usage or non-zero exit prints `sync: FAIL` until it works.
+1. **Sync.** `./sync --board <id> --label <label> --name "<name>" --limit 5` previews, then applies up to five moves. Usage or non-zero exit prints `sync: FAIL` until it works.
 2. **New tickets.** A workable ownerless Todo ticket gets an owner. Start the highest-priority workable Todo first; urgent before anything else.
 3. **Waits.** Read the newest comments on each waiting ticket first. Valentin's yes makes it workable: clear the mark, assign an owner.
 4. **Check.** `./drain-check --board <id> --label <label> --state-name "<name>"`.
