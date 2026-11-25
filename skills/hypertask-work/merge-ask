@@ -17,6 +17,7 @@ context: "Please merge." and "Please merge when CI is green." are asks.
 
 merge-ask --self-test
 """
+import html
 import re
 
 FIX = 'merge it yourself per pstack shipping; ask him only a product question'
@@ -31,11 +32,22 @@ WAITING_ON_HIM = re.compile(
 PERMISSION = re.compile(r"\b(should|shall|may|can|could|would) (?:i|we)\b", re.I)
 DIRECT = re.compile(r"\b(merge|ship|land) (?:it|this|that|them)\b", re.I)
 SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+# Comments arrive as HTML: paragraphs hold one sentence each and carry no whitespace
+# between them, so a boundary must become a newline before sentences are split (VSTA-280).
+BLOCK_TAG = re.compile(
+    r'</?(?:p|li|ul|ol|div|h[1-6]|br|blockquote|tr)\b[^>]*>', re.I)
+TAG = re.compile(r'<[^>]*>')
+
+
+def plain(text):
+    """HTML comment or plain text, with block boundaries kept as line breaks."""
+    text = BLOCK_TAG.sub('\n', text or '')
+    return html.unescape(TAG.sub('', text))
 
 
 def asks(text):
     """True when the text waits on Valentin to merge, ship, approve or review a PR."""
-    text = text or ''
+    text = plain(text)
     has_pr = bool(PR.search(text))
     for sentence in SENTENCE.split(text):
         merge = MERGE_VERB.search(sentence)
@@ -72,6 +84,8 @@ def self_test():
         "Please review PR #524.",
         "Please merge.",
         "Please merge when CI is green.",
+        '<p>Can you merge https://github.com/x/y/pull/1?</p>',
+        '<p>Please review the PR</p>',
     ]
     passes = [
         "Should the button be blue or green?",
@@ -84,6 +98,12 @@ def self_test():
         "The PR is red; babysitting it now.",
         "It reached you because models ship only on your yes.",
         "New models ship only when you say yes.",
+        # VSTA-278 comment 440713: a Why line saying "your" and a separate Yes line
+        # saying "I ship it", with no whitespace between the paragraphs.
+        '<p><strong>Why</strong> it affects your board.</p><p><strong>Yes:</strong> I ship it.</p>',
+        '<ul><li>your board</li><li>I ship it</li></ul>',
+        '<h1>Why it affects your board</h1><div>yes, I ship it</div>',
+        '<p>It affects your board.</p><p>I ship it.</p>',
     ]
     for text in asks_him:
         assert asks(text), f'a merge ask must be caught: {text}'

@@ -2947,5 +2947,34 @@ class PrCapTest(CheckTest):
         self.assertNotIn('/pull/2', line)
 
 
+class MergeAskTest(unittest.TestCase):
+    """VSTA-280: an HTML comment's paragraphs are separate sentences."""
+
+    def test_a_why_paragraph_and_a_yes_paragraph_are_not_one_sentence(self):
+        text = ('<p><strong>Why</strong> it affects your board.</p>'
+                '<p><strong>Yes:</strong> I ship it.</p>')
+        self.assertFalse(drain.merge_ask.asks(text))
+
+    def test_list_items_are_separate_sentences(self):
+        self.assertFalse(drain.merge_ask.asks(
+            '<ul><li>your board</li><li>I ship it</li></ul>'))
+
+    def test_a_real_html_ask_still_counts(self):
+        self.assertTrue(drain.merge_ask.asks(
+            '<p>Can you merge https://github.com/x/y/pull/1?</p>'))
+        self.assertTrue(drain.merge_ask.asks('<p>Please review the PR</p>'))
+
+    def test_plain_text_is_unchanged(self):
+        for text in ('Should the button be blue or green?',
+                     'It reached you because models ship only on your yes.'):
+            with self.subTest(text=text):
+                self.assertFalse(drain.merge_ask.asks(text))
+        for text in ('Please merge.',
+                     'Say ship and I will merge '
+                     'https://github.com/valentinyeo/multiprompt-android/pull/524.'):
+            with self.subTest(text=text):
+                self.assertTrue(drain.merge_ask.asks(text))
+
+
 if __name__ == '__main__':
     unittest.main()
