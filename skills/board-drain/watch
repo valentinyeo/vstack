@@ -207,7 +207,7 @@ def superseded(name):
     """
     try:
         pid = int(loop_state.stored(name).get('watch_pid'))
-    except loop_state.ERRORS:
+    except (TypeError, ValueError):
         return False
     if pid == os.getpid():
         return False
