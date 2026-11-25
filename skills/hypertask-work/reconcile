@@ -1847,7 +1847,33 @@ def read_ticket(key):
     return task
 
 
-def tickets(section=None, board=DEFAULT):
+def card_ident(row):
+    """What makes two pages name the same card: its ticket key, else its id."""
+    for field in ('ticketNumber', 'id'):
+        value = row.get(field)
+        if value:
+            return f'{field}:{value}'
+    return None
+
+
+def unique_cards(rows):
+    """One card per ticket: a busy board can list the same card on two pages."""
+    cards, seen = [], set()
+    for row in rows:
+        ident = card_ident(row)
+        if ident is not None:
+            if ident in seen:
+                continue
+            seen.add(ident)
+        cards.append(row)
+    return cards
+
+
+def walk_board(section=None, board=DEFAULT):
+    """One fresh walk of the listing, and how many cards it says the board holds.
+
+    A cursor that comes back twice ends the walk early: the rest cannot be reached.
+    """
     rows, cursor, seen = [], None, set()
     while True:
         args = ['task', 'list', '--project', str(board.id), '--status', 'Normal', '--limit', '100']
@@ -1859,12 +1885,30 @@ def tickets(section=None, board=DEFAULT):
         rows += page['tasks']
         cursor = page.get('nextCursor')
         if not cursor:
-            if isinstance(page.get('total'), int) and len(rows) < page['total']:
-                raise ValueError('incomplete board pagination')
             break
         if cursor in seen:
-            raise ValueError('repeated board cursor')
+            break
         seen.add(cursor)
+    total = page.get('total')
+    return unique_cards(rows), total if isinstance(total, int) else None, not cursor
+
+
+# A board that gains a card mid-walk makes the walk short of its own total, so the
+# only cure is a fresh walk from the top (VSTA-273).
+PAGINATION_TRIES = 3
+
+
+def tickets(section=None, board=DEFAULT):
+    rows, total = [], None
+    for _ in range(PAGINATION_TRIES):
+        rows, total, walked = walk_board(section, board)
+        if walked and (total is None or len(rows) >= total):
+            break
+    else:
+        counts = (f'got {len(rows)} of {total}' if total is not None
+                  else f'got {len(rows)} cards')
+        why = '' if walked else '; a cursor repeated'
+        raise ValueError(f'incomplete board pagination: {counts} after {PAGINATION_TRIES} tries{why}')
     if any(str(t['projectId']) != str(board.id) for t in rows):
         raise ValueError(f'ticket outside board {board.id}')
     return rows
