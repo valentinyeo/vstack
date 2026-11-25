@@ -138,6 +138,11 @@ def blocked_by():
     return json.loads((FIXTURES / 'VSTA-7.relations.json').read_text())['relations']
 
 
+def blocking_cards():
+    """The same links as `task list` carries them on the card's blockingTasks."""
+    return [relation['otherTask'] for relation in blocked_by()]
+
+
 def agent_comment(age):
     return {'createdAt': iso(NOW - age), 'creatorId': 6, 'agent': {'id': 'a'},
             'agent_display_name': 'Poteto', 'text': 'working it'}
@@ -2535,7 +2540,7 @@ class WatchSyncTest(unittest.TestCase):
 
 
 class RelationsCliTest(unittest.TestCase):
-    """The real CLI answers `task relations`: one read per unmarked Todo ticket."""
+    """A listed card's links come free; `task relations` answers only a listing without them."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -2545,28 +2550,24 @@ class RelationsCliTest(unittest.TestCase):
         self.real_bin.mkdir(parents=True)
         self.real_log = self.directory / 'real.log'
         self.real_log.write_text('')
-        task = {'projectId': 13556, 'labels': [{'name': 'Board Drain Loop'}],
-                'status': 'Normal', 'assignees': [], 'waitingOnUserId': None,
-                'blockerCommentId': None, 'updatedAt': iso(NOW - 300)}
-        tasks = [dict(task, ticketNumber='VSTA-7', section='Todo'),
-                 dict(task, ticketNumber='VSTA-8', section='Todo', waitingOnUserId=6),
-                 dict(task, ticketNumber='VSTA-2', section='Doing',
-                      assignees=[agent_assignee('Board Drain Loop')])]
-        answers = {'task list': {'tasks': tasks, 'total': len(tasks)},
+        self.card = {'projectId': 13556, 'labels': [{'name': 'Board Drain Loop'}],
+                     'status': 'Normal', 'assignees': [], 'waitingOnUserId': None,
+                     'blockerCommentId': None, 'updatedAt': iso(NOW - 300)}
+
+    def run_check(self, cards):
+        answers = {'task list': {'tasks': cards, 'total': len(cards)},
                    'comment list': {'comments': []},
                    'task relations': {'success': True, 'relations': blocked_by()},
                    'project show': {'project': {'uniqueIdentifier': 'VSTA', 'sections': [
                        {'section_title': 'Todo'}, {'section_title': 'Doing'}]}}}
         write_tool(self.real_bin / 'hypertask',
-                   'import json, os, pathlib, sys\n'
-                   'log = pathlib.Path(os.environ["REAL_HYPERTASK_LOG"])\n'
-                   'log.write_text(log.read_text() + " ".join(sys.argv[1:]) + "\\n")\n'
+                   'import json, os, sys\n'
+                   'with open(os.environ["REAL_HYPERTASK_LOG"], "a") as log:\n'
+                   '    log.write(" ".join(sys.argv[1:]) + "\\n")\n'
                    f'answers = {answers!r}\n'
                    'args = [a for a in sys.argv[1:] if a != "--json"]\n'
                    'print(json.dumps(answers.get(" ".join(args[:2]), {"tasks": [], "total": 0})))\n')
-
-    def test_links_come_from_the_cli_once_per_unmarked_todo(self):
-        done = subprocess.run(
+        return subprocess.run(
             [sys.executable, str(SKILL / 'drain-check'), '--board', '13556',
              '--label', 'Board Drain Loop', '--now', iso(NOW)],
             capture_output=True, text=True, timeout=60,
@@ -2574,13 +2575,34 @@ class RelationsCliTest(unittest.TestCase):
                  'REAL_HYPERTASK_LOG': str(self.real_log),
                  'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state'),
                  'RECONCILE_CACHE': str(self.directory / 'cache.json')})
+
+    def relation_reads(self):
+        return [line for line in self.real_log.read_text().splitlines()
+                if 'task relations' in line]
+
+    def todo_side(self, **links):
+        return [dict(self.card, ticketNumber='VSTA-7', section='Todo', **links),
+                dict(self.card, ticketNumber='VSTA-8', section='Todo', waitingOnUserId=6),
+                dict(self.card, ticketNumber='VSTA-2', section='Doing',
+                     assignees=[agent_assignee('Board Drain Loop')])]
+
+    def test_a_card_that_carries_its_links_costs_no_relation_read(self):
+        # VSTA-293: the listing already names the blockers, so the blocked line comes
+        # from the card and no call is spent asking again.
+        done = self.run_check(self.todo_side(blockingTasks=blocking_cards()))
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn('blocked: VSTA-7 by VSTA-2, VSTA-3', done.stdout)
         self.assertIn('waiting: VSTA-8 (marked)', done.stdout)
         self.assertIn('drain-check: PASS', done.stdout)
-        reads = [line for line in self.real_log.read_text().splitlines()
-                 if 'task relations' in line]
-        self.assertEqual(reads, ['--json task relations VSTA-7'])
+        self.assertEqual(self.relation_reads(), [])
+
+    def test_a_listing_without_the_links_reads_the_cli_once(self):
+        done = self.run_check(self.todo_side())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn('blocked: VSTA-7 by VSTA-2, VSTA-3', done.stdout)
+        self.assertIn('waiting: VSTA-8 (marked)', done.stdout)
+        self.assertIn('drain-check: PASS', done.stdout)
+        self.assertEqual(self.relation_reads(), ['--json task relations VSTA-7'])
 
 
 class SyncTest(unittest.TestCase):
