@@ -45,7 +45,7 @@ THRESHOLDS = {
     "hold_memory_full_avg60": 5.0,
     "hold_mem_avail_gb": 12.0,
     "hold_disk_free_gb": 30.0,
-    "hold_disk_free_frac": 0.07,
+    "hold_disk_free_frac": 0.075,
     "hold_disk_used_pct": 95.0,
     "hold_counter_pct": 90.0,
     "reserve_gb": 24.0,
@@ -412,8 +412,8 @@ def disk_limits(disk):
     if total_gb <= 0:
         return {"add_free_gb": add, "hold_free_gb": hold}
     return {
-        "add_free_gb": min(add, THRESHOLDS["add_disk_free_frac"] * total_gb),
-        "hold_free_gb": min(hold, THRESHOLDS["hold_disk_free_frac"] * total_gb),
+        "add_free_gb": round(min(add, THRESHOLDS["add_disk_free_frac"] * total_gb), 6),
+        "hold_free_gb": round(min(hold, THRESHOLDS["hold_disk_free_frac"] * total_gb), 6),
     }
 
 

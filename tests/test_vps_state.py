@@ -292,6 +292,20 @@ class DiskLimitScalesToTheDisk(unittest.TestCase):
         self.assertNotEqual(self.verdict(400, 70)["verdict"]["worker"], "ADD")
         self.assertEqual(self.verdict(400, 25)["verdict"]["worker"], "HOLD")
 
+    def test_400g_disk_preserves_the_absolute_boundaries(self):
+        for free_gb, expected in ((29, "HOLD"), (30, "CAREFUL"),
+                                  (80, "CAREFUL"), (81, "ADD")):
+            with self.subTest(free_gb=free_gb):
+                result = self.verdict(400, free_gb)
+                self.assertEqual(result["verdict"], {"worker": expected, "chat": expected})
+
+    def test_fractional_boundaries_are_not_shifted_by_float_noise(self):
+        for total_gb, free_gb, expected in ((88, 6.6, "CAREFUL"),
+                                           (6, 1.2, "CAREFUL")):
+            with self.subTest(total_gb=total_gb, free_gb=free_gb):
+                result = self.verdict(total_gb, free_gb)
+                self.assertEqual(result["verdict"], {"worker": expected, "chat": expected})
+
     def test_disk_fact_carries_the_total(self):
         module = load_script()
         tmp = pathlib.Path(tempfile.mkdtemp(prefix="vps-state-disktotal-"))
