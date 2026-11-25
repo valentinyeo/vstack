@@ -8,6 +8,9 @@ second run registers nothing. Unrelated registrations are preserved.
 
 register-user-hook.py --event PreToolUse --matcher Bash \
   --matcher 'mcp__.*create_pull_request' --entry '{"type": "command", ...}'
+
+--replace also drops an older registration of the same script that this entry supersedes, such
+as a loose hook wired by its full path before vstack shipped it (VSTA-289).
 """
 import argparse
 import json
@@ -34,15 +37,26 @@ def already(data, event, matcher, name):
     return False
 
 
-def register(data, entry, events, matchers):
+def register(data, entry, events, matchers, replace=False):
     """Add the entry only where it is missing. Return True when the file must be written."""
     name = hook_name(entry)
+    command = str(entry.get('command') or '')
     changed = False
     for event in events:
+        groups = data.setdefault('hooks', {}).setdefault(event, [])
+        if replace:
+            for group in groups:
+                hooks = group.get('hooks') or []
+                kept = [hook for hook in hooks
+                        if not (isinstance(hook, dict) and hook_name(hook) == name
+                                and str(hook.get('command') or '') != command)]
+                if len(kept) != len(hooks):
+                    group['hooks'] = kept
+                    changed = True
+            groups[:] = [group for group in groups if group.get('hooks')]
         for matcher in matchers or [None]:
             if already(data, event, matcher, name):
                 continue
-            groups = data.setdefault('hooks', {}).setdefault(event, [])
             # Join the group with the same matcher so one event keeps one list.
             group = next((group for group in groups if isinstance(group, dict)
                           and group.get('matcher') == matcher), None)
@@ -79,6 +93,8 @@ def main(argv=None):
                         help='tool matcher applied to every event, repeatable; omit for all')
     parser.add_argument('--settings', type=Path,
                         default=Path.home() / '.claude/settings.json')
+    parser.add_argument('--replace', action='store_true',
+                        help='drop an older registration of this script that this entry supersedes')
     args = parser.parse_args(argv)
 
     try:
@@ -95,7 +111,7 @@ def main(argv=None):
     data = load(path)
     if data is None:
         return 0
-    if not register(data, entry, args.events, args.matchers):
+    if not register(data, entry, args.events, args.matchers, replace=args.replace):
         return 0
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.vstack-tmp')
