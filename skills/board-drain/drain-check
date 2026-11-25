@@ -287,7 +287,11 @@ def in_flight(key, pulls, now, board):
         open_pulls({'ticketNumber': key}, pulls))
 
 
-def orphan_finding(row, pulls, loaded, now, board):
+def card_budget(budgets, key):
+    return budgets.setdefault(key, {'used': False})
+
+
+def orphan_finding(row, pulls, loaded, now, board, budget=None):
     """An open PR red and idle an hour with no helper: the owner resumes it first.
 
     A worker pushes, updates its PR and exits, so checks pending or green, or a push
@@ -310,7 +314,7 @@ def orphan_finding(row, pulls, loaded, now, board):
     if any(in_flight(key, pulls, now, board) for key in blockers):
         return None
     pull = own[0]
-    facts = confirmed_pull(pull, now, now, {'used': False})
+    facts = confirmed_pull(pull, now, now, budget or {'used': False})
     if facts is None:
         return None
     if red_and_idle(facts):
@@ -479,9 +483,10 @@ def pull_now(pull, now, seen, budget):
         return facts
     budget['used'] = True
     read = read_pull_facts(url)
+    read_pushed = stamp_of(read.get('pushed'))
     return {'state': read.get('state') or state,
             'checks': read.get('checks') or checks,
-            'pushed': read.get('pushed') if read.get('pushed') is not None else pushed,
+            'pushed': pushed if read_pushed is None else read_pushed,
             'seen': now, 'live': True}
 
 
@@ -503,15 +508,21 @@ def confirmed_pull(pull, now, seen, budget):
     read = read_pull_facts(pull_field(pull, 'url') or '')
     if not read:
         return None
-    return {'state': read['state'], 'checks': read.get('checks') or '',
-            'pushed': read.get('pushed'), 'seen': now, 'live': True}
+    return {'state': read.get('state'), 'checks': read.get('checks') or '',
+            'pushed': stamp_of(read.get('pushed')), 'seen': now, 'live': True}
 
 
 def red_and_idle(facts):
-    """Open, red checks and no push for an hour: the rule both PR findings share."""
-    pushed = facts['pushed']
+    """Open, red checks and no push for an hour: the rule both PR findings share.
+
+    A moment that will not parse is no verdict, never a crash (VSTA-303).
+    """
+    pushed = stamp_of(facts.get('pushed'))
+    seen = stamp_of(facts.get('seen'))
+    if pushed is None or seen is None:
+        return False
     return (facts['state'] == 'OPEN' and facts['checks'] == 'red'
-            and pushed is not None and facts['seen'] - pushed > STUCK_AFTER)
+            and seen - pushed > STUCK_AFTER)
 
 
 def undated(facts):
@@ -680,7 +691,7 @@ def view_repos(rows, pulls, listing, board):
     return found
 
 
-def stuck_finding(task, pulls, now, board, listing=(), listing_at=None):
+def stuck_finding(task, pulls, now, board, listing=(), listing_at=None, budget=None):
     """A Checks card on a red PR with no push and no owner for an hour, or None.
 
     A PR link the tick already holds answers first; a card with no link is matched
@@ -695,7 +706,7 @@ def stuck_finding(task, pulls, now, board, listing=(), listing_at=None):
     """
     if task.get('section') != CHECKS or alive(task, now, board):
         return None
-    budget = {'used': False}
+    budget = budget or {'used': False}
     linked = linked_pulls(task, pulls)
     seen = now if linked or listing_at is None else listing_at
     for pull in linked or card_pulls(task.get('ticketNumber'), listing, board):
@@ -977,8 +988,10 @@ def read_view(args, now):
     listing, listing_at = (), None
     if any(not linked_pulls(row['task'], pulls) for row in idle_checks):
         listing, listing_at = open_listing(board, now)
+    budgets = {}
     for row in idle_checks:
-        finding = stuck_finding(row['task'], pulls, now, board, listing, listing_at)
+        finding = stuck_finding(row['task'], pulls, now, board, listing, listing_at,
+                                card_budget(budgets, row['task']['ticketNumber']))
         if finding is not None:
             findings.append(finding)
             # The stuck advice already covers this card, so its PR gets one line, not two.
@@ -986,8 +999,9 @@ def read_view(args, now):
     # Orphans come first: while one of this chat's PRs has no helper, starting on a
     # fresh Todo is the mistake, so the Todo advice below stays quiet.
     orphans = [finding for finding in
-               (orphan_finding(row, pulls, loaded, now, board) for row in rows
-                if row['task']['ticketNumber'] not in stuck_keys)
+               (orphan_finding(row, pulls, loaded, now, board,
+                               card_budget(budgets, row['task']['ticketNumber']))
+                for row in rows if row['task']['ticketNumber'] not in stuck_keys)
                if finding is not None]
     findings[:0] = orphans
     if workable and not live and not orphans and not held_by_cap:
