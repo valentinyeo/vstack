@@ -265,8 +265,13 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
         if not spare:
-            print(f'vstack-feedback: no agent token for {name}, and this server has no '
-                  f'{FALLBACK} login; never use a person token', file=sys.stderr)
+            if name == FALLBACK:
+                reason = f'this chat is {FALLBACK} and has no token of its own'
+            elif board != BOARD:
+                reason = f'the {FALLBACK} login is used on board {BOARD} only'
+            else:
+                reason = f'this server has no {FALLBACK} login'
+            print(f'vstack-feedback: no agent token for {name}; {reason}', file=sys.stderr)
             return 2
         try:
             print(file_with(Client(spare, board), title, why,
