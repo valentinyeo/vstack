@@ -699,6 +699,31 @@ class ReconcileTest(unittest.TestCase):
         with patch.object(r, 'api', return_value={'tasks': [task()], 'total': 2}), self.assertRaisesRegex(ValueError, 'incomplete'):
             r.tickets()
 
+    def test_a_board_that_grows_mid_walk_is_walked_again_from_the_top(self):
+        first, second = task(), {**task(), 'ticketNumber': 'SOFT-2'}
+        pages = [{'tasks': [first], 'total': 2, 'nextCursor': 'page2'},
+                 {'tasks': [], 'total': 3, 'nextCursor': None},
+                 {'tasks': [first, second], 'total': 2, 'nextCursor': None}]
+        with patch.object(r, 'api', side_effect=pages) as api:
+            rows = r.tickets()
+        self.assertEqual([t['ticketNumber'] for t in rows], ['SOFT-1', 'SOFT-2'])
+        self.assertEqual(api.call_count, 3)
+        self.assertNotIn('--cursor', api.call_args.args, 'the retry starts a fresh walk')
+
+    def test_a_board_that_stays_short_raises_with_both_counts(self):
+        with patch.object(r, 'api', return_value={'tasks': [task()], 'total': 2}) as api:
+            with self.assertRaisesRegex(ValueError, 'got 1 of 2 after 3 tries'):
+                r.tickets()
+        self.assertEqual(api.call_count, 3)
+
+    def test_a_card_on_two_pages_is_returned_once(self):
+        first, second = task(), {**task(), 'ticketNumber': 'SOFT-2'}
+        pages = [{'tasks': [first], 'total': 2, 'nextCursor': 'page2'},
+                 {'tasks': [first, second], 'total': 2, 'nextCursor': None}]
+        with patch.object(r, 'api', side_effect=pages):
+            rows = r.tickets()
+        self.assertEqual([t['ticketNumber'] for t in rows], ['SOFT-1', 'SOFT-2'])
+
     def test_open_pr_read_is_one_call_without_comments_or_policy(self):
         node = {'url': 'https://github.com/valentinyeo/another-repo/pull/1', 'state': 'OPEN',
                 'headRefOid': HEAD, 'baseRefOid': 'c' * 40, 'author': {'login': 'writer'},
