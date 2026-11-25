@@ -46,15 +46,15 @@
   },
   {
     "id": "orphan-recovery",
-    "rule": "Within an hour, give a workerless PR a worker or park it and return its card to Todo.",
-    "sentence": "A PR without a live worker gets one within the hour, or is parked with its card back in Todo.",
+    "rule": "Within an hour, give a red PR with no live worker a worker, or park it and return its card to Todo.",
+    "sentence": "A red PR idle an hour with no live worker gets a worker, or is parked with its card back in Todo.",
     "tools": [{"path": "skills/hypertask-work/reconcile", "name": "Hypertask Reconciler hourly tick (VSTA-208/VSTA-210)"}],
     "status": "active"
   },
   {
     "id": "orphan-first",
-    "rule": "An owned PR without a live worker blocks new work.",
-    "sentence": "Never start new work while you own a PR with no live worker; restore its worker or park it first.",
+    "rule": "A red PR idle an hour with no live worker blocks new work; restore its worker or park it first.",
+    "sentence": "A red PR idle an hour with no live worker blocks new work; restore its worker or park it first. A PR waiting on pending or green checks after its worker exited cleanly blocks nothing.",
     "tools": [{"path": "skills/board-drain/drain-check", "name": "drain-check orphan finding"}],
     "status": "active"
   },
