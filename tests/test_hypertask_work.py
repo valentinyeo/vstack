@@ -1662,6 +1662,28 @@ else:
                 'staleness': {'sectionChangedAt': entry_at}}
         self.assertEqual(r.target(self.facts(card, now), board=r.BOARDS[15])[0], 'No Flag')
 
+    # VSTA-281 on board 13556: its old PR sf-companion#50 merged with PASS, the owner
+    # moved the card back to Doing for new work, and the merge was read as evidence for
+    # that new work, three runs in a row (VSTA-315).
+    VSTA_281 = {'entry': '2026-11-25T12:00:00Z', 'merged': '2026-11-24T18:00:00Z'}
+
+    def doing_facts(self, merged_at, entered, alive=False):
+        merged = r.Pull('https://github.com/valentinyeo/sf-companion/pull/50', 'MERGED', 'green',
+                        True, r.stamp(merged_at))
+        return r.Facts('Doing', 8000, alive, (merged,), column_entered=entered)
+
+    def test_a_merge_before_a_reopened_doing_card_leaves_its_live_worker_alone(self):
+        facts = self.doing_facts(self.VSTA_281['merged'], r.stamp(self.VSTA_281['entry']), alive=True)
+        self.assertEqual(r.target(facts, board=r.BOARDS[13556]), ('Doing', 'live worker'))
+
+    def test_a_merge_after_the_doing_entry_still_finishes_the_card(self):
+        facts = self.doing_facts('2026-11-25T13:00:00Z', r.stamp(self.VSTA_281['entry']))
+        self.assertEqual(r.target(facts, board=r.BOARDS[13556]), ('Done', 'merged with PASS'))
+
+    def test_an_unreadable_doing_entry_keeps_the_old_reading(self):
+        facts = self.doing_facts('2026-11-25T13:00:00Z', None)
+        self.assertEqual(r.target(facts, board=r.BOARDS[13556]), ('Done', 'merged with PASS'))
+
     def test_a_board_15_dry_run_keeps_a_reopened_card_in_backlog(self):
         tasks = [{**self.board15_tasks(count=1)[0], 'ticketNumber': 'HTPR-7807',
                   'staleness': {'sectionChangedAt': self.REOPENED['entry']}}]
