@@ -35,6 +35,7 @@ def load(name, path):
 # Tests never touch the real ~/.cache: every cached answer has its own file here.
 TEST_CACHE = Path(tempfile.mkdtemp(prefix='reconcile-cache-')) / 'cache.json'
 os.environ['RECONCILE_CACHE'] = str(TEST_CACHE)
+os.environ['BOARD_DRAIN_CACHE_DIR'] = str(TEST_CACHE.parent / 'board-drain')
 
 r = load('fleet_reconcile', ROOT / 'skills/hypertask-work/reconcile')
 lease = load('fleet_lease', ROOT / 'skills/hypertask-work/lease')
@@ -746,6 +747,27 @@ class ReconcileTest(unittest.TestCase):
             r.run('hypertask', '--json', 'task', 'list')
         self.assertEqual(r.github_calls(), (2, 1))
         self.assertEqual(r.github_summary(), 'reconcile: github calls=3 (graphql=2, rest=1)')
+
+    def test_the_call_count_holds_when_reads_run_from_many_threads(self):
+        # drain-check reads a ticket's comments and links from a thread pool (VSTA-293),
+        # so two reads land at once: the counter behind the summary must still be exact.
+        ok = subprocess.CompletedProcess([], 0, '{}', '')
+        readers, per_thread = 8, 5
+
+        def read():
+            for _ in range(per_thread):
+                r.run('gh', 'api', 'graphql', '-f', 'query=x')
+
+        before = sum(count for _, count in r.TIMING.values())
+        with patch.object(r.subprocess, 'run', return_value=ok):
+            threads = [threading.Thread(target=read) for _ in range(readers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(r.github_calls(), (readers * per_thread, 0))
+        self.assertEqual(sum(count for _, count in r.TIMING.values()) - before,
+                         readers * per_thread)
 
     def test_every_run_prints_its_github_call_count(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -4746,6 +4768,55 @@ class UnlabeledSyncTest(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 r.main()
             self.assertIn('--label', str(caught.exception))
+
+
+class SectionChangedCacheTest(unittest.TestCase):
+    """VSTA-293: a column-entry read is cached, and a failed read is not."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix='section-changed-cache-')
+        env = patch.dict(os.environ, {'BOARD_DRAIN_CACHE_DIR': self.directory})
+        env.start()
+        self.addCleanup(env.stop)
+        self.card = {'ticketNumber': 'HTPR-7001', 'section': 'Backlog', 'projectId': 15,
+                     'updatedAt': '2026-11-20T09:00:00Z', 'assignees': [], 'labels': []}
+        self.pulls = {'HTPR-7001': [{'state': 'MERGED'}]}
+        r.SECTION_CHANGED.clear()
+        self.addCleanup(r.SECTION_CHANGED.clear)
+
+    def fill(self, api):
+        with patch.object(r, 'api', side_effect=api):
+            r.fill_section_changed([self.card], self.pulls, r.BOARDS[15])
+        return r.SECTION_CHANGED.get('HTPR-7001')
+
+    def test_a_second_tick_uses_the_cached_column_entry(self):
+        reads = []
+
+        def api(*args):
+            reads.append(args)
+            return {'tasks': [dict(self.card, staleness={'sectionChangedAt': '2026-11-20T08:00:00Z'})]}
+
+        entered = r.stamp('2026-11-20T08:00:00Z')
+        self.assertEqual(self.fill(api), entered)
+        self.assertEqual(self.fill(api), entered)
+        self.assertEqual(reads, [('task', 'get', 'HTPR-7001')])
+
+    def test_a_failed_read_is_asked_again(self):
+        answers = iter([RuntimeError('unreadable'),
+                        {'tasks': [dict(self.card, staleness={'sectionChangedAt':
+                                                             '2026-11-20T08:00:00Z'})]}])
+        reads = []
+
+        def api(*args):
+            reads.append(args)
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        self.assertIsNone(self.fill(api))
+        self.assertEqual(self.fill(api), r.stamp('2026-11-20T08:00:00Z'))
+        self.assertEqual(len(reads), 2)
 
 
 if __name__ == '__main__':

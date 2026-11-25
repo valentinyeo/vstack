@@ -1,6 +1,8 @@
 import argparse
 import contextlib
 from datetime import datetime, timezone
+import threading
+import time
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -19,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/board-drain'
 FIXTURES = ROOT / 'tests/fixtures/board_drain'
 NOW = 1800000000
+# Tests never touch the real ~/.cache: the tick's own cache gets a temp directory.
+os.environ['BOARD_DRAIN_CACHE_DIR'] = tempfile.mkdtemp(prefix='board-drain-cache-')
 
 
 def load(name, path):
@@ -132,6 +136,11 @@ def vsta(key, section='Todo', age=1800, assignees=None):
 def blocked_by():
     """VSTA-7's links as `hypertask --json task relations VSTA-7` sent them."""
     return json.loads((FIXTURES / 'VSTA-7.relations.json').read_text())['relations']
+
+
+def blocking_cards():
+    """The same links as `task list` carries them on the card's blockingTasks."""
+    return [relation['otherTask'] for relation in blocked_by()]
 
 
 def agent_comment(age):
@@ -2531,7 +2540,7 @@ class WatchSyncTest(unittest.TestCase):
 
 
 class RelationsCliTest(unittest.TestCase):
-    """The real CLI answers `task relations`: one read per unmarked Todo ticket."""
+    """A listed card's links come free; `task relations` answers only a listing without them."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -2541,28 +2550,24 @@ class RelationsCliTest(unittest.TestCase):
         self.real_bin.mkdir(parents=True)
         self.real_log = self.directory / 'real.log'
         self.real_log.write_text('')
-        task = {'projectId': 13556, 'labels': [{'name': 'Board Drain Loop'}],
-                'status': 'Normal', 'assignees': [], 'waitingOnUserId': None,
-                'blockerCommentId': None, 'updatedAt': iso(NOW - 300)}
-        tasks = [dict(task, ticketNumber='VSTA-7', section='Todo'),
-                 dict(task, ticketNumber='VSTA-8', section='Todo', waitingOnUserId=6),
-                 dict(task, ticketNumber='VSTA-2', section='Doing',
-                      assignees=[agent_assignee('Board Drain Loop')])]
-        answers = {'task list': {'tasks': tasks, 'total': len(tasks)},
+        self.card = {'projectId': 13556, 'labels': [{'name': 'Board Drain Loop'}],
+                     'status': 'Normal', 'assignees': [], 'waitingOnUserId': None,
+                     'blockerCommentId': None, 'updatedAt': iso(NOW - 300)}
+
+    def run_check(self, cards):
+        answers = {'task list': {'tasks': cards, 'total': len(cards)},
                    'comment list': {'comments': []},
                    'task relations': {'success': True, 'relations': blocked_by()},
                    'project show': {'project': {'uniqueIdentifier': 'VSTA', 'sections': [
                        {'section_title': 'Todo'}, {'section_title': 'Doing'}]}}}
         write_tool(self.real_bin / 'hypertask',
-                   'import json, os, pathlib, sys\n'
-                   'log = pathlib.Path(os.environ["REAL_HYPERTASK_LOG"])\n'
-                   'log.write_text(log.read_text() + " ".join(sys.argv[1:]) + "\\n")\n'
+                   'import json, os, sys\n'
+                   'with open(os.environ["REAL_HYPERTASK_LOG"], "a") as log:\n'
+                   '    log.write(" ".join(sys.argv[1:]) + "\\n")\n'
                    f'answers = {answers!r}\n'
                    'args = [a for a in sys.argv[1:] if a != "--json"]\n'
                    'print(json.dumps(answers.get(" ".join(args[:2]), {"tasks": [], "total": 0})))\n')
-
-    def test_links_come_from_the_cli_once_per_unmarked_todo(self):
-        done = subprocess.run(
+        return subprocess.run(
             [sys.executable, str(SKILL / 'drain-check'), '--board', '13556',
              '--label', 'Board Drain Loop', '--now', iso(NOW)],
             capture_output=True, text=True, timeout=60,
@@ -2570,13 +2575,34 @@ class RelationsCliTest(unittest.TestCase):
                  'REAL_HYPERTASK_LOG': str(self.real_log),
                  'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state'),
                  'RECONCILE_CACHE': str(self.directory / 'cache.json')})
+
+    def relation_reads(self):
+        return [line for line in self.real_log.read_text().splitlines()
+                if 'task relations' in line]
+
+    def todo_side(self, **links):
+        return [dict(self.card, ticketNumber='VSTA-7', section='Todo', **links),
+                dict(self.card, ticketNumber='VSTA-8', section='Todo', waitingOnUserId=6),
+                dict(self.card, ticketNumber='VSTA-2', section='Doing',
+                     assignees=[agent_assignee('Board Drain Loop')])]
+
+    def test_a_card_that_carries_its_links_costs_no_relation_read(self):
+        # VSTA-293: the listing already names the blockers, so the blocked line comes
+        # from the card and no call is spent asking again.
+        done = self.run_check(self.todo_side(blockingTasks=blocking_cards()))
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn('blocked: VSTA-7 by VSTA-2, VSTA-3', done.stdout)
         self.assertIn('waiting: VSTA-8 (marked)', done.stdout)
         self.assertIn('drain-check: PASS', done.stdout)
-        reads = [line for line in self.real_log.read_text().splitlines()
-                 if 'task relations' in line]
-        self.assertEqual(reads, ['--json task relations VSTA-7'])
+        self.assertEqual(self.relation_reads(), [])
+
+    def test_a_listing_without_the_links_reads_the_cli_once(self):
+        done = self.run_check(self.todo_side())
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn('blocked: VSTA-7 by VSTA-2, VSTA-3', done.stdout)
+        self.assertIn('waiting: VSTA-8 (marked)', done.stdout)
+        self.assertIn('drain-check: PASS', done.stdout)
+        self.assertEqual(self.relation_reads(), ['--json task relations VSTA-7'])
 
 
 class SyncTest(unittest.TestCase):
@@ -3043,6 +3069,259 @@ class MergeAskTest(unittest.TestCase):
                      'https://github.com/valentinyeo/multiprompt-android/pull/524.'):
             with self.subTest(text=text):
                 self.assertTrue(drain.merge_ask.asks(text))
+
+
+class FastTicketReadTest(unittest.TestCase):
+    """VSTA-293: a labelled read pays its slowest ticket's calls, not their sum."""
+
+    BOARD = 13734
+    LABEL = 'Multi Bot Bugs'
+    TICKETS = 20
+    CALL_SECONDS = 0.2
+    SEQUENTIAL = TICKETS * CALL_SECONDS * 2
+
+    def tasks(self, count=None):
+        return [{'ticketNumber': f'MUBO-{index}', 'projectId': self.BOARD, 'section': 'Todo',
+                 'labels': [{'name': self.LABEL}], 'updatedAt': iso(NOW - 3600),
+                 'waitingOnUserId': None, 'blockerCommentId': None}
+                for index in range(1, (count or self.TICKETS) + 1)]
+
+    def board(self, tasks):
+        return drain.fixture_board(self.BOARD, [{'task': task} for task in tasks])
+
+    def args(self, **extra):
+        return argparse.Namespace(board=self.BOARD, label=self.LABEL, fixture=None,
+                                 state_name=self.LABEL, skip_comments=False, **extra)
+
+    def fake_api(self, calls, seconds=0.0, fail=None):
+        lock = threading.Lock()
+
+        def api(*argv):
+            with lock:
+                calls.append(argv)
+            if seconds:
+                time.sleep(seconds)
+            if fail is not None and argv[:2] == fail[0] and argv[2] == fail[1]:
+                raise fail[2](fail[2].__name__)
+            if argv[:2] == ('comment', 'list'):
+                return {'comments': [{'id': f'{argv[2]}-1', 'body': 'a comment'}]}
+            if argv[:2] == ('task', 'relations'):
+                return {'relations': []}
+            raise AssertionError(f'unexpected call {argv}')
+
+        return api
+
+    def read(self, calls, seconds=0.0, fail=None, tasks=None):
+        tasks = tasks or self.tasks()
+        with patch.object(drain.reconcile, 'board_config', return_value=self.board(tasks)), \
+                patch.object(drain.reconcile, 'tickets', return_value=tasks), \
+                patch.object(drain.reconcile, 'api', self.fake_api(calls, seconds, fail)):
+            return drain.rows_for(self.args())
+
+    def test_twenty_tickets_are_read_together_not_one_after_another(self):
+        calls = []
+        began = time.monotonic()
+        board, rows, loaded, data, board_tasks = self.read(calls, self.CALL_SECONDS)
+        spent = time.monotonic() - began
+        self.assertLess(spent, self.SEQUENTIAL / 2, f'{spent:.1f}s for {len(calls)} calls')
+        self.assertEqual(len(calls), self.TICKETS * 2)
+        self.assertEqual([row['task']['ticketNumber'] for row in rows],
+                         [task['ticketNumber'] for task in self.tasks()])
+        for row in rows:
+            self.assertEqual(row['comments'], [{'id': f'{row["task"]["ticketNumber"]}-1',
+                                                'body': 'a comment'}])
+            self.assertEqual(row['relations'], [])
+
+    def test_the_rows_are_what_a_sequential_read_gave(self):
+        together = self.read([])[1]
+        one_by_one = []
+        with patch.object(drain.reconcile, 'api', self.fake_api([])):
+            for task in self.tasks():
+                row = {'task': task}
+                row['comments'] = drain.ticket_comments(task['ticketNumber'])
+                row['relations'] = drain.ticket_relations(task['ticketNumber'])
+                one_by_one.append(row)
+        self.assertEqual(together, one_by_one)
+
+    def test_the_board_rules_read_no_comment_a_tick_already_held(self):
+        tasks = self.tasks()
+        calls = []
+        args = self.args()
+        _, rows, _, _, _ = self.read(calls)
+        self.assertEqual(len(calls), self.TICKETS * 2)
+        lint = drain.lint_module()
+        held = {}
+
+        def lint_stub(lint_args, shared=None):
+            held.update(shared)
+            lint.adopt(shared)
+            lint.collect_comments(shared['tasks'], shared['data'], lint_args, shared['board'].id)
+            return []
+
+        # Board 13734 is no human board, so the lint would read only Done tickets. On a
+        # human board it reads every one of them.
+        human = patch.object(lint, 'HUMAN_BOARDS', frozenset({self.BOARD}))
+        human.start()
+        self.addCleanup(human.stop)
+        calls.clear()
+        with patch.object(lint.reconcile, 'api', self.fake_api(calls)):
+            lint.collect_comments([{'ticketNumber': task['ticketNumber'], 'section': 'Todo'}
+                                   for task in tasks], {}, args, self.BOARD)
+        self.assertEqual(len(calls), self.TICKETS, 'the guard needs a fetch to prevent')
+        calls.clear()
+        view = {'board': self.board(tasks), 'rows': rows, 'data': {}, 'pulls': {}}
+        with patch.object(lint, 'lint', lint_stub), \
+                patch.object(drain.reconcile, 'api', self.fake_api(calls)):
+            drain.rule_breaks(view, args, NOW)
+        self.assertEqual(calls, [], 'the board rules read a comment the tick already held')
+        self.assertEqual(sorted(held['data']['comments']),
+                         sorted(task['ticketNumber'] for task in tasks))
+
+    def test_a_failed_comment_read_raises_as_before(self):
+        with self.assertRaises(RuntimeError):
+            self.read([], 0.0, (('comment', 'list'), 'MUBO-7', RuntimeError))
+
+    def test_a_failed_relations_read_raises_as_before(self):
+        with self.assertRaises(ValueError):
+            self.read([], 0.0, (('task', 'relations'), 'MUBO-9', ValueError))
+
+
+class ListingHoldsTheFactsTest(unittest.TestCase):
+    """VSTA-293: the facts a listing already carries save the calls that made a tick slow."""
+
+    BOARD = 13734
+    LABEL = 'Multi Bot Bugs'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        env = patch.dict(os.environ, {'BOARD_DRAIN_CACHE_DIR': str(self.directory / 'cache')})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tasks(self, count=5):
+        return [{'ticketNumber': f'MUBO-{index}', 'projectId': self.BOARD, 'section': 'Todo',
+                 'labels': [{'name': self.LABEL}], 'updatedAt': iso(NOW - 3600),
+                 'commentCount': 2, 'waitingOnUserId': None, 'blockerCommentId': None,
+                 'blockingTasks': []}
+                for index in range(1, count + 1)]
+
+    def args(self):
+        return argparse.Namespace(board=self.BOARD, label=self.LABEL, fixture=None,
+                                  state_name=self.LABEL, skip_comments=False)
+
+    def fake_api(self, calls, relations=()):
+        def api(*argv):
+            calls.append(argv)
+            if argv[:2] == ('comment', 'list'):
+                return {'comments': [{'id': f'{argv[2]}-1', 'createdAt': iso(NOW - 60)}]}
+            if argv[:2] == ('task', 'relations'):
+                return {'relations': list(relations)}
+            raise AssertionError(f'unexpected call {argv}')
+        return api
+
+    def read(self, tasks, calls, relations=()):
+        board = drain.fixture_board(self.BOARD, [{'task': task} for task in tasks])
+        with patch.object(drain.reconcile, 'board_config', return_value=board), \
+                patch.object(drain.reconcile, 'tickets', return_value=tasks), \
+                patch.object(drain.reconcile, 'api', self.fake_api(calls, relations)):
+            return drain.rows_for(self.args())
+
+    def listed_blocker(self, **changes):
+        """MUBO-1 BlockedBy MUBO-2, as `task list` sends it."""
+        tasks = self.tasks()
+        tasks[1].update(section='Doing', blockingTasks=[], assignees=[agent_assignee()])
+        tasks[0].update(blockingTasks=[{'id': 2, 'ticketNumber': 'MUBO-2', 'status': 'Normal',
+                                        'section': 'Doing', 'projectId': self.BOARD}],
+                        **changes)
+        return tasks
+
+    def test_a_listing_with_blockers_asks_no_card_for_its_links(self):
+        calls = []
+        _, rows, loaded, _, _ = self.read(self.listed_blocker(), calls)
+        self.assertEqual([call for call in calls if call[:2] == ('task', 'relations')], [])
+        blocked = [row for row in rows if row['task']['ticketNumber'] == 'MUBO-1'][0]
+        stuck = drain.open_blockers(blocked['relations'], loaded)
+        self.assertEqual(stuck, ['MUBO-2'])
+        self.assertEqual(f'blocked: MUBO-1 by {", ".join(stuck)}', 'blocked: MUBO-1 by MUBO-2')
+
+    def test_a_links_read_gives_the_same_blocked_line_the_listing_gives(self):
+        link_relation = [{'relationType': 'BlockedBy', 'direction': 'outgoing',
+                          'otherTask': {'ticketNumber': 'MUBO-2', 'status': 'Normal'}}]
+        _, listed_rows, loaded, _, _ = self.read(self.listed_blocker(), [])
+        plain = self.listed_blocker()
+        del plain[0]['blockingTasks']
+        links = []
+        _, link_rows, _, _, _ = self.read(plain, links, relations=link_relation)
+        self.assertEqual([call for call in links if call[:2] == ('task', 'relations')],
+                         [('task', 'relations', 'MUBO-1')])
+        listed_row = [row for row in listed_rows if row['task']['ticketNumber'] == 'MUBO-1'][0]
+        link_row = [row for row in link_rows if row['task']['ticketNumber'] == 'MUBO-1'][0]
+        self.assertEqual(drain.open_blockers(listed_row['relations'], loaded),
+                         drain.open_blockers(link_row['relations'], loaded))
+
+    def test_a_second_unchanged_tick_reads_no_comment(self):
+        tasks = self.tasks()
+        calls = []
+        self.read(tasks, calls)
+        self.assertEqual(len(calls), len(tasks), 'the first tick pays one comment read per card')
+        calls.clear()
+        _, rows, _, _, _ = self.read(tasks, calls)
+        self.assertEqual([call for call in calls if call[:2] == ('comment', 'list')], [])
+        self.assertEqual(rows[0]['comments'], [{'id': 'MUBO-1-1', 'createdAt': iso(NOW - 60)}])
+
+    def test_a_new_comment_on_one_card_rereads_only_that_card(self):
+        tasks = self.tasks()
+        self.read(tasks, [])
+        tasks[2]['commentCount'] = 3
+        calls = []
+        _, rows, _, _, _ = self.read(tasks, calls)
+        self.assertEqual([call[:3] for call in calls if call[:2] == ('comment', 'list')],
+                         [('comment', 'list', 'MUBO-3')])
+        self.assertEqual(rows[0]['comments'], [{'id': 'MUBO-1-1', 'createdAt': iso(NOW - 60)}])
+
+    def test_a_moved_updated_at_rereads_the_card_too(self):
+        tasks = self.tasks()
+        self.read(tasks, [])
+        tasks[0]['updatedAt'] = iso(NOW - 60)
+        calls = []
+        self.read(tasks, calls)
+        self.assertEqual([call[:3] for call in calls if call[:2] == ('comment', 'list')],
+                         [('comment', 'list', 'MUBO-1')])
+
+    def test_a_corrupt_cache_reads_every_card_and_does_not_crash(self):
+        tasks = self.tasks()
+        self.read(tasks, [])
+        path = drain.reconcile.board_cache_path(drain.reconcile.TICKETS_CACHE)
+        path.write_text('{not json')
+        calls = []
+        _, rows, _, _, _ = self.read(tasks, calls)
+        self.assertEqual(len([call for call in calls if call[:2] == ('comment', 'list')]),
+                         len(tasks))
+        self.assertEqual(len(rows), len(tasks))
+
+    def test_a_card_whose_listing_has_no_count_is_read_every_tick(self):
+        tasks = [task for task in self.tasks()]
+        for task in tasks:
+            del task['commentCount']
+        self.read(tasks, [])
+        calls = []
+        self.read(tasks, calls)
+        self.assertEqual(len([call for call in calls if call[:2] == ('comment', 'list')]),
+                         len(tasks))
+
+    def test_the_board_rules_share_the_same_comment_cache(self):
+        tasks = [dict(task, section='Done') for task in self.tasks()]
+        lint = drain.lint_module()
+        calls = []
+        with patch.object(lint.reconcile, 'api', self.fake_api(calls)):
+            first = lint.collect_comments(tasks, {}, self.args(), self.BOARD)
+            self.assertEqual(len(calls), len(tasks))
+            calls.clear()
+            second = lint.collect_comments(tasks, {}, self.args(), self.BOARD)
+        self.assertEqual(calls, [])
+        self.assertEqual(first, second)
 
 
 if __name__ == '__main__':

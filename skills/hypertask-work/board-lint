@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only board lint: one line per rule break, no writes."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib.machinery
 import importlib.util
 import json
@@ -47,6 +48,8 @@ sys.modules['board_drain_loop_state'] = loop_state
 
 OPEN = frozenset({'Todo', 'Doing', 'Building', 'Checks', 'AI Review', 'Verifier', 'Verification Backlog'})
 DONE = 'Done'
+# One CLI call per ticket; a whole board's comments cost its slowest ticket, not their sum.
+COMMENT_WORKERS = 8
 WORKING = frozenset({'Doing', 'Building', 'Checks', 'AI Review', 'Verifier'})
 TODO = 'Todo'
 FALLBACK_AGENT = frozenset({'valentins claude code cli', 'valentins claude code'})
@@ -806,22 +809,37 @@ def check_human_writes(board_id, tasks_by_key, comments_by_ticket, breaks):
                 break
 
 
+def ticket_comments(key):
+    """An unreadable page is no comments, never a break."""
+    try:
+        return reconcile.ticket_comments(key)
+    except ERRORS:
+        return []
+
+
 def collect_comments(tasks, data, args, board_id):
     out = dict(data.get('comments') or {})
     if args.fixture or args.skip_comments:
         return out
+    wanted, seen = [], set()
     for task in tasks:
         key = task['ticketNumber']
         if task.get('section') != DONE:
             if board_id not in HUMAN_BOARDS:
                 continue
-        if key in out:
+        if key in out or key in seen:
             continue
-        try:
-            page = reconcile.api('comment', 'list', key, '--limit', '50')
-            out[key] = page.get('comments') or []
-        except ERRORS:
-            out[key] = []
+        seen.add(key)
+        wanted.append(task)
+    if not wanted:
+        return out
+    cache, fresh = reconcile.board_cache_read(reconcile.TICKETS_CACHE), {}
+    with ThreadPoolExecutor(max_workers=COMMENT_WORKERS) as pool:
+        rows = list(pool.map(
+            lambda task: reconcile.comments_cached(task, cache, ticket_comments, fresh),
+            wanted))
+    reconcile.board_cache_update(reconcile.TICKETS_CACHE, fresh)
+    out.update({task['ticketNumber']: comments for task, comments in zip(wanted, rows)})
     return out
 
 
