@@ -2339,6 +2339,9 @@ class LeaseTest(unittest.TestCase):
                 # The WIP cap reads the board, which a test never reaches: VSTA-206
                 # tests its own rule in tests/test_wip_cap.py against card facts.
                 patch.object(lease, 'cap_refusal', return_value=None),
+                # The launch directory here is this checkout, a shared one; VSTA-259
+                # proves the refusal itself in SharedCheckoutTest against real worktrees.
+                patch.object(lease, 'shared_refusal', return_value=None),
                 patch.object(lease, 'spawn_card',
                              side_effect=lambda command, env: self.spawned.append(
                                  (command, dict(env))))):
@@ -2430,6 +2433,13 @@ class LeaseTest(unittest.TestCase):
         lease.write('SOFT-1', 'start', os.getpid(), self.directory, NOW)
         self.assertEqual(json.loads(self.path.read_text())['pid'], os.getpid())
 
+    def launch_dir(self):
+        """A launch directory the lease accepts: outside git, holding its brief."""
+        where = self.directory / 'launch'
+        where.mkdir(exist_ok=True)
+        (where / 'brief.txt').write_text('fix it\n')
+        return where
+
     def test_wrapper_fast_command_and_exit_status(self):
         # The WIP cap's board read is not this test's subject, so a `hypertask` stub
         # answers 3 here the way a plan-pick worker's shim does and the cap fails open.
@@ -2442,7 +2452,7 @@ class LeaseTest(unittest.TestCase):
         env = {**os.environ, 'MULTIPROMPT_TAB': '', 'FLEET_LEASE_DIR': str(self.directory),
                'PATH': f'{stubdir}{os.pathsep}{os.environ.get("PATH", "")}'}
         for code in (0, 7):
-            result = subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'SOFT-1', 'run', '--', sys.executable, '-c', f'raise SystemExit({code})'], env=env, capture_output=True, text=True, timeout=10)
+            result = subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'SOFT-1', 'run', '--', sys.executable, '-c', f'raise SystemExit({code})'], env=env, cwd=self.launch_dir(), capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, code, result.stderr)
             self.assertFalse(self.path.exists())
 
@@ -2606,9 +2616,99 @@ class LeaseTest(unittest.TestCase):
     def test_wrapper_registers_running_child(self):
         env = {**os.environ, 'MULTIPROMPT_TAB': '', 'FLEET_LEASE_DIR': str(self.directory)}
         code = "import json,os,pathlib; p=pathlib.Path(os.environ['FLEET_LEASE_DIR'])/'SOFT-1.json'; import time; time.sleep(.2); d=json.loads(p.read_text()); assert d['pid']==os.getpid()"
-        result = subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'SOFT-1', 'run', '--', sys.executable, '-c', code], env=env, capture_output=True, text=True, timeout=10)
+        result = subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'SOFT-1', 'run', '--', sys.executable, '-c', code], env=env, cwd=self.launch_dir(), capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.path.exists())
+
+
+class SharedCheckoutTest(unittest.TestCase):
+    """The lease refuses a worker in a shared checkout (VSTA-259).
+
+    A `cd <worktree>` whose directory is gone leaves bash in the shared checkout, and
+    other chats read that checkout live. A worker starts in a linked worktree on a
+    branch, never in the main worktree or on the default branch.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(os.path.realpath(self.temp.name))
+        self.home = self.dir / 'home'
+        self.home.mkdir()
+        self.leases = self.dir / 'leases'
+        self.marker = self.dir / 'started'
+        self.bin = self.dir / 'bin'
+        self.bin.mkdir()
+        stub = self.bin / 'hypertask'
+        stub.write_text('#!/bin/sh\nexit 3\n')
+        stub.chmod(0o755)
+        self.repo = self.dir / 'repo'
+        self.new_repo(self.repo)
+        self.feature = self.dir / 'wt-feature'
+        self.git('-C', str(self.repo), 'worktree', 'add', '-q', '-b', 'vsta-259', str(self.feature))
+
+    def git(self, *args):
+        env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
+               'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.com',
+               'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.com'}
+        return subprocess.run(['git', *args], env=env, check=True, capture_output=True,
+                              text=True, timeout=30)
+
+    def new_repo(self, path, branch='main'):
+        """A repo whose main worktree sits on `branch`."""
+        self.git('init', '-q', str(path))
+        self.git('-C', str(path), 'commit', '-q', '--allow-empty', '-m', 'init')
+        self.git('-C', str(path), 'branch', '-M', branch)
+
+    def run_lease(self, cwd):
+        """One real `lease run` in `cwd`; its child leaves a marker when it starts."""
+        child = [sys.executable, '-c',
+                 f'import pathlib; pathlib.Path({str(self.marker)!r}).write_text("started")']
+        env = {**os.environ, 'HOME': str(self.home), 'MULTIPROMPT_TAB': '',
+               'FLEET_LEASE_DIR': str(self.leases),
+               'PATH': f'{self.bin}{os.pathsep}{os.environ.get("PATH", "")}'}
+        return subprocess.run([str(ROOT / 'skills/hypertask-work/lease'), 'VSTA-259', 'run', '--',
+                               *child], cwd=cwd, env=env, capture_output=True, text=True,
+                              timeout=60)
+
+    def assert_started_nothing(self, done):
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertFalse(self.marker.exists(), 'no worker process started')
+        self.assertFalse((self.leases / 'VSTA-259.json').exists(), 'no lease taken')
+
+    def test_main_worktree_is_refused(self):
+        done = self.run_lease(self.repo)
+        self.assert_started_nothing(done)
+        self.assertEqual(done.stderr.strip(),
+                         f'lease: refusing to run a worker in a shared checkout ({self.repo} on main); '
+                         'make a git worktree on a branch first')
+
+    def test_default_branch_checkout_is_refused(self):
+        other = self.dir / 'repo-default-branch'
+        self.new_repo(other)
+        self.git('-C', str(other), 'checkout', '-q', '-b', 'elsewhere')
+        checkout = self.dir / 'wt-main'
+        self.git('-C', str(other), 'worktree', 'add', '-q', str(checkout), 'main')
+        done = self.run_lease(checkout)
+        self.assert_started_nothing(done)
+        self.assertIn(f'({checkout} on main)', done.stderr)
+
+    def test_linked_worktree_on_a_branch_starts(self):
+        done = self.run_lease(self.feature)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(self.marker.exists(), 'the worker ran')
+        self.assertFalse((self.leases / 'VSTA-259.json').exists(), 'the lease ended with it')
+
+    def test_a_directory_outside_git_starts_only_with_a_brief(self):
+        plain = self.dir / 'plain'
+        plain.mkdir()
+        refused = self.run_lease(plain)
+        self.assert_started_nothing(refused)
+        self.assertIn('holds no brief.txt', refused.stderr)
+        (plain / 'brief.txt').write_text('fix it\n')
+        allowed = self.run_lease(plain)
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertTrue(self.marker.exists(), 'the worker ran')
 
 
 RESET = 1900003600
