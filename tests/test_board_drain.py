@@ -2542,18 +2542,16 @@ class SyncTest(unittest.TestCase):
         answers = [
             (0, 'DRY RUN board=13734 tickets=1 unknown=0\n', 'reconcile: board 13734 title=Multi Bot\n'),
             (0, 'PREVIEW board=13734 tickets=1 unknown=0\n', ''),
-            (0, 'PLAN MUBO-101 AI Review -> Done | merged with PASS\n', ''),
             (0, 'MOVE MUBO-101 AI Review -> Done | merged with PASS\n', ''),
         ]
         code, out, calls = self.run_sync_for(13734, 'Multi Bot', 'Multi Bot', answers, '--limit', '7')
         self.assertEqual(code, 0, out)
         self.assertEqual(out.strip().splitlines()[-1], 'sync: ok')
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 3)
         self.assertEqual(calls[0]['argv'][2:], ['--board', '13734', '--label', 'Multi Bot'])
         self.assertEqual(calls[1]['argv'][2:], ['--board', '13734', '--label', 'Multi Bot',
                                                 '--apply', '--limit', '7'])
-        self.assertEqual(calls[2]['argv'][2:], ['--board', '13734', '--unlabeled'])
-        self.assertEqual(calls[3]['argv'][2:], ['--board', '13734', '--unlabeled',
+        self.assertEqual(calls[2]['argv'][2:], ['--board', '13734', '--unlabeled',
                                                 '--apply', '--limit', '7'])
         expected_caller = sync.caller(13734, 'Multi Bot')
         for call in calls:
@@ -2563,12 +2561,11 @@ class SyncTest(unittest.TestCase):
 
     def test_vstack_lead_runs_unlabeled_after_own_label(self):
         self.write_token(name='Vstack Maintainer')
-        answers = [(0, 'ok\n', '')] * 4
+        answers = [(0, 'ok\n', '')] * 3
         code, out, calls = self.run_sync_for(13556, 'Vstack', 'Vstack Maintainer', answers)
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(calls), 4)
-        self.assertEqual(calls[2]['argv'][2:], ['--board', '13556', '--unlabeled'])
-        self.assertEqual(calls[3]['argv'][2:], ['--board', '13556', '--unlabeled',
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[2]['argv'][2:], ['--board', '13556', '--unlabeled',
                                                 '--apply', '--limit', '5'])
 
     def test_non_lead_chats_do_not_run_unlabeled(self):
@@ -2589,10 +2586,11 @@ class SyncTest(unittest.TestCase):
     def test_board15_lead_runs_unlabeled_and_non_lead_does_not(self):
         self.write_token(name='HT Product Lead')
         code, out, calls = self.run_sync_for(
-            15, 'HT Product Lead', 'HT Product Lead', [(0, 'ok\n', '')] * 4)
+            15, 'HT Product Lead', 'HT Product Lead', [(0, 'ok\n', '')] * 3)
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(calls), 4)
-        self.assertEqual(calls[2]['argv'][2:], ['--board', '15', '--unlabeled'])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[2]['argv'][2:], ['--board', '15', '--unlabeled',
+                                                '--apply', '--limit', '5'])
 
         self.write_token(name='Mobile Designer')
         code, out, calls = self.run_sync_for(
@@ -2609,6 +2607,50 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertEqual(len(calls), 2)
         self.assertFalse(loop.sync_state('Multi Bot')['ok'])
+
+    def test_a_failed_step_carries_the_last_stderr_line(self):
+        """VSTA-265: 'exited 1' alone hides the cause; the stderr line is the cause."""
+        self.write_token(name='Multi Bot')
+        code, out, calls = self.run_sync_for(
+            13734, 'Multi Bot', 'Multi Bot',
+            [(0, 'ok\n', 'reconcile: board 13734 title=Multi Bot\n'),
+             (1, '', 'boom: card is a manual override\n')])
+        self.assertEqual(code, 1, out)
+        self.assertIn('apply exited 1: boom: card is a manual override', out)
+        record = loop.sync_state('Multi Bot')
+        self.assertFalse(record['ok'])
+        self.assertEqual(record['reason'], 'apply exited 1: boom: card is a manual override')
+
+    def test_a_failed_step_without_stderr_falls_back_to_stdout(self):
+        self.write_token(name='Multi Bot')
+        code, out, calls = self.run_sync_for(
+            13734, 'Multi Bot', 'Multi Bot',
+            [(0, 'ok\n', 'reconcile: board 13734 title=Multi Bot\n'),
+             (1, 'reconcile: board locked\n', '')])
+        self.assertEqual(code, 1, out)
+        self.assertIn('apply exited 1: reconcile: board locked', out)
+
+    def test_a_long_stderr_line_is_trimmed(self):
+        self.write_token(name='Multi Bot')
+        long_line = 'x' * 400
+        code, out, calls = self.run_sync_for(
+            13734, 'Multi Bot', 'Multi Bot',
+            [(0, 'ok\n', 'reconcile: board 13734 title=Multi Bot\n'),
+             (1, '', long_line + '\n')])
+        self.assertEqual(code, 1, out)
+        self.assertEqual(loop.sync_state('Multi Bot')['reason'],
+                         'apply exited 1: ' + 'x' * 200)
+
+    def test_the_lead_runs_exactly_one_unlabeled_step(self):
+        """VSTA-265: the apply already plans, so a preview doubles the GitHub calls."""
+        self.write_token(name='HT Product Lead')
+        code, out, calls = self.run_sync_for(
+            15, 'HT Product Lead', 'HT Product Lead', [(0, 'ok\n', '')] * 3)
+        self.assertEqual(code, 0, out)
+        unlabeled = [call for call in calls if '--unlabeled' in call['argv']]
+        self.assertEqual(len(unlabeled), 1, calls)
+        self.assertEqual(unlabeled[0]['argv'][2:],
+                         ['--board', '15', '--unlabeled', '--apply', '--limit', '5'])
 
     def test_lead_stops_before_unlabeled_on_budget_skip(self):
         self.write_token(name='Multi Bot')
