@@ -13,6 +13,9 @@ counts the board rows its tick already read and fails `over cap`;
 `skills/hypertask-work/lease` reads the same board before it starts a worker and
 refuses with exit 75.
 
+Only the starting chat's own label counts against it, never a product label that
+sits on most of a board's cards (VSTA-266).
+
 A read that fails fails open with one warning line: a board outage must never stop
 work.
 
@@ -62,7 +65,11 @@ def is_agent_label(name):
 
 
 def agent_labels(task):
-    """The ticket's chat labels, one per label, in board order."""
+    """The ticket's chat labels, one per label, in board order.
+
+    A chat label only means "not one of GENERIC", so a product label lands here
+    too. A cap reads `cap_labels` instead, which counts one chat's own label.
+    """
     names, seen = [], set()
     for label in task.get('labels') or ():
         name = name_of(label)
@@ -77,6 +84,19 @@ def carries(task, label):
     """Trimmed and case-insensitive, the way every label on the board is read."""
     wanted = (label or '').strip().casefold()
     return any(name_of(item).casefold() == wanted for item in task.get('labels') or ())
+
+
+def cap_labels(task, own='', known=None):
+    """The labels a start counts against: the starting chat's own label only.
+
+    With `own` unreadable, a label counts only when a chat here drains it (`known`,
+    casefolded), so a product label no chat drains never blocks a start.
+    """
+    labels = agent_labels(task)
+    folded = (own or '').strip().casefold()
+    if folded:
+        return [name for name in labels if name.casefold() == folded]
+    return [name for name in labels if name.casefold() in (known or frozenset())]
 
 
 def cap_for(label):
@@ -140,9 +160,10 @@ def warn_once(detail):
 def read_held(board_id, labels, read):
     """The held line for the first of these labels at cap, or None.
 
-    `read(board_id)` answers that board's cards. The lease passes the ticket's own
-    labels through here; drain-check counts its tick's rows with `at_cap`. A read
-    that fails answers None, so a board outage never stops a worker.
+    `read(board_id)` answers that board's cards. The lease passes the starting
+    chat's own label through here (`cap_labels`); drain-check counts its tick's rows
+    with `at_cap`. A read that fails answers None, so a board outage never stops a
+    worker.
     """
     try:
         tasks = read(board_id)
@@ -188,6 +209,15 @@ def self_test():
                                     {'name': 'brain-light'}, {'name': 'vstack'}]}) == ['Vstack'], \
         'chat labels only, one per label'
     assert agent_labels({}) == [], 'a card with no label counts against nothing'
+    shared = {'labels': [{'name': 'Multiprompt'}, {'name': 'Multi Bot Verification'}]}
+    assert cap_labels(shared, 'Multi Bot Verification', {'multiprompt'}) == \
+        ['Multi Bot Verification'], 'a start counts its own label only'
+    assert cap_labels(shared, '', {'multi bot verification'}) == ['Multi Bot Verification'], \
+        'with no own label, only a chat label counts'
+    assert cap_labels({'labels': [{'name': 'Multiprompt'}]}, '', {'multi bot verification'}) == [], \
+        'a product label alone counts against nothing'
+    assert cap_labels(shared, 'Vstack', {'multi bot verification'}) == [], \
+        'a label the card does not carry counts nothing'
 
     def broken(_board_id):
         raise OSError('board unreadable')

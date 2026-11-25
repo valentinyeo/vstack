@@ -14,6 +14,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import sys
 import tempfile
 import unittest
@@ -24,6 +25,8 @@ SKILL = ROOT / 'skills/board-drain'
 NOW = 1800000000
 LABEL = 'Board Drain Loop'
 OTHER = 'Responsive Mode'
+PRODUCT = 'Multiprompt'
+OWN = 'Multi Bot Verification'
 
 
 def load(name, path):
@@ -61,9 +64,10 @@ def open_rows(cards, column='Checks', label=LABEL):
     return [{'task': task, 'comments': []} for task in open_cards(cards, column, label)]
 
 
-def card(key, section='Todo', priority=None, age=3 * 3600):
+def card(key, section='Todo', priority=None, age=3 * 3600, labels=None):
     task = {'ticketNumber': key, 'projectId': 13556, 'section': section, 'status': 'Normal',
-            'labels': [{'name': LABEL}], 'waitingOnUserId': None, 'blockerCommentId': None,
+            'labels': [{'name': name} for name in (labels or [LABEL])],
+            'waitingOnUserId': None, 'blockerCommentId': None,
             'updatedAt': iso(NOW - age)}
     if priority is not None:
         task['priority'] = priority
@@ -97,6 +101,18 @@ class CapRuleTest(unittest.TestCase):
         self.assertEqual(wip.agent_labels({'labels': [{'name': 'Bug'}, {'name': 'brain-light'},
                                                        {'name': LABEL}]}), [LABEL])
 
+    def test_only_the_starting_chats_own_label_is_counted(self):
+        shared = {'labels': [{'name': PRODUCT}, {'name': OWN}]}
+        known = frozenset({PRODUCT.casefold(), OWN.casefold()})
+        self.assertEqual(wip.cap_labels(shared, OWN, known), [OWN])
+
+    def test_with_no_own_label_only_a_chat_label_counts(self):
+        shared = {'labels': [{'name': PRODUCT}, {'name': OWN}]}
+        self.assertEqual(wip.cap_labels(shared, '', frozenset({OWN.casefold()})), [OWN])
+        self.assertEqual(wip.cap_labels({'labels': [{'name': PRODUCT}]}, '', frozenset()), [])
+        self.assertEqual(wip.cap_labels({'labels': [{'name': PRODUCT}]}, '',
+                                        frozenset({OWN.casefold()})), [])
+
     def test_a_failed_board_read_fails_open_with_one_warning(self):
         said = io.StringIO()
         wip._warned.clear()
@@ -117,7 +133,7 @@ class LeaseRefusalTest(unittest.TestCase):
     def setUp(self):
         wip._warned.clear()
 
-    def run_lease(self, task, cards, read_error=None):
+    def run_lease(self, task, cards, read_error=None, own=LABEL):
         """Run one `lease run` against these card facts, with the child stubbed."""
         popping = patch.object(lease.subprocess, 'Popen')
         started = popping.start()
@@ -133,6 +149,9 @@ class LeaseRefusalTest(unittest.TestCase):
                  else patch.object(lease, 'board_tasks', return_value=cards))
         said = io.StringIO()
         with patch.object(lease.reconcile, 'read_ticket', return_value=task), board, \
+                patch.object(lease, 'own_label', return_value=own), \
+                patch.object(lease, 'chat_labels',
+                             return_value=frozenset({LABEL.casefold(), OWN.casefold()})), \
                 patch.object(lease, 'write') as written, \
                 patch.object(lease, 'sync_card'), \
                 patch.object(sys, 'argv', ['lease', task['ticketNumber'], 'run', '--', 'true']), \
@@ -175,6 +194,24 @@ class LeaseRefusalTest(unittest.TestCase):
         self.assertNotIn('held:', said)
         started.assert_called_once()
 
+    def test_a_product_label_at_cap_does_not_hold_the_start(self):
+        """MUBO-538: the shared app label carried 14 open cards (VSTA-266)."""
+        task = card('MUBO-538', labels=[PRODUCT, OWN])['task']
+        code, said, started, _written = self.run_lease(
+            task, open_cards(14, label=PRODUCT) + open_cards(1, label=OWN), own=OWN)
+        self.assertEqual(code, 0, said)
+        self.assertNotIn('held:', said)
+        started.assert_called_once()
+
+    def test_the_own_label_at_cap_is_held_and_named(self):
+        task = card('MUBO-538', labels=[PRODUCT, OWN])['task']
+        code, said, started, _written = self.run_lease(
+            task, open_cards(14, label=PRODUCT) + open_cards(5, label=OWN), own=OWN)
+        self.assertEqual(code, 75, said)
+        self.assertIn(f'lease: MUBO-538 held: label {OWN} has 5 open tickets in '
+                      'Doing+Checks+AI Review (cap 5); ship one first', said)
+        started.assert_not_called()
+
     def test_a_board_read_that_fails_starts_the_worker_with_one_warning(self):
         code, said, started, _written = self.run_lease(card('VSTA-206')['task'], [],
                                                        read_error=OSError('board unreadable'))
@@ -182,6 +219,47 @@ class LeaseRefusalTest(unittest.TestCase):
         self.assertEqual(said.count('cap not enforced'), 1, said)
         self.assertIn('wip-cap: board 13556 read failed (board unreadable); cap not enforced', said)
         started.assert_called_once()
+
+
+class OwnLabelTest(unittest.TestCase):
+    """The lease reads the label the starting chat armed its loop with (VSTA-266)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        loop_state = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(self.directory)})
+        loop_state.start()
+        self.addCleanup(loop_state.stop)
+        self.loop = drain.loop_state
+        self.env = {'HOME': str(self.directory)}
+
+    def record(self, name, label, owner_pid=1):
+        (self.directory / f'{self.loop.slug(name)}.json').write_text(json.dumps(
+            {'name': name, 'label': label, 'owner_pid': owner_pid,
+             'host': socket.gethostname(), 'armed_at': iso(NOW)}))
+
+    def test_the_label_the_chat_armed_with_is_its_own(self):
+        self.record(OWN, OWN)
+        self.assertEqual(self.loop.own_label({**self.env, 'BOARD_DRAIN_NAME': OWN}), OWN)
+
+    def test_a_launch_with_no_tab_is_found_by_the_process_above_it(self):
+        self.record(OWN, OWN, owner_pid=os.getppid())
+        self.assertEqual(self.loop.own_label(self.env), OWN)
+
+    def test_the_named_chat_wins_over_a_process_above_it(self):
+        self.record(OTHER, OTHER, owner_pid=os.getppid())
+        self.record(OWN, OWN)
+        self.assertEqual(self.loop.own_label({**self.env, 'BOARD_DRAIN_NAME': OWN}), OWN)
+
+    def test_no_record_reads_no_own_label(self):
+        self.assertEqual(self.loop.own_label(self.env), '')
+
+    def test_chat_labels_names_every_armed_chats_label(self):
+        self.record(OWN, OWN)
+        self.record('Multi Bot Bugs', PRODUCT)
+        self.assertEqual(self.loop.chat_labels(),
+                         frozenset({OWN.casefold(), PRODUCT.casefold()}))
 
 
 class DrainCheckCapTest(unittest.TestCase):
