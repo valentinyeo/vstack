@@ -117,6 +117,18 @@ class LoginForSession(unittest.TestCase):
     def test_a_name_with_no_token_is_none(self):
         self.assertIsNone(session.login_for_session(self.env(SHIP_SESSION_NAME='No Token Chat')))
 
+    def test_name_login_names_a_chat_with_no_token(self):
+        self.assertEqual(session.name_login(self.env(SHIP_SESSION_NAME='No Token Chat')),
+                         'No Token Chat')
+        self.roster('live-test', 'Test Chat')
+        self.assertEqual(session.name_login(self.env(MULTIPROMPT_TAB='live-test')), 'Test Chat')
+        self.assertEqual(session.name_login(self.env()), '')
+
+    def test_name_login_never_names_a_person(self):
+        self.assertEqual(session.name_login(self.env(SHIP_SESSION_NAME='Valentin Yeo')), '')
+        self.roster('live-test', 'Valentins Claude Code')
+        self.assertEqual(session.name_login(self.env(MULTIPROMPT_TAB='live-test')), '')
+
 
 if __name__ == '__main__':
     unittest.main()

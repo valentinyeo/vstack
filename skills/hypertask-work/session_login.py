@@ -137,10 +137,16 @@ def token_file_login(env, where):
     return (name, path, TOKEN_FILE)
 
 
+def ship_name(env):
+    """The agent name SHIP_SESSION_NAME names, or '' when it names no agent."""
+    name = str(env.get('SHIP_SESSION_NAME') or '').strip()
+    return '' if not name or is_person(name) else name
+
+
 def ship_name_login(env, where):
     """(name, path, source) for SHIP_SESSION_NAME, or None when it names no agent login."""
-    name = str(env.get('SHIP_SESSION_NAME') or '').strip()
-    if not name or is_person(name):
+    name = ship_name(env)
+    if not name:
         return None
     path = token_path(where, name)
     return (name, path, 'SHIP_SESSION_NAME') if path.is_file() else None
@@ -153,6 +159,21 @@ def tab_login(env, where):
     if not name:
         return None
     return (name, token_path(where, name), 'MULTIPROMPT_TAB')
+
+
+def name_login(env=None):
+    """This chat's name from SHIP_SESSION_NAME or its tab, token file or not, or ''.
+
+    The order matches `login`, and a person's name never resolves.
+    """
+    env = os.environ if env is None else env
+    where = home(env)
+    name = ship_name(env)
+    if name:
+        return name
+    tab = str(env.get('MULTIPROMPT_TAB') or '').strip()
+    name = session_name(where, tab) if tab else ''
+    return '' if is_person(name) else name
 
 
 def login(env=None):
