@@ -201,13 +201,11 @@ def wake(lines):
 def superseded(name):
     """True when a newer watcher owns this chat's loop, so this one must stop waking.
 
-    A restart or a safety tick starts a fresh watcher while the old job keeps polling, and
-    each of them would wake the chat for the same move. The loop state already names the
-    newest watcher, so the older one reads that and leaves it alone (VSTA-270).
+    A restart can leave the older job polling, so the loop state names the newest watcher.
     """
     try:
         pid = int(loop_state.stored(name).get('watch_pid'))
-    except (TypeError, ValueError):
+    except loop_state.ERRORS:
         return False
     if pid == os.getpid():
         return False
@@ -267,7 +265,7 @@ def follow(args, clock=time.time, sleep=time.sleep):
                     pending.append(line)
             reported += 1
         if pending and (last_wake is None or clock() - last_wake >= 60):
-            # A change both watchers saw must still send only one wake.
+            # A handover can land between the poll and this wake, so check again.
             if superseded(args.name):
                 return 0
             if not wake(pending):

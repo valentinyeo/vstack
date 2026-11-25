@@ -2133,12 +2133,24 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(out.getvalue(), f'watch: superseded by pid {newer}; exiting\n')
         self.assertFalse(self.wakes.exists(), 'the stale watcher must not wake the chat')
-        # The newer watcher still sends exactly one wake for the change both saw.
+        # The live watcher still sends exactly one wake for the change. Only wakes
+        # carrying the change count: the clock runs past one heartbeat before the second
+        # reported cycle, and that heartbeat wake is the watcher doing its job.
         code, out, _ = self.run_watch(
             [], '--every', '10', '--heartbeat', '100', '--cycles', '2',
             on_sleep=lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else None)
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.wakes.read_text().splitlines()), 1)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        sent = [wake for wake in wakes if 'changed: VSTA-80 new in Todo' in wake[4]]
+        self.assertEqual(len(sent), 1, wakes)
+
+    def test_an_unreadable_state_never_crashes_the_watcher(self):
+        """VSTA-270: loop-state can raise OSError, so a bad read is not a supersession."""
+        out = io.StringIO()
+        with patch.object(watch.loop_state, 'stored', side_effect=OSError('state gone')), \
+                contextlib.redirect_stdout(out):
+            self.assertFalse(watch.superseded('Watch Test'))
+        self.assertEqual(out.getvalue(), '')
 
     def test_a_handover_after_the_change_sends_no_wake(self):
         """VSTA-270: the newer watcher may appear between the poll and the wake."""
