@@ -191,6 +191,11 @@ def checks_payload(row, *pulls):
     return {'rows': [row], 'pulls': {row['task']['ticketNumber']: list(pulls)}}
 
 
+def idle_pr_card(key='SOFT-2940', age=7200):
+    """A card in AI Review, out of Checks, so only the orphan rule judges its PR."""
+    return doing(key, age=age, section='AI Review')
+
+
 def listed_pull(key='SOFT-2940', checks='red', pushed=iso(NOW - 2 * 86400), **changes):
     """One row of the board's open-PR listing: open, with its checks and last push."""
     row = {'url': PR_524['url'], 'state': 'OPEN', 'title': f'{key}: a card parked in Checks',
@@ -381,29 +386,73 @@ class CheckTest(unittest.TestCase):
         self.assertNotIn('wait on merge', out)
         self.assertNotIn('orphan PR:', out)
 
-    def test_an_open_pr_with_no_helper_is_an_orphan(self):
-        # VSTA-210: the owner carries its PR to merge, so an open PR with no helper is
-        # the work it owes before it starts a new ticket.
-        code, out = self.run_payload(checks_payload(stuck_card(), PR_524))
+    def test_an_open_pr_red_and_idle_an_hour_with_no_helper_is_an_orphan(self):
+        # VSTA-210 and VSTA-298: the owner carries its PR to merge, so a red PR with
+        # no push and no helper for an hour is the work it owes before a new ticket.
+        payload = {'rows': [idle_pr_card()], 'pulls': {'SOFT-2940': [red_pull()]}}
+        code, out = self.run_payload(payload)
         self.assertEqual(code, 1, out)
         self.assertIn('orphan PR: SOFT-2940 https://github.com/valentinyeo/multiprompt-android/'
-                      'pull/524 has no live helper; start a helper on this PR before any new '
-                      'ticket', out)
+                      'pull/524 is red and idle an hour with no live helper; start a helper on '
+                      'this PR before any new ticket', out)
+
+    def test_pending_checks_after_a_clean_exit_are_not_an_orphan(self):
+        # VSTA-292: the worker pushes, updates the PR and exits, so a PR waiting on CI
+        # is someone else still moving, never an orphan.
+        pull = red_pull() | {'checks': 'pending'}
+        with patch.object(drain, 'read_pull_facts') as read:
+            code, out = self.run_payload({'rows': [idle_pr_card()],
+                                          'pulls': {'SOFT-2940': [pull]}})
+        self.assertEqual(code, 0, out)
+        read.assert_not_called()
+        self.assertNotIn('orphan PR:', out)
+
+    def test_green_checks_with_no_helper_are_not_an_orphan(self):
+        with patch.object(drain, 'read_pull_facts') as read:
+            code, out = self.run_payload({'rows': [idle_pr_card()],
+                                          'pulls': {'SOFT-2940': [PR_524]}})
+        self.assertEqual(code, 0, out)
+        read.assert_not_called()
+        self.assertNotIn('orphan PR:', out)
+
+    def test_a_red_pr_pushed_ten_minutes_ago_is_not_an_orphan(self):
+        pull = red_pull(pushed=iso(NOW - 600))
+        code, out = self.run_payload({'rows': [idle_pr_card()],
+                                      'pulls': {'SOFT-2940': [pull]}})
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('orphan PR:', out)
+
+    def test_a_pr_the_tick_cannot_judge_is_an_orphan_only_past_the_hour(self):
+        # No checks state and no push time: the card's own idle time decides, so a
+        # card an hour old keeps the old rule and a fresh one is left alone.
+        pull = {'url': PR_524['url'], 'state': 'OPEN'}
+        for age, orphan in ((7200, True), (600, False)):
+            with self.subTest(age=age):
+                with patch.object(drain, 'read_pull_facts', return_value={}) as read:
+                    code, out = self.run_payload({'rows': [idle_pr_card(age=age)],
+                                                  'pulls': {'SOFT-2940': [pull]}})
+                self.assertEqual(code, 1 if orphan else 0, out)
+                read.assert_called_once_with(PR_524['url'])
+                if orphan:
+                    self.assertIn('orphan PR: SOFT-2940', out)
+                else:
+                    self.assertNotIn('orphan PR:', out)
 
     def test_a_live_helper_on_the_pr_means_no_orphan(self):
         live = lambda key, now, board: key == 'SOFT-2940'
-        code, out = self.run_payload(checks_payload(stuck_card(), PR_524), alive=live)
+        payload = {'rows': [idle_pr_card()], 'pulls': {'SOFT-2940': [red_pull()]}}
+        code, out = self.run_payload(payload, alive=live)
         self.assertEqual(code, 0, out)
         self.assertNotIn('orphan PR:', out)
 
     def test_a_card_blocked_by_work_in_flight_is_not_an_orphan(self):
-        # SOFT-2944 waits on SOFT-2945, and SOFT-2945 has a live helper, so its own PR
-        # idles on purpose rather than being dropped.
+        # SOFT-2944 waits on SOFT-2945, and SOFT-2945 has a live helper, so its own red
+        # PR idles on purpose rather than being dropped.
         row = todo('SOFT-2944')
         row['relations'] = [{'relationType': 'BlockedBy', 'direction': 'outgoing',
                              'otherTask': {'ticketNumber': 'SOFT-2945', 'status': 'Normal'}}]
         payload = {'rows': [row, doing('SOFT-2945')],
-                   'pulls': {'SOFT-2944': [PR_524]}}
+                   'pulls': {'SOFT-2944': [red_pull()]}}
         live = lambda key, now, board: key == 'SOFT-2945'
         code, out = self.run_payload(payload, alive=live)
         self.assertEqual(code, 0, out)
@@ -413,8 +462,8 @@ class CheckTest(unittest.TestCase):
     def test_an_orphan_pr_outranks_starting_on_a_fresh_todo(self):
         # Valentin's rule: a PR comes first. The advice names the orphan, never the Todo
         # the loop would otherwise pick.
-        payload = {'rows': [stuck_card(), todo('SOFT-2946', age=3 * 3600)],
-                   'pulls': {'SOFT-2940': [PR_524]}}
+        payload = {'rows': [idle_pr_card(), todo('SOFT-2946', age=3 * 3600)],
+                   'pulls': {'SOFT-2940': [red_pull()]}}
         code, out = self.run_payload(payload)
         self.assertEqual(code, 1, out)
         self.assertIn('orphan PR: SOFT-2940', out)
@@ -1826,7 +1875,7 @@ class WatchTest(unittest.TestCase):
         # newest beat sits after `now`. Both reads must still see the live helper, or
         # the watcher prints "orphan PR" on one poll and "cleared" on the next.
         row = vsta('VSTA-1', section='AI Review', age=7200)
-        self.rows({'rows': [row], 'pulls': {'VSTA-1': [PR_524]}})
+        self.rows({'rows': [row], 'pulls': {'VSTA-1': [red_pull()]}})
         args = argparse.Namespace(board=13556, label='Board Drain Loop',
                                   fixture=str(self.fixture))
         with tempfile.TemporaryDirectory() as leases, \
@@ -1843,7 +1892,7 @@ class WatchTest(unittest.TestCase):
     def test_a_lease_that_stopped_beating_is_still_no_helper(self):
         # The window still has to bite: a beat 15 minutes old is no live helper.
         row = vsta('VSTA-1', section='AI Review', age=7200)
-        self.rows({'rows': [row], 'pulls': {'VSTA-1': [PR_524]}})
+        self.rows({'rows': [row], 'pulls': {'VSTA-1': [red_pull()]}})
         args = argparse.Namespace(board=13556, label='Board Drain Loop',
                                   fixture=str(self.fixture))
         with tempfile.TemporaryDirectory() as leases, \
