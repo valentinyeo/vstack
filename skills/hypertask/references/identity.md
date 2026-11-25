@@ -121,7 +121,7 @@ The flat file `$S/<slug>-agent-token` is the one every tool reads. Mode 600.
 Every ticket you file or work carries you as assignee.
 
 - Filing: take it right after create: `hypertask agent take <ticket> --project <board>`.
-- Starting work: the lease sync takes it for you when it has no agent assignee (see `board.md`).
+- Starting work: the lease sync takes it for you when nobody is assigned to it (see `board.md`).
 - Never assign a person, including Valentin.
 - Never replace an existing assignee. Add yourself.
 

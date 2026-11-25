@@ -120,8 +120,10 @@ class LeaseTest(Scratch):
         self.lease = load('lease_path_under_test', ROOT / 'skills/hypertask-work/lease')
 
     def test_take_card_reaches_the_copy_in_local_bin(self):
-        self.assertTrue(self.lease.take_card('VSTA-234', 'Vstack', self.token,
-                                             env=dict(os.environ)))
+        # An empty answer means the ticket was taken: PATH has no CLI, so this server's
+        # own copy in ~/.local/bin is the one asked.
+        self.assertEqual(self.lease.take_card('VSTA-234', 'Vstack', self.token,
+                                              env=dict(os.environ)), '')
 
 
 class IdleStopTest(Scratch):

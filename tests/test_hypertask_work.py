@@ -2548,40 +2548,87 @@ class LeaseTest(unittest.TestCase):
         self.assertNotIn('nothing ran', said.getvalue())
         self.assertEqual(self.spawned[-1][1]['RECONCILE_WORKER_EXIT'], '0')
 
-    def sync_start(self, assignees, take_code=0):
-        """Run one start action with the board CLI faked; return its calls."""
+    def sync_start(self, assignees, take_code=0, take_error='', read_code=0, read_error=''):
+        """Run one start action with the board CLI faked; return its calls and stderr."""
         calls = []
 
         def fake(command, **kwargs):
             calls.append((command, kwargs.get('env', {})))
             if command[1:3] == ['--json', 'task']:
                 return subprocess.CompletedProcess(
-                    command, 0,
-                    json.dumps({'tasks': [{'projectId': 2060, 'assignees': assignees}]}), '')
-            return subprocess.CompletedProcess(command, take_code, '', '')
+                    command, read_code, '' if read_code else
+                    json.dumps({'tasks': [{'projectId': 2060, 'assignees': assignees}]}),
+                    read_error)
+            return subprocess.CompletedProcess(command, take_code, '', take_error)
 
-        with patch.object(lease, 'find', return_value='/bin/hypertask'), \
+        said = io.StringIO()
+        with patch.object(lease, 'board_cli', return_value='/bin/hypertask'), \
                 patch.object(lease.subprocess, 'run', side_effect=fake), \
-                patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
+                patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]), \
+                contextlib.redirect_stderr(said):
             self.assertEqual(lease.main(), 0)
+        self.said = said.getvalue()
         return calls
 
-    def test_start_sync_takes_the_ticket_when_it_has_no_agent(self):
-        for assignees in ([], [{'id': 6, 'agent': None}]):
-            with self.subTest(assignees=assignees):
-                calls = self.sync_start(assignees)
-                take = [command for command, _env in calls
-                        if command[1:3] == ['agent', 'take']]
-                self.assertEqual(take, [['/bin/hypertask', 'agent', 'take', 'SOFT-1',
-                                         '--project', '2060']])
-                for _command, env in calls:
-                    self.assertEqual(env['SHIP_SESSION_NAME'], 'Test Chat')
-                    self.assertEqual(env['HYPERTASKS_JWT_TOKEN'], 'secret')
+    def test_start_sync_takes_the_ticket_when_nobody_is_assigned(self):
+        calls = self.sync_start([])
+        take = [command for command, _env in calls if command[1:3] == ['agent', 'take']]
+        self.assertEqual(take, [['/bin/hypertask', 'agent', 'take', 'SOFT-1',
+                                 '--project', '2060']])
+        for _command, env in calls:
+            self.assertEqual(env['SHIP_SESSION_NAME'], 'Test Chat')
+            self.assertEqual(env['HYPERTASKS_JWT_TOKEN'], 'secret')
+        self.assertNotIn('left unassigned', self.said)
 
     def test_start_sync_never_replaces_an_existing_agent(self):
-        calls = self.sync_start([{'id': 6, 'agent': {'id': 'agent-1'}}])
+        calls = self.sync_start([{'id': 6, 'type': 'agent', 'agent': {'id': 'agent-1'}}])
         self.assertFalse([command for command, _env in calls
                           if command[1:3] == ['agent', 'take']])
+        self.assertNotIn('left unassigned', self.said)
+
+    def test_start_sync_leaves_a_ticket_a_person_assigned_to_themselves(self):
+        """AGENTS.md manual override: a ticket a person took is theirs, not the chat's."""
+        calls = self.sync_start([{'id': 6, 'email': 'valentin.yeo@gmail.com',
+                                  'displayName': 'Valentin Yeo', 'type': 'user'}])
+        self.assertFalse([command for command, _env in calls
+                          if command[1:3] == ['agent', 'take']])
+        self.assertNotIn('left unassigned', self.said)
+        self.assertTrue(self.path.is_file(), 'the lease is still written')
+
+    def test_a_failed_take_says_the_ticket_is_still_unassigned(self):
+        calls = self.sync_start([], take_code=1, take_error='hypertask: mutation lease busy\n')
+        self.assertTrue([command for command, _env in calls
+                         if command[1:3] == ['agent', 'take']])
+        self.assertEqual(self.said.strip(),
+                         'lease: SOFT-1 left unassigned: hypertask: mutation lease busy')
+        self.assertTrue(self.path.is_file(), 'the lease is still written')
+
+    def test_a_ticket_that_cannot_be_read_is_named_not_swallowed(self):
+        calls = self.sync_start([], read_code=1, read_error='hypertask: rate limited\n')
+        self.assertFalse([command for command, _env in calls
+                          if command[1:3] == ['agent', 'take']])
+        self.assertEqual(self.said.strip(),
+                         'lease: SOFT-1 left unassigned: hypertask: rate limited')
+        self.assertTrue(self.path.is_file(), 'the lease is still written')
+
+    def test_the_board_cli_is_never_a_worker_shim(self):
+        """VSTA-260: a shim first on PATH answered nothing, so the assignment vanished."""
+        shims = self.directory / 'worker-shims'
+        shims.mkdir()
+        shim = shims / 'hypertask'
+        shim.write_text('#!/bin/sh\nexit 127\n')
+        shim.chmod(0o755)
+        real = self.directory / 'bin' / 'hypertask'
+        real.parent.mkdir()
+        real.write_text('#!/bin/sh\nexit 0\n')
+        real.chmod(0o755)
+        with patch.dict(os.environ, {'PATH': os.pathsep.join([str(shims), str(real.parent),
+                                                             '/usr/bin', '/bin']),
+                                     'HOME': str(self.directory)}):
+            self.assertEqual(lease.board_cli(), str(real))
+        with patch.dict(os.environ, {'PATH': f'{shims}:/usr/bin:/bin',
+                                     'HOME': str(self.directory)}):
+            self.assertIsNone(lease.board_cli())
 
     def test_a_failed_take_never_fails_the_lease(self):
         calls = self.sync_start([], take_code=1)
@@ -2589,13 +2636,16 @@ class LeaseTest(unittest.TestCase):
                          if command[1:3] == ['agent', 'take']])
         self.assertTrue(self.path.is_file(), 'the lease is still written')
 
-    def test_no_login_spawns_nothing_and_the_lease_still_works(self):
-        self.spawned = []
+    def test_no_login_warns_once_and_the_worker_still_starts(self):
+        self.spawned, said = [], io.StringIO()
         with patch.object(lease.session, 'login_for_session', return_value=None), \
-                patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]):
+                patch.object(sys, 'argv', ['lease', 'SOFT-1', 'start', '--pid', str(os.getpid())]), \
+                contextlib.redirect_stderr(said):
             self.assertEqual(lease.main(), 0)
         self.assertTrue(self.path.is_file(), 'a missing login never stops the lease')
         self.assertEqual(self.spawned, [])
+        self.assertEqual(said.getvalue().strip(),
+                         'lease: SOFT-1 left unassigned: this chat has no agent login')
         with patch.object(lease.session, 'login_for_session', return_value=None):
             self.assertFalse(lease.sync_card('SOFT-1', 'start', {'HOME': str(self.directory)}))
 

@@ -19,7 +19,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
-from bin_path import find
+from bin_path import local_bin
 
 
 def load(name, path):
@@ -70,38 +70,72 @@ def write(key, action, pid, directory=None, now=None):
                 Path(temp.name).unlink(missing_ok=True)
 
 
-def take_card(key, name, token, env=None):
-    """Assign the chat's agent to the ticket when it has no agent assignee.
+SHIMS = 'worker-shims'
 
-    Leaves an existing agent assignee alone and never assigns a person. Any
-    failure answers False: a lease never blocks and never fails on assignment.
+
+def board_cli(home=None):
+    """The real `hypertask`, never a worker shim.
+
+    A worker's PATH leads with `worker-shims` folders, and those shims wrap or refuse
+    board commands (VSTA-165, VSTA-249). A shim asked for the board CLI answered
+    nothing at all, so the assignment below vanished with no line and no error
+    (VSTA-260). PATH outside those folders still wins, then this server's own copy.
+    """
+    for part in (os.environ.get('PATH') or '').split(os.pathsep):
+        if not part or Path(part).name == SHIMS:
+            continue
+        candidate = Path(part) / 'hypertask'
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    local = local_bin(home) / 'hypertask'
+    return str(local) if local.is_file() else None
+
+
+def one_line(text):
+    """The first non-empty line of a command's error, never a page of it."""
+    for line in str(text or '').splitlines():
+        if line.strip():
+            return line.strip()
+    return ''
+
+
+def take_card(key, name, token, env=None):
+    """Assign this chat's own agent to the ticket when nobody is assigned to it.
+
+    A ticket with any assignee stays as it is: a person on it put themselves there and
+    that is a manual override, and another agent already owns it otherwise. Answers the
+    one plain line saying why the ticket is still unassigned, or '' when it was taken or
+    rightly left alone. A lease never blocks and never fails on assignment.
     """
     env = dict(os.environ if env is None else env)
     try:
         token_value = Path(token).read_text().strip()
     except OSError:
-        return False
+        token_value = ''
     if not token_value:
-        return False
-    cli = find('hypertask')
+        return UNASSIGNED.format(key=key, why='no agent login token to read')
+    cli = board_cli()
     if cli is None:
-        return False
+        return UNASSIGNED.format(key=key, why='no hypertask CLI on this host')
     run_env = dict(env, HYPERTASKS_JWT_TOKEN=token_value, SHIP_SESSION_NAME=name)
     try:
         read = subprocess.run([cli, '--json', 'task', 'get', key], capture_output=True,
                               text=True, env=run_env, timeout=30, check=False)
+        if read.returncode != 0:
+            return UNASSIGNED.format(key=key, why=one_line(read.stderr) or 'ticket read failed')
         task = (json.loads(read.stdout or '{}').get('tasks') or [{}])[0]
-        if any(isinstance(row, dict) and row.get('agent')
-               for row in task.get('assignees') or ()):
-            return False
+        if task.get('assignees'):
+            return ''
         command = [cli, 'agent', 'take', key]
         if task.get('projectId'):
             command += ['--project', str(task['projectId'])]
         took = subprocess.run(command, capture_output=True, text=True, env=run_env,
                               timeout=30, check=False)
-        return took.returncode == 0
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return False
+        if took.returncode == 0:
+            return ''
+        return UNASSIGNED.format(key=key, why=one_line(took.stderr) or 'agent take failed')
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return UNASSIGNED.format(key=key, why=str(error) or 'board call failed')
 
 
 def spawn_card(command, env):
@@ -112,6 +146,10 @@ def spawn_card(command, env):
 
 
 LANE_WAITING = 'nothing ran, waiting for a lane'
+# The assignment is a notice, never a gate: a ticket that stays unassigned gets one
+# plain line and the worker still starts (VSTA-260).
+UNASSIGNED = 'lease: {key} left unassigned: {why}'
+NO_LOGIN = 'this chat has no agent login'
 # The card's start is refused, not its worker run: nothing runs and the chat must
 # ship one of its open tickets first (VSTA-206).
 CAP_HELD = 'lease: {key} held: {line}'
@@ -218,11 +256,10 @@ def sync_card(key, phase, env=None, worker_exit=None):
     """
     env = dict(os.environ if env is None else env)
     try:
-        login = session.login_for_session(env)
-        if login is None:
-            return False
-        name, token = login
-        if not Path(token).is_file():
+        name, token = session.login_for_session(env) or ('', None)
+        if not token or not Path(token).is_file():
+            if phase == 'start':
+                print(UNASSIGNED.format(key=key, why=NO_LOGIN), file=sys.stderr, flush=True)
             return False
         script = Path(__file__).resolve().with_name('reconcile')
         if not script.is_file():
@@ -235,7 +272,9 @@ def sync_card(key, phase, env=None, worker_exit=None):
             env['RECONCILE_WORKER_EXIT'] = str(worker_exit)
         env.setdefault('GH_CALLER', 'lease:' + key)
         if phase == 'start':
-            take_card(key, name, token, env)
+            line = take_card(key, name, token, env)
+            if line:
+                print(line, file=sys.stderr, flush=True)
         command = [sys.executable, str(script), '--ticket', key, '--apply', '--limit', '1']
         spawn_card(command, env)
         return True
