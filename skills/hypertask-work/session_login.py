@@ -14,6 +14,8 @@ import time
 
 TOKENS = '.config/hypertask-agents/credentials/sessions'
 STATE = '.local/state/reconcile-auto'
+# The environment keys a chat's own process carries its Multibot tab in.
+TAB_KEYS = ('MULTIPROMPT_TAB', 'ZSB_SESSION', 'MULTIBOT_SESSION')
 # The owner is a person, not an agent. A login named after him writes as him, so
 # no session resolves to one: "Valentins Claude Code", "Valentin Yeo" and
 # "Valentin's Chat" all refuse.

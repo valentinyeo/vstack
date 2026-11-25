@@ -112,15 +112,97 @@ def parent_pid(pid):
         return None
 
 
+def ancestors(start=None):
+    """The processes above this one, nearest first."""
+    pid, seen = (os.getppid() if start is None else start), []
+    while pid and pid > 1 and pid not in seen:
+        seen.append(pid)
+        pid = parent_pid(pid)
+    return seen
+
+
 def owner_pid(start=None):
     """The nearest chat process above this one, so a new chat reads as a new owner."""
-    pid, seen = os.getppid() if start is None else start, set()
-    while pid and pid > 1 and pid not in seen:
-        seen.add(pid)
+    for pid in ancestors(start):
         if agent_process(command_line(pid)):
             return pid
-        pid = parent_pid(pid)
     return os.getppid()
+
+
+def records():
+    """Every chat's loop record in this state folder, readable ones only."""
+    found = []
+    try:
+        paths = sorted(state_dir().glob('*.json'))
+    except OSError:
+        return found
+    for path in paths:
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(state, dict) and isinstance(state.get('name'), str) and state['name'].strip():
+            found.append(state)
+    return found
+
+
+def chat_labels():
+    """The board labels the chats recorded in this state folder drain, casefolded."""
+    return frozenset(str(state.get('label')).strip().casefold() for state in records()
+                     if isinstance(state.get('label'), str) and state['label'].strip())
+
+
+def env_name(env=None):
+    """This chat's own Multibot name from its environment, or ''.
+
+    BOARD_DRAIN_NAME names the chat outright; otherwise its tab becomes a Multibot
+    name through the roster, the same read `session_login` makes for the chat's
+    login.
+    """
+    env = os.environ if env is None else env
+    explicit = str(env.get('BOARD_DRAIN_NAME') or '').strip()
+    if explicit:
+        return explicit
+    for key in reconcile.session.TAB_KEYS:
+        here = str(env.get(key) or '').strip()
+        if not here:
+            continue
+        try:
+            name = reconcile.session.session_name(
+                Path(env.get('HOME') or Path.home()), here)
+        except ERRORS:
+            name = ''
+        if name:
+            return name
+    return ''
+
+
+def own_record(env=None):
+    """The loop record of the chat running this process, {} when it has none.
+
+    Named first by the chat's own environment. A launch with no tab is found by the
+    chat process above it: the record already holds that pid, so the lease started
+    inside that chat reads the label the chat armed with (VSTA-266).
+    """
+    named = env_name(env)
+    if named:
+        state = stored(named)
+        if isinstance(state.get('label'), str) and state['label'].strip():
+            return state
+    above = set(ancestors())
+    mine = [state for state in records()
+            if state.get('host') == socket.gethostname()
+            and state.get('owner_pid') in above
+            and isinstance(state.get('label'), str) and state['label'].strip()]
+    if not mine:
+        return {}
+    return max(mine, key=lambda state: reconcile.moment(state.get('armed_at')) or 0.0)
+
+
+def own_label(env=None):
+    """The board label this chat drains, or '' when it cannot be read."""
+    label = own_record(env).get('label')
+    return label.strip() if isinstance(label, str) else ''
 
 
 def stored(name):
