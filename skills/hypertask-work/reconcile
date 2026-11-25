@@ -741,19 +741,38 @@ def pid_alive(pid):
         return True
 
 
+# A beat inside this window, either side of the reader's `now`, is a live lease.
+LEASE_WINDOW = 900
+
+
+def lease_fresh(now, lease):
+    """Was this record beaten inside the freshness window? Both readers and the
+    lease writer ask the same question, so they ask it here."""
+    return abs(now - stamp(lease['last_beat'])) < LEASE_WINDOW
+
+
 def live_lease(key, now, directory=None):
+    """A lease beaten inside the freshness window, on this host, with its PID alive.
+
+    `now` is the moment the caller's read began, and a read can outlast a beat: the
+    lease helper beats every 60s, and drain-check's read runs for over a minute on a
+    slow GitHub probe. A beat that landed while that read ran is later than `now` and
+    still proves the worker alive, so a beat ahead of `now` counts the same as one
+    behind it, and only a beat beyond the whole window is no proof (VSTA-257).
+
+    The start time is not judged: a helper that started during the read is alive too,
+    and a live PID with a fresh beat is the only proof this read needs.
+    """
     path = (directory or LEASES) / (key + '.json')
     try:
         lease = json.loads(path.read_text())
     except FileNotFoundError:
         return False
-    age = now - stamp(lease['last_beat'])
-    if age >= 900:
+    if not lease_fresh(now, lease):
         return False
     if lease['host'] != socket.gethostname():
         raise ValueError('lease belongs to another host; PID cannot be checked')
-    started = stamp(lease['started'])
-    return 0 <= age < 900 and started <= now and pid_alive(lease['pid'])
+    return pid_alive(lease['pid'])
 
 
 def process_chain(pid=None, directory=None):

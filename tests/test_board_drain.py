@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 from datetime import datetime, timezone
 import hashlib
@@ -7,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1621,6 +1623,45 @@ class WatchTest(unittest.TestCase):
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = watch.main(argv, clock=clock.time, sleep=clock.sleep)
         return code, out.getvalue() + err.getvalue(), clock
+
+    def test_a_beat_that_lands_inside_the_read_keeps_the_helper_alive(self):
+        # VSTA-257: the watcher holds one `now` for a whole read, and a slow read (a
+        # 20-55s GitHub probe plus the board pages) outlasts a 60s lease beat, so the
+        # newest beat sits after `now`. Both reads must still see the live helper, or
+        # the watcher prints "orphan PR" on one poll and "cleared" on the next.
+        row = vsta('VSTA-1', section='AI Review', age=7200)
+        self.rows({'rows': [row], 'pulls': {'VSTA-1': [PR_524]}})
+        args = argparse.Namespace(board=13556, label='Board Drain Loop',
+                                  fixture=str(self.fixture))
+        with tempfile.TemporaryDirectory() as leases, \
+                patch.object(watch.drain.reconcile, 'LEASES', Path(leases)), \
+                patch.object(watch.drain.reconcile, 'process_tickets', return_value=set()):
+            # Each read starts a poll apart, and the helper's next beat lands after
+            # that read's own `now` because the read itself ran long.
+            for read_began, newest_beat in ((NOW, NOW + 30), (NOW + 180, NOW + 210)):
+                self.write_lease(Path(leases), 'VSTA-1',
+                                 started=NOW - 600, last_beat=newest_beat)
+                snapshot = watch.snapshot(args, read_began)
+                self.assertNotIn('orphan PR', snapshot['findings'])
+
+    def test_a_lease_that_stopped_beating_is_still_no_helper(self):
+        # The window still has to bite: a beat 15 minutes old is no live helper.
+        row = vsta('VSTA-1', section='AI Review', age=7200)
+        self.rows({'rows': [row], 'pulls': {'VSTA-1': [PR_524]}})
+        args = argparse.Namespace(board=13556, label='Board Drain Loop',
+                                  fixture=str(self.fixture))
+        with tempfile.TemporaryDirectory() as leases, \
+                patch.object(watch.drain.reconcile, 'LEASES', Path(leases)), \
+                patch.object(watch.drain.reconcile, 'process_tickets', return_value=set()):
+            self.write_lease(Path(leases), 'VSTA-1', started=NOW - 2000, last_beat=NOW - 901)
+            self.assertIn('orphan PR', watch.snapshot(args, NOW)['findings'])
+
+    @staticmethod
+    def write_lease(directory, key, **record):
+        """This host's live PID on a lease record, as `lease run --` writes one."""
+        lease = dict(pid=os.getpid(), host=socket.gethostname(), started=NOW, last_beat=NOW)
+        lease.update(record)
+        (directory / f'{key}.json').write_text(json.dumps(lease))
 
     def test_once_prints_the_snapshot_and_exits(self):
         rows = [vsta('VSTA-1', section='Doing', age=300), vsta('VSTA-2')]

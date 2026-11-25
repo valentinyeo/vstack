@@ -53,7 +53,11 @@ def write(key, action, pid, directory=None, now=None):
                 path.unlink()
             return
         if old and not mine:
-            if 0 <= now - reconcile.stamp(old['last_beat']) < 900 and (old['host'] != socket.gethostname() or reconcile.pid_alive(old['pid'])):
+            # The same window live_lease reads: a beat ahead of `now` (a slow write,
+            # or another reader's slower clock) still means a live owner (VSTA-257).
+            if (reconcile.lease_fresh(now, old)
+                    and (old['host'] != socket.gethostname()
+                         or reconcile.pid_alive(old['pid']))):
                 raise ValueError('another live worker owns this lease')
         if action == 'beat' and not mine:
             raise ValueError('no matching lease to beat')
