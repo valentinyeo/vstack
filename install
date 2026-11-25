@@ -176,10 +176,15 @@ fi
 # The pacer rule follows a chat to Codex and Antigravity: an owner chat there reads the rule
 # from its own rule file and is refused by the same guard, whatever harness it switched to
 # (VSTA-283). One rule text, marked blocks, and a hooks merge that keeps every entry already there.
-python3 "$ROOT/scripts/install-pacer-rules.py" || {
-  echo "vstack install: install-pacer-rules failed; Codex and Antigravity chats have no pacer rule" >&2
-  exit 1
-}
+# A partial checkout has no config or rule text, so a missing script skips like the merge above.
+if [ -f "$ROOT/scripts/install-pacer-rules.py" ]; then
+  python3 "$ROOT/scripts/install-pacer-rules.py" || {
+    echo "vstack install: install-pacer-rules failed; Codex and Antigravity chats have no pacer rule" >&2
+    exit 1
+  }
+else
+  echo "vstack install: skip Codex and Antigravity pacer rules (no $ROOT/scripts/install-pacer-rules.py)" >&2
+fi
 
 # Pacer workers on OpenCode and Antigravity never run Claude hooks, so the same refusal
 # is generated as a command shim on a folder plan-pick puts first on a worker's PATH

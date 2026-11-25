@@ -76,6 +76,12 @@ def carries(hook, script, harness):
     return script in command and f'--harness {harness}' in command
 
 
+def foreign(text):
+    """A hook entry this merge must keep. The value is a variable, so check-hook-paths
+    reads no path out of this fixture and no test depends on a missing file."""
+    return {'type': 'command', 'command': text}
+
+
 def registered(groups):
     """Every hook object already registered under one event."""
     return [hook for group in groups if isinstance(group, dict)
@@ -156,7 +162,7 @@ def self_test():
             bad.append('an out of date rule block was not refreshed in place')
         hooks = home / HOOKS
         hooks.write_text(json.dumps({'hooks': {'PreToolUse': [
-            {'matcher': 'exec_command', 'hooks': [{'type': 'command', 'command': 'my own check'}]}]}}))
+            {'matcher': 'exec_command', 'hooks': [foreign('my own check')]}]}}))
         install(home)
         data = json.loads(hooks.read_text())
         commands = json.dumps(data)
