@@ -217,11 +217,14 @@ FACTORY_STAGE_COLUMN = {
 FACTORY_COLUMN_STAGE = {name: stage for stage, name in FACTORY_STAGE_COLUMN.items()}
 FACTORY_COLUMN_STAGE['Building'] = Stage.IN_PROGRESS
 FACTORY_COLUMN_STAGE['Verifier'] = Stage.REVIEW
+# Board 15 has no Done column (VSTA-267). Its done columns are No Flag, Flag: Everyone
+# and Flag: Only Me + QA, and the Flag ones stay protected, so a finished card lands in
+# No Flag, which is protected too: a card already there is never moved again.
 PRODUCT_STAGE_COLUMN = {
     Stage.BACKLOG: 'Backlog',
     Stage.IN_PROGRESS: 'In Progress',
     Stage.REVIEW: 'AI Review',
-    Stage.DONE: 'Done',
+    Stage.DONE: 'No Flag',
 }
 PRODUCT_COLUMN_STAGE = {name: stage for stage, name in PRODUCT_STAGE_COLUMN.items()}
 PRODUCT_COLUMN_STAGE['QA'] = Stage.REVIEW

@@ -16,7 +16,7 @@ Software Factory board 2060:
 | Valentin Review | His call. Only he moves a ticket out. |
 | Done | A merged PR with a PASS verdict on its head, or live proof. |
 
-Board 15 (Hypertask product) uses Backlog, In Progress, AI Review, QA and Done, and keeps its own protected columns. Any other board keeps its own columns; the reconcile reads them.
+Board 15 (Hypertask product) uses Backlog, In Progress, AI Review and QA, and keeps its own protected columns; it has no Done column, so a finished card lands in No Flag (VSTA-267). Any other board keeps its own columns; the reconcile reads them.
 
 Ticket keys carry the board prefix: `VSTA-` on 13556, `SOFT-` on 2060, `HTPR-` on 15.
 
@@ -34,7 +34,7 @@ Move the ticket the moment its stage moves. The PR outranks a live worker.
 
 A merged PR is evidence only when it merged after the card entered the column it is in now. A card parked or reopened behind an older merge keeps its column, and a card already in review stays there: an old merge is history, never a promotion, and never a demotion. Open PRs and live workers read the same as before.
 
-A verifier PASS runs before the merge, so no card waits for live proof after one (pstack `shipping.md` step 1). Board 15 follows the same stage rules: a merged PR with PASS plans Done, a merged PR without PASS plans Backlog, and QA is no longer a post-merge hold.
+A verifier PASS runs before the merge, so no card waits for live proof after one (pstack `shipping.md` step 1). Board 15 follows the same stage rules: a merged PR with PASS plans No Flag, a merged PR without PASS plans Backlog, and QA is no longer a post-merge hold.
 
 A ticket waiting on Valentin, or blocked by a card whose own work is in flight (a live worker or an open PR), stays where it is, and the plan line names that blocker. A blocker that is Done or idle holds nothing: the card follows the idle rules. The links come from the board read itself (`blockingTasks`), never from a read per card. Never move a ticket into Valentin Review. Other boards keep their own columns; use the name the board shows, including the `Building` and `Verifier` aliases.
 
@@ -42,7 +42,7 @@ Verification tickets carry the label `verification` and start in Verification Ba
 
 ## Protected columns
 
-Valentin Review, Done and Not now never move. On board 15 the protected columns are UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, Done, No Flag and every Flag column; QA is managed like review, so a merged PR there moves on to Done (with PASS) or Backlog (without PASS). On any board, a column the reconcile does not recognise stays put.
+Valentin Review, Done and Not now never move. On board 15 the protected columns are UX needed, UX Sign-off, Agent Blocked (Infra), Valentin Review, No Flag and every Flag column; QA is managed like review, so a merged PR there moves on to No Flag (with PASS) or Backlog (without PASS). On any board, a column the reconcile does not recognise stays put.
 
 ## Manual override
 
