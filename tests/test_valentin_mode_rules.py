@@ -10,6 +10,31 @@ SPEC = importlib.util.spec_from_file_location('board_guidance', ROOT / 'scripts/
 eval_run = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(eval_run)
 
+LADDER_CALL = '''#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+here = Path(__file__).resolve().parent
+queue = json.loads((here / 'responses.json').read_text())
+request = json.loads(sys.stdin.read())
+with (here / 'calls.log').open('a') as log:
+    log.write(json.dumps({'argv': sys.argv[1:], 'request': request}) + '\\n')
+answer = queue.pop(0)
+(here / 'responses.json').write_text(json.dumps(queue))
+print(json.dumps(answer))
+'''
+MODEL_FAMILIES = 'def model_family(model):\n    return model.split("-")[0]\n'
+CANDIDATE = 'deepseek-v4.1-flash'
+JUDGE = 'zai-glm-5.3-flash'
+TOOL_ONLY = ('\n\n<\uff5cDSML\uff5c calls>\n<\uff5cDSML\uff5c invoke name="Bash">\n'
+             '<\uff5cDSML\uff5c parameter name="command" string="true">true'
+             '</\uff5cDSML\uff5c parameter>\n</\uff5cDSML\uff5c invoke>\n'
+             '</\uff5cDSML\uff5c calls>')
+ANSWER = json.dumps({
+    '1': 'You already own 5 tickets in flight, so no: ship one before starting a Todo ticket.',
+    '2': 'Restart a fresh worker on its PR within the hour, or park it: close the PR with a '
+         'note, keep the branch, move the card back to Todo.',
+})
+
 
 class ValentinModeRules(unittest.TestCase):
     def setUp(self):
@@ -107,6 +132,86 @@ class ValentinModeRules(unittest.TestCase):
                         eval_run.main()
                     self.assertEqual(calls.call_args.kwargs['excluded'], 'deepseek')
                     self.assertNotIn('deepseek', json.dumps(calls.call_args.args[0]))
+
+    def fake_ladder(self, root, rows):
+        lanes = root / 'lanes'
+        lanes.mkdir()
+        ladder = lanes / 'ladder-call'
+        ladder.write_text(LADDER_CALL)
+        ladder.chmod(0o755)
+        (lanes / 'model_families.py').write_text(MODEL_FAMILIES)
+        (lanes / 'responses.json').write_text(json.dumps(rows))
+        return ladder
+
+    def run_eval(self, ladder, out):
+        with patch('sys.argv', ['board', '--ladder', str(ladder), '--out', str(out)]):
+            eval_run.main()
+
+    def reply(self, model, text):
+        return {'model': model, **self.message(text)}
+
+    def message(self, text):
+        return {'choices': [{'message': {'content': text}}]}
+
+    def grades(self, failing=None):
+        questions = json.loads((eval_run.CASES / 'scenarios.json').read_text())
+        return {key: {'pass': key != failing, 'reason': 'Correct action'}
+                for key in questions}
+
+    def test_answer_text_ignores_tool_calls_and_keeps_prose(self):
+        self.assertEqual(eval_run.answer_text(self.message('')), '')
+        self.assertEqual(eval_run.answer_text(self.message('  \n\t')), '')
+        self.assertEqual(eval_run.answer_text(self.message(None)), '')
+        self.assertEqual(eval_run.answer_text(self.message(TOOL_ONLY)), '')
+        self.assertEqual(eval_run.answer_text(self.message('Tool call coming.\n' + TOOL_ONLY)),
+                         'Tool call coming.')
+        self.assertEqual(eval_run.answer_text(self.message(ANSWER)), ANSWER)
+
+    def test_tool_call_only_reply_is_retried_then_judged(self):
+        rows = [self.reply(CANDIDATE, TOOL_ONLY), self.reply(CANDIDATE, ANSWER),
+                self.reply(JUDGE, json.dumps(self.grades()))]
+        with tempfile.TemporaryDirectory() as where:
+            root, out = Path(where), Path(where) / 'evidence'
+            ladder = self.fake_ladder(root, rows)
+            self.run_eval(ladder, out)
+            self.assertFalse((out / 'no-answer.json').exists())
+            for name in ('chat-a-response.json', 'chat-a-try2-response.json',
+                         'judge-response.json'):
+                with self.subTest(evidence=name):
+                    self.assertTrue((out / name).is_file())
+            judged = (out / 'judge-request.json').read_text()
+            self.assertIn('ship one before starting a Todo ticket', judged)
+            self.assertNotIn('DSML', judged)
+            calls = (ladder.parent / 'calls.log').read_text().splitlines()
+            self.assertEqual(len(calls), 3)
+
+    def test_empty_answer_three_times_is_an_infrastructure_error(self):
+        blank = self.reply(CANDIDATE, ' \n')
+        with tempfile.TemporaryDirectory() as where:
+            root, out = Path(where), Path(where) / 'evidence'
+            ladder = self.fake_ladder(root, [blank, blank, blank])
+            with self.assertRaises(SystemExit) as raised:
+                self.run_eval(ladder, out)
+            message = str(raised.exception)
+            self.assertIn('no answer after 3 tries', message)
+            self.assertNotIn('Scenario', message)
+            evidence = json.loads((out / 'no-answer.json').read_text())
+            self.assertEqual(evidence['error'], 'no answer')
+            self.assertEqual(evidence['kind'], 'infrastructure error')
+            self.assertEqual(evidence['tries'], 3)
+            self.assertFalse((out / 'judge-request.json').exists())
+            calls = (ladder.parent / 'calls.log').read_text().splitlines()
+            self.assertEqual(len(calls), 3)
+
+    def test_wrong_answer_still_fails_as_before(self):
+        rows = [self.reply(CANDIDATE, ANSWER),
+                self.reply(JUDGE, json.dumps(self.grades(failing='1')))]
+        with tempfile.TemporaryDirectory() as where:
+            root, out = Path(where), Path(where) / 'evidence'
+            ladder = self.fake_ladder(root, rows)
+            with self.assertRaisesRegex(ValueError, 'Scenario 1 failed'):
+                self.run_eval(ladder, out)
+            self.assertFalse((out / 'no-answer.json').exists())
 
     def test_all_scenarios_must_pass(self):
         passing = {'1': {'pass': True, 'reason': 'Correct action'},
