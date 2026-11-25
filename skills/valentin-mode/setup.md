@@ -49,6 +49,23 @@ Codex's `PreToolUse` payload and exit codes match Claude Code's, so the only tra
 
 Heavy-Bash pacing and the other entries in the hook table above stay Claude Code only: on Codex and Antigravity they key off a Claude transcript, which those harnesses do not write.
 
+## The mode on every harness a chat can switch to
+
+Multibot's "Switch AI" moves a chat to another harness. Only Claude Code runs a skill's frontmatter hook, so a switched chat used to drop valentin-mode: no version line, and `loop-state status` said "not armed" for every switched chat (VSTA-305). `hooks/harness-start.py` hands the mode to the harness itself, and `./install` wires it with a 5-second timeout that fails open:
+
+| Harness | Config | Event | Command |
+|---|---|---|---|
+| Codex | `~/.codex/hooks.json` | `SessionStart` | `run-hook harness-start.py --harness codex --event start` |
+| Codex | `~/.codex/hooks.json` | `UserPromptSubmit` | `run-hook harness-start.py --harness codex --event prompt` |
+| Antigravity (`agy`) | `~/.gemini/config/hooks.json` (`vstack-valentin-mode`) | `PreInvocation` | `run-hook harness-start.py --harness agy --event start` |
+| Pi | `~/.pi/agent/extensions/vstack-valentin-mode.ts` | `session_start` | `python3 ~/.claude/hooks/harness-start.py --harness pi --event start` |
+
+The start line carries the version line from `version.sh`, the order to read `~/.claude/skills/valentin-mode/SKILL.md` in full, and, when this chat drains a board, the one command that arms its loop the high-latency way: one recurring job on `~/.local/bin/plan-pick --loop-interval` recorded with `loop-state arm`, because no harness but Claude Code has the background watcher job. The prompt line repeats the same re-arm order while `loop-state status` says not armed, at most once every ten minutes per session. The chat's name, board and label come from board-drain itself (`board-drain-guard`'s tab and announce read, `loop-state own_record`, then the `Hypertask board:` line in the project notes).
+
+Antigravity has no start event, so its entry rides `PreInvocation` and says its start line once per conversation. Pi has no hook file: its extension asks the same script for the text at `session_start` and queues it as context, and it has no prompt-time check, so a Pi chat hears the re-arm order once at session start and again whenever the session restarts.
+
+`scripts/install-mode-start-hook.py` merges the Codex entries: a second install writes nothing and every hook already registered there stays. Antigravity's entry ships in `config/antigravity-hooks.json`; the Pi extension is `skills/valentin-mode/pi-start.ts`, linked into `~/.pi/agent/extensions/`.
+
 ## Token Ladder prompt hook
 
 When `token-ladder` is installed (resolved on `PATH` or in `~/.local/bin`), `./install` wires its prompt hook with a 5-second timeout through `scripts/install-ladder-hook.py`, preserving unrelated hooks and skipping cleanly when `token-ladder` is absent.
