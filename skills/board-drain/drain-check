@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove a chat's board drain loop is alive: workable Todo, live Doing, waits, blocked links, armed loop."""
+"""Prove a chat's board drain loop is alive: workable Todo by priority, live Doing, waits, blocked links, armed loop."""
 import argparse
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -92,6 +92,7 @@ LISTING_FIELDS = ('url title headRefName commits(last:1){nodes{commit{committedD
 # uses it, and the boards spell his column "Valentin Review".
 VALENTIN_USER_ID = 6
 WAITING_COLUMNS = frozenset({'waiting', 'waiting on valentin', 'human review'})
+URGENT_IDLE = 600
 FRESH = 1800
 STALE = 7200
 # Board-rule breaks warn until a rule is promoted here: list a rule id and its
@@ -628,16 +629,18 @@ def stuck_finding(task, pulls, now, board, listing=(), listing_at=None):
     return None
 
 
+def start_rank(row, now, board):
+    key = row['task']['ticketNumber']
+    try:
+        index = int(reconcile.ticket_index(key, board))
+    except ValueError:
+        index = sys.maxsize
+    return (wip.rank(row['task']), -(age(row['task'], now) or 0), index)
+
+
 def top_key(rows, now, board):
-    """The longest-idle workable ticket; the lowest key breaks a tie."""
-    def rank(row):
-        key = row['task']['ticketNumber']
-        try:
-            index = int(reconcile.ticket_index(key, board))
-        except ValueError:
-            index = sys.maxsize
-        return (-(age(row['task'], now) or 0), index)
-    return sorted(rows, key=rank)[0]['task']['ticketNumber']
+    """The ticket to start first: highest priority, then longest idle, then lowest key."""
+    return min(rows, key=lambda row: start_rank(row, now, board))['task']['ticketNumber']
 
 
 def sync_findings(name, now):
@@ -858,6 +861,13 @@ def read_view(args, now):
             blocked_lines.append(f'blocked: {task["ticketNumber"]} by {", ".join(stuck)}')
         else:
             workable.append(row)
+    # Valentin's priority rule: an urgent ticket is picked up first. A hold pauses
+    # launches but never reorders work, and wip-cap already lets urgent start over cap.
+    for row in sorted(workable, key=lambda row: start_rank(row, now, board)):
+        spent = age(row['task'], now)
+        if wip.urgent(row['task']) and spent is not None and spent > URGENT_IDLE:
+            findings.append(('urgent', f'urgent: {row["task"]["ticketNumber"]} is urgent and '
+                                       'waiting in Todo; start it before any other ticket.'))
     # An urgent Todo card may start while its label is at cap, so its nudge stands.
     # An open PR over the cap is not the same: it gets parked before any new start,
     # urgent or not, because a start would open one more.
@@ -897,7 +907,8 @@ def read_view(args, now):
                                            f'{task["section"]} has no agent assigned. Assign your '
                                            f'own agent login to it (task assign '
                                            f'{task["ticketNumber"]} --self, with your token).'))
-    for row in workable if not orphans else ():
+    for row in (sorted(workable, key=lambda row: start_rank(row, now, board))
+                if not orphans else ()):
         spent = age(row['task'], now)
         if spent is not None and spent > STALE and not held_by_cap:
             findings.append(('stale', f'stale: {row["task"]["ticketNumber"]} workable in Todo '

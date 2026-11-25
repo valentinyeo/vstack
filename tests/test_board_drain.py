@@ -49,11 +49,27 @@ def snapshot(key):
     return {'task': task, 'comments': comments}
 
 
-def todo(key, age=1800, waiting_on=None, blocker=None, comments=()):
+def todo(key, age=1800, waiting_on=None, blocker=None, comments=(), priority=None):
     task = {'ticketNumber': key, 'projectId': 2060, 'section': 'Todo',
             'labels': [{'name': 'Poteto'}], 'waitingOnUserId': waiting_on,
             'blockerCommentId': blocker, 'updatedAt': iso(NOW - age)}
+    if priority is not None:
+        task['priority'] = priority
     return {'task': task, 'comments': list(comments)}
+
+
+def priority_row(index=None, name=None):
+    row = {}
+    if index is not None:
+        row['priority_index'] = index
+    if name is not None:
+        row['Priority_Value'] = name
+    return row
+
+
+URGENT = priority_row(1, 'Urgent')
+HIGH = priority_row(2, 'High')
+MEDIUM = priority_row(3, 'Medium')
 
 
 def agent_assignee(name='Poteto'):
@@ -613,6 +629,101 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn('loop off: 1 workable Todo', out)
         self.assertNotIn('stale:', out)
+
+    def top(self, rows):
+        return drain.top_key(rows, NOW, drain.fixture_board(2060, rows))
+
+    def test_top_key_prefers_an_urgent_ticket_over_an_older_medium_one(self):
+        rows = [todo('SOFT-3101', age=3 * 3600, priority=MEDIUM),
+                todo('SOFT-3102', age=300, priority=URGENT)]
+        self.assertEqual(self.top(rows), 'SOFT-3102')
+
+    def test_top_key_breaks_a_priority_tie_by_age(self):
+        rows = [todo('SOFT-3103', age=600, priority=HIGH),
+                todo('SOFT-3104', age=3 * 3600, priority=HIGH)]
+        self.assertEqual(self.top(rows), 'SOFT-3104')
+
+    def test_top_key_breaks_a_priority_and_age_tie_by_lowest_key(self):
+        rows = [todo('SOFT-3106', age=600, priority=MEDIUM),
+                todo('SOFT-3105', age=600, priority=MEDIUM)]
+        self.assertEqual(self.top(rows), 'SOFT-3105')
+
+    def test_top_key_puts_a_no_priority_card_last_however_old_it_is(self):
+        # Hypertask index 0 means No Priority, so it must never outrank a real one.
+        rows = [todo('SOFT-3123', age=3 * 3600, priority=priority_row(0, 'No Priority')),
+                todo('SOFT-3124', age=300, priority=MEDIUM)]
+        self.assertEqual(self.top(rows), 'SOFT-3124')
+
+    def test_priority_reads_the_rank_from_the_index_or_the_name(self):
+        self.assertEqual(drain.wip.rank({'priority': URGENT}), 0)
+        self.assertEqual(drain.wip.rank({'priority': HIGH}), 1)
+        self.assertEqual(drain.wip.rank({'priority': {'Priority_Value': 'Medium'}}), 2)
+        self.assertEqual(drain.wip.rank({'priority': 'low'}), 3)
+        self.assertEqual(drain.wip.rank({}), drain.wip.NONE_RANK)
+        self.assertEqual(drain.wip.rank({'priority': priority_row(0, 'No Priority')}),
+                         drain.wip.NONE_RANK)
+
+    def test_a_workable_urgent_ticket_idle_eleven_minutes_fails(self):
+        code, out = self.run_check([todo('SOFT-3107', age=11 * 60, priority=URGENT),
+                                    doing('SOFT-3108')])
+        self.assertEqual(code, 1, out)
+        self.assertIn('urgent: SOFT-3107 is urgent and waiting in Todo; start it before any '
+                      'other ticket.', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_workable_urgent_ticket_idle_five_minutes_does_not_fail(self):
+        code, out = self.run_check([todo('SOFT-3109', age=5 * 60, priority=URGENT),
+                                    doing('SOFT-3110')])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('urgent:', out)
+        self.assertIn('drain-check: PASS', out)
+
+    def test_an_urgent_ticket_waiting_on_valentin_does_not_fail(self):
+        code, out = self.run_check([todo('SOFT-3111', age=3600, waiting_on=6, priority=URGENT),
+                                    doing('SOFT-3112')])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('urgent:', out)
+        self.assertIn('waiting: SOFT-3111 (marked)', out)
+
+    def test_an_urgent_ticket_blocked_by_an_open_ticket_does_not_fail(self):
+        row = todo('SOFT-3113', age=3600, priority=URGENT)
+        row['relations'] = blocked_by()
+        code, out = self.run_check([row, doing('SOFT-3114')])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('urgent:', out)
+        self.assertIn('blocked: SOFT-3113 by VSTA-2, VSTA-3', out)
+
+    def test_a_server_hold_never_hides_an_urgent_ticket(self):
+        code, out = self.run_check([todo('SOFT-3115', age=11 * 60, priority=URGENT),
+                                    todo('SOFT-3116', age=3 * 3600)], probe=(2, HOLD_LINE))
+        self.assertEqual(code, 1, out)
+        self.assertIn('urgent: SOFT-3115 is urgent and waiting in Todo;', out)
+        self.assertIn(f'held: {HOLD_LINE}; 2 workable Todo wait for the server', out)
+        self.assertNotIn('stale:', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_a_no_lane_hold_never_hides_an_urgent_ticket(self):
+        code, out = self.run_check([todo('SOFT-3117', age=11 * 60, priority=URGENT),
+                                    todo('SOFT-3118', age=3 * 3600)], lane=NOW - 60)
+        self.assertEqual(code, 1, out)
+        self.assertIn('urgent: SOFT-3117 is urgent and waiting in Todo;', out)
+        self.assertIn('held: no worker lane since', out)
+        self.assertNotIn('stale:', out)
+        self.assertIn('drain-check: FAIL (1 findings)', out)
+
+    def test_loop_off_names_the_urgent_ticket_over_a_much_older_one(self):
+        code, out = self.run_check([todo('SOFT-3119', age=3 * 3600, priority=MEDIUM),
+                                    todo('SOFT-3120', age=3600, priority=URGENT)])
+        self.assertEqual(code, 1, out)
+        self.assertIn('start a worker on SOFT-3120.', out)
+        self.assertIn('urgent: SOFT-3120', out)
+
+    def test_the_stale_lines_are_ordered_urgent_first(self):
+        code, out = self.run_check([todo('SOFT-3121', age=3 * 3600, priority=MEDIUM),
+                                    todo('SOFT-3122', age=3 * 3600, priority=URGENT)],
+                                   '--no-load')
+        self.assertEqual(code, 1, out)
+        self.assertLess(out.index('stale: SOFT-3122'), out.index('stale: SOFT-3121'))
 
     def test_a_marked_todo_with_no_comment_timestamp_does_not_crash(self):
         comments = [dict(agent_comment(3600), createdAt=None)]

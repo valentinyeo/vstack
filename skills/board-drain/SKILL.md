@@ -40,7 +40,7 @@ Never delete the loop for an empty Todo; a tick with nothing new stays quiet.
 ## Each tick adds
 
 1. **Sync.** `./sync --board <id> --label <label> --name "<name>"` (references/sync.md): preview, then `--apply --limit 5`. Usage or non-zero exit prints `sync: FAIL` until it works.
-2. **New tickets.** A workable ownerless Todo ticket gets an owner.
+2. **New tickets.** A workable ownerless Todo ticket gets an owner. Start the highest-priority workable Todo first; urgent before anything else.
 3. **Waits.** Read the newest comments on each waiting ticket first. Valentin's yes makes it workable: clear the mark, assign an owner.
 4. **Check.** `./drain-check --board <id> --label <label> --state-name "<name>"`.
 5. **Re-arm.** `loop-state status` exit 3 means expiry within a day: arm, record a fresh loop, delete the old.
@@ -54,7 +54,8 @@ BlockedBy open tickets stay out via links, not memory. drain-check reads `task r
 
 ## drain-check fails
 
-- **loop off:** workable Todo, nothing alive in Doing. Re-arm, then give the named ticket an owner.
+- **loop off:** workable Todo, nothing alive in Doing. Re-arm, then give the named ticket an owner. The ticket it names is the highest-priority workable Todo, then the longest idle.
+- **urgent:** an urgent Todo ticket workable and idle over ten minutes. Start it before any other ticket (Valentin's priority rule); a server HOLD, a no-lane hold or the cap never hides this line.
 - **unassigned:** a ticket in a working column with no agent. Assign your login: `task assign <KEY> --self`.
 - **stalled:** Doing ticket, no live owner. Fresh plan-pick owner; tickets moved across boards get a new key, so check the old lease first.
 - **orphan PR:** a card of yours with an open PR and no live helper. Start a helper on that PR before any new ticket.

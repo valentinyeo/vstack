@@ -34,6 +34,11 @@ GENERIC_PREFIX = 'brain-'
 # None covers every label with no row of its own, so moving the fleet's cap is this
 # one number.
 CAPS = {None: 5}
+# One table reads Hypertask priority: index 0 is No Priority, 1 Urgent, 2 High,
+# 3 Medium, 4 Low. A smaller index is higher, so the rank below is urgent first and
+# a card with no priority is last.
+PRIORITY_RANKS = {'urgent': 0, 'high': 1, 'medium': 2, 'low': 3}
+NONE_RANK = len(PRIORITY_RANKS)
 ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, AttributeError,
           subprocess.SubprocessError)
 _warned = set()
@@ -92,13 +97,26 @@ def at_cap(tasks, label):
     return cards >= cap, cards, cap
 
 
-def urgent(task):
-    """Hypertask priority urgent: index 1, or the word itself."""
+def rank(task):
+    """Hypertask priority as a rank, urgent 0 and no priority last."""
     priority = task.get('priority')
+    value, index = '', None
     if isinstance(priority, dict):
-        return (str(priority.get('priority_index') or '').strip() == '1'
-                or str(priority.get('Priority_Value') or '').strip().casefold() == 'urgent')
-    return str(priority or '').strip().casefold() == 'urgent'
+        value = str(priority.get('Priority_Value') or '')
+        try:
+            index = int(str(priority.get('priority_index') or '').strip())
+        except (TypeError, ValueError):
+            index = None
+    elif priority is not None:
+        value = str(priority)
+    if index is not None:
+        return index - 1 if 1 <= index <= 4 else NONE_RANK
+    return PRIORITY_RANKS.get(value.strip().casefold(), NONE_RANK)
+
+
+def urgent(task):
+    """Hypertask priority urgent: the highest rank."""
+    return rank(task) == 0
 
 
 def starts_work(task):
@@ -156,6 +174,12 @@ def self_test():
     assert urgent({'priority': 'urgent'}), 'a plain word'
     assert not urgent({'priority': {'priority_index': 3, 'Priority_Value': 'Medium'}}), 'medium'
     assert not urgent({}), 'no priority'
+    assert rank({'priority': {'priority_index': 0, 'Priority_Value': 'No Priority'}}) == NONE_RANK, \
+        'index 0 is no priority, never urgent'
+    assert rank({'priority': {'priority_index': 4, 'Priority_Value': 'Low'}}) == 3, 'index 4 is low'
+    assert rank({'priority': {'priority_index': 2}}) == 1, 'the index alone names high'
+    assert not urgent({'priority': {'priority_index': 0, 'Priority_Value': 'No Priority'}}), \
+        'a no-priority card never starts first'
     assert starts_work({'section': 'Todo'}), 'Todo starts work'
     assert starts_work({'section': 'Backlog'}), 'a product backlog starts work'
     assert not starts_work({'section': 'Doing'}), 'Doing is a resume'
