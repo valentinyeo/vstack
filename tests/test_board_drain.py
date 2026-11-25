@@ -195,6 +195,10 @@ def red_pull(pushed=iso(NOW - 2 * 86400), **changes):
     return pull
 
 
+def red_read(pushed=iso(NOW - 2 * 86400), state='OPEN', checks='red'):
+    return {'state': state, 'checks': checks, 'pushed': pushed}
+
+
 def checks_payload(row, *pulls):
     """One Checks row with the PR facts a fixture hands drain-check."""
     return {'rows': [row], 'pulls': {row['task']['ticketNumber']: list(pulls)}}
@@ -260,14 +264,17 @@ class CheckTest(unittest.TestCase):
         return code, out.getvalue()
 
     def run_payload(self, payload, *extra, alive=False, board=2060, label='Poteto',
-                    probe=(0, ADD_LINE), lane=None, fail_rules=frozenset(), now=NOW):
+                    probe=(0, ADD_LINE), lane=None, fail_rules=frozenset(), now=NOW,
+                    confirm=None):
         fixture = self.directory / 'fixture.json'
         fixture.write_text(json.dumps(payload))
         argv = ['--board', str(board), '--label', label, '--fixture', str(fixture),
                 '--now', iso(now), *extra]
         out = io.StringIO()
         live = alive if callable(alive) else (lambda *args: alive)
-        with patch.object(drain, 'probe_load', return_value=probe), \
+        read = (patch.object(drain, 'read_pull_facts', return_value=confirm) if confirm
+                is not None else contextlib.nullcontext())
+        with read, patch.object(drain, 'probe_load', return_value=probe), \
                 patch.object(drain, 'probe_lane', return_value=lane), \
                 patch.object(drain, 'FAIL_RULES', fail_rules), \
                 patch.object(drain.reconcile, 'worker_alive', side_effect=live), \
@@ -399,7 +406,7 @@ class CheckTest(unittest.TestCase):
         # VSTA-210 and VSTA-298: the owner carries its PR to merge, so a red PR with
         # no push and no helper for an hour is the work it owes before a new ticket.
         payload = {'rows': [idle_pr_card()], 'pulls': {'SOFT-2940': [red_pull()]}}
-        code, out = self.run_payload(payload)
+        code, out = self.run_payload(payload, confirm=red_read())
         self.assertEqual(code, 1, out)
         self.assertIn('orphan PR: SOFT-2940 https://github.com/valentinyeo/multiprompt-android/'
                       'pull/524 is red and idle an hour with no live helper; start a helper on '
@@ -473,7 +480,7 @@ class CheckTest(unittest.TestCase):
         # the loop would otherwise pick.
         payload = {'rows': [idle_pr_card(), todo('SOFT-2946', age=3 * 3600)],
                    'pulls': {'SOFT-2940': [red_pull()]}}
-        code, out = self.run_payload(payload)
+        code, out = self.run_payload(payload, confirm=red_read())
         self.assertEqual(code, 1, out)
         self.assertIn('orphan PR: SOFT-2940', out)
         self.assertNotIn('loop off:', out)
@@ -513,11 +520,12 @@ class CheckTest(unittest.TestCase):
     def test_a_red_pr_idle_an_hour_with_no_owner_is_stuck(self):
         # VSTA-187, now on the hourly clock (VSTA-208): a card parked in Checks on a red
         # PR that took no push for an hour, with no worker holding it, needs a fresh
-        # owner rather than another tick.
-        with patch.object(drain, 'read_pull_facts') as read:
+        # owner rather than another tick. The listing row is a candidate, so the card
+        # pays one direct read that confirms it.
+        with patch.object(drain, 'read_pull_facts', return_value=red_read()) as read:
             code, out = self.run_payload(checks_payload(stuck_card(), red_pull()))
         self.assertEqual(code, 1, out)
-        read.assert_not_called()
+        read.assert_called_once_with(PR_524['url'])
         self.assertIn('stuck: SOFT-2940 in Checks, PR '
                       'https://github.com/valentinyeo/multiprompt-android/pull/524 red and idle '
                       'since 2027-01-13 08:00 UTC, no live owner. Start a fresh plan-pick owner '
@@ -557,7 +565,7 @@ class CheckTest(unittest.TestCase):
         # VSTA-187 on real data: an idle Checks card carries no PR link and the board's
         # saved facts never cover it, so its open PR comes from the board listing.
         with patch.object(drain, 'open_pull_rows', return_value=[listed_pull()]) as read:
-            code, out = self.run_payload({'rows': [stuck_card()]})
+            code, out = self.run_payload({'rows': [stuck_card()]}, confirm=red_read())
         self.assertEqual(code, 1, out)
         read.assert_called_once()
         self.assertIn('stuck: SOFT-2940 in Checks, PR '
@@ -569,7 +577,7 @@ class CheckTest(unittest.TestCase):
         # A branch written with the key in lower case still names the card.
         pull = listed_pull(title='Fix the pane', headRefName='soft-2940-red-pr')
         with patch.object(drain, 'open_pull_rows', return_value=[pull]):
-            code, out = self.run_payload({'rows': [stuck_card()]})
+            code, out = self.run_payload({'rows': [stuck_card()]}, confirm=red_read())
         self.assertEqual(code, 1, out)
         self.assertIn('stuck: SOFT-2940 in Checks', out)
 
@@ -590,9 +598,11 @@ class CheckTest(unittest.TestCase):
     def test_the_listing_is_read_once_ten_minutes(self):
         listing = [listed_pull()]
         with patch.object(drain, 'open_pull_rows', return_value=listing) as read:
-            first = self.run_payload({'rows': [stuck_card()]})
-            second = self.run_payload({'rows': [stuck_card()]}, now=NOW + 300)
-            third = self.run_payload({'rows': [stuck_card()]}, now=NOW + 601)
+            first = self.run_payload({'rows': [stuck_card()]}, confirm=red_read())
+            second = self.run_payload({'rows': [stuck_card()]}, now=NOW + 300,
+                                      confirm=red_read())
+            third = self.run_payload({'rows': [stuck_card()]}, now=NOW + 601,
+                                     confirm=red_read())
         self.assertEqual((first[0], second[0], third[0]), (1, 1, 1), second[1])
         self.assertEqual(read.call_count, 2, 'one read per ten minutes, not one a tick')
         for code, out in (first, second, third):
@@ -610,9 +620,72 @@ class CheckTest(unittest.TestCase):
     def test_a_listing_that_saw_an_hour_of_silence_marks_the_card_stuck(self):
         pull = listed_pull(pushed=iso(NOW - 2 * 3600))
         drain.save_listing(drain.reconcile.BOARDS[2060], [pull], NOW - 600)
-        code, out = self.run_payload({'rows': [stuck_card()]})
+        code, out = self.run_payload({'rows': [stuck_card()]}, confirm=red_read())
         self.assertEqual(code, 1, out)
         self.assertIn('stuck: SOFT-2940 in Checks', out)
+
+    def test_a_cached_row_that_still_shows_the_old_head_cannot_mark_a_card_stuck(self):
+        # VSTA-303, seen live: the listing was taken 18s after a push and GitHub's
+        # search index still returned the old head and the old red rollup.
+        fresh = red_read(pushed=iso(NOW - 300))
+        with patch.object(drain, 'read_pull_facts', return_value=fresh) as read:
+            code, out = self.run_payload({'rows': [stuck_card()],
+                                          'pulls': {'SOFT-2940': [listed_pull()]}})
+        self.assertEqual(code, 0, out)
+        read.assert_called_once_with(PR_524['url'])
+        self.assertNotIn('stuck:', out)
+
+    def test_a_listing_row_that_still_shows_the_old_head_cannot_mark_a_card_stuck(self):
+        fresh = red_read(pushed=iso(NOW - 300))
+        with patch.object(drain, 'open_pull_rows', return_value=[listed_pull()]), \
+                patch.object(drain, 'read_pull_facts', return_value=fresh) as read:
+            code, out = self.run_payload({'rows': [stuck_card()]})
+        self.assertEqual(code, 0, out)
+        read.assert_called_once_with(PR_524['url'])
+        self.assertNotIn('stuck:', out)
+
+    def test_a_cached_red_row_is_confirmed_before_it_is_called_an_orphan(self):
+        # VSTA-303: the same stale row feeds the orphan rule, so its candidate pays the
+        # one direct read too, and the push the listing missed clears the card.
+        with patch.object(drain, 'read_pull_facts',
+                          return_value=red_read(pushed=iso(NOW - 300))) as read:
+            code, out = self.run_payload({'rows': [idle_pr_card()],
+                                          'pulls': {'SOFT-2940': [red_pull()]}})
+        self.assertEqual(code, 0, out)
+        read.assert_called_once_with(PR_524['url'])
+        self.assertNotIn('orphan PR:', out)
+
+    def test_a_confirmed_red_and_idle_row_still_fails(self):
+        for section in ('Checks', 'AI Review'):
+            with self.subTest(section=section):
+                row = stuck_card(section=section) if section == 'Checks' else idle_pr_card()
+                with patch.object(drain, 'read_pull_facts', return_value=red_read()):
+                    code, out = self.run_payload({'rows': [row],
+                                                  'pulls': {'SOFT-2940': [red_pull()]}})
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"{'stuck' if section == 'Checks' else 'orphan PR'}: SOFT-2940",
+                              out)
+
+    def test_a_failed_confirming_read_leaves_the_card_alone(self):
+        for row in (stuck_card(), idle_pr_card()):
+            with self.subTest(section=row['task']['section']):
+                with patch.object(drain, 'read_pull_facts', return_value={}) as read:
+                    code, out = self.run_payload({'rows': [row],
+                                                  'pulls': {'SOFT-2940': [red_pull()]}})
+                read.assert_called_once_with(PR_524['url'])
+                self.assertEqual(code, 0, out)
+                self.assertNotIn('stuck:', out)
+                self.assertNotIn('orphan PR:', out)
+
+    def test_a_green_listing_row_costs_no_direct_read(self):
+        with patch.object(drain, 'open_pull_rows',
+                          return_value=[listed_pull(checks='green')]) as listing, \
+                patch.object(drain, 'read_pull_facts') as read:
+            code, out = self.run_payload({'rows': [stuck_card()]})
+        listing.assert_called_once()
+        read.assert_not_called()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('stuck:', out)
 
     def test_a_failed_listing_read_hides_no_other_finding(self):
         for failure in (RuntimeError('gh down'), KeyError('data'), ValueError('not json')):
@@ -634,7 +707,8 @@ class CheckTest(unittest.TestCase):
                 self.assertIn('unassigned: SOFT-2940 in Checks has no agent assigned.', out)
 
     def test_a_no_lane_hold_collapses_a_stuck_card(self):
-        code, out = self.run_payload(checks_payload(stuck_card(), red_pull()), lane=NOW - 60)
+        code, out = self.run_payload(checks_payload(stuck_card(), red_pull()), lane=NOW - 60,
+                                     confirm=red_read())
         self.assertEqual(code, 0, out)
         self.assertIn('held: no worker lane since', out)
         self.assertNotIn('stuck:', out)
@@ -1889,7 +1963,8 @@ class WatchTest(unittest.TestCase):
                                   fixture=str(self.fixture))
         with tempfile.TemporaryDirectory() as leases, \
                 patch.object(watch.drain.reconcile, 'LEASES', Path(leases)), \
-                patch.object(watch.drain.reconcile, 'process_tickets', return_value=set()):
+                patch.object(watch.drain.reconcile, 'process_tickets', return_value=set()), \
+                patch.object(watch.drain, 'read_pull_facts', return_value=red_read()):
             # Each read starts a poll apart, and the helper's next beat lands after
             # that read's own `now` because the read itself ran long.
             for read_began, newest_beat in ((NOW, NOW + 30), (NOW + 180, NOW + 210)):
@@ -1906,7 +1981,8 @@ class WatchTest(unittest.TestCase):
                                   fixture=str(self.fixture))
         with tempfile.TemporaryDirectory() as leases, \
                 patch.object(watch.drain.reconcile, 'LEASES', Path(leases)), \
-                patch.object(watch.drain.reconcile, 'process_tickets', return_value=set()):
+                patch.object(watch.drain.reconcile, 'process_tickets', return_value=set()), \
+                patch.object(watch.drain, 'read_pull_facts', return_value=red_read()):
             self.write_lease(Path(leases), 'VSTA-1', started=NOW - 2000, last_beat=NOW - 901)
             self.assertIn('orphan PR', watch.snapshot(args, NOW)['findings'])
 
