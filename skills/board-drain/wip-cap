@@ -39,7 +39,7 @@ GENERIC_PREFIX = 'brain-'
 # One table: open tickets one agent label may hold, keyed by casefolded label name.
 # None covers every label with no row of its own, so moving the fleet's cap is this
 # one number.
-CAPS = {None: 5}
+CAPS = {None: 5, 'ht bugs': 10}
 # A board's review-debt freeze: no new start while it holds more of these than its cap.
 REVIEW_DEBT_CAPS = {13734: 10}
 _REVIEWING = frozenset({'checks', 'ai review'})
@@ -247,6 +247,7 @@ def self_test():
     full = [{'section': 'Checks', 'labels': [{'name': 'Vstack'}]}] * 5
     assert at_cap(full, 'Vstack') == (True, 5, 5), 'five open is already full'
     assert cap_for('Vstack') == 5, 'a label with no row of its own takes the one cap'
+    assert cap_for('HT Bugs') == 10, 'the HT Bugs chat may run 10 workers'
     assert urgent({'priority': {'priority_index': 1, 'Priority_Value': 'Urgent'}}), 'index 1'
     assert urgent({'priority': {'Priority_Value': 'Urgent'}}), 'the word'
     assert urgent({'priority': 'urgent'}), 'a plain word'
