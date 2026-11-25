@@ -34,6 +34,8 @@ ANSWER = json.dumps({
     '2': 'Restart a fresh worker on its PR within the hour, or park it: close the PR with a '
          'note, keep the branch, move the card back to Todo.',
 })
+BROKEN_JUDGE = ('Here is my grading: {"1": {"pass": true, "reason": "ok"}\n'
+                ' "2": {"pass": true, "reason": "ok"}}')
 
 
 class ValentinModeRules(unittest.TestCase):
@@ -212,6 +214,59 @@ class ValentinModeRules(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Scenario 1 failed'):
                 self.run_eval(ladder, out)
             self.assertFalse((out / 'no-answer.json').exists())
+            self.assertFalse((out / 'no-verdict.json').exists())
+
+    def test_judge_json_is_read_from_a_code_fence(self):
+        fenced = '```json\n' + json.dumps(self.grades()) + '\n```'
+        rows = [self.reply(CANDIDATE, ANSWER), self.reply(JUDGE, fenced)]
+        with tempfile.TemporaryDirectory() as where:
+            root, out = Path(where), Path(where) / 'evidence'
+            ladder = self.fake_ladder(root, rows)
+            self.run_eval(ladder, out)
+            self.assertFalse((out / 'no-verdict.json').exists())
+            self.assertTrue((out / 'judge-response.json').is_file())
+            self.assertEqual(len((ladder.parent / 'calls.log').read_text().splitlines()), 2)
+
+    def test_verdict_json_reads_fenced_and_prose_wrapped_answers(self):
+        grades = {'1': {'pass': True, 'reason': 'ok'}}
+        body = json.dumps(grades)
+        self.assertEqual(eval_run.verdict_json(body), grades)
+        self.assertEqual(eval_run.verdict_json(f'```json\n{body}\n```'), grades)
+        self.assertEqual(eval_run.verdict_json(f'My grading:\n{body}\nDone.'), grades)
+        with self.assertRaises(ValueError):
+            eval_run.verdict_json('PASS')
+
+    def test_broken_judge_answer_is_asked_again(self):
+        rows = [self.reply(CANDIDATE, ANSWER), self.reply(JUDGE, BROKEN_JUDGE),
+                self.reply(JUDGE, json.dumps(self.grades()))]
+        with tempfile.TemporaryDirectory() as where:
+            root, out = Path(where), Path(where) / 'evidence'
+            ladder = self.fake_ladder(root, rows)
+            self.run_eval(ladder, out)
+            self.assertFalse((out / 'no-verdict.json').exists())
+            for name in ('judge-response.json', 'judge-try2-response.json'):
+                with self.subTest(evidence=name):
+                    self.assertTrue((out / name).is_file())
+            self.assertEqual(len((ladder.parent / 'calls.log').read_text().splitlines()), 3)
+
+    def test_broken_judge_answer_three_times_is_an_infrastructure_error(self):
+        broken = self.reply(JUDGE, BROKEN_JUDGE)
+        rows = [self.reply(CANDIDATE, ANSWER), broken, broken, broken]
+        with tempfile.TemporaryDirectory() as where:
+            root, out = Path(where), Path(where) / 'evidence'
+            ladder = self.fake_ladder(root, rows)
+            with self.assertRaises(SystemExit) as raised:
+                self.run_eval(ladder, out)
+            message = str(raised.exception)
+            self.assertIn('judge gave no valid JSON after 3 tries', message)
+            self.assertIn('infrastructure error', message)
+            self.assertNotIn('Scenario', message)
+            evidence = json.loads((out / 'no-verdict.json').read_text())
+            self.assertEqual(evidence['error'], 'no verdict')
+            self.assertEqual(evidence['kind'], 'infrastructure error')
+            self.assertEqual(evidence['tries'], 3)
+            self.assertFalse((out / 'no-answer.json').exists())
+            self.assertEqual(len((ladder.parent / 'calls.log').read_text().splitlines()), 4)
 
     def test_all_scenarios_must_pass(self):
         passing = {'1': {'pass': True, 'reason': 'Correct action'},
