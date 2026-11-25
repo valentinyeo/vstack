@@ -272,6 +272,8 @@ PY
 SKILL_UPDATE_HOOK='{"type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/skill-update.py\""}'
 PR_CAP_HOOK='{"type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/pr-cap-guard.py\"", "timeout": 30}'
 AGENT_LANE_HOOK='{"type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/agent-lane-guard.py\"", "timeout": 10}'
+# ask-first-guard shipped as a loose file wired by full path; --replace drops that entry (VSTA-289).
+ASK_FIRST_HOOK='{"type": "command", "command": "\"$HOME/.local/share/vstack/hooks/run-hook\" \"$HOME/.claude/hooks/ask-first-guard.py\""}'
 python3 "$ROOT/scripts/register-user-hook.py" --event UserPromptSubmit \
   --entry "$SKILL_UPDATE_HOOK" || {
   echo "vstack install: could not register skill-update in ~/.claude/settings.json" >&2
@@ -287,6 +289,11 @@ python3 "$ROOT/scripts/register-user-hook.py" --event PreToolUse \
   --matcher Bash \
   --entry "$AGENT_LANE_HOOK" || {
   echo "vstack install: could not register agent-lane-guard in ~/.claude/settings.json" >&2
+  exit 1
+}
+python3 "$ROOT/scripts/register-user-hook.py" --event Stop --replace \
+  --entry "$ASK_FIRST_HOOK" || {
+  echo "vstack install: could not register ask-first-guard in ~/.claude/settings.json" >&2
   exit 1
 }
 

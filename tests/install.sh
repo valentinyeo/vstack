@@ -108,7 +108,10 @@ assert [(group.get('matcher'), hook['command'], hook.get('timeout'))
                                         ('Bash', lane, 10),
                                         ('mcp__.*create_pull_request', guard, 30)], data
 assert set(data) >= {'hooks'}, data
-assert data['hooks']['Stop'] == [], 'unrelated settings stay put'
+assert data['hooks']['Stop'] == [{'hooks': [{
+    'type': 'command',
+    'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/ask-first-guard.py"'}]}], \
+    'a Stop list that started empty gains only the ask-first guard'
 PY
 printf 'PASS skill-update and the PR cap guard registered globally exactly once, idempotently\n'
 python3 - "$TEST_HOME/.claude/settings.json" "${retired_hooks[@]}" <<'PY'
@@ -137,6 +140,8 @@ guard = {'type': 'command',
 lane = {'type': 'command',
         'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/agent-lane-guard.py"',
         'timeout': 10}
+ask = {'type': 'command',
+       'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/ask-first-guard.py"'}
 assert json.loads(path.read_text()) == {'env': {'KEEP': 'yes'}, 'hooks': {
     'UserPromptSubmit': [{'hooks': [{'type': 'command', 'command': '"$HOME/.local/share/vstack/hooks/run-hook" "$HOME/.claude/hooks/skill-update.py"'}]}],
     'PreToolUse': [
@@ -144,7 +149,7 @@ assert json.loads(path.read_text()) == {'env': {'KEEP': 'yes'}, 'hooks': {
         {'matcher': 'Bash', 'hooks': [guard, lane]},
         {'matcher': 'mcp__.*create_pull_request', 'hooks': [guard]},
     ],
-    'Stop': [{'hooks': []}]
+    'Stop': [{'hooks': [ask]}]
 }}
 assert path.stat().st_mode & 0o777 == 0o600
 PY
@@ -170,3 +175,42 @@ for hook in pacer-guard.py; do
   [ -x "$TEST_HOME/.claude/hooks/$hook" ]
   printf 'PASS hook %s is linked and executable\n' "$hook"
 done
+
+[ -L "$TEST_HOME/.claude/hooks/ask-first-guard.py" ]
+[ "$(readlink -f "$TEST_HOME/.claude/hooks/ask-first-guard.py")" = "$ROOT/hooks/ask-first-guard.py" ]
+printf 'PASS ask-first-guard is linked like every other hook\n'
+
+# VSTA-289: ask-first-guard was a loose file wired by its full path. install puts it behind
+# the launcher, drops that one old registration and keeps every other Stop hook.
+python3 - "$TEST_HOME/.claude/settings.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+loose = {'type': 'command', 'command': f'/usr/bin/python3 {path.parent}/hooks/ask-first-guard.py'}
+other = {'type': 'command', 'command': 'echo keep me', 'timeout': 5}
+path.write_text(json.dumps({'hooks': {'Stop': [
+    {'hooks': [other]},
+    {'hooks': [loose, other]},
+]}}, indent=2) + '\n')
+PY
+env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
+settings_after_migration=$(sha256sum "$TEST_HOME/.claude/settings.json")
+env HOME="$TEST_HOME" VSTACK_INSTALL_ANYWHERE=1 VSTACK_DIR="$TEST_HOME/.local/share/vstack" "$ROOT/install"
+[ "$(sha256sum "$TEST_HOME/.claude/settings.json")" = "$settings_after_migration" ]
+python3 - "$TEST_HOME/.claude/settings.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+data = json.loads(Path(sys.argv[1]).read_text())
+groups = data['hooks']['Stop']
+guided = [hook['command'] for group in groups for hook in group['hooks']
+          if 'ask-first-guard.py' in hook.get('command', '')]
+assert guided == ['"$HOME/.local/share/vstack/hooks/run-hook" '
+                  '"$HOME/.claude/hooks/ask-first-guard.py"'], guided
+kept = [hook['command'] for group in groups for hook in group['hooks']
+        if hook.get('command') == 'echo keep me']
+assert kept == ['echo keep me', 'echo keep me'], kept
+assert all(group.get('hooks') for group in groups), groups
+PY
+printf 'PASS the loose ask-first-guard registration becomes one launcher entry, idempotently\n'
