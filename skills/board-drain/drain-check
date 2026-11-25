@@ -301,8 +301,7 @@ def orphan_finding(row, pulls, loaded, now, board, budget=None):
     come from the tick's board facts, so a row carrying its checks and push time
     costs no GitHub read unless it is a red-and-idle candidate: that one is confirmed
     by a direct PR read, so a cached row that still shows the head from before a push
-    is not called an orphan (VSTA-303). A row missing either costs at most one read,
-    and then the card's own clock keeps the old rule only past the hour.
+    is not called an orphan (VSTA-303).
     """
     task = row['task']
     if task.get('section') in (DONE, NOT_NOW) or waits_on_valentin(task):
@@ -319,7 +318,8 @@ def orphan_finding(row, pulls, loaded, now, board, budget=None):
         return None
     if red_and_idle(facts):
         said = f'is {ORPHAN_FIX}'
-    elif undated(facts) and (age(task, now) or 0) > STUCK_AFTER:
+    elif (facts.get('read') and undated(facts)
+          and (age(task, now) or 0) > STUCK_AFTER):
         said = f'has {ORPHAN_UNKNOWN}'
     else:
         return None
@@ -464,9 +464,9 @@ def pull_now(pull, now, seen, budget):
 
     A row the tick loaded answers without GitHub. A read only fills a row still
     missing state, checks or its push time, one read per card, recorded in `budget`;
-    a read that fails leaves the row unknown rather than guessing at it. A pull read
-    live is judged against now, one taken from a listing against the moment it was
-    taken.
+    a read that fails leaves the row unknown rather than guessing at it. A pull
+    read live is judged against now, one taken from a listing against the moment it
+    was taken.
     """
     url = pull_field(pull, 'url') or ''
     state = (pull_field(pull, 'state') or '').upper()
@@ -487,7 +487,7 @@ def pull_now(pull, now, seen, budget):
     return {'state': read.get('state') or state,
             'checks': read.get('checks') or checks,
             'pushed': pushed if read_pushed is None else read_pushed,
-            'seen': now, 'live': True}
+            'seen': now, 'live': True, 'read': bool(read)}
 
 
 def confirmed_pull(pull, now, seen, budget):
@@ -509,7 +509,8 @@ def confirmed_pull(pull, now, seen, budget):
     if not read:
         return None
     return {'state': read.get('state'), 'checks': read.get('checks') or '',
-            'pushed': stamp_of(read.get('pushed')), 'seen': now, 'live': True}
+            'pushed': stamp_of(read.get('pushed')), 'seen': now, 'live': True,
+            'read': True}
 
 
 def red_and_idle(facts):
