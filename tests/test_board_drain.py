@@ -439,12 +439,11 @@ class CheckTest(unittest.TestCase):
         self.assertNotIn('orphan PR:', out)
 
     def test_a_pr_the_tick_cannot_judge_is_an_orphan_only_past_the_hour(self):
-        # No checks state and no push time: the card's own idle time decides, so a
-        # card an hour old keeps the old rule and a fresh one is left alone.
         pull = {'url': PR_524['url'], 'state': 'OPEN'}
+        nothing = {'state': 'OPEN', 'checks': '', 'pushed': None}
         for age, orphan in ((7200, True), (600, False)):
             with self.subTest(age=age):
-                with patch.object(drain, 'read_pull_facts', return_value={}) as read:
+                with patch.object(drain, 'read_pull_facts', return_value=nothing) as read:
                     code, out = self.run_payload({'rows': [idle_pr_card(age=age)],
                                                   'pulls': {'SOFT-2940': [pull]}})
                 self.assertEqual(code, 1 if orphan else 0, out)
@@ -453,6 +452,35 @@ class CheckTest(unittest.TestCase):
                     self.assertIn('orphan PR: SOFT-2940', out)
                 else:
                     self.assertNotIn('orphan PR:', out)
+
+    def test_a_card_whose_one_read_is_spent_is_not_an_orphan(self):
+        pull = {'url': PR_524['url'], 'state': 'OPEN'}
+        with patch.object(drain, 'read_pull_facts', return_value={}) as read:
+            code, out = self.run_payload({'rows': [stuck_card(age=7200)],
+                                          'pulls': {'SOFT-2940': [pull]}})
+        read.assert_called_once_with(PR_524['url'])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('stuck:', out)
+        self.assertNotIn('orphan PR:', out)
+
+    def test_a_direct_read_that_finds_a_green_pr_is_not_an_orphan(self):
+        pull = {'url': PR_524['url'], 'state': 'OPEN'}
+        with patch.object(drain, 'read_pull_facts',
+                          return_value=red_read(checks='green')) as read:
+            code, out = self.run_payload({'rows': [idle_pr_card()],
+                                          'pulls': {'SOFT-2940': [pull]}})
+        read.assert_called_once_with(PR_524['url'])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('orphan PR:', out)
+
+    def test_a_direct_read_that_finds_a_red_idle_pr_is_an_orphan(self):
+        pull = {'url': PR_524['url'], 'state': 'OPEN'}
+        with patch.object(drain, 'read_pull_facts', return_value=red_read()) as read:
+            code, out = self.run_payload({'rows': [idle_pr_card()],
+                                          'pulls': {'SOFT-2940': [pull]}})
+        read.assert_called_once_with(PR_524['url'])
+        self.assertEqual(code, 1, out)
+        self.assertIn('orphan PR: SOFT-2940', out)
 
     def test_a_live_helper_on_the_pr_means_no_orphan(self):
         live = lambda key, now, board: key == 'SOFT-2940'
