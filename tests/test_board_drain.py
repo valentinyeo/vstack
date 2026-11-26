@@ -2801,9 +2801,9 @@ class WatchDetachTest(unittest.TestCase):
                                  self.directory / 'absent/plan-pick')
         plan_pick.start()
         self.addCleanup(plan_pick.stop)
-        alive = patch.object(watch, 'tab_alive', return_value=None)
-        alive.start()
-        self.addCleanup(alive.stop)
+        self.tmux = self.sender.parent / 'tmux'
+        self.tmux.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(1)\n')
+        self.tmux.chmod(0o755)
 
     def rows(self, rows):
         self.fixture.write_text(json.dumps(rows))
@@ -2840,7 +2840,7 @@ class WatchDetachTest(unittest.TestCase):
         service = self.unit().read_text()
         self.assertIn('Restart=on-failure', service)
         self.assertIn('--detached', service)
-        self.assertIn('EnvironmentFile=' + str(self.environment_file()), service)
+        self.assertIn('EnvironmentFile=' + str(self.directory / 'state/watch-%i.env'), service)
         self.assertIn('Description=Board drain watcher %i', service)
         environment = self.environment_file().read_text()
         self.assertIn('BOARD="13556"', environment)
@@ -2859,6 +2859,32 @@ class WatchDetachTest(unittest.TestCase):
         self.assertEqual(restarts, [('restart', 'board-watch@watch-test.service')] * 2)
         self.assertEqual([path.name for path in self.unit().parent.iterdir()],
                          ['board-watch@.service'])
+
+    def test_two_chats_detach_without_changing_the_shared_template(self):
+        code, out, first_calls = self.detach()
+        self.assertEqual(code, 0, out)
+        service = self.unit().read_text()
+        modified = self.unit().stat().st_mtime_ns
+        with patch.dict(os.environ, {'MULTIPROMPT_TAB': 'other-tab'}):
+            code, out, second_calls = self.detach(
+                '--name', 'Other Chat!', '--board', '15', '--label', 'Other View')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.unit().read_text(), service)
+        self.assertEqual(self.unit().stat().st_mtime_ns, modified)
+        self.assertNotIn('watch-test', service)
+        self.assertNotIn('other-chat', service)
+        template = next(line.split('=', 1)[1] for line in service.splitlines()
+                        if line.startswith('EnvironmentFile='))
+        for calls, name, board, label, tab in (
+                (first_calls, 'Watch Test', 13556, 'Board Drain Loop', 'own-tab'),
+                (second_calls, 'Other Chat!', 15, 'Other View', 'other-tab')):
+            unit = next(call[1] for call in calls if call[0] == 'restart')
+            instance = unit.removeprefix('board-watch@').removesuffix('.service')
+            self.assertEqual(instance, loop.slug(name))
+            environment = Path(template.replace('%i', instance)).read_text()
+            for key, value in {'NAME': name, 'BOARD': board, 'LABEL': label,
+                               'MULTIPROMPT_TAB': tab}.items():
+                self.assertIn(f'{key}="{value}"', environment)
 
     def test_no_systemd_user_prints_the_tracked_job_fallback(self):
         code, out, _ = self.detach(fail=OSError('no bus'))
@@ -2933,11 +2959,42 @@ class WatchDetachTest(unittest.TestCase):
         self.assertEqual(len(sent), 2, 'a failed delivery is retried, never an exit')
         self.assertIn('changed: VSTA-80 new in Todo', sent[-1][0])
 
-    def test_a_detached_watcher_stops_when_its_chat_is_gone(self):
-        with patch.object(watch, 'tab_alive', return_value=False):
-            code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+    def test_an_agent_host_only_chat_keeps_its_watcher(self):
+        self.assertEqual(watch.own_tab(), 'own-tab')
+        self.assertFalse(watch.tab_alive('own-tab'))
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '2')
         self.assertEqual(code, 0, out)
-        self.assertIn('chat: tmux session own-tab is gone; stopping this detached watcher', out)
+        self.assertNotIn('stopping this detached watcher', out)
+
+    def test_an_agent_host_pid_is_used_when_available(self):
+        config = self.configs / 'own.config.json'
+        config.write_text(json.dumps({'tmux': 'own-tab', 'pid': os.getpid()}))
+        self.assertIs(watch.agent_host_alive('own-tab'), True)
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+        config.write_text(json.dumps({'tmux': 'own-tab', 'pid': dead_pid()}))
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180), 'a stale pid alone proves nothing')
+
+    def test_missing_tmux_is_not_evidence_that_the_chat_is_gone(self):
+        (self.configs / 'own.config.json').unlink()
+        self.tmux.unlink()
+        self.assertIsNone(watch.tab_alive('own-tab'))
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+
+    def test_a_real_tmux_chat_without_an_agent_host_record_stays_alive(self):
+        (self.configs / 'own.config.json').unlink()
+        self.tmux.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(0)\n')
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+
+    def test_an_unreadable_agent_host_record_is_not_evidence_of_a_gone_chat(self):
+        (self.configs / 'own.config.json').write_text('{bad json')
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+
+    def test_a_detached_watcher_stops_when_its_chat_is_gone(self):
+        (self.configs / 'own.config.json').unlink()
+        (self.configs / 'other.config.json').write_text(json.dumps({'tmux': 'other-tab'}))
+        code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+        self.assertEqual(code, 0, out)
+        self.assertIn('chat: chat own-tab is gone; stopping this detached watcher', out)
         self.assertEqual(clock.now - NOW, 180, 'two polls, then it stops itself')
         state = json.loads((self.directory / 'state/watch-test.json').read_text())
         self.assertIsNone(state['watch_pid'], 'a stopped watcher leaves no live pid behind')

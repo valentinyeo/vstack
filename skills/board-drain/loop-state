@@ -523,7 +523,7 @@ def arm_watch(name, board, label, watcher, every=DEFAULT_EVERY, environment=None
                '--board', '${BOARD}', '--label', '${LABEL}', '--name', '${NAME}',
                '--every', '${EVERY}']
     service = ('[Unit]\nDescription=Board drain watcher %i\n\n[Service]\nType=simple\n'
-               f'EnvironmentFile={environment_file}\n'
+               f'EnvironmentFile={state_dir().resolve()}/watch-%i.env\n'
                'ExecStart=' + ' '.join(unit_quote(arg) for arg in command) +
                '\nRestart=on-failure\nRestartSec=30\n')
     write_unit(directory, 'board-watch@.service', service)
