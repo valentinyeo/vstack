@@ -273,7 +273,7 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         return kept
 
     def arm_with_watcher(self, target, board='2060', label='vvm-test', safety='0 */6 * * *',
-                         background=True, script='skills/board-drain/watch'):
+                         background=True, script='skills/board-drain/watch', detach=False):
         """The pass stream with a tracked background watcher instead of a 15-minute cron."""
         job = 'safe4c1d2'
         state_path = target / 'state.json'
@@ -287,10 +287,11 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         watcher = {'type': 'assistant', 'session_id': 'sid-vbd', 'message': {
             'role': 'assistant', 'content': [{
                 'type': 'tool_use', 'id': 'w1', 'name': 'Bash',
-                'input': {'command': '%s --board %s --label "%s" '
+                'input': {'command': '%s%s --board %s --label "%s" '
                                      '--name "VBD Test Chat" --every 180'
-                                     % (script, board, label),
-                          'description': 'Watch the view', 'run_in_background': background,
+                                     % (script, ' --detach' if detach else '', board, label),
+                          'description': 'Watch the view',
+                          'run_in_background': background and not detach,
                           'timeout': 7200000}}]}}
         safety_events = []
         if safety is not None:
@@ -345,6 +346,13 @@ class VerifyBoardDrainGrade(unittest.TestCase):
         code, output, _target = self.grade(target)
         self.assertEqual(code, 0, output)
         self.assert_check(output, 'PASS', 'armed')
+
+    def test_a_detached_watcher_passes_armed_without_a_safety_cron(self):
+        target = self.copy_fixture('pass')
+        self.arm_with_watcher(target, safety=None, detach=True)
+        code, output, _target = self.grade(target)
+        self.assertEqual(code, 0, output)
+        self.assertIn('PASS armed: a detached watcher on this view', output)
 
     def test_a_watcher_without_a_safety_cron_fails_armed(self):
         """Nothing restarts the loop when the watcher dies without a safety cron."""

@@ -101,8 +101,7 @@ def rearm(name, state):
     """The one command that re-arms this chat's watcher on the view it drains."""
     board, label = state.get('board'), state.get('label')
     if isinstance(board, int) and isinstance(label, str) and label:
-        return (f'{SKILL}/watch --board {board} --label "{label}" --name "{name}" as a tracked '
-                f'background Bash job (7200000 ms timeout)')
+        return f'{SKILL}/watch --detach --board {board} --label "{label}" --name "{name}"'
     return f'{SKILL}/SKILL.md Arm step 2'
 
 
@@ -293,8 +292,8 @@ def self_test():
             told = answer(prompt, env, home, now)
             context = told.get('hookSpecificOutput', {}).get('additionalContext', '')
             assert 'watcher is dead since 2027-01-15T07:00:00Z' in context, context
-            assert 'watch --board 2060 --label "Board Drain Loop" --name "Guard Test"' in context, (
-                'the nudge names the exact command')
+            assert ('watch --detach --board 2060 --label "Board Drain Loop" '
+                    '--name "Guard Test"' in context), 'the nudge names the exact command'
             assert answer(stop, env, home, now).get('decision') == 'block', 'Stop holds the turn'
             assert block_count(home, 'sid-1') == 1, 'one block recorded'
 

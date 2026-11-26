@@ -26,7 +26,6 @@ WEEK_SLACK = timedelta(hours=1)
 
 SEPARATORS = re.compile(r';|&&|\|\||\n')
 QUOTES = re.compile(r'["\']')
-# The watcher started as a tracked background job is the Claude Code arm.
 WATCH_SCRIPT = re.compile(r'(?:skills/board-drain/watch|(?<![\w./-])\./watch)(?![\w-])')
 ASSIGNMENT = re.compile(r'(?<![\w$])([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|"\']+)')
 SCRIPTS = frozenset({'loop-state', 'drain-check', 'reconcile'})
@@ -275,6 +274,13 @@ def watch_on_view(watches, board, label):
                for tool_use, command in watches)
 
 
+def detached_on_view(watches, board, label):
+    return any(bare_flag(command, 'detach')
+               and flag_value(command, 'board', board)
+               and flag_value(command, 'label', label)
+               for _tool_use, command in watches)
+
+
 def cron_firings(cron):
     """Every firing of a 5-field cron as minutes past midnight, or None when unreadable."""
     fields = cron.split() if isinstance(cron, str) else []
@@ -333,15 +339,18 @@ def safety_cron(events):
 
 
 def check_armed(events, board, label='vvm-test'):
-    """PASS when the chat armed a loop over its own view, one of two ways.
+    """PASS when the chat armed a loop over its own view, one of three ways.
 
-    Either a tracked background `watch` on this chat's board and label plus a safety
-  cron at most every 6 hours, or a recurring cron on the plan pace (at least every
-  2 hours). A cron that fires more often than every 2 hours FAILS.
+    A detached `watch` on this chat's board and label (its own systemd unit), or a tracked
+    background `watch` on them plus a safety cron at most every 6 hours, or a recurring
+    cron on the plan pace (at least every 2 hours). A cron that fires more often than
+    every 2 hours FAILS.
     Returns (result, cron job id or None).
     """
     reasons = []
     watches = background_watch(events)
+    if detached_on_view(watches, board, label):
+        return (PASS, 'a detached watcher on this view'), None
     if watch_on_view(watches, board, label):
         tool_use, job, safety_reasons = safety_cron(events)
         if tool_use is not None:
@@ -351,7 +360,9 @@ def check_armed(events, board, label='vvm-test'):
     if watches:
         backgrounded = any(tool_input(use).get('run_in_background') is True
                            for use, _command in watches)
-        reason = ('a watch job for another view' if backgrounded
+        detached = any(bare_flag(command, 'detach') for _use, command in watches)
+        reason = ('a detached watch for another view' if detached else
+                  'a watch job for another view' if backgrounded
                   else 'a watch call that did not run in the background')
         return (FAIL, 'armed ' + reason), None
     for tool_use in cron_creates(events):
