@@ -510,6 +510,27 @@ def arm(name, every='2h', expires=None, job=None, now=None, board=None, label=No
     return store(name, state, drop=('dead_notice',) + PAUSE_FIELDS)
 
 
+def stale_job(name, job, now=None):
+    """One line naming the old loop job a fresh arm leaves running, else None.
+
+    Session crons are stored nowhere on disk, so a chat that re-arms after a restart
+    cannot count its old loops; Hypertask Reconciler reached six at once (VSTA-318).
+    """
+    if not job:
+        return None
+    state = stored(name)
+    old = state.get('job')
+    if not old or old == job:
+        return None
+    moment = time.time() if now is None else now
+    try:
+        if moment >= reconcile.stamp(state['expires_at']):
+            return None
+    except ERRORS:
+        return None
+    return f'loop-state: delete the old loop job {old} (CronDelete) so only {job} runs'
+
+
 def interval_seconds(text):
     value = str(text or '').strip().lower()
     match = DURATION.match(value)
@@ -688,10 +709,13 @@ def main(argv=None):
             if refusal:
                 print(refusal)
                 return 2
+            old_job = stale_job(args.name, args.job)
             state = arm(args.name, args.every, args.expires, args.job,
                         board=args.board, label=args.label)
             remaining = int(reconcile.stamp(state['expires_at']) - reconcile.stamp(state['armed_at']))
             print(f'armed, expires in {window(remaining)}')
+            if old_job:
+                print(old_job)
             return 0
         if args.command == 'clear':
             clear(args.name)
