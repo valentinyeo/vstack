@@ -1773,6 +1773,32 @@ class LoopStateTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, every + result.stdout + result.stderr)
             self.assertEqual(loop.stored('HT Test')['every'], every)
 
+    def test_a_rearm_names_the_old_job_to_delete(self):
+        """VSTA-318: a restart re-arms over a live loop, leaving the old cron running."""
+        self.assertEqual(self.arm_cli('--job', 'job-a').returncode, 0)
+        result = self.arm_cli('--job', 'job-b')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1],
+                         'loop-state: delete the old loop job job-a (CronDelete) so only job-b runs')
+        self.assertEqual(loop.stored('HT Test')['job'], 'job-b')
+
+    def test_arming_the_same_job_twice_names_no_old_job(self):
+        self.assertEqual(self.arm_cli('--job', 'job-a').returncode, 0)
+        result = self.arm_cli('--job', 'job-a')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('delete the old loop job', result.stdout)
+
+    def test_arm_with_no_prior_state_names_no_old_job(self):
+        result = self.arm_cli('--job', 'job-a')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('delete the old loop job', result.stdout)
+
+    def test_an_expired_prior_loop_names_no_old_job(self):
+        loop.arm('HT Test', job='job-a', expires=iso(time.time() - 60))
+        result = self.arm_cli('--job', 'job-b')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('delete the old loop job', result.stdout)
+
     def test_interval_seconds_reads_every_arm_form(self):
         self.assertEqual(loop.interval_seconds('15m'), 900)
         self.assertEqual(loop.interval_seconds('2h'), loop.PACER_FLOOR)
