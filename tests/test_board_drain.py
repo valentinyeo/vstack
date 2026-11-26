@@ -1704,6 +1704,43 @@ class HypertaskPathTest(unittest.TestCase):
             self.assertEqual(os.environ['PATH'], '/usr/bin:/bin')
 
 
+class ChatProcessTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.proc = Path(self.temp.name)
+
+    def fake_process(self, pid, argv, parent):
+        directory = self.proc / str(pid)
+        directory.mkdir(parents=True)
+        (directory / 'cmdline').write_bytes(
+            b''.join(os.fsencode(word) + b'\0' for word in argv))
+        (directory / 'stat').write_text(f'{pid} (chat) S {parent} 0 0 0\n')
+        return pid
+
+    def owner(self, start):
+        with patch.object(loop.reconcile, 'PROC', self.proc):
+            return loop.owner_pid(start)
+
+    def test_agy_is_a_chat_process(self):
+        self.assertTrue(loop.agent_process(['/home/valentin/.local/bin/agy', '--model', 'x']))
+
+    def test_a_shell_is_not_a_chat_process(self):
+        self.assertFalse(loop.agent_process(['/bin/sh', '-c', 'loop-state arm']))
+
+    def test_an_agy_ancestor_owns_the_loop(self):
+        host = self.fake_process(90, ['python', '/home/valentin/.local/bin/agent-host',
+                                      '--agent-host', 'antigravity'], 1)
+        chat = self.fake_process(100, ['/home/valentin/.local/bin/agy', '--model', 'x',
+                                       '--input-format', 'stream-json'], host)
+        self.fake_process(200, ['/bin/sh', '-c', 'loop-state arm --name Chat'], chat)
+        self.assertEqual(self.owner(200), chat)
+
+    def test_no_chat_above_this_process_keeps_the_old_fallback(self):
+        shell = self.fake_process(200, ['/bin/sh', '-c', 'loop-state arm --name Chat'], 1)
+        self.assertEqual(self.owner(shell), os.getppid())
+
+
 class LoopStateTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
