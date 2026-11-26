@@ -1745,6 +1745,41 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(state['board'], 13556)
         self.assertEqual(state['label'], 'Vstack')
 
+    def arm_cli(self, *extra):
+        env = dict(os.environ, BOARD_DRAIN_STATE_DIR=str(self.directory))
+        return subprocess.run([sys.executable, str(SKILL / 'loop-state'), 'arm',
+                               '--name', 'HT Test', *extra],
+                              capture_output=True, text=True, env=env, timeout=30)
+
+    def test_arm_refuses_under_two_hours_with_a_live_watcher(self):
+        """VSTA-317: a live watcher already wakes the chat, so a 15m loop buys nothing."""
+        loop.record_watch('HT Test', os.getpid())
+        result = self.arm_cli('--every', '15m')
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         'loop-state: a chat with a live watcher arms 2h or more; got 15m')
+        self.assertNotIn('every', loop.stored('HT Test'), 'a refused arm writes no loop')
+
+    def test_arm_without_a_watcher_allows_under_two_hours(self):
+        """VSTA-317: the refusal never reaches a chat with no watcher."""
+        result = self.arm_cli('--every', '15m')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(loop.stored('HT Test')['every'], '15m')
+
+    def test_arm_two_hours_or_more_with_a_live_watcher_is_allowed(self):
+        loop.record_watch('HT Test', os.getpid())
+        for every in ('2h', '6h', '21600'):
+            result = self.arm_cli('--every', every)
+            self.assertEqual(result.returncode, 0, every + result.stdout + result.stderr)
+            self.assertEqual(loop.stored('HT Test')['every'], every)
+
+    def test_interval_seconds_reads_every_arm_form(self):
+        self.assertEqual(loop.interval_seconds('15m'), 900)
+        self.assertEqual(loop.interval_seconds('2h'), loop.PACER_FLOOR)
+        self.assertEqual(loop.interval_seconds('6h'), 21600)
+        self.assertEqual(loop.interval_seconds('21600'), 21600)
+        self.assertIsNone(loop.interval_seconds('the plan pace'))
+
     def test_expiry_within_a_day_asks_for_a_rearm(self):
         loop.arm('HT Test', expires=iso(NOW + 10 * 3600), now=NOW)
         self.assertEqual(loop.status('HT Test', now=NOW),
@@ -2452,6 +2487,33 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(out.strip(), 'heartbeat: no change in 10m')
         self.assertEqual(clock.now - NOW, 600)
+
+    def test_a_short_heartbeat_still_wakes_the_chat(self):
+        """VSTA-317: a heartbeat inside the lifetime still wakes; only an idle one is quiet."""
+        code, out, _clock = self.run_watch([vsta('VSTA-1', section='Done')],
+                                           '--heartbeat', '600')
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(len(wakes), 1, wakes)
+        self.assertIn('heartbeat: no change in 10m', wakes[0][4])
+
+    def test_an_idle_watcher_leaves_the_lifetime_exit_as_its_only_tick(self):
+        """VSTA-317: the heartbeat before the exit prints and does not wake."""
+        code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+        self.assertEqual(code, 0, out)
+        self.assertIn('heartbeat: no change in 2h', out)
+        self.assertIn('lifetime: exiting before the 2h job limit; restart me', out)
+        self.assertLess(clock.now - NOW, watch.LIMIT)
+        self.assertFalse(self.wakes.exists(), 'the exit alone wakes the chat')
+
+    def test_a_real_change_still_wakes_the_chat(self):
+        code, out, _clock = self.run_watch(
+            [vsta('VSTA-1', section='Done')],
+            on_sleep=lambda tick: tick == 1 and self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(len(wakes), 1, wakes)
+        self.assertIn('changed: VSTA-80 new in Todo', wakes[0][4])
 
     def test_one_api_failure_retries_on_the_next_poll(self):
         def on_sleep(tick):
