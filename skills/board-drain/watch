@@ -3,8 +3,9 @@
 
 The watcher pulses into this chat's loop state on every poll. View changes, sync failures,
 and quiet heartbeats send a prompt to its own Multibot tab, keeping the watcher alive.
-If that wake is unavailable, exit so the tracked job wakes the chat. A watcher also leaves
-just before the harness's 2h job limit, after its last wake, so the chat restarts it rather
+The last heartbeat before this watcher's own exit only prints, because that exit is the
+tick (VSTA-317). If that wake is unavailable, exit so the tracked job wakes the chat.
+A watcher also leaves just before the harness's 2h job limit, so the chat restarts it rather
 than reading a killed job as a dead watcher (VSTA-239). After a crash or hang, the last pulse
 is the marker the chat's own hook reads to say "your watcher is dead: re-arm" and push
 Valentin after 10 minutes (VSTA-151).
@@ -61,6 +62,11 @@ def heartbeat_seconds(args):
         return args.heartbeat
     paced = min(loop_state.loop_interval(), LIMIT)
     return paced - args.every
+
+
+def exit_comes_first(heartbeat, elapsed, deadline):
+    """The exit wakes the chat on its own, so a heartbeat wake minutes before it buys a turn."""
+    return elapsed + heartbeat > deadline
 
 
 def waiting_mark(task):
@@ -255,7 +261,7 @@ def follow(args, clock=time.time, sleep=time.sleep):
     pending, last_wake = [], None
     max_cycles = getattr(args, 'cycles', 0) or 0
     while True:
-        lines = []
+        lines, unwoken = [], []
         if superseded(args.name):
             return 0
         if loop_state.pause_state(args.name, now=clock()):
@@ -290,12 +296,15 @@ def follow(args, clock=time.time, sleep=time.sleep):
                 lines.extend(changes(baseline, current))
                 baseline, started = current, clock()
             elif clock() - started >= heartbeat:
-                lines.append(f'heartbeat: no change in {window(heartbeat)}')
+                line = f'heartbeat: no change in {window(heartbeat)}'
+                lines.append(line)
+                if exit_comes_first(heartbeat, clock() - lifetime, deadline):
+                    unwoken.append(line)
                 started = clock()
         if lines:
             for line in lines:
                 print(line, flush=True)
-                if line not in pending:
+                if line not in pending and line not in unwoken:
                     pending.append(line)
             reported += 1
         if pending and (last_wake is None or clock() - last_wake >= 60):

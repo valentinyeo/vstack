@@ -31,6 +31,8 @@ Session crons die with the chat; recurring ones expire in 7 days. Arm at session
 4. **Codex or chats without background jobs:** one recurring job on `~/.local/bin/plan-pick --loop-interval` (at least 2h) with the loop prompt; record with `loop-state arm`.
 5. If a crash or restart kills the watcher, restart step 2.
 
+The watcher's 2h exit is the idle tick, not a heartbeat wake. A chat with a live watcher arms 2h or more.
+
 `watch` arms independent 15-minute sync via `board-sync@<name-slug>.timer`; for `sync timer off`, run `./loop-state timer --board <id> --label <label> --name "<name>"`.
 
 On changes, sync failures or heartbeats, `watch` sends its own tab the change and `run drain-check` via `mp-send`, matching its tmux to agent-host `sid` and sending with that config's own `provider` (or the `switched_to` of a switched chat). It keeps polling, coalescing wakes to one per 60s, and leaves before the 2h job limit so the chat restarts it. If delivery is unavailable or fails, it prints and exits 0; the tracked job wakes the chat. Re-arm step 2.
