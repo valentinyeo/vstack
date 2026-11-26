@@ -591,6 +591,36 @@ def stale_job(name, job, now=None):
     return f'loop-state: delete the old loop job {old} (CronDelete) so only {job} runs'
 
 
+def duplicate_job(name, job, now=None):
+    """One line refusing a second loop job while this same chat still runs the first.
+
+    Session crons live only in the chat's memory, so nothing on disk can count them; the
+    stored owner pid and host are what a restart changes. A live same-pid record means the
+    old cron is still running here, and arming another stacks copies that fire together
+    (VSTA-337).
+    """
+    if not job:
+        return None
+    state = stored(name)
+    old = state.get('job')
+    if not old or old == job:
+        return None
+    moment = time.time() if now is None else now
+    try:
+        if state.get('host') != socket.gethostname():
+            return None
+        if moment >= reconcile.stamp(state['expires_at']):
+            return None
+        if state.get('owner_pid') != owner_pid():
+            return None
+        if not reconcile.pid_alive(state['owner_pid']):
+            return None
+    except ERRORS:
+        return None
+    return (f'loop-state: this chat already runs loop job {old}; CronDelete {job} and keep '
+            f'{old}, or CronDelete {old} first and re-run with --replace')
+
+
 def interval_seconds(text):
     value = str(text or '').strip().lower()
     match = DURATION.match(value)
@@ -756,6 +786,8 @@ def main(argv=None):
             sub.add_argument('--every', default='2h')
             sub.add_argument('--expires', help='ISO expiry; default is 7 days (recurring cron limit)')
             sub.add_argument('--job', help='The cron or job id this chat armed')
+            sub.add_argument('--replace', action='store_true',
+                             help='The old loop job is already deleted')
             sub.add_argument('--board', type=int, help='The board this loop drains')
             sub.add_argument('--label', help='The board label this loop drains')
     args = parser.parse_args(argv)
@@ -769,7 +801,11 @@ def main(argv=None):
             if refusal:
                 print(refusal)
                 return 2
-            old_job = stale_job(args.name, args.job)
+            duplicate = None if args.replace else duplicate_job(args.name, args.job)
+            if duplicate:
+                print(duplicate)
+                return 2
+            old_job = None if args.replace else stale_job(args.name, args.job)
             state = arm(args.name, args.every, args.expires, args.job,
                         board=args.board, label=args.label)
             remaining = int(reconcile.stamp(state['expires_at']) - reconcile.stamp(state['armed_at']))

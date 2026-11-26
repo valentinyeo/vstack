@@ -1810,13 +1810,67 @@ class LoopStateTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, every + result.stdout + result.stderr)
             self.assertEqual(loop.stored('HT Test')['every'], every)
 
-    def test_a_rearm_names_the_old_job_to_delete(self):
-        """VSTA-318: a restart re-arms over a live loop, leaving the old cron running."""
-        self.assertEqual(self.arm_cli('--job', 'job-a').returncode, 0)
+    def test_a_rearm_after_the_owner_died_names_the_old_job_to_delete(self):
+        """VSTA-318: a restarted chat re-arms over the loop record the old chat left."""
+        state = loop.arm('HT Test', job='job-a', now=NOW)
+        state['owner_pid'] = dead_pid()
+        loop.state_path('HT Test').write_text(json.dumps(state))
         result = self.arm_cli('--job', 'job-b')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.splitlines()[-1],
                          'loop-state: delete the old loop job job-a (CronDelete) so only job-b runs')
+        self.assertEqual(loop.stored('HT Test')['job'], 'job-b')
+
+    def run_arm(self, *extra, owner=4242, alive=True):
+        """Arm through the CLI with the chat's owner pid and its liveness injected."""
+        with patch.object(loop, 'owner_pid', return_value=owner), \
+                patch.object(loop.reconcile, 'pid_alive', return_value=alive), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = loop.main(['arm', '--name', 'HT Test', *extra])
+        return code, out.getvalue()
+
+    def test_a_second_job_from_the_same_live_chat_is_refused(self):
+        """VSTA-337: stacked 6h loop crons all fired within a minute."""
+        self.assertEqual(self.run_arm('--job', 'job-a')[0], 0)
+        code, text = self.run_arm('--job', 'job-b')
+        self.assertEqual(code, 2, text)
+        self.assertEqual(text.strip(),
+                         'loop-state: this chat already runs loop job job-a; CronDelete job-b '
+                         'and keep job-a, or CronDelete job-a first and re-run with --replace')
+        self.assertEqual(loop.stored('HT Test')['job'], 'job-a', 'a refused arm records nothing')
+
+    def test_the_same_job_from_the_same_chat_is_idempotent(self):
+        self.assertEqual(self.run_arm('--job', 'job-a')[0], 0)
+        code, text = self.run_arm('--job', 'job-a')
+        self.assertEqual(code, 0, text)
+        self.assertNotIn('already runs loop job', text)
+        self.assertEqual(loop.stored('HT Test')['job'], 'job-a')
+
+    def test_replace_records_the_new_job_after_the_old_was_deleted(self):
+        self.assertEqual(self.run_arm('--job', 'job-a')[0], 0)
+        code, text = self.run_arm('--job', 'job-b', '--replace')
+        self.assertEqual(code, 0, text)
+        self.assertNotIn('already runs loop job', text)
+        self.assertEqual(loop.stored('HT Test')['job'], 'job-b')
+
+    def test_a_restarted_chat_records_the_new_job(self):
+        self.assertEqual(self.run_arm('--job', 'job-a', owner=4242)[0], 0)
+        self.assertEqual(self.run_arm('--job', 'job-b', owner=5252)[0], 0)
+        self.assertEqual(loop.stored('HT Test')['job'], 'job-b')
+
+    def test_a_dead_owner_records_the_new_job(self):
+        self.assertEqual(self.run_arm('--job', 'job-a', owner=4242)[0], 0)
+        code, text = self.run_arm('--job', 'job-b', owner=4242, alive=False)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(loop.stored('HT Test')['job'], 'job-b')
+
+    def test_an_expired_record_records_the_new_job(self):
+        state = loop.arm('HT Test', job='job-a', expires=iso(time.time() - 60))
+        state['owner_pid'] = 4242
+        loop.state_path('HT Test').write_text(json.dumps(state))
+        code, text = self.run_arm('--job', 'job-b')
+        self.assertEqual(code, 0, text)
+        self.assertNotIn('already runs loop job', text)
         self.assertEqual(loop.stored('HT Test')['job'], 'job-b')
 
     def test_arming_the_same_job_twice_names_no_old_job(self):
