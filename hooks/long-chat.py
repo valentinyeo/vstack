@@ -24,8 +24,8 @@ DEFAULT_WINDOW = 200_000
 WINDOW_1M = 1_000_000
 DEFAULT_SOFT = 0.55
 DEFAULT_HARD = 0.70
-SOFT_CAP = 300_000
-HARD_CAP = 400_000
+SOFT_CAP = 110_000
+HARD_CAP = 150_000
 MAX_BLOCKS = 3
 NOHOST_TTL = 30 * 60
 # A failed fresh start is filed by the chat that failed it, once per failure. A failure from
@@ -740,12 +740,12 @@ def self_test():
         model_1m = 'claude-sonnet[1m]'
         soft_1m = write_transcript(
             place, 'soft_1m.jsonl',
-            {'input_tokens': 350000, 'cache_read_input_tokens': 0,
+            {'input_tokens': 120000, 'cache_read_input_tokens': 0,
              'cache_creation_input_tokens': 0},
             model=model_1m)
         hard_1m = write_transcript(
             place, 'hard_1m.jsonl',
-            {'input_tokens': 410000, 'cache_read_input_tokens': 0,
+            {'input_tokens': 160000, 'cache_read_input_tokens': 0,
              'cache_creation_input_tokens': 0},
             model=model_1m)
         sid_soft_1m = 'sess-1m-soft'
@@ -755,7 +755,7 @@ def self_test():
             'hook_event_name': 'UserPromptSubmit', 'session_id': sid_soft_1m,
             'transcript_path': soft_1m}
         assert hook(payload_soft_1m, env_1m).get('hookSpecificOutput', {}).get(
-            'additionalContext'), '1m 350k -> soft context'
+            'additionalContext'), '1m 120k -> soft context'
         host_1m = agent_host_dir(home)
         host_1m.mkdir(parents=True, exist_ok=True)
         (host_1m / 'live-1m-test.state.json').write_text(json.dumps({
@@ -766,22 +766,27 @@ def self_test():
         stop_soft_1m = {
             'hook_event_name': 'Stop', 'session_id': sid_soft_1m,
             'transcript_path': soft_1m, 'stop_hook_active': False}
-        assert hook(stop_soft_1m, env_1m_host) == {}, '1m 350k under hard -> no Stop block'
+        assert hook(stop_soft_1m, env_1m_host) == {}, '1m 120k under hard -> no Stop block'
         stop_hard_1m = {
             'hook_event_name': 'Stop', 'session_id': sid_hard_1m,
             'transcript_path': hard_1m, 'stop_hook_active': False}
-        assert hook(stop_hard_1m, env_1m_host).get('decision') == 'block', '1m 410k -> block'
+        assert hook(stop_hard_1m, env_1m_host).get('decision') == 'block', '1m 160k -> block'
 
-        opus_150k = write_transcript(
-            place, 'opus_150k.jsonl',
-            {'input_tokens': 150000, 'cache_read_input_tokens': 0,
+        opus_90k = write_transcript(
+            place, 'opus_90k.jsonl',
+            {'input_tokens': 90000, 'cache_read_input_tokens': 0,
              'cache_creation_input_tokens': 0},
             model='claude-opus-5-5')
-        opus_410k = write_transcript(
-            place, 'opus_410k.jsonl',
-            {'input_tokens': 410000, 'cache_read_input_tokens': 0,
+        opus_160k = write_transcript(
+            place, 'opus_160k.jsonl',
+            {'input_tokens': 160000, 'cache_read_input_tokens': 0,
              'cache_creation_input_tokens': 0},
             model='claude-opus-5-5')
+        unknown_120k = write_transcript(
+            place, 'unknown_120k.jsonl',
+            {'input_tokens': 120000, 'cache_read_input_tokens': 0,
+             'cache_creation_input_tokens': 0},
+            model='vendor-unknown')
         unknown_230k = write_transcript(
             place, 'unknown_230k.jsonl',
             {'input_tokens': 230000, 'cache_read_input_tokens': 0,
@@ -798,17 +803,24 @@ def self_test():
             'tmux': 'live-window-test', 'pid': os.getpid()}))
         stop_opus_low = {
             'hook_event_name': 'Stop', 'session_id': 'sess-opus-low',
-            'transcript_path': opus_150k, 'stop_hook_active': False}
-        assert hook(stop_opus_low, env_plain) == {}, 'opus 5.5 at 150k -> no block'
+            'transcript_path': opus_90k, 'stop_hook_active': False}
+        assert hook(stop_opus_low, env_plain) == {}, 'opus 5.5 at 90k -> no block'
         stop_opus_high = {
             'hook_event_name': 'Stop', 'session_id': 'sess-opus-high',
-            'transcript_path': opus_410k, 'stop_hook_active': False}
+            'transcript_path': opus_160k, 'stop_hook_active': False}
         assert hook(stop_opus_high, env_plain).get('decision') == 'block', (
-            'opus 5.5 at 410k -> block')
+            'opus 5.5 at 160k -> block')
+        assert window_tokens('vendor-unknown', {}, size=230000) == WINDOW_1M, (
+            'unknown at 230k -> inferred 1M window')
+        stop_unknown_low = {
+            'hook_event_name': 'Stop', 'session_id': 'sess-unknown-low',
+            'transcript_path': unknown_120k, 'stop_hook_active': False}
+        assert hook(stop_unknown_low, env_plain) == {}, 'unknown at 120k -> under hard, no block'
         stop_unknown = {
             'hook_event_name': 'Stop', 'session_id': 'sess-unknown',
             'transcript_path': unknown_230k, 'stop_hook_active': False}
-        assert hook(stop_unknown, env_plain) == {}, 'unknown at 230k -> 1M, no block'
+        assert hook(stop_unknown, env_plain).get('decision') == 'block', (
+            'unknown at 230k -> past 150k hard cap, block')
         stop_haiku = {
             'hook_event_name': 'Stop', 'session_id': 'sess-haiku',
             'transcript_path': haiku_150k, 'stop_hook_active': False}

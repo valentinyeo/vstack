@@ -45,7 +45,7 @@ SCENARIOS = {
     },
     'handover': {
         'job': 'Write the handover for a fresh chat, then stop.',
-        'rule': ('- **Long chats:** past 300k tokens the long-chat hook warns; at 400k it blocks until you '
+        'rule': ('- **Long chats:** past 110k tokens the long-chat hook warns; at 150k it blocks until you '
                  'follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.'),
         'needs': 'long-chat',
         'reads': ('long-chat/SKILL.md',),
