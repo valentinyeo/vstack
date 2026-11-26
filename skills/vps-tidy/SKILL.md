@@ -49,7 +49,7 @@ That keeps your own temp files and orphaned programs in check without a central 
 - Git worktrees, branches and `.git` directories. repo-tidy owns those, including node_modules inside a worktree.
 - vcc-evidence as a cache: a video stays unless the board read succeeds and the ticket is not open.
 - Another user's files or processes. Only your uid.
-- claude, tmux, codex, pi and interactive shells, and any process tree holding one of them.
+- Chat programs (claude, codex, pi, agy), tmux and interactive shells, and any process tree holding one of them.
 - A symlink, a mount point, a foreign owner, a special file, or a path a process holds open.
 - Anything under a config, ssh, claude or codex directory: those names are on its never-touch list.
 

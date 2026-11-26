@@ -589,7 +589,7 @@ class ProcessRules(Base):
     def test_never_kill_list_survives_every_rule(self):
         worktree = self.worktree()
         protected = {}
-        for name in ('claude', 'tmux', 'codex', 'pi'):
+        for name in ('claude', 'tmux', 'codex', 'pi', 'agy'):
             proc = self.box.spawn(cwd=worktree)
             protected[name] = proc
             self.box.add_process(proc.pid, 1, '{} something'.format(name),

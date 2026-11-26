@@ -74,7 +74,7 @@ EVIDENCE_BUILD_NAMES = BUILD_DIRS + BUILD_PREFIXES
 STATE_TMP_PARENTS = ("hax", "drain", "vcc-evidence", "disk-guard", "hypertask",
                      "vps-load", "vps-tidy", "proc-watchdog", "evidence-prune")
 VIDEO_SUFFIXES = (".mp4", ".webm", ".mov", ".mkv")
-PROTECTED_NAMES = {"claude", "tmux", "codex", "pi"}
+PROTECTED_NAMES = {"claude", "tmux", "codex", "pi", "agy"}
 TREE_PROTECTED_NAMES = PROTECTED_NAMES | {"bash", "zsh", "fish", "dash", "sh",
                                           "systemd", "sshd", "init", "login"}
 PROVIDER_NAMES = {"codex", "claude", "hax", "node"}
@@ -1281,7 +1281,7 @@ def scan_processes(ctx):
                     break
         if protected:
             candidate_row("processes", "keep", "protected",
-                          "protected: tree holds {}, never kill claude, tmux, codex, pi "
+                          "protected: tree holds {}, never kill a chat program, tmux "
                           "or an interactive shell".format(protected), row)
             continue
         if kind == "headless-browser":

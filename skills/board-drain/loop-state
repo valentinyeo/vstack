@@ -34,7 +34,7 @@ reconcile = importlib.util.module_from_spec(spec)
 sys.modules[loader.name] = reconcile
 loader.exec_module(reconcile)
 
-AGENTS = frozenset({'claude', 'codex', 'pi'})
+AGENTS = frozenset({'claude', 'codex', 'pi', 'agy'})
 NODES = frozenset({'node', 'nodejs'})
 WEEK = 7 * 86400
 SOON = 86400
@@ -102,7 +102,10 @@ def command_line(pid):
 
 
 def agent_process(argv):
-    """claude, codex or pi, and node only when it is running claude."""
+    """A chat program, and node only when it is running claude.
+
+    `agy` is Antigravity's chat CLI, which runs under the agent host (VSTA-331).
+    """
     if not argv:
         return False
     name = Path(argv[0]).name
