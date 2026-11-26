@@ -112,6 +112,21 @@ class CapRuleTest(unittest.TestCase):
         self.assertEqual(wip.cap_for(LABEL), 5)
         self.assertEqual(wip.cap_for('a chat nobody configured'), 5)
 
+    def test_the_ht_lanes_may_each_run_ten_workers(self):
+        self.assertEqual(wip.cap_for('HT Features'), 10)
+        self.assertEqual(wip.cap_for('HT Verification'), 10)
+        self.assertEqual(wip.cap_for('ht features'), 10, 'a label reads case-insensitively')
+        self.assertEqual(wip.cap_for('HT Bugs'), 10)
+        self.assertEqual(wip.cap_for('HT Support'), 5, 'an unlisted label keeps the fleet cap')
+
+    def test_an_ht_lane_holds_its_eleventh_start_only(self):
+        self.assertEqual(wip.at_cap(open_cards(10, label='HT Features'), 'HT Features'),
+                         (True, 10, 10))
+        self.assertEqual(wip.at_cap(open_cards(9, label='HT Verification'), 'HT Verification'),
+                         (False, 9, 10))
+        self.assertEqual(wip.at_cap(open_cards(5, label='HT Support'), 'HT Support'),
+                         (True, 5, 5))
+
     def test_a_generic_label_is_never_counted(self):
         self.assertEqual(wip.agent_labels({'labels': [{'name': 'Bug'}, {'name': 'brain-light'},
                                                        {'name': LABEL}]}), [LABEL])

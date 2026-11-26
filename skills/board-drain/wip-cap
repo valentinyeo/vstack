@@ -39,7 +39,7 @@ GENERIC_PREFIX = 'brain-'
 # One table: open tickets one agent label may hold, keyed by casefolded label name.
 # None covers every label with no row of its own, so moving the fleet's cap is this
 # one number.
-CAPS = {None: 5, 'ht bugs': 10}
+CAPS = {None: 5, 'ht bugs': 10, 'ht features': 10, 'ht verification': 10}
 # A board's review-debt freeze: no new start while it holds more of these than its cap.
 REVIEW_DEBT_CAPS = {13734: 10}
 _REVIEWING = frozenset({'checks', 'ai review'})
