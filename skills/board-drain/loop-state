@@ -506,6 +506,34 @@ def environment_line(key, value):
     return f'{key}="{text}"\n'
 
 
+def watch_env(name):
+    """This chat's watcher environment file, the one its unit reads on every start."""
+    return state_dir().resolve() / f'watch-{slug(name)}.env'
+
+
+def retarget_watch(name, tab):
+    """Point this chat's watcher environment file at a new tab, so a unit restart keeps it.
+
+    False means there was no file to rewrite.
+    """
+    target = watch_env(name)
+    try:
+        lines = target.read_text().splitlines()
+    except OSError:
+        return False
+    kept = [line + '\n' for line in lines]
+    wanted = environment_line('MULTIPROMPT_TAB', tab)
+    current = [line for line in kept if line.startswith('MULTIPROMPT_TAB=')]
+    if current == [wanted]:
+        return True
+    kept = [line for line in kept if not line.startswith('MULTIPROMPT_TAB=')] + [wanted]
+    with tempfile.NamedTemporaryFile(mode='w', dir=target.parent, delete=False) as out:
+        temporary = Path(out.name)
+        out.write(''.join(kept))
+    temporary.replace(target)
+    return True
+
+
 def arm_watch(name, board, label, watcher, every=DEFAULT_EVERY, environment=None, now=None):
     moment = time.time() if now is None else now
     if board < 1:
@@ -518,7 +546,7 @@ def arm_watch(name, board, label, watcher, every=DEFAULT_EVERY, environment=None
         'BOARD': board, 'LABEL': label, 'NAME': name, 'EVERY': int(every),
         **(environment or {}),
     }
-    environment_file = state_dir().resolve() / f'watch-{slug(name)}.env'
+    environment_file = watch_env(name)
     environment_file.parent.mkdir(parents=True, exist_ok=True)
     environment_file.write_text(''.join(environment_line(key, value)
                                        for key, value in values.items()))
