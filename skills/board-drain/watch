@@ -218,12 +218,40 @@ def tab_alive(tab):
         return None
 
 
+def agent_host_alive(tab):
+    """True for a live pid, None for a record without proof, False only for no record."""
+    if not tab:
+        return None
+    found = False
+    directory = Path.home() / '.local/state/multiprompt/agent-host'
+    try:
+        paths = sorted(directory.iterdir())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    for path in paths:
+        if not path.name.endswith('.config.json'):
+            continue
+        try:
+            config = json.loads(path.read_text())
+            if not isinstance(config, dict):
+                found = True
+            elif config.get('tmux') == tab:
+                if drain.reconcile.pid_alive(config.get('pid')):
+                    return True
+                found = True
+        except (OSError, ValueError):
+            found = True
+    return None if found else False
+
+
 def chat_gone(started, now):
     if now - started >= loop_state.WEEK:
         return f'no live chat signal for {loop_state.window(loop_state.WEEK)}'
     tab = own_tab()
-    if tab_alive(tab) is False:
-        return f'tmux session {tab} is gone'
+    if agent_host_alive(tab) is False and tab_alive(tab) is False:
+        return f'chat {tab} is gone'
     return None
 
 
