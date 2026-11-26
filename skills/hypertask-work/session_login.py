@@ -92,6 +92,35 @@ def own_agent_id(name, env=None):
     return token_agent_id(token)
 
 
+def chat_names(home):
+    """The chat-name file as {tab: entry}, {} when it cannot be read."""
+    try:
+        names = json.loads(chat_names_path(home).read_text())
+    except (OSError, ValueError):
+        return {}
+    return names if isinstance(names, dict) else {}
+
+
+def chat_tabs(home, name):
+    """The tabs this Multibot name lives on, newest published first.
+
+    A restart leaves the old tab's entry behind, so only `at` says which tab is current.
+    """
+    wanted = str(name).strip()
+    if not wanted:
+        return []
+    rows = [(entry, tab) for tab, entry in chat_names(home).items()
+            if isinstance(entry, dict) and str(entry.get('name') or '').strip() == wanted]
+    rows.sort(key=lambda pair: published(pair[0]), reverse=True)
+    return [tab for _entry, tab in rows]
+
+
+def published(entry):
+    """The publish time a chat-name entry carries, 0 when it carries none."""
+    at = entry.get('at')
+    return at if isinstance(at, (int, float)) else 0
+
+
 def session_name(home, tab):
     """The roster Multibot name for this tmux session, else the chat-name file."""
     try:
@@ -103,11 +132,7 @@ def session_name(home, tab):
             name = str(row.get('multibot') or '').strip()
             if name:
                 return name
-    try:
-        names = json.loads(chat_names_path(home).read_text())
-    except (OSError, ValueError):
-        return ''
-    entry = names.get(tab) if isinstance(names, dict) else None
+    entry = chat_names(home).get(tab)
     return str(entry.get('name') or '').strip() if isinstance(entry, dict) else ''
 
 

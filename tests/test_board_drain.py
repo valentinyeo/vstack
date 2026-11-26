@@ -3061,24 +3061,103 @@ class WatchDetachTest(unittest.TestCase):
         config = self.configs / 'own.config.json'
         config.write_text(json.dumps({'tmux': 'own-tab', 'pid': os.getpid()}))
         self.assertIs(watch.agent_host_alive('own-tab'), True)
-        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180, 'Watch Test'))
         config.write_text(json.dumps({'tmux': 'own-tab', 'pid': dead_pid()}))
-        self.assertIsNone(watch.chat_gone(NOW, NOW + 180), 'a stale pid alone proves nothing')
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180, 'Watch Test'), 'a stale pid alone proves nothing')
 
     def test_missing_tmux_is_not_evidence_that_the_chat_is_gone(self):
         (self.configs / 'own.config.json').unlink()
         self.tmux.unlink()
         self.assertIsNone(watch.tab_alive('own-tab'))
-        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180, 'Watch Test'))
 
     def test_a_real_tmux_chat_without_an_agent_host_record_stays_alive(self):
         (self.configs / 'own.config.json').unlink()
         self.tmux.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(0)\n')
-        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180, 'Watch Test'))
 
     def test_an_unreadable_agent_host_record_is_not_evidence_of_a_gone_chat(self):
         (self.configs / 'own.config.json').write_text('{bad json')
-        self.assertIsNone(watch.chat_gone(NOW, NOW + 180))
+        self.assertIsNone(watch.chat_gone(NOW, NOW + 180, 'Watch Test'))
+
+    def chat_names(self, mapping):
+        """The chat-name file's tab -> chat record, as a restart leaves it."""
+        path = self.directory / '.local/state/multiprompt/chat-names.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(mapping))
+
+    def live_tab(self, record, tab, sid='new-sid', name='Watch Test', at=None):
+        """A live tab: its agent-host record, plus this tab in the chat-name file."""
+        (self.configs / f'{record}.config.json').write_text(
+            json.dumps({'tmux': tab, 'sid': sid, 'pid': os.getpid()}))
+        entry = {'name': name, 'sid': sid}
+        if at is not None:
+            entry['at'] = at
+        self.chat_names({tab: entry})
+
+    def test_a_restarted_chat_is_followed_to_its_new_tab(self):
+        self.detach()
+        (self.configs / 'own.config.json').unlink()
+        self.live_tab('new', 'new-tab')
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '2')
+        self.assertEqual(code, 0, out)
+        self.assertIn('chat: Watch Test moved to tab new-tab; following it', out)
+        self.assertNotIn('stopping this detached watcher', out)
+        self.assertIn('MULTIPROMPT_TAB="new-tab"', self.environment_file().read_text(),
+                      'a unit restart keeps the new tab')
+
+    def test_a_wake_after_the_move_goes_to_the_new_tab(self):
+        (self.configs / 'own.config.json').unlink()
+        self.live_tab('new', 'new-tab')
+        code, out, _ = self.run_watch(
+            [vsta('VSTA-1', section='Done')],
+            on_sleep=lambda tick: tick == 1 and self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(len(wakes), 1, wakes)
+        self.assertEqual(wakes[0][:2], ['--tmux', 'new-tab'])
+        self.assertEqual(wakes[0][2:4], ['claude', 'new-sid'])
+
+    def test_the_name_gone_everywhere_stops_and_another_chats_tab_is_never_adopted(self):
+        self.detach()
+        (self.configs / 'own.config.json').unlink()
+        self.live_tab('other', 'other-tab', sid='other-sid', name='Other Chat')
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('following it', out)
+        self.assertIn('chat: chat own-tab is gone; stopping this detached watcher', out)
+        self.assertIn('MULTIPROMPT_TAB="own-tab"', self.environment_file().read_text())
+
+    def test_the_newest_live_tab_carrying_the_name_wins(self):
+        (self.configs / 'own.config.json').unlink()
+        self.chat_names({'stale-tab': {'name': 'Watch Test', 'sid': 'stale-sid', 'at': 1},
+                         'new-tab': {'name': 'Watch Test', 'sid': 'new-sid', 'at': 2}})
+        for tab, sid in (('stale-tab', 'stale-sid'), ('new-tab', 'new-sid')):
+            (self.configs / f'{tab}.config.json').write_text(
+                json.dumps({'tmux': tab, 'sid': sid, 'pid': os.getpid()}))
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '2')
+        self.assertEqual(code, 0, out)
+        self.assertIn('chat: Watch Test moved to tab new-tab; following it', out)
+        self.assertNotIn('stale-tab', out)
+
+    def test_a_dead_tab_carrying_the_name_is_not_adopted(self):
+        (self.configs / 'own.config.json').unlink()
+        (self.configs / 'new.config.json').write_text(
+            json.dumps({'tmux': 'new-tab', 'sid': 'new-sid', 'pid': dead_pid()}))
+        self.chat_names({'new-tab': {'name': 'Watch Test', 'sid': 'new-sid'}})
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('following it', out)
+        self.assertIn('stopping this detached watcher', out)
+
+    def test_a_move_with_no_environment_file_follows_and_says_so(self):
+        (self.configs / 'own.config.json').unlink()
+        self.live_tab('new', 'new-tab')
+        code, out, _ = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '2')
+        self.assertEqual(code, 0, out)
+        self.assertIn('chat: Watch Test moved to tab new-tab; following it (env file not updated)',
+                      out)
+        self.assertNotIn('stopping this detached watcher', out)
 
     def test_a_detached_watcher_stops_when_its_chat_is_gone(self):
         (self.configs / 'own.config.json').unlink()

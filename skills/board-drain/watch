@@ -12,7 +12,9 @@ Valentin after 10 minutes (VSTA-151).
 
 `--detach` starts the same loop in a systemd --user unit, so an idle chat needs no turn to
 restart it and none to answer a heartbeat (VSTA-319): the unit has no 2h life, waits for a
-real change, and stops itself when its chat is gone. `--detached` is the mode inside it.
+real change, and stops itself when its chat is gone. A chat restart gives the same name a
+new tab, so a watcher that finds its own tab gone looks the name up and follows it instead
+of exiting (VSTA-335). `--detached` is the mode inside it.
 """
 import argparse
 import contextlib
@@ -246,11 +248,34 @@ def agent_host_alive(tab):
     return None if found else False
 
 
-def chat_gone(started, now):
+def name_tab(name):
+    """The live tab this chat's name is newest on, else ''.
+
+    Only a tab the chat-name file gives this exact name, and that is alive now, counts.
+    """
+    for tab in drain.reconcile.session.chat_tabs(Path.home(), name):
+        if agent_host_alive(tab) is True or tab_alive(tab) is True:
+            return tab
+    return ''
+
+
+def follow_tab(name, tab):
+    """Move this watcher to the chat's new tab, and the unit's next start with it."""
+    os.environ['MULTIPROMPT_TAB'] = tab
+    kept = loop_state.retarget_watch(name, tab)
+    note = '' if kept else ' (env file not updated)'
+    print(f'chat: {name} moved to tab {tab}; following it{note}', flush=True)
+
+
+def chat_gone(started, now, name):
     if now - started >= loop_state.WEEK:
         return f'no live chat signal for {loop_state.window(loop_state.WEEK)}'
     tab = own_tab()
     if agent_host_alive(tab) is False and tab_alive(tab) is False:
+        moved = name_tab(name)
+        if moved:
+            follow_tab(name, moved)
+            return None
         return f'chat {tab} is gone'
     return None
 
@@ -354,7 +379,7 @@ def follow(args, clock=time.time, sleep=time.sleep):
             print('paused: leaving this chat idle; resume its loop to re-arm me', flush=True)
             return 0
         if detached:
-            reason = chat_gone(started, clock())
+            reason = chat_gone(started, clock(), args.name)
             gone = gone + 1 if reason else 0
             if gone >= GONE_POLLS:
                 print(f'chat: {reason}; stopping this detached watcher', flush=True)
