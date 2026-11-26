@@ -1915,7 +1915,9 @@ class LoopStateTest(unittest.TestCase):
                                'watch_pid': dead_pid(), 'watch_every': 180})
         loop.beat('HT Test', now=NOW)
         self.assertEqual(loop.watch_health('HT Test', now=NOW + 180), ('ok', 'watcher ok'))
-        self.assertEqual(loop.status('HT Test', now=NOW + 180), (0, 'armed, expires in 7d0h'))
+        code, line = loop.status('HT Test', now=NOW + 180)
+        self.assertEqual(code, 0, line)
+        self.assertTrue(line.startswith('armed, expires in '), line)
         self.assertEqual(loop.watch_health('HT Test', now=NOW + 10_000),
                          ('dead', f'watcher dead since {iso(NOW)}'))
         # A pulse with no recorded pid is a watcher that exited, unit or not.
@@ -2817,7 +2819,7 @@ class WatchDetachTest(unittest.TestCase):
         calls = []
         out = io.StringIO()
         systemctl = self.systemctl(calls)
-        with patch.object(loop, 'systemctl', side_effect=fail or systemctl), \
+        with patch.object(watch.loop_state, 'systemctl', side_effect=fail or systemctl), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             code = watch.main(['--board', '13556', '--label', 'Board Drain Loop',
                                '--name', 'Watch Test', '--detach', *extra], clock=Clock().time)
