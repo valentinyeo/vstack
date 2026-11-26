@@ -6,7 +6,7 @@ A chat restarted after a crash turns its own drain loop back on without being to
 
 - `rearm.load`: the chat loads board drain through the `/board-drain` command or the `Skill` tool.
 - `rearm.status`: it runs `loop-state status --name "<its name>"` before arming, because exit 0 means already armed.
-- `rearm.arm`: either a `Bash` call with `run_in_background: true` running `skills/board-drain/watch` with this chat's `--board` and `--label` plus a safety `CronCreate` of at most 6 hours, or a recurring cron on the plan pace (at least every 2 hours) carrying the loop prompt.
+- `rearm.arm`: either a `Bash` call running `skills/board-drain/watch --detach` (its own systemd --user unit), or a `Bash` call with `run_in_background: true` running `skills/board-drain/watch` with this chat's `--board` and `--label` plus a safety `CronCreate` of at most 6 hours, or a recurring cron on the plan pace (at least every 2 hours) carrying the loop prompt.
 - `rearm.record`: `loop-state arm` writes `armed_at` in this run, `expires_at` about 7 days later and the job id the harness returned, without dropping `last_sync`.
 - `sync.run`: `./sync --board <id> --label <label> --name "<chat>" --limit 5` runs the reconcile preview, then an apply of up to five moves.
 - `sync.ok`: `last_sync.ok` is true and `at` is after the run started.

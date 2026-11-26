@@ -9,6 +9,10 @@ A watcher also leaves just before the harness's 2h job limit, so the chat restar
 than reading a killed job as a dead watcher (VSTA-239). After a crash or hang, the last pulse
 is the marker the chat's own hook reads to say "your watcher is dead: re-arm" and push
 Valentin after 10 minutes (VSTA-151).
+
+`--detach` starts the same loop in a systemd --user unit, so an idle chat needs no turn to
+restart it and none to answer a heartbeat (VSTA-319): the unit has no 2h life, waits for a
+real change, and stops itself when its chat is gone. `--detached` is the mode inside it.
 """
 import argparse
 import contextlib
@@ -28,6 +32,7 @@ HERE = Path(__file__).resolve().parent
 # The harness ends a tracked background job at two hours, so the heartbeat lands inside it.
 LIMIT = 7200
 FAILURES = 3
+GONE_POLLS = 2
 
 
 def sibling(name, filename):
@@ -189,13 +194,65 @@ def wake_failed(status, stderr):
     print(f'wake: failed ({status}): {last[-1] if last else ""}', flush=True)
 
 
+def own_tab():
+    tab = os.environ.get('MULTIPROMPT_TAB')
+    if tab:
+        return tab
+    if not os.environ.get('TMUX'):
+        return ''
+    try:
+        return subprocess.run(['tmux', 'display-message', '-p', '#S'],
+                              check=True, capture_output=True, text=True,
+                              timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
+def tab_alive(tab):
+    if not tab or shutil.which('tmux') is None:
+        return None
+    try:
+        return subprocess.run(['tmux', 'has-session', '-t', '=' + tab],
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def chat_gone(started, now):
+    if now - started >= loop_state.WEEK:
+        return f'no live chat signal for {loop_state.window(loop_state.WEEK)}'
+    tab = own_tab()
+    if tab_alive(tab) is False:
+        return f'tmux session {tab} is gone'
+    return None
+
+
+def detach(args, clock=time.time):
+    pause = loop_state.pause_state(args.name, now=clock())
+    if pause:
+        print(f'{loop_state.pause_line(pause)}; no detached watcher started', flush=True)
+        return 0
+    if not loop_state.systemd_user():
+        print('detach: no systemd --user here; run without --detach as a tracked background job',
+              flush=True)
+        return 0
+    tab = own_tab()
+    environment = {'MULTIPROMPT_TAB': tab} if tab else {}
+    try:
+        loop_state.arm_watch(args.name, args.board, args.label, Path(__file__).resolve(),
+                             every=args.every, environment=environment, now=clock())
+        unit = loop_state.watch_unit(args.name)
+    except drain.ERRORS as error:
+        print(f'detach: FAIL {error}', flush=True)
+        return 1
+    print(f'detached: {unit}; restarts on failure and stops when this chat is gone', flush=True)
+    return 0
+
+
 def wake(lines):
     """Send a prompt only to this process's own tab; False means use the job-exit wake."""
     try:
-        tab = os.environ.get('MULTIPROMPT_TAB')
-        if not tab and os.environ.get('TMUX'):
-            tab = subprocess.run(['tmux', 'display-message', '-p', '#S'],
-                                 check=True, capture_output=True, text=True, timeout=5).stdout.strip()
+        tab = own_tab()
         if not tab:
             return False
         sender = shutil.which('mp-send') or Path.home() / '.multiprompt-runtime/mp-send'
@@ -252,21 +309,28 @@ def superseded(name):
 
 def follow(args, clock=time.time, sleep=time.sleep):
     """Poll and wake our own chat; exit 0 on wake failure, --cycles or the job limit, 1 on API loss."""
+    detached = bool(getattr(args, 'detached', False))
     heartbeat, baseline, started, failures = heartbeat_seconds(args), None, clock(), 0
     # Leave one poll and a minute of margin for the last wake and this exit to land.
-    lifetime, deadline = started, max(0, LIMIT - args.every - 60)
+    lifetime, deadline = started, None if detached else max(0, LIMIT - args.every - 60)
     every_sync = 0 if args.no_sync else args.sync_every
     synced = None
     reported = 0
-    pending, last_wake = [], None
+    pending, last_try, gone = [], None, 0
     max_cycles = getattr(args, 'cycles', 0) or 0
     while True:
-        lines, unwoken = [], []
+        lines, heartbeat_line = [], None
         if superseded(args.name):
             return 0
         if loop_state.pause_state(args.name, now=clock()):
             print('paused: leaving this chat idle; resume its loop to re-arm me', flush=True)
             return 0
+        if detached:
+            reason = chat_gone(started, clock())
+            gone = gone + 1 if reason else 0
+            if gone >= GONE_POLLS:
+                print(f'chat: {reason}; stopping this detached watcher', flush=True)
+                return 0
         # The pulse comes first: a watcher that stops here is dead, and its last pulse says when.
         try:
             loop_state.beat(args.name, now=clock())
@@ -296,35 +360,42 @@ def follow(args, clock=time.time, sleep=time.sleep):
                 lines.extend(changes(baseline, current))
                 baseline, started = current, clock()
             elif clock() - started >= heartbeat:
-                line = f'heartbeat: no change in {window(heartbeat)}'
-                lines.append(line)
-                if exit_comes_first(heartbeat, clock() - lifetime, deadline):
-                    unwoken.append(line)
+                heartbeat_line = f'heartbeat: no change in {window(heartbeat)}'
                 started = clock()
+        if heartbeat_line:
+            print(heartbeat_line, flush=True)
+            if (not detached and heartbeat_line not in pending
+                    and not exit_comes_first(heartbeat, clock() - lifetime, deadline)):
+                pending.append(heartbeat_line)
+            reported += 1
         if lines:
             for line in lines:
                 print(line, flush=True)
-                if line not in pending and line not in unwoken:
+                if line not in pending:
                     pending.append(line)
+            del pending[:-20]
             reported += 1
-        if pending and (last_wake is None or clock() - last_wake >= 60):
+        if pending and (last_try is None or clock() - last_try >= 60):
             # A handover can land between the poll and this wake, so check again.
             if superseded(args.name):
                 return 0
-            if not wake(pending):
+            last_try = clock()
+            if wake(pending):
+                pending.clear()
+            elif detached:
+                print('wake: retrying on the next poll', flush=True)
+            else:
                 return 0
-            pending.clear()
-            last_wake = clock()
         if max_cycles and reported >= max_cycles:
             return 0
         # Past this, the harness kills the job; leave first so the chat restarts the watcher.
-        if clock() - lifetime >= deadline:
+        if deadline is not None and clock() - lifetime >= deadline:
             print('lifetime: exiting before the 2h job limit; restart me', flush=True)
             return 0
         # Do not strand a coalesced wake until the next poll or heartbeat.
         left = heartbeat - (clock() - started)
         if pending:
-            left = min(left, 60 - (clock() - last_wake))
+            left = min(left, 60 - (clock() - last_try))
         sleep(max(1, min(args.every, left)))
 
 
@@ -352,7 +423,13 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
                         help='Read a JSON list of {"task", "comments"} instead of the API')
     parser.add_argument('--once', action='store_true',
                         help='Print one snapshot as JSON and exit, for a live check')
+    parser.add_argument('--detach', action='store_true',
+                        help='Start this watcher in its own systemd --user unit and return at once')
+    parser.add_argument('--detached', action='store_true',
+                        help='Internal: this process already runs inside its own unit')
     args = parser.parse_args(argv)
+    if args.detach and args.detached:
+        parser.error('--detach starts a unit; --detached runs inside one')
     if args.board < 1:
         parser.error('--board must be a positive board id')
     if args.every < 1:
@@ -364,6 +441,8 @@ def main(argv=None, clock=time.time, sleep=time.sleep):
     if args.sync_every < 1:
         parser.error('--sync-every must be at least one second')
     try:
+        if args.detach:
+            return detach(args, clock)
         if args.once:
             return once(args, clock)
         if not args.no_sync:

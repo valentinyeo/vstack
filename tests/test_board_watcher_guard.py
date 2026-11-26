@@ -115,8 +115,8 @@ class GuardTest(unittest.TestCase):
         told = self.context(self.prompt())
         self.assertIn(f'watcher is dead since {iso(NOW - 3 * 3600)}', told)
         self.assertIn('Nothing is polling your view', told)
-        self.assertIn('watch --board 13734 --label "Multi Bot Bugs" --name "Multi Bot Bugs"',
-                      told)
+        self.assertIn('watch --detach --board 13734 --label "Multi Bot Bugs" '
+                      '--name "Multi Bot Bugs"', told)
         body = json.dumps(self.prompt())
         self.assertIn('hookEventName', body)
         self.assertIn('UserPromptSubmit', body)
@@ -135,6 +135,13 @@ class GuardTest(unittest.TestCase):
         record = self.write_state(beat_hours_ago=3, watch_pid=os.getpid())
         record.pop('watch_beat')
         record.pop('watch_every')
+        (self.state / 'multi-bot-bugs.json').write_text(json.dumps(record))
+        self.assertEqual(self.prompt(), {})
+        self.assertEqual(self.stop(), {})
+
+    def test_a_detached_watcher_with_a_fresh_pulse_is_left_alone(self):
+        record = self.write_state(beat_hours_ago=0.05, watch_pid=dead_pid())
+        record['watch_unit'] = 'board-watch@multi-bot-bugs.service'
         (self.state / 'multi-bot-bugs.json').write_text(json.dumps(record))
         self.assertEqual(self.prompt(), {})
         self.assertEqual(self.stop(), {})
@@ -304,8 +311,8 @@ class GuardTest(unittest.TestCase):
                                    self.env, self.home)
         self.assertEqual(blocked.get('decision'), 'block', blocked)
         self.assertIn('watcher is dead since', blocked.get('reason', ''))
-        self.assertIn('watch --board 13734 --label "Multi Bot Bugs" --name "Multi Bot Bugs"',
-                      blocked.get('reason', ''))
+        self.assertIn('watch --detach --board 13734 --label "Multi Bot Bugs" '
+                      '--name "Multi Bot Bugs"', blocked.get('reason', ''))
 
     def test_hypertask_reconciler_kill_test_uses_same_loop_state_and_guard(self):
         """VSTA-151 round 2: Hypertask Reconciler (live-2a735a3c) shares loop-state and guard."""
@@ -351,8 +358,8 @@ class GuardTest(unittest.TestCase):
                                    rec_env, self.home, now=now_dead)
         self.assertEqual(blocked.get('decision'), 'block', blocked)
         self.assertIn(
-            'watch --board 13556 --label "Hypertask Reconciler" --name "Hypertask Reconciler"',
-            blocked.get('reason', ''))
+            'watch --detach --board 13556 --label "Hypertask Reconciler" '
+            '--name "Hypertask Reconciler"', blocked.get('reason', ''))
         self.assertEqual(len(received), 1, received)
         self.assertIn('Hypertask Reconciler', received[0]['body'])
         self.assertIn('dead since', received[0]['body'])

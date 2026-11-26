@@ -298,8 +298,10 @@ def watch_health(name, now=None):
     seen = beat_at if beat_at is not None else started_at
     if pid is None and seen is None:
         return 'none', 'no watcher recorded'
-    if pid is not None and reconcile.pid_alive(pid) and (
-            beat_at is None or moment - beat_at <= beat_limit(state)):
+    fresh = beat_at is not None and moment - beat_at <= beat_limit(state)
+    unit_backed = bool(state.get('watch_unit'))
+    if pid is not None and (unit_backed or reconcile.pid_alive(pid)) and (
+            beat_at is None or fresh):
         return 'ok', 'watcher ok'
     since = iso(seen) if seen is not None else 'before this loop was armed'
     return 'dead', f'watcher dead since {since}'
@@ -387,6 +389,10 @@ def timer_unit(name):
     return f'board-sync@{slug(name)}.timer'
 
 
+def watch_unit(name):
+    return f'board-watch@{slug(name)}.service'
+
+
 def bus_environment():
     runtime = f'/run/user/{os.getuid()}'
     return {'XDG_RUNTIME_DIR': runtime, 'DBUS_SESSION_BUS_ADDRESS': f'unix:path={runtime}/bus'}
@@ -395,6 +401,13 @@ def bus_environment():
 def systemctl(*args):
     return subprocess.run(['systemctl', '--user', *args], capture_output=True, text=True,
                           timeout=30, env={**os.environ, **bus_environment()})
+
+
+def systemd_user():
+    try:
+        return systemctl('show-environment').returncode == 0
+    except ERRORS:
+        return False
 
 
 def timer_enabled(name):
@@ -408,6 +421,17 @@ def unit_quote(value):
     """Quote systemd syntax, including specifiers; ExecStart also escapes dollars."""
     return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace(
         '%', '%%').replace('\n', '\\n').replace('\r', '\\r') + '"'
+
+
+def write_unit(directory, filename, content):
+    target = directory / filename
+    if target.exists() and target.read_text() == content:
+        return False
+    with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as out:
+        temporary = Path(out.name)
+        out.write(content)
+    temporary.replace(target)
+    return True
 
 
 def prune_timers(name, now):
@@ -432,6 +456,16 @@ def prune_timers(name, now):
             systemctl('disable', '--now', unit).check_returncode()
 
 
+def unit_environment():
+    return {
+        **bus_environment(),
+        'PATH': f'{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin',
+        'BOARD_DRAIN_STATE_DIR': str(state_dir().resolve()),
+        'BOARD_DRAIN_CRED_DIR': str(Path(os.environ.get('BOARD_DRAIN_CRED_DIR') or
+            Path.home() / '.config/hypertask-agents/credentials/sessions').resolve()),
+    }
+
+
 def arm_timer(name, board, label, now=None):
     """Converge only this chat's units, then disable abandoned chats' recorded timers."""
     moment = time.time() if now is None else now
@@ -441,13 +475,7 @@ def arm_timer(name, board, label, now=None):
     config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
     directory = config / 'systemd/user'
     directory.mkdir(parents=True, exist_ok=True)
-    environment = {
-        **bus_environment(),
-        'PATH': f'{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin',
-        'BOARD_DRAIN_STATE_DIR': str(state_dir().resolve()),
-        'BOARD_DRAIN_CRED_DIR': str(Path(os.environ.get('BOARD_DRAIN_CRED_DIR') or
-            Path.home() / '.config/hypertask-agents/credentials/sessions').resolve()),
-    }
+    environment = unit_environment()
     command = ['/usr/bin/timeout', '600', sys.executable,
                str(Path(__file__).resolve().with_name('sync')), '--board', str(board),
                '--label', label, '--name', name, '--own-token']
@@ -460,13 +488,7 @@ def arm_timer(name, board, label, now=None):
              'OnStartupSec=1min\nOnUnitActiveSec=15min\nRandomizedDelaySec=3min\n'
              'Unit=' + unit.removesuffix('.timer') + '.service\n\n[Install]\nWantedBy=timers.target\n')
     for filename, content in ((unit, timer), (unit.removesuffix('.timer') + '.service', service)):
-        target = directory / filename
-        if target.exists() and target.read_text() == content:
-            continue
-        with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as out:
-            temporary = Path(out.name)
-            out.write(content)
-        temporary.replace(target)
+        write_unit(directory, filename, content)
     # Retry reload even after a crash between replacing a unit and reloading it.
     systemctl('daemon-reload').check_returncode()
     systemctl('enable', '--now', unit).check_returncode()
@@ -474,6 +496,41 @@ def arm_timer(name, board, label, now=None):
                          'sync_timer_armed_at': iso(moment)})
     prune_timers(name, moment)
     return state
+
+
+def environment_line(key, value):
+    text = str(value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', ' ')
+    return f'{key}="{text}"\n'
+
+
+def arm_watch(name, board, label, watcher, every=DEFAULT_EVERY, environment=None, now=None):
+    moment = time.time() if now is None else now
+    if board < 1:
+        raise ValueError('--board must be positive')
+    unit = watch_unit(name)
+    directory = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'systemd/user'
+    directory.mkdir(parents=True, exist_ok=True)
+    values = {
+        **unit_environment(),
+        'BOARD': board, 'LABEL': label, 'NAME': name, 'EVERY': int(every),
+        **(environment or {}),
+    }
+    environment_file = state_dir().resolve() / f'watch-{slug(name)}.env'
+    environment_file.parent.mkdir(parents=True, exist_ok=True)
+    environment_file.write_text(''.join(environment_line(key, value)
+                                       for key, value in values.items()))
+    command = [sys.executable, str(watcher), '--detached',
+               '--board', '${BOARD}', '--label', '${LABEL}', '--name', '${NAME}',
+               '--every', '${EVERY}']
+    service = ('[Unit]\nDescription=Board drain watcher %i\n\n[Service]\nType=simple\n'
+               f'EnvironmentFile={environment_file}\n'
+               'ExecStart=' + ' '.join(unit_quote(arg) for arg in command) +
+               '\nRestart=on-failure\nRestartSec=30\n')
+    write_unit(directory, 'board-watch@.service', service)
+    systemctl('daemon-reload').check_returncode()
+    systemctl('restart', unit).check_returncode()
+    return store(name, {'watch_unit': unit, 'watch_detached_at': iso(moment),
+                        'board': board, 'label': label})
 
 
 def loop_interval(timeout=20):

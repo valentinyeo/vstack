@@ -1909,6 +1909,22 @@ class LoopStateTest(unittest.TestCase):
         self.assertEqual(loop.status('HT Test', now=NOW + 541),
                          (2, f'watcher dead since {iso(NOW)}'))
 
+    def test_a_detached_watcher_lives_on_its_own_fresh_pulse(self):
+        loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
+        loop.store('HT Test', {'watch_unit': 'board-watch@ht-test.service',
+                               'watch_pid': dead_pid(), 'watch_every': 180})
+        loop.beat('HT Test', now=NOW)
+        self.assertEqual(loop.watch_health('HT Test', now=NOW + 180), ('ok', 'watcher ok'))
+        code, line = loop.status('HT Test', now=NOW + 180)
+        self.assertEqual(code, 0, line)
+        self.assertTrue(line.startswith('armed, expires in '), line)
+        self.assertEqual(loop.watch_health('HT Test', now=NOW + 10_000),
+                         ('dead', f'watcher dead since {iso(NOW)}'))
+        # A pulse with no recorded pid is a watcher that exited, unit or not.
+        loop.beat('HT Test', now=NOW + 10_000)
+        loop.clear_watch('HT Test')
+        self.assertEqual(loop.watch_health('HT Test', now=NOW + 10_000)[0], 'dead')
+
     def test_a_live_watcher_without_beats_counts_as_alive_during_upgrade(self):
         """An old pre-upgrade watcher wrote watch_pid and watch_started, never watch_beat."""
         loop.arm('HT Test', every='6h', job='cron-1', now=NOW)
@@ -2755,6 +2771,184 @@ class WatchTest(unittest.TestCase):
     def _mark_waiting(self, rows, comments):
         rows[0]['comments'] = comments
         self.rows(rows)
+
+
+class WatchDetachTest(unittest.TestCase):
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.fixture = self.directory / 'view.json'
+        self.sender = self.directory / 'bin/mp-send'
+        self.sender.parent.mkdir()
+        self.wakes = self.directory / 'wakes.jsonl'
+        self.sender.write_text(
+            f'#!{sys.executable}\nimport json, pathlib, sys\n'
+            f'with pathlib.Path({str(self.wakes)!r}).open("a") as log:\n'
+            '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+        self.sender.chmod(0o755)
+        self.configs = self.directory / '.local/state/multiprompt/agent-host'
+        self.configs.mkdir(parents=True)
+        (self.configs / 'own.config.json').write_text(json.dumps({'tmux': 'own-tab', 'sid': 'own-sid'}))
+        env = patch.dict(os.environ, {
+            'HOME': str(self.directory), 'XDG_CONFIG_HOME': str(self.directory),
+            'MULTIPROMPT_TAB': 'own-tab', 'TMUX': '', 'PATH': str(self.sender.parent),
+            'BOARD_DRAIN_STATE_DIR': str(self.directory / 'state')})
+        env.start()
+        self.addCleanup(env.stop)
+        plan_pick = patch.object(watch.loop_state, 'PLAN_PICK',
+                                 self.directory / 'absent/plan-pick')
+        plan_pick.start()
+        self.addCleanup(plan_pick.stop)
+        alive = patch.object(watch, 'tab_alive', return_value=None)
+        alive.start()
+        self.addCleanup(alive.stop)
+
+    def rows(self, rows):
+        self.fixture.write_text(json.dumps(rows))
+
+    def systemctl(self, calls):
+        """A fake systemctl: records its argv and succeeds, so no test touches real systemd."""
+        def fake(*args):
+            calls.append(args)
+            return subprocess.CompletedProcess(['systemctl', '--user', *args], 0, '', '')
+        return fake
+
+    def detach(self, *extra, fail=None):
+        calls = []
+        out = io.StringIO()
+        systemctl = self.systemctl(calls)
+        with patch.object(watch.loop_state, 'systemctl', side_effect=fail or systemctl), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = watch.main(['--board', '13556', '--label', 'Board Drain Loop',
+                               '--name', 'Watch Test', '--detach', *extra], clock=Clock().time)
+        return code, out.getvalue(), calls
+
+    def unit(self):
+        return self.directory / 'systemd/user/board-watch@.service'
+
+    def environment_file(self):
+        return self.directory / 'state/watch-watch-test.env'
+
+    def test_detach_writes_and_starts_the_unit(self):
+        code, out, calls = self.detach()
+        self.assertEqual(code, 0, out)
+        self.assertIn('detached: board-watch@watch-test.service', out)
+        self.assertEqual(calls, [('show-environment',), ('daemon-reload',),
+                                 ('restart', 'board-watch@watch-test.service')])
+        service = self.unit().read_text()
+        self.assertIn('Restart=on-failure', service)
+        self.assertIn('--detached', service)
+        self.assertIn('EnvironmentFile=' + str(self.environment_file()), service)
+        self.assertIn('Description=Board drain watcher %i', service)
+        environment = self.environment_file().read_text()
+        self.assertIn('BOARD="13556"', environment)
+        self.assertIn('LABEL="Board Drain Loop"', environment)
+        self.assertIn('NAME="Watch Test"', environment)
+        self.assertIn('MULTIPROMPT_TAB="own-tab"', environment)
+        state = json.loads((self.directory / 'state/watch-test.json').read_text())
+        self.assertEqual(state['watch_unit'], 'board-watch@watch-test.service')
+
+    def test_arming_again_replaces_the_older_unit_instead_of_adding_one(self):
+        code, out, calls = self.detach()
+        self.assertEqual(code, 0, out)
+        code, out, again = self.detach()
+        self.assertEqual(code, 0, out)
+        restarts = [call for call in calls + again if call[:1] == ('restart',)]
+        self.assertEqual(restarts, [('restart', 'board-watch@watch-test.service')] * 2)
+        self.assertEqual([path.name for path in self.unit().parent.iterdir()],
+                         ['board-watch@.service'])
+
+    def test_no_systemd_user_prints_the_tracked_job_fallback(self):
+        code, out, _ = self.detach(fail=OSError('no bus'))
+        self.assertEqual(code, 0, out)
+        self.assertIn('no systemd --user here', out)
+        self.assertIn('tracked background job', out)
+        self.assertFalse(self.unit().exists())
+
+    def test_a_paused_chat_starts_no_unit(self):
+        loop.pause('Watch Test', reason='Claude budget pause', now=NOW)
+        code, out, calls = self.detach()
+        self.assertEqual(code, 0, out)
+        self.assertIn('paused until further notice: Claude budget pause', out)
+        self.assertEqual(calls, [])
+        self.assertFalse(self.unit().exists())
+
+    def run_watch(self, rows, *extra, on_sleep=None):
+        self.rows(rows)
+        clock = Clock()
+        clock.on_sleep = on_sleep
+        cycles = () if '--cycles' in extra else ('--cycles', '1')
+        argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
+                '--fixture', str(self.fixture), '--no-sync', '--detached', *cycles, *extra]
+        out = io.StringIO()
+        with patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = watch.main(argv, clock=clock.time, sleep=clock.sleep)
+        return code, out.getvalue(), clock
+
+    def test_a_detached_watcher_has_no_lifetime_exit_and_no_idle_wake(self):
+        code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')],
+                                          '--heartbeat', '5000', '--cycles', '2')
+        self.assertEqual(code, 0, out)
+        self.assertNotIn('lifetime: exiting before the 2h job limit', out)
+        self.assertIn('heartbeat: no change in 2h', out)
+        self.assertGreater(clock.now - NOW, watch.LIMIT, 'the unit has no 2h limit')
+        self.assertFalse(self.wakes.exists(), 'an idle detached watcher never wakes the chat')
+
+    def test_a_detached_watcher_still_wakes_the_chat_on_a_change(self):
+        code, out, _ = self.run_watch(
+            [vsta('VSTA-1', section='Done')],
+            on_sleep=lambda tick: tick == 1 and self.rows([vsta('VSTA-80')]))
+        self.assertEqual(code, 0, out)
+        wakes = [json.loads(line) for line in self.wakes.read_text().splitlines()]
+        self.assertEqual(len(wakes), 1, wakes)
+        self.assertIn('changed: VSTA-80 new in Todo', wakes[0][4])
+
+    def test_a_detached_wake_failure_retries_on_the_next_poll(self):
+        class StopTest(BaseException):
+            pass
+
+        sent = []
+
+        def failing(lines):
+            sent.append(list(lines))
+            if len(sent) >= 2:
+                raise StopTest()
+            return False
+
+        self.rows([vsta('VSTA-1', section='Done')])
+        clock = Clock()
+        clock.on_sleep = lambda tick: self.rows([vsta('VSTA-80')]) if tick == 1 else None
+        argv = ['--board', '13556', '--label', 'Board Drain Loop', '--name', 'Watch Test',
+                '--fixture', str(self.fixture), '--no-sync', '--detached', '--cycles', '0']
+        out = io.StringIO()
+        with patch.object(watch, 'wake', side_effect=failing), \
+                patch.object(watch.drain.reconcile, 'worker_alive', return_value=False), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            with self.assertRaises(StopTest):
+                watch.main(argv, clock=clock.time, sleep=clock.sleep)
+        self.assertIn('wake: retrying on the next poll', out.getvalue())
+        self.assertEqual(len(sent), 2, 'a failed delivery is retried, never an exit')
+        self.assertIn('changed: VSTA-80 new in Todo', sent[-1][0])
+
+    def test_a_detached_watcher_stops_when_its_chat_is_gone(self):
+        with patch.object(watch, 'tab_alive', return_value=False):
+            code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+        self.assertEqual(code, 0, out)
+        self.assertIn('chat: tmux session own-tab is gone; stopping this detached watcher', out)
+        self.assertEqual(clock.now - NOW, 180, 'two polls, then it stops itself')
+        state = json.loads((self.directory / 'state/watch-test.json').read_text())
+        self.assertIsNone(state['watch_pid'], 'a stopped watcher leaves no live pid behind')
+
+    def test_a_detached_watcher_with_no_live_signal_stops_after_the_loop_week(self):
+        with patch.object(watch.loop_state, 'WEEK', 300):
+            code, out, clock = self.run_watch([vsta('VSTA-1', section='Done')], '--cycles', '0')
+        self.assertEqual(code, 0, out)
+        self.assertIn('no live chat signal for', out)
+        self.assertIn('stopping this detached watcher', out)
+        self.assertLess(clock.now - NOW, 7 * 86400)
 
 
 class WatchSyncTest(unittest.TestCase):
