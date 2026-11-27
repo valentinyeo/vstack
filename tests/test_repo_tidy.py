@@ -119,7 +119,7 @@ class TestGates(SandboxCase):
         self.assertTrue(line, output)
         self.assertIn("worktrees removed 4", line[0], output)
         self.assertIn("local branches deleted 8", line[0], output)
-        self.assertIn("remote deleted 4", line[0], output)
+        self.assertIn("remote deleted 5", line[0], output)  # copy-merged is the slices fixture's
         self.assertIn("stale-unPR'd 1", line[0], output)
 
     def test_run_log_written(self):
@@ -190,7 +190,9 @@ class TestSlices(SandboxCase):
 
     def test_each_held_folder_gives_its_reason(self):
         self.assertIn("HOLD slice", self.apply.stdout)
-        self.assertIn("sibling folders removed 3 held 4", self.apply.stdout)
+        # Two shipped clones go; the dirty, unpushed, leased, orphaned and grouped
+        # ones stay. The neighbour copy is another project's, so it is not counted.
+        self.assertIn("sibling folders removed 2 held 5", self.apply.stdout)
 
     def test_dry_run_names_the_same_folders_and_removes_none(self):
         self.assertEqual(self.dry.returncode, 0, self.dry.stderr)

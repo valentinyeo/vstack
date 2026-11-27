@@ -293,7 +293,7 @@ def discover_repos(projects_root):
         path = Path.home() / share
         if is_main_checkout(path):
             repos.append(path.resolve())
-    slugs = {repo: repo_slug(repo) for repo in repos}
+    slugs = {repo: origin_slug_from_config(repo) for repo in repos}
     kept = []
     for repo in repos:
         copy_of = [other.name for other in repos
@@ -383,16 +383,64 @@ def remote_branches(repo):
     return branches
 
 
+SLUG = re.compile(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$")
+
+
+def slug_from_url(url):
+    match = SLUG.search(url or "")
+    return "%s/%s" % (match.group(1), match.group(2)) if match else None
+
+
 def repo_slug(repo):
     # git config, not `remote get-url`: a url.<base>.insteadOf rewrite would
     # turn the GitHub URL into the local path it fetches from.
     code, out, _ = git(["-C", str(repo), "config", "--get", "remote.origin.url"])
     if code != 0:
         return None
-    match = re.search(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$", out.strip())
-    if not match:
+    return slug_from_url(out.strip())
+
+
+def git_config_file(path):
+    """The config that names this folder's remotes, with no child process."""
+    dot = Path(path) / ".git"
+    if dot.is_dir():
+        return dot / "config"
+    target = gitdir_target(path)
+    if target is None:
         return None
-    return "%s/%s" % (match.group(1), match.group(2))
+    # A linked worktree's admin dir sits inside the main checkout's `.git`.
+    if target.parent.name == "worktrees":
+        return target.parent.parent / "config"
+    return target / "config"
+
+
+def origin_slug_from_config(path):
+    """This folder's origin slug read straight from the file, never from a child.
+
+    Discovery runs before any repo's own budget, so a git here has no deadline to
+    die at: a hung filesystem or a stuck remote would run out GIT_TIMEOUT once per
+    repo and hang the whole sweep. Discovery only needs to tell a project from its
+    copies, and the config file answers that in one open.
+    """
+    config = git_config_file(path)
+    if config is None:
+        return None
+    try:
+        text = config.read_text(errors="replace")
+    except OSError:
+        return None
+    section = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+            continue
+        if section != '[remote "origin"]':
+            continue
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "url":
+            return slug_from_url(value.strip())
+    return None
 
 
 # -- github --------------------------------------------------------------
@@ -718,9 +766,12 @@ class RepoRun:
         base_set = commit_set(self.repo, base) if base else set()
         remote_set = commit_set(self.repo, "--remotes") if fetch_ok else set()
 
+        self.tidy_worktrees(base, base_set, remote_set, github, remote_ok, cutoff)
+        # The cap is one repo's removal budget, and a repo's own worktrees come
+        # first: they are the copies a chat made, so they are what --max-remove
+        # defers last. Sibling folders spend whatever is left.
         self.tidy_slices(base, base_set, remote_set, github, remote_ok, cutoff,
                          main_path)
-        self.tidy_worktrees(base, base_set, remote_set, github, remote_ok, cutoff)
         self.tidy_local_branches(base, base_set, github, remote_ok)
         if remote_ok:
             self.tidy_remote_branches(base, base_set, github)
