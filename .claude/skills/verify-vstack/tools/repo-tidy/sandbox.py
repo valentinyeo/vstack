@@ -153,6 +153,7 @@ class Sandbox:
         self.fixture_path = self.root / "fixture.json"
         self.call_log = self.root / "gh-calls.log"
         self.expect_path = self.root / "expect.json"
+        self.slices_fixture = {"merged": [], "open": [], "closed": []}
         self.scale = scale
         self.neighbour = neighbour
 
@@ -212,7 +213,7 @@ class Sandbox:
         self.git(["commit", "-qm", "main two"], cwd=self.repo)
         self.git(["push", "-q", "origin", "HEAD:main"], cwd=self.repo)
 
-        fixture = {SLUG: {"prs": {"merged": [], "open": [], "closed": []},
+        fixture = {SLUG: {"prs": self.slices_fixture,
                           "delete_branch_on_merge": False,
                           "protected": ["main", "remote-protected"]}}
         prs = fixture[SLUG]["prs"]
@@ -315,6 +316,7 @@ class Sandbox:
         prs["merged"].append({"headRefName": "remote-protected", "headRefOid": tip,
                               "number": 21, "mergedAt": iso(1)})
 
+        self._build_slices()
         if self.neighbour:
             self._build_neighbour()
         if self.scale:
@@ -353,6 +355,83 @@ class Sandbox:
         shim = self.bin / "gh"
         shim.write_text(GH_SHIM)
         shim.chmod(0o755)
+
+    def _build_slices(self):
+        """The project's other folders beside it, one per state repo-tidy tells apart.
+
+        A clone keeps its own git objects, so a clone is safe to remove only when its
+        own tip shipped. The shipped ones are a clone sitting on main and a clone whose
+        tip a merged PR carries. The held ones break one gate each: a dirty edit, an
+        unpushed commit, a lease, a folder of another project, a worktree folder git no
+        longer registers, and a grouping folder holding its own copy.
+        """
+        self._slice_commit(self.projects / "sandbox-main-copy", "main", None, None,
+                           push=False)
+        self.git(["checkout", "-q", "main"], cwd=self.projects / "sandbox-main-copy")
+        self.git(["reset", "-q", "--hard", "origin/main"], cwd=self.projects / "sandbox-main-copy")
+        tip = self._slice_commit(self.projects / "sandbox-merged-copy", "copy-merged",
+                                 "copy.txt", "copied work\n")
+        self.slices_fixture["merged"].append(
+            {"headRefName": "copy-merged", "headRefOid": tip, "number": 41,
+             "mergedAt": iso(1)})
+        # The clone's own commits are now on origin, so the project's view of the
+        # remote is what a chat's next fetch would see.
+        self.git(["-C", str(self.repo), "fetch", "-q", "origin"])
+        dirty = self.projects / "sandbox-dirty-copy"
+        self._slice_commit(dirty, "dirty-copy", "dirty.txt", "dirty\n", push=False)
+        (dirty / "app.py").write_text("print('edited, never committed')\n")
+        self._slice_commit(self.projects / "sandbox-unpushed-copy", "unpushed-copy",
+                           "unpushed.txt", "unpushed\n", push=False)
+        self._slice_commit(self.projects / "sandbox-leased-copy", "leased-copy",
+                           "leased.txt", "leased\n", push=False)
+        other = self.projects / "sandbox-neighbour-copy"
+        self._slice_commit(other, "neighbour", "n.txt", "n\n", push=False)
+        self.git(["remote", "set-url", "origin", str(self.root / "other-origin.git")],
+                 cwd=other)
+        orphan = self.projects / "sandbox-orphan-tree"
+        orphan.mkdir(parents=True)
+        (orphan / ".git").write_text("gitdir: %s\n" % (
+            self.repo / ".git/worktrees/sandbox-orphan-tree"))
+        (orphan / "app.py").write_text("print('orphan')\n")
+        self._slice_commit(self.projects / "sandbox-trees/chat-copy", "grouped",
+                           "g.txt", "g\n", push=False)
+        self.age_slices()
+
+    def _slice_commit(self, path, branch, filename, content, push=True):
+        """A clone of the origin on `branch`, with one commit when a file is named."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.git(["clone", "-q", GITHUB_ORIGIN, str(path)])
+        self.git(["config", "user.name", "Sandbox"], cwd=path)
+        self.git(["config", "user.email", "sandbox@example.com"], cwd=path)
+        if filename is None:
+            return self.git(["rev-parse", "HEAD"], cwd=path).stdout.strip()
+        self.git(["checkout", "-q", "-B", branch], cwd=path)
+        (path / filename).write_text(content)
+        self.git(["add", "-A"], cwd=path)
+        self.git(["commit", "-qm", "work on %s" % branch], cwd=path)
+        tip = self.git(["rev-parse", "HEAD"], cwd=path).stdout.strip()
+        if push:
+            self.git(["push", "-q", "origin", branch], cwd=path)
+        return tip
+
+    def age_slices(self, hours=3):
+        """Backdate every sibling folder, so only a freshly used one looks in use."""
+        old = time.time() - hours * 3600
+        for path in self.slice_dirs():
+            for dirpath, dirnames, filenames in os.walk(path):
+                dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules")]
+                for name in filenames:
+                    try:
+                        os.utime(os.path.join(dirpath, name), (old, old))
+                    except OSError:
+                        pass
+
+    def slice_dirs(self):
+        """Every folder this project owns beside itself, including the grouped one."""
+        return [path for path in self.projects.iterdir()
+                if path.is_dir() and (path.name.startswith("sandbox-")
+                                      or path.name == "sandbox-trees")]
 
     def _build_neighbour(self):
         """A second repo under the projects root, with one shipped worktree."""
@@ -422,6 +501,10 @@ class Sandbox:
             "kept_worktrees": ["wip", "scratch", "unpushed", "open-pr", "squash-stale",
                                "closed-recent", "in-use", "recent", "lease", "detached"],
             "outside_worktrees": ["outside/outside-tree"],
+            "gone_slices": ["sandbox-main-copy", "sandbox-merged-copy"],
+            "kept_slices": ["sandbox-dirty-copy", "sandbox-unpushed-copy",
+                            "sandbox-leased-copy", "sandbox-neighbour-copy",
+                            "sandbox-orphan-tree", "sandbox-trees"],
             "deleted_branches": ["clean-merged", "squash-merged", "ignored-merged",
                                  "local-merged", "local-squash", "local-closed-old",
                                  "remote-merged", "remote-protected"],
@@ -440,6 +523,8 @@ class Sandbox:
             "commits": [],
         }
         if scale:
+            expect["gone_slices"] = []
+            expect["kept_slices"] = []
             expect["gone_worktrees"] = []
             expect["kept_worktrees"] = []
             expect["deleted_branches"] = []
@@ -536,7 +621,8 @@ def snapshot(root) -> dict:
         "remote": sorted(remote),
         "alive_commits": sorted(alive),
         "gh_calls": calls,
-        "dirs": sorted(str(p.name) for p in sb.projects.glob("sandbox-*") if p.is_dir()),
+        "dirs": sorted(str(p.name) for p in sb.projects.glob("sandbox-*") if p.is_dir()
+                       or p.name == "sandbox-trees"),
     }
 
 
@@ -613,6 +699,16 @@ def grade(root, run_dir=None) -> tuple:
         record("github-setting", not patches, "no setting write expected")
 
     record("main-worktree", main in paths, "main checkout untouched")
+
+    dirs = set(state["dirs"])
+    leaked_slices = [n for n in expect.get("gone_slices", []) if n in dirs]
+    still_slices = [n for n in expect.get("kept_slices", []) if n not in dirs]
+    record("slices", not leaked_slices and not still_slices,
+           "%d shipped sibling folders removed, %d held%s%s" % (
+               len(expect.get("gone_slices", [])) - len(leaked_slices),
+               len(expect.get("kept_slices", [])) - len(still_slices),
+               "" if not leaked_slices else ", leaked: " + ", ".join(leaked_slices),
+               "" if not still_slices else ", lost held: " + ", ".join(still_slices)))
 
     if run_dir:
         run_dir = Path(run_dir)

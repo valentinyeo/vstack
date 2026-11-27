@@ -233,6 +233,89 @@ class Clock:
             self.on_sleep(int((self.now - NOW) // seconds))
 
 
+class TidyFindingsTest(unittest.TestCase):
+    """drain-check reads this project's own merged folders without asking GitHub."""
+
+    OWED = ("TIDY /home/v/projects/vstack-wt-vsta-1\n"
+            "TIDY /home/v/projects/vstack-wt-vsta-2\n"
+            "TIDY /home/v/projects/vstack-wt-vsta-3\n")
+
+    def run_quick(self, stdout, returncode=0, present=True):
+        done = subprocess.CompletedProcess(args=[], returncode=returncode,
+                                           stdout=stdout, stderr='')
+        access = (lambda path, mode: True) if present else (lambda path, mode: False)
+        with patch.object(drain.os, 'access', access), \
+                patch.object(drain.subprocess, 'run', return_value=done):
+            return drain.tidy_findings()
+
+    def test_an_owed_folder_is_one_finding_that_names_the_fix(self):
+        findings = self.run_quick(self.OWED)
+        self.assertEqual(len(findings), 1, findings)
+        kind, text = findings[0]
+        self.assertEqual(kind, 'tidy')
+        self.assertIn('3 folder(s)', text)
+        self.assertIn('vstack-wt-vsta-1', text)
+        self.assertIn('repo-tidy --apply --project', text)
+
+    def test_a_pass_reads_as_no_finding(self):
+        self.assertEqual(self.run_quick('tidy: PASS\n'), [])
+
+    def test_many_owed_folders_are_capped_with_a_count(self):
+        owed = ''.join('TIDY /home/v/projects/vstack-wt-%d\n' % index
+                       for index in range(drain.TIDY_SHOWN + 3))
+        findings = self.run_quick(owed)
+        self.assertIn('(+3 more)', findings[0][1])
+
+    def test_a_missing_or_broken_reader_reports_nothing(self):
+        self.assertEqual(self.run_quick('', returncode=2), [])
+        self.assertEqual(self.run_quick(self.OWED, present=False), [])
+
+    def test_a_fixture_tick_never_runs_the_read(self):
+        """A fixture is a board under test, not this host's folders."""
+        called = []
+        with patch.object(drain, 'tidy_findings',
+                          side_effect=lambda: called.append(1) or []):
+            fixture = Path(tempfile.mkdtemp(prefix='board-drain-tidy-')) / 'f.json'
+            fixture.write_text('[]')
+            out = io.StringIO()
+            with patch.object(drain, 'probe_load', return_value=(0, ADD_LINE)), \
+                    patch.object(drain, 'probe_lane', return_value=None), \
+                    contextlib.redirect_stdout(out):
+                drain.main(['--board', '2060', '--label', 'Poteto',
+                            '--fixture', str(fixture), '--now', iso(NOW)])
+        self.assertEqual(called, [], out.getvalue())
+
+    def test_a_live_tick_runs_the_read(self):
+        code, out, called = self.live_tick()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(called, [1], out)
+
+    def test_no_hygiene_flag_skips_the_read(self):
+        code, out, called = self.live_tick('--no-hygiene')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(called, [], out)
+
+    def live_tick(self, *extra):
+        """One tick with the board read and the load probe stubbed, at no network."""
+        called = []
+        directory = Path(tempfile.mkdtemp(prefix='board-drain-tidy-live-'))
+        env = patch.dict(os.environ, {'BOARD_DRAIN_STATE_DIR': str(directory)})
+        env.start()
+        self.addCleanup(env.stop)
+        out = io.StringIO()
+        with patch.object(drain, 'tidy_findings',
+                          side_effect=lambda: called.append(1) or []), \
+                patch.object(drain, 'probe_load', return_value=(0, ADD_LINE)), \
+                patch.object(drain, 'probe_lane', return_value=None), \
+                patch.object(drain, 'rows_for',
+                             return_value=('board', [], {}, {}, [])), \
+                patch.object(drain.reconcile, 'github_summary', return_value=''), \
+                contextlib.redirect_stdout(out):
+            code = drain.main(['--board', '2060', '--label', 'Poteto',
+                               '--now', iso(NOW), *extra])
+        return code, out.getvalue(), called
+
+
 class CheckTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -118,6 +118,11 @@ VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
 LOAD_FINDINGS = frozenset({'loop off', 'stale', 'orphan PR'})
 # A board over its review-debt cap holds new starts: these findings wait behind one line.
 REVIEW_DEBT_FINDINGS = frozenset({'loop off', 'stale'})
+# This chat's own project folders, read from local git only. repo-tidy owns every
+# gate; this check only says which folders it already owes a cleanup for.
+REPO_TIDY = HERE.parent / 'repo-tidy' / 'repo-tidy'
+TIDY_TIMEOUT = 20
+TIDY_SHOWN = 5
 # The lane probe: plan-pick's own record of never finding a free worker lane.
 PLAN_PICK_LOG = Path(os.environ.get('PLAN_PICK_LAUNCHES')
                      or os.path.expanduser('~/.local/state/token-ladder/launches.jsonl'))
@@ -391,6 +396,34 @@ def newest_comment(comments):
 
 def comment_text(comment):
     return (comment.get('text') or comment.get('commentText') or '').strip()
+
+
+def tidy_findings():
+    """Folders this chat's own project merged and left behind, from local git alone.
+
+    A merge that kept its worktree and branch is a cleanup the chat owes, and this
+    is where a chat sees it without remembering. repo-tidy decides every gate; this
+    reads its `--quick` pass, which asks GitHub nothing and writes nothing, so a
+    tick costs no network and can never delete. What local git cannot see, a squash
+    merge or an open PR, waits for the gated `--apply` run. News, not a failure:
+    only that run, with all four gates, may remove anything.
+    """
+    if not os.access(REPO_TIDY, os.X_OK):
+        return []
+    try:
+        done = subprocess.run([str(REPO_TIDY), '--quick'], capture_output=True,
+                              text=True, timeout=TIDY_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    owed = [line[len('TIDY '):].strip() for line in (done.stdout or '').splitlines()
+            if line.startswith('TIDY ')]
+    if not owed:
+        return []
+    shown = ', '.join(Path(path).name for path in owed[:TIDY_SHOWN])
+    more = '' if len(owed) <= TIDY_SHOWN else f' (+{len(owed) - TIDY_SHOWN} more)'
+    return [('tidy', f'tidy: {len(owed)} folder(s) this project already merged and left '
+                     f'behind: {shown}{more}; run repo-tidy --apply --project . from the '
+                     f'main checkout')]
 
 
 def merge_findings(rows, pulls):
@@ -1025,6 +1058,8 @@ def read_view(args, now):
             findings.append(('stale', f'stale: {row["task"]["ticketNumber"]} workable in Todo '
                                       f'for {int(spent // 3600)}h.'))
     findings += merge_findings(rows, pulls)
+    if not args.fixture and not getattr(args, 'no_hygiene', False):
+        findings += tidy_findings()
     # The repos this board ships from must refuse a merge until a verifier passed it.
     # Only this view's own repos are judged: another chat's repo is its gate, not this
     # one's. A view with no PRs names no repo, and asks GitHub nothing at all.
@@ -1174,6 +1209,8 @@ def main(argv=None):
     parser.add_argument('--state-name', help='Also require this chat\'s loop to be armed')
     parser.add_argument('--no-load', action='store_true',
                         help='Skip the vps-state load probe and the plan-pick lane probe')
+    parser.add_argument('--no-hygiene', action='store_true',
+                        help="Skip this project's own folder read (repo-tidy --quick)")
     args = parser.parse_args(argv)
     if args.board < 1:
         parser.error('--board must be a positive board id')
