@@ -314,6 +314,56 @@ class DiskLimitScalesToTheDisk(unittest.TestCase):
         self.assertEqual(facts["disk"]["total_gb"], 75.0)
 
 
+class DiskWarning(unittest.TestCase):
+    """A root disk that is 85% full warns and names the two commands that fix it."""
+
+    def verdict(self, total_gb, free_gb):
+        module = load_script()
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="vps-state-warn-"))
+        proc, ps, disk = write_proc(tmp, 4.0, 70 * 1024 * MB,
+                                    free=int(free_gb * GB), total=int(total_gb * GB))
+        return module.evaluate(module.collect(proc, ps_file=ps, statvfs_json=disk,
+                                              cores=CORES))
+
+    def disk_line(self, result):
+        return " ".join(reason for reason in result["reasons"]["worker"]
+                        if reason.startswith("disk"))
+
+    def test_eighty_five_percent_warns_and_names_both_cleaners(self):
+        # 678G disk, 101G free: 85% used with room over the 80G ADD floor.
+        result = self.verdict(678, 101)
+        self.assertEqual(result["verdict"]["worker"], "CAREFUL")
+        self.assertEqual(result["verdict"]["chat"], "CAREFUL")
+        line = self.disk_line(result)
+        self.assertIn("85% used", line)
+        self.assertIn("repo-tidy --prune-caches", line)
+        self.assertIn("vps-tidy --apply", line)
+
+    def test_below_the_warning_line_still_adds(self):
+        # 84% used: no warning, no block, one more worker fits.
+        result = self.verdict(678, 108)
+        self.assertEqual(result["verdict"], {"worker": "ADD", "chat": "ADD"})
+        self.assertEqual(self.disk_line(result), "")
+
+    def test_the_warning_never_holds(self):
+        for free_gb in (101, 95, 90):
+            with self.subTest(free_gb=free_gb):
+                result = self.verdict(678, free_gb)
+                self.assertNotEqual(result["verdict"]["worker"], "HOLD")
+                self.assertIn("repo-tidy --prune-caches", self.disk_line(result))
+
+    def test_a_real_ninety_percent_block_keeps_the_same_hint(self):
+        result = self.verdict(678, 60)
+        self.assertNotEqual(result["verdict"]["worker"], "ADD")
+        self.assertIn("repo-tidy --prune-caches", self.disk_line(result))
+
+    def test_one_threshold_owns_the_warning(self):
+        module = load_script()
+        self.assertEqual(module.THRESHOLDS["add_disk_used_pct"], 85.0)
+        self.assertLess(module.THRESHOLDS["add_disk_used_pct"],
+                        module.THRESHOLDS["hold_disk_used_pct"])
+
+
 class CoreSeam(unittest.TestCase):
     """A fixture that says 18 cores must say 18 on a 4 core runner too."""
 

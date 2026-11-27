@@ -67,6 +67,6 @@ It reports, it never deletes. Clean only what this session made. Never touch ano
 - `load5` per core above 1.0 means the queue is longer than the machine.
 - cpu and io pressure are kernel averages of the share of time work waited.
 - memory needs 24G free before another worker, and the room line leaves that reserve alone.
-- disk above 90% used or under 80G free stops new builds. On a small disk both free-GB floors shrink with it: ADD needs more than 20% of the disk free, HOLD below 7.5%, and a 400G or larger disk keeps the 80G and 30G numbers.
+- disk at 85% used or more stops ADD (it answers CAREFUL, never HOLD): a worker still starts, and the line names `repo-tidy --prune-caches --project .` then `vps-tidy --apply`, the two commands that hand the space back. Under 80G free also stops new builds. On a small disk both free-GB floors shrink with it: ADD needs more than 20% of the disk free, HOLD below 7.5%, and a 400G or larger disk keeps the 80G and 30G numbers.
 
 If a line says unknown, that probe failed. Answer CAREFUL at best, never ADD.

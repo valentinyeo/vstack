@@ -38,7 +38,10 @@ THRESHOLDS = {
     "add_memory_full_avg60": 2.0,
     "add_disk_free_gb": 80.0,
     "add_disk_free_frac": 0.20,
-    "add_disk_used_pct": 90.0,
+    # Disk that still allows a worker, but is close enough to fill that the chat
+    # should hand space back now instead of waiting for a hold. The line it adds
+    # names the two cleaners, so it is a fix, not a number to watch.
+    "add_disk_used_pct": 85.0,
     "hold_load_per_core": 1.5,
     "hold_cpu_some_avg60": 40.0,
     "hold_io_full_avg60": 10.0,
@@ -57,6 +60,8 @@ CMD_TIMEOUT = 5
 TMP_BUDGET = 5
 TMP_AGE_DAYS = 2
 STATUS_REL = os.path.join(".local", "state", "vps-load", "status")
+DISK_HINT = ("run repo-tidy --prune-caches --project . then vps-tidy --apply "
+             "to take the space back")
 
 PRINT_FLAGS = ("-p", "--print")
 WORKER_NAMES = {"hax", "cursor-agent"}
@@ -417,6 +422,18 @@ def disk_limits(disk):
     }
 
 
+def disk_reason(disk):
+    """The disk line a chat reads, with the two commands that hand space back.
+
+    One place owns this sentence, so a HOLD, an ADD block and the 85% warning cannot
+    drift into three different hints.
+    """
+    text = "disk {:.0f}% used".format(disk["used_pct"])
+    if disk["used_pct"] >= THRESHOLDS["add_disk_used_pct"]:
+        text += ", " + DISK_HINT
+    return text
+
+
 def evaluate(facts):
     limits = THRESHOLDS
     cores = facts["cores"]
@@ -445,7 +462,7 @@ def evaluate(facts):
         if disk["free_gb"] < disk_floor["hold_free_gb"]:
             holds.append("only {:.0f}G disk free".format(disk["free_gb"]))
         if disk["used_pct"] > limits["hold_disk_used_pct"]:
-            holds.append("disk {:.0f}% used".format(disk["used_pct"]))
+            holds.append(disk_reason(disk))
     for key, name in (("pty", "pty"), ("pids", "pids"), ("files", "open files")):
         counter = facts[key]
         if counter and counter["used_pct"] is not None and counter["used_pct"] > limits["hold_counter_pct"]:
@@ -458,7 +475,9 @@ def evaluate(facts):
         if disk["free_gb"] <= disk_floor["add_free_gb"]:
             disk_blocks.append("only {:.0f}G disk free".format(disk["free_gb"]))
         if disk["used_pct"] >= limits["add_disk_used_pct"]:
-            disk_blocks.append("disk {:.0f}% used".format(disk["used_pct"]))
+            # Steady, never a hold: a worker still starts, and the line names the two
+            # commands that hand the space back before the disk holds the next one.
+            disk_blocks.append(disk_reason(disk))
 
     worker_blocks = []
     if load is None:

@@ -115,3 +115,7 @@ gated `--apply` run; `--quick` never removes anything.
 state and grades a real apply run. `tests/test_repo_tidy.py` covers each gate,
 the cap, a broken gh, a repo mid-rebase, the sibling folders, `--project`,
 `--quick`, and an 800-worktree dry run under 60 seconds.
+`tests/test_repo_tidy_hygiene.py` covers the disk pass: an idle worktree's output goes,
+a recent one's and a live process's stay, a tracked file inside `dist/` is held, a
+entries in /tmp for the project are cleaned while a recent one, another project's, a bare
+name and a symlink stay, and a second run removes nothing.
