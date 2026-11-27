@@ -84,6 +84,8 @@ Whoever owns a ticket owns its PR until it merges (pstack autopilot-full: one ow
 - **Cloudflare:** host everything new there. Build the Rat Stack way (https://ratstack.sh): copy its floor, load its skills.
 - **Long chats:** past 110k tokens the long-chat hook warns; at 150k it blocks until you follow ../long-chat/SKILL.md (handover, then mp-fresh in the same Multibot chat). Never /clear.
 - **Own chat only:** run vstack tools only on your own chat; `tests/test_own_chat_only.py` enforces it, allowlist `config/cross-chat-allowlist.txt`.
+- **Clean up after your merge:** once your PR is merged on GitHub, run `repo-tidy --apply --mine "<main checkout>" --branch "<your merged branch>"`. Anything merged into the default branch lives on GitHub, so the copy in this repo does not. `repo-tidy` decides every removal from its four gates; `drain-check` names what is still left over.
+- **Sweep what you inherit:** the first time you work a project, run `repo-tidy --apply --project "<main checkout>"`. It clears the merged worktrees and old sibling branch folders earlier chats left behind for that project only, never another project's. Holds are retried on your own next tick.
 
 ## Designing
 

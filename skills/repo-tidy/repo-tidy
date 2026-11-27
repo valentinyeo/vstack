@@ -12,12 +12,23 @@ removals, behind four gates on every item:
                file touched in the last 2 hours, no lease file naming it
   restorable   not a detached HEAD holding commits on no remote ref
 
+Sibling slices of the same project go too, by the same four gates: a worktree
+folder, a stale registration whose folder is gone, and a standalone clone in a
+sibling folder whose origin remote is this project's (the old `repo-<ticket>`
+folders). The main checkout is never a candidate, and a folder owned by another
+repo is never touched.
+
 A repo mid-rebase or mid-merge is skipped whole. Nothing is deleted under
-~/.local/state/vcc-evidence, and nothing outside a registered worktree under
-the projects root. --max-remove caps one run so a bug cannot empty a repo.
+~/.local/state/vcc-evidence, and nothing outside the projects root.
+--max-remove caps one run so a bug cannot empty a repo.
+
+--quick reads only local git, asks GitHub nothing and writes nothing: it prints
+one TIDY line per cleanup still owed. drain-check runs it, so a merge that left
+its worktree behind is a finding, not a memory test.
 
 Usage:
-  repo-tidy [--apply] [--all | REPO_PATH...] [--json] [--mine SESSION_CWD --branch BRANCH]
+  repo-tidy [--apply] [--all | --project DIR | REPO_PATH...] [--json] [--quick]
+            [--mine SESSION_CWD --branch BRANCH]
             [--max-remove N] [--projects-root DIR] [--jobs N]
 """
 
@@ -145,23 +156,111 @@ def is_repo(path):
     dot = Path(path) / ".git"
     if dot.is_dir():
         return True
-    if not dot.is_file():
-        return False
-    try:
-        text = dot.read_text(errors="replace").strip()
-    except OSError:
-        return False
-    if not text.startswith("gitdir:"):
-        return False
-    target = Path(text[len("gitdir:"):].strip())
-    if not target.is_absolute():
-        target = Path(path) / target
-    return target.exists()
+    target = gitdir_target(path)
+    return bool(target and target.exists())
 
 
 def is_main_checkout(path):
     """Directory discovery: a worktree is not a repo of its own."""
     return (Path(path) / ".git").is_dir()
+
+
+def under(path, root):
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def gitdir_target(path):
+    """Where a folder's `.git` file points, or None for a folder that has none."""
+    dot = Path(path) / ".git"
+    if not dot.is_file():
+        return None
+    try:
+        text = dot.read_text(errors="replace").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    target = Path(text[len("gitdir:"):].strip())
+    if not target.is_absolute():
+        target = Path(path) / target
+    return target
+
+
+def slice_homes(repo, projects_root):
+    """Where this project's slice folders live: beside it, and in its grouping folders.
+
+    Chats keep their copies beside the main checkout (`projects/<repo>-wt-<ticket>`)
+    and sometimes in a grouping folder (`projects/<repo>-trees/<chat>-...`). The
+    grouping folders carry the project's own name, so two levels is the whole scan:
+    one listing per folder, never another project's tree.
+    """
+    main = Path(repo).resolve()
+    parent = main.parent
+    root = Path(projects_root).resolve()
+    homes = [parent]
+    try:
+        children = sorted(parent.iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        if (child.is_dir() and child.name.startswith(main.name + "-")
+                and not is_repo(child)):
+            homes.append(child)
+    return [home for home in homes if under(home, root)]
+
+
+def slice_candidates(repo, main_path, projects_root, slug):
+    """Folders beside this project that hold its own work, never another repo's.
+
+    Three kinds belong here: a registered worktree (git already lists it), a
+    worktree folder whose registration is gone (a stale copy of this repo's own
+    admin), and a standalone clone whose origin remote is this project's. A
+    registered one is left to the worktree pass; the rest come back here.
+    """
+    common = Path(main_path) / ".git"
+    owned_by_admin = str(common / "worktrees") + os.sep
+    registered = {str(Path(entry["path"]).resolve()) for entry in parse_worktrees(main_path)}
+    found = []
+    seen = set()
+    for home in slice_homes(main_path, projects_root):
+        try:
+            children = sorted(home.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir() or child.is_symlink():
+                continue
+            path = child.resolve()
+            if str(path) == str(Path(main_path).resolve()) or str(path) in seen:
+                continue
+            if str(path) in registered:
+                continue
+            seen.add(str(path))
+            target = gitdir_target(path)
+            if target is not None:
+                if str(target.resolve()).startswith(owned_by_admin):
+                    found.append({"path": str(path), "stale": True, "branch": None,
+                                  "head": None})
+                continue
+            if not slug or repo_slug(path) != slug:
+                continue
+            found.append({"path": str(path), "stale": False,
+                          "branch": clone_branch(path), "head": clone_head(path)})
+    return found
+
+
+def clone_head(path):
+    code, out, _ = git(["-C", str(path), "rev-parse", "HEAD"])
+    return out.strip() if code == 0 else None
+
+
+def clone_branch(path):
+    code, out, _ = git(["-C", str(path), "symbolic-ref", "--short", "HEAD"])
+    return out.strip() if code == 0 and out.strip() else None
 
 
 def session_repo(session_cwd):
@@ -178,6 +277,13 @@ def session_repo(session_cwd):
 
 
 def discover_repos(projects_root):
+    """Every project under the root, once. A leftover copy beside one is not a project.
+
+    A chat names its copy after the repo it came from, so `<repo>-<ticket>` beside
+    `<repo>` with the same origin is a slice of that project. The project's own pass
+    removes it, and a sweep that also treated it as a project of its own would race
+    that removal and read the same PR list twice.
+    """
     repos = []
     if projects_root.is_dir():
         for child in sorted(projects_root.iterdir()):
@@ -187,14 +293,17 @@ def discover_repos(projects_root):
         path = Path.home() / share
         if is_main_checkout(path):
             repos.append(path.resolve())
-    seen = set()
-    unique = []
+    slugs = {repo: origin_slug_from_config(repo) for repo in repos}
+    kept = []
     for repo in repos:
-        key = str(repo)
-        if key not in seen:
-            seen.add(key)
-            unique.append(repo)
-    return unique
+        copy_of = [other.name for other in repos
+                   if other != repo and slugs.get(other) and slugs.get(other) == slugs.get(repo)
+                   and repo.name.startswith(other.name + "-")]
+        if copy_of:
+            continue
+        if repo not in kept:
+            kept.append(repo)
+    return kept
 
 
 # -- git reads -----------------------------------------------------------
@@ -274,16 +383,64 @@ def remote_branches(repo):
     return branches
 
 
+SLUG = re.compile(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$")
+
+
+def slug_from_url(url):
+    match = SLUG.search(url or "")
+    return "%s/%s" % (match.group(1), match.group(2)) if match else None
+
+
 def repo_slug(repo):
     # git config, not `remote get-url`: a url.<base>.insteadOf rewrite would
     # turn the GitHub URL into the local path it fetches from.
     code, out, _ = git(["-C", str(repo), "config", "--get", "remote.origin.url"])
     if code != 0:
         return None
-    match = re.search(r"github\.com[:/]+([^/]+)/(.+?)(?:\.git)?/?$", out.strip())
-    if not match:
+    return slug_from_url(out.strip())
+
+
+def git_config_file(path):
+    """The config that names this folder's remotes, with no child process."""
+    dot = Path(path) / ".git"
+    if dot.is_dir():
+        return dot / "config"
+    target = gitdir_target(path)
+    if target is None:
         return None
-    return "%s/%s" % (match.group(1), match.group(2))
+    # A linked worktree's admin dir sits inside the main checkout's `.git`.
+    if target.parent.name == "worktrees":
+        return target.parent.parent / "config"
+    return target / "config"
+
+
+def origin_slug_from_config(path):
+    """This folder's origin slug read straight from the file, never from a child.
+
+    Discovery runs before any repo's own budget, so a git here has no deadline to
+    die at: a hung filesystem or a stuck remote would run out GIT_TIMEOUT once per
+    repo and hang the whole sweep. Discovery only needs to tell a project from its
+    copies, and the config file answers that in one open.
+    """
+    config = git_config_file(path)
+    if config is None:
+        return None
+    try:
+        text = config.read_text(errors="replace")
+    except OSError:
+        return None
+    section = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+            continue
+        if section != '[remote "origin"]':
+            continue
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "url":
+            return slug_from_url(value.strip())
+    return None
 
 
 # -- github --------------------------------------------------------------
@@ -497,6 +654,7 @@ def audit_in_progress(git_dir):
 
 
 def worktree_status(path):
+    """(tracked edits, untracked files), or None when git cannot answer."""
     code, out, err = git(["--no-optional-locks", "-C", str(path), "status",
                           "--porcelain", "--untracked-files=all"], timeout=GIT_TIMEOUT)
     if code != 0:
@@ -511,20 +669,15 @@ def worktree_status(path):
     return (tracked, untracked), ""
 
 
-def under(path, root):
-    try:
-        Path(path).resolve().relative_to(Path(root).resolve())
-        return True
-    except ValueError:
-        return False
-
-
 class RepoRun:
     def __init__(self, repo, opts, live):
         self.repo = Path(repo)
         self.opts = opts
         self.live = live
         self.plan = []
+        self._slices = None
+        self._main_path = None
+        self._slice_cutoff = None
         self.result = {
             "repo": str(self.repo),
             "skipped": None,
@@ -534,6 +687,7 @@ class RepoRun:
             "remote_decisions": False,
             "worktrees": {"removed": [], "held": [], "deferred": 0, "pruned": [],
                           "outside": 0},
+            "slices": {"removed": [], "held": [], "deferred": 0, "pruned": []},
             "branches": {"deleted": [], "kept": [], "deferred": 0},
             "remote": {"deleted": [], "kept": [], "stale": [], "deferred": 0},
             "setting": {"before": None, "set": False, "changed": False},
@@ -596,6 +750,11 @@ class RepoRun:
             self.note("WARN", "repo", self.repo,
                       "fetch failed, remote-dependent decisions skipped")
 
+        cutoff = time.time() - RECENT_SECONDS
+        self._slice_cutoff = cutoff
+        main_path = self.main_path(entries)
+        self._main_path = main_path
+
         github = Github(self.repo)
         remote_ok = bool(slug) and fetch_ok and github.load()
         result["remote_decisions"] = remote_ok
@@ -606,21 +765,119 @@ class RepoRun:
 
         base_set = commit_set(self.repo, base) if base else set()
         remote_set = commit_set(self.repo, "--remotes") if fetch_ok else set()
-        cutoff = time.time() - RECENT_SECONDS
 
         self.tidy_worktrees(base, base_set, remote_set, github, remote_ok, cutoff)
+        # The cap is one repo's removal budget, and a repo's own worktrees come
+        # first: they are the copies a chat made, so they are what --max-remove
+        # defers last. Sibling folders spend whatever is left.
+        self.tidy_slices(base, base_set, remote_set, github, remote_ok, cutoff,
+                         main_path)
         self.tidy_local_branches(base, base_set, github, remote_ok)
         if remote_ok:
             self.tidy_remote_branches(base, base_set, github)
             if not self.opts.mine:
                 self.tidy_setting(github)
         removed = (len(result["worktrees"]["removed"]) + len(result["branches"]["deleted"])
-                   + len(result["remote"]["deleted"]))
+                   + len(result["remote"]["deleted"]) + len(result["slices"]["removed"]))
         # statvfs is the whole filesystem, so a dry run frees nothing and a run
         # that removed nothing reports nothing.
         if self.opts.apply and removed:
             result["freed_bytes"] = max(0, free_bytes(self.opts.projects_root) - before)
         return result
+
+    @staticmethod
+    def main_path(entries):
+        return str(Path(entries[0]["path"]).resolve()) if entries else None
+
+    def slice_rows(self):
+        """This project's other folders, found once and read by both passes."""
+        if self._slices is None:
+            self._slices = slice_candidates(self.repo, self._main_path,
+                                            self.opts.projects_root, repo_slug(self.repo))
+        return self._slices
+
+    # sibling slices ----------------------------------------------------
+    def tidy_slices(self, base, base_set, remote_set, github, remote_ok, cutoff,
+                    main_path):
+        """Clean this project's other folders: stale registrations and old clones.
+
+        A chat's copy belongs to the project, not to the chat that left it, so these
+        are the missed cleanups a chat starting on the project finishes. The same four
+        gates judge each one: a clone's own tip is what shipped or did not, and the same
+        merged-PR and remote reads answer for it. --mine never reaches them.
+        """
+        if self.opts.mine or not main_path:
+            return
+        candidates = self.slice_rows()
+        for row in [row for row in candidates if row["stale"]]:
+            # A folder whose admin is gone cannot answer git status, so nothing here
+            # can promise it holds no uncommitted work. It is named and left alone.
+            self.hold_slice(row["path"], "unreadable",
+                            "its git registration is gone, so git cannot check its "
+                            "files; remove it by hand once you have looked")
+        live = [row for row in candidates if not row["stale"]]
+        if not live:
+            return
+
+        def one(row):
+            return row, self.verdict_for(row, base, base_set, remote_set, github,
+                                         remote_ok, cutoff)
+
+        workers = min(8, (os.cpu_count() or 2))
+        left = (getattr(_STATE, "deadline", None) or 0) - time.monotonic()
+        with ThreadPoolExecutor(max_workers=workers, initializer=set_deadline,
+                                initargs=(left,)) as pool:
+            verdicts = list(pool.map(one, live))
+        for row, verdict in verdicts:
+            kind, reason = verdict
+            if kind != "remove":
+                self.hold_slice(row["path"], reason[0], reason[1])
+                continue
+            self.remove_slice(row["path"], main_path, reason[1])
+
+    def hold_slice(self, path, reason, detail):
+        self.result["slices"]["held"].append(
+            {"path": path, "reason": reason, "detail": detail})
+        self.note("HOLD", "slice", path, "%s: %s" % (reason, detail))
+
+    def remove_slice(self, path, main_path, why):
+        if self.budget <= 0:
+            self.result["slices"]["deferred"] += 1
+            self.note("DEFER", "slice", path, "over --max-remove")
+            return
+        if self.opts.apply:
+            removed, detail = self.remove_clone(path, main_path)
+            if not removed:
+                self.hold_slice(path, "remove-failed", detail)
+                return
+        self.budget -= 1
+        self.result["slices"]["removed"].append({"path": path, "why": why})
+        self.note("REMOVE", "slice", path, why)
+
+    def remove_clone(self, path, main_path):
+        """rm -rf a folder this run checked, behind the same last walls."""
+        target = Path(path)
+        if main_path and str(target.resolve()) == str(Path(main_path).resolve()):
+            return False, "refused: main checkout"
+        if not under(target, self.opts.projects_root):
+            return False, "refused: outside the projects root"
+        if str(target.resolve()) == str(Path(self.opts.projects_root).resolve()):
+            return False, "refused: that is the projects root itself"
+        if str(Path.home() / FORBIDDEN) in str(target.resolve()):
+            return False, "refused: vcc evidence"
+        status, err = worktree_status(path)
+        if status is None or status[0] or status[1]:
+            return False, "changed since the scan: " + (
+                (err or "").strip() or "%d tracked, %d untracked" % (
+                    len(status[0]), len(status[1])))
+        use = self.live.in_use(path) or recently_touched(path, self._slice_cutoff)
+        if use:
+            return False, "started using it since the scan: " + str(use)
+        try:
+            shutil.rmtree(str(target))
+        except OSError as exc:
+            return False, "rm -rf failed: %s" % exc
+        return True, "removed"
 
     # worktrees ---------------------------------------------------------
     def tidy_worktrees(self, base, base_set, remote_set, github, remote_ok, cutoff):
@@ -961,12 +1218,9 @@ class RepoRun:
 
 # -- reporting -----------------------------------------------------------
 
-def summarise(result, apply):
-    work = result["worktrees"]
-    branches = result["branches"]
-    remote = result["remote"]
+def hold_counts(rows):
     counts = {"wip": 0, "in use": 0, "unshipped": 0}
-    for row in work["held"]:
+    for row in rows:
         reason = row["reason"]
         if reason in ("wip", "scratch"):
             counts["wip"] += 1
@@ -974,26 +1228,42 @@ def summarise(result, apply):
             counts["in use"] += 1
         elif reason != "outside":
             counts["unshipped"] += 1
+    return counts
+
+
+def summarise(result, apply):
+    work = result["worktrees"]
+    branches = result["branches"]
+    remote = result["remote"]
+    counts = hold_counts(work["held"])
     verb = "removed" if apply else "would-remove"
     freed = result["freed_bytes"] / 1e9
     stale = len(remote["stale"])
-    return ("%s: worktrees %s %d held %d (wip %d, in-use %d, unshipped %d) | "
+    slices = result.get("slices") or {"removed": [], "held": [], "deferred": 0}
+    line = ("%s: worktrees %s %d held %d (wip %d, in-use %d, unshipped %d) | "
             "local branches deleted %d kept %d | remote deleted %d stale-unPR'd %d "
             "| freed ~%.1f GB" % (
                 Path(result["repo"]).name, verb, len(work["removed"]),
                 len(work["held"]) + work["deferred"], counts["wip"], counts["in use"],
                 counts["unshipped"], len(branches["deleted"]), len(branches["kept"]),
                 len(remote["deleted"]), stale, freed))
+    # A repo with no sibling folders keeps the line every reader already parses.
+    if slices["removed"] or slices["held"] or slices["deferred"]:
+        line += (" | sibling folders %s %d held %d" % (
+            verb, len(slices["removed"]), len(slices["held"]) + slices["deferred"]))
+    return line
 
 
 def deferred_line(result):
     work = result["worktrees"]["deferred"]
     branches = result["branches"]["deferred"]
     remote = result["remote"]["deferred"]
-    if not (work or branches or remote):
+    slices = (result.get("slices") or {}).get("deferred", 0)
+    if not (work or branches or remote or slices):
         return None
-    return ("DEFERRED %d worktree removals, %d branch deletions, %d remote deletions "
-            "(--max-remove %d)" % (work, branches, remote, result["max_remove"]))
+    return ("DEFERRED %d worktree removals, %d sibling folder removals, "
+            "%d branch deletions, %d remote deletions (--max-remove %d)" % (
+                work, slices, branches, remote, result["max_remove"]))
 
 
 def write_run_log(payload, stamp):
@@ -1038,6 +1308,84 @@ def sweep_jobs(requested):
     return JOBS_AT_VERDICT[verdict], verdict.lower()
 
 
+# -- the chat's own quick check ------------------------------------------
+
+def local_owed(repo, opts, live, seen, cutoff):
+    """The cleanups this repo still owes, judged from local git alone.
+
+    An item counts only when it is past the gates that need no network: clean, and
+    neither in use nor touched in the last two hours. Whether its work shipped is
+    then a local question, because a merged branch's tip is in the base or on a
+    remote ref, and every commit a left behind folder keeps is in one of the two.
+    What local git cannot see, such as a squash merge, is not guessed at: those
+    wait for --apply, which asks GitHub.
+    """
+    owed = []
+    entries = parse_worktrees(repo)
+    for entry in entries[1:]:
+        path = Path(entry["path"])
+        if not under(path, opts.projects_root):
+            continue
+        if not path.exists():
+            owed.append(entry["path"])
+            continue
+        if entry.get("head") not in seen:
+            continue
+        status, _ = worktree_status(path)
+        if status is None or status[0] or status[1]:
+            continue
+        if live.in_use(path) or recently_touched(path, cutoff):
+            continue
+        owed.append(entry["path"])
+    return owed
+
+
+def slice_owed(repo, opts, live, seen, cutoff):
+    """The sibling folders of this project this repo could clean without the network."""
+    owed = []
+    main_path = RepoRun.main_path(parse_worktrees(repo))
+    if not main_path:
+        return owed
+    for row in slice_candidates(repo, main_path, opts.projects_root, repo_slug(repo)):
+        path = Path(row["path"])
+        if row["stale"]:
+            owed.append(row["path"])
+            continue
+        if not under(path, opts.projects_root) or not path.exists():
+            continue
+        if row.get("head") not in seen:
+            continue
+        status, _ = worktree_status(path)
+        if status is None or status[0] or status[1]:
+            continue
+        if live.in_use(path) or recently_touched(path, cutoff):
+            continue
+        owed.append(row["path"])
+    return owed
+
+
+def quick_sweep(repos, opts):
+    """One TIDY line per cleanup owed, and one PASS line when nothing is owed."""
+    live = Live([opts.projects_root] + repos)
+    cutoff = time.time() - RECENT_SECONDS
+    owed = []
+    for repo in repos:
+        entries = parse_worktrees(repo)
+        repo = Path(entries[0]["path"]).resolve() if entries else repo
+        seen = commit_set(repo, "--remotes")
+        base = base_ref(repo)
+        if base:
+            seen |= commit_set(repo, base)
+        owed += local_owed(repo, opts, live, seen, cutoff)
+        if not opts.mine:
+            owed += slice_owed(repo, opts, live, seen, cutoff)
+    for path in sorted(set(owed)):
+        print("TIDY %s" % path)
+    if not owed:
+        print("tidy: PASS")
+    return 0
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="repo-tidy", add_help=True,
                                      description="Remove shipped worktrees and "
@@ -1046,7 +1394,13 @@ def main(argv):
                         help="actually remove; without it this is a dry run")
     parser.add_argument("--all", action="store_true",
                         help="every repo under the projects root plus the two shares")
+    parser.add_argument("--project", metavar="DIR", default=None,
+                        help="this project only: its own folders beside DIR, never "
+                             "another project's")
     parser.add_argument("--json", action="store_true", help="print full detail")
+    parser.add_argument("--quick", action="store_true",
+                        help="local git only, no gh, no fetch, no log: one TIDY line "
+                             "per cleanup still owed, for a chat's own check")
     parser.add_argument("--mine", metavar="SESSION_CWD",
                         help="only this session's named branch in this repo")
     parser.add_argument("--branch", help="branch owned by this chat; required with --mine")
@@ -1064,8 +1418,12 @@ def main(argv):
 
     if bool(opts.mine) != bool(opts.branch):
         parser.error("--mine and --branch must be used together")
-    if opts.mine and (opts.all or opts.paths):
-        parser.error("--mine cannot be combined with --all or repo paths")
+    if opts.mine and (opts.all or opts.paths or opts.project):
+        parser.error("--mine cannot be combined with --all, --project or repo paths")
+    if opts.project and (opts.all or opts.paths):
+        parser.error("--project cannot be combined with --all or repo paths")
+    if opts.quick and opts.apply:
+        parser.error("--quick reads only; it never removes anything")
     if opts.max_remove < 0:
         parser.error("--max-remove must be 0 or more")
     if opts.repo_timeout < 1:
@@ -1083,6 +1441,13 @@ def main(argv):
         repos = [repo]
     elif opts.all:
         repos = discover_repos(opts.projects_root)
+    elif opts.project:
+        repo = session_repo(opts.project)
+        if repo is None:
+            sys.stderr.write("repo-tidy: %s is not in a git repo; nothing to clean\n"
+                             % opts.project)
+            return 2
+        repos = [repo]
     elif opts.paths:
         repos = [Path(p).resolve() for p in opts.paths]
     else:
@@ -1092,6 +1457,8 @@ def main(argv):
             return 2
         repos = [repo]
 
+    if opts.quick:
+        return quick_sweep(repos, opts)
     live = Live([opts.projects_root] + repos)
     sweep_workers, probe = sweep_jobs(opts.jobs)
     if len(repos) == 1:
@@ -1160,6 +1527,10 @@ def main(argv):
             "worktrees_outside": sum(r["worktrees"]["outside"] for r in results),
             "branches_deleted": sum(len(r["branches"]["deleted"]) for r in results),
             "remote_deleted": sum(len(r["remote"]["deleted"]) for r in results),
+            "slices_removed": sum(len((r.get("slices") or {}).get("removed") or [])
+                                  for r in results),
+            "slices_held": sum(len((r.get("slices") or {}).get("held") or [])
+                               for r in results),
             "freed_bytes": sum(r["freed_bytes"] for r in results),
         },
     }

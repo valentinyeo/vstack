@@ -119,7 +119,7 @@ class TestGates(SandboxCase):
         self.assertTrue(line, output)
         self.assertIn("worktrees removed 4", line[0], output)
         self.assertIn("local branches deleted 8", line[0], output)
-        self.assertIn("remote deleted 4", line[0], output)
+        self.assertIn("remote deleted 5", line[0], output)  # copy-merged is the slices fixture's
         self.assertIn("stale-unPR'd 1", line[0], output)
 
     def test_run_log_written(self):
@@ -144,6 +144,123 @@ class TestGates(SandboxCase):
         self.assertIn("main", self.after["remote"])
         self.assertIn("main", self.after["branches"])
         self.assertIn("remote-protected", self.after["remote"])
+
+
+class TestSlices(SandboxCase):
+    """A project's other folders: its old clones and left behind worktree folders.
+
+    A chat's copy belongs to the project, not to the chat that left it, so a chat
+    starting on the project clears what earlier chats missed.
+    """
+
+    @classmethod
+    def build(cls):
+        world, expect = super().build()
+        cls.dry = tidy(world, "--all")
+        cls.apply = tidy(world, "--all", "--apply")
+        return world, expect
+
+    def names(self):
+        return set(sandbox.snapshot(self.world.root)["dirs"])
+
+    def test_shipped_clones_are_removed(self):
+        self.assertEqual(self.apply.returncode, 0, self.apply.stderr)
+        names = self.names()
+        self.assertNotIn("sandbox-main-copy", names, self.apply.stdout)
+        self.assertNotIn("sandbox-merged-copy", names, self.apply.stdout)
+
+    def test_dirty_unpushed_leased_and_grouped_clones_stay(self):
+        names = self.names()
+        for name in ("sandbox-dirty-copy", "sandbox-unpushed-copy",
+                     "sandbox-leased-copy", "sandbox-trees"):
+            self.assertIn(name, names, self.apply.stdout)
+
+    def test_another_projects_copy_is_untouched(self):
+        self.assertIn("sandbox-neighbour-copy", self.names(), self.apply.stdout)
+
+    def test_a_worktree_folder_git_no_longer_registers_stays(self):
+        self.assertIn("sandbox-orphan-tree", self.names(), self.apply.stdout)
+
+    def test_the_main_checkout_is_never_a_slice(self):
+        main = str((self.world.projects / "sandbox").resolve())
+        self.assertTrue((self.world.projects / "sandbox").is_dir(), self.apply.stdout)
+        removed = [line for line in self.apply.stdout.splitlines()
+                   if line.startswith("REMOVE slice ") and (main + " (") in line]
+        self.assertEqual(removed, [], self.apply.stdout)
+
+    def test_each_held_folder_gives_its_reason(self):
+        self.assertIn("HOLD slice", self.apply.stdout)
+        # Two shipped clones go; the dirty, unpushed, leased, orphaned and grouped
+        # ones stay. The neighbour copy is another project's, so it is not counted.
+        self.assertIn("sibling folders removed 2 held 5", self.apply.stdout)
+
+    def test_dry_run_names_the_same_folders_and_removes_none(self):
+        self.assertEqual(self.dry.returncode, 0, self.dry.stderr)
+        for name in ("sandbox-main-copy", "sandbox-merged-copy"):
+            line = [row for row in self.dry.stdout.splitlines()
+                    if row.startswith("REMOVE slice ") and name in row]
+            self.assertTrue(line, self.dry.stdout)
+        started = set(re.findall(r"^REMOVE slice (\S+)", self.dry.stdout, re.M))
+        applied = set(re.findall(r"^REMOVE slice (\S+)", self.apply.stdout, re.M))
+        self.assertEqual(started, applied, self.dry.stdout)
+        self.assertTrue(started, self.dry.stdout)
+
+    def test_mine_never_reaches_a_sibling_folder(self):
+        result = tidy(self.world, "--apply", "--mine", str(self.world.repo),
+                      "--branch", "clean-merged")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("slice", result.stdout)
+
+
+class TestProjectScope(SandboxCase):
+    """An agent starting on a project cleans that project, never another one."""
+
+    neighbour = True
+
+    def test_project_cleans_only_its_own_folders(self):
+        result = tidy(self.world, "--apply", "--project", str(self.world.repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sandbox:", result.stdout)
+        self.assertNotIn("other:", result.stdout)
+        self.assertTrue((self.world.projects / "other-done").exists(), result.stdout)
+        self.assertFalse((self.world.projects / "sandbox-main-copy").exists(), result.stdout)
+
+    def test_project_refuses_a_path_outside_a_repo(self):
+        outside = self.world.root / "not-a-repo"
+        outside.mkdir(exist_ok=True)
+        result = tidy(self.world, "--project", str(outside))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not in a git repo", result.stderr)
+
+    def test_project_cannot_be_combined_with_all(self):
+        result = tidy(self.world, "--project", str(self.world.repo), "--all")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--project", result.stderr)
+
+
+class TestQuick(SandboxCase):
+    """drain-check's own read: local git only, no gh, no fetch, one line per item."""
+
+    def test_owed_folder_is_one_line_and_gh_is_never_called(self):
+        before = sandbox.snapshot(self.world.root)["gh_calls"]
+        result = tidy(self.world, "--quick", "--project", str(self.world.repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("TIDY ", result.stdout)
+        self.assertIn("sandbox-merged-clean", result.stdout)
+        self.assertEqual(before, sandbox.snapshot(self.world.root)["gh_calls"])
+
+    def test_quick_removes_nothing(self):
+        before = sandbox.snapshot(self.world.root)
+        result = tidy(self.world, "--quick", "--project", str(self.world.repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = sandbox.snapshot(self.world.root)
+        self.assertEqual(before["worktrees"], after["worktrees"])
+        self.assertEqual(before["dirs"], after["dirs"])
+
+    def test_quick_never_removes_anything(self):
+        result = tidy(self.world, "--quick", "--apply")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--quick", result.stderr)
 
 
 class TestDryRunOnly(SandboxCase):
