@@ -23,8 +23,13 @@ A repo mid-rebase or mid-merge is skipped whole. Nothing is deleted under
 --max-remove caps one run so a bug cannot empty a repo.
 
 --quick reads only local git, asks GitHub nothing and writes nothing: it prints
-one TIDY line per cleanup still owed. drain-check runs it, so a merge that left
-its worktree behind is a finding, not a memory test.
+one TIDY line per folder --apply would remove right now from what local git can
+see, and stays silent about anything it cannot settle locally. A tip counts as
+shipped there only when it is an ancestor of the base branch, so a squash merge,
+a merged PR whose tip is not fetched, a closed-unmerged PR and a worktree folder
+git no longer registers all wait for --apply and never show up as owed.
+drain-check runs it, so a merge that left its worktree behind is a finding, not a
+memory test, and a finding always clears when the chat runs --apply.
 
 Usage:
   repo-tidy [--apply] [--all | --project DIR | REPO_PATH...] [--json] [--quick]
@@ -1310,15 +1315,16 @@ def sweep_jobs(requested):
 
 # -- the chat's own quick check ------------------------------------------
 
-def local_owed(repo, opts, live, seen, cutoff):
+def local_owed(repo, opts, live, merged, cutoff):
     """The cleanups this repo still owes, judged from local git alone.
 
     An item counts only when it is past the gates that need no network: clean, and
-    neither in use nor touched in the last two hours. Whether its work shipped is
-    then a local question, because a merged branch's tip is in the base or on a
-    remote ref, and every commit a left behind folder keeps is in one of the two.
-    What local git cannot see, such as a squash merge, is not guessed at: those
-    wait for --apply, which asks GitHub.
+    neither in use nor touched in the last two hours. `merged` is every commit on
+    the base branch, so naming a folder here is the local half of apply's shipped
+    test: a tip on some remote branch but not in the base may still be unshipped,
+    and --apply holds it. Guessing from a remote ref is what made quick report
+    folders apply refused; anything local git cannot settle waits for --apply,
+    which asks GitHub.
     """
     owed = []
     entries = parse_worktrees(repo)
@@ -1329,7 +1335,7 @@ def local_owed(repo, opts, live, seen, cutoff):
         if not path.exists():
             owed.append(entry["path"])
             continue
-        if entry.get("head") not in seen:
+        if entry.get("head") not in merged:
             continue
         status, _ = worktree_status(path)
         if status is None or status[0] or status[1]:
@@ -1340,8 +1346,12 @@ def local_owed(repo, opts, live, seen, cutoff):
     return owed
 
 
-def slice_owed(repo, opts, live, seen, cutoff):
-    """The sibling folders of this project this repo could clean without the network."""
+def slice_owed(repo, opts, live, merged, cutoff):
+    """The sibling folders of this project this repo could clean without the network.
+
+    A folder whose git registration is gone is never named: --apply holds it as
+    unreadable because git cannot check its files, so the chat has to look at it.
+    """
     owed = []
     main_path = RepoRun.main_path(parse_worktrees(repo))
     if not main_path:
@@ -1349,11 +1359,10 @@ def slice_owed(repo, opts, live, seen, cutoff):
     for row in slice_candidates(repo, main_path, opts.projects_root, repo_slug(repo)):
         path = Path(row["path"])
         if row["stale"]:
-            owed.append(row["path"])
             continue
         if not under(path, opts.projects_root) or not path.exists():
             continue
-        if row.get("head") not in seen:
+        if row.get("head") not in merged:
             continue
         status, _ = worktree_status(path)
         if status is None or status[0] or status[1]:
@@ -1365,20 +1374,18 @@ def slice_owed(repo, opts, live, seen, cutoff):
 
 
 def quick_sweep(repos, opts):
-    """One TIDY line per cleanup owed, and one PASS line when nothing is owed."""
+    """One TIDY line per folder --apply would remove now, unsaid when unproven."""
     live = Live([opts.projects_root] + repos)
     cutoff = time.time() - RECENT_SECONDS
     owed = []
     for repo in repos:
         entries = parse_worktrees(repo)
         repo = Path(entries[0]["path"]).resolve() if entries else repo
-        seen = commit_set(repo, "--remotes")
         base = base_ref(repo)
-        if base:
-            seen |= commit_set(repo, base)
-        owed += local_owed(repo, opts, live, seen, cutoff)
+        merged = commit_set(repo, base) if base else set()
+        owed += local_owed(repo, opts, live, merged, cutoff)
         if not opts.mine:
-            owed += slice_owed(repo, opts, live, seen, cutoff)
+            owed += slice_owed(repo, opts, live, merged, cutoff)
     for path in sorted(set(owed)):
         print("TIDY %s" % path)
     if not owed:
@@ -1400,7 +1407,8 @@ def main(argv):
     parser.add_argument("--json", action="store_true", help="print full detail")
     parser.add_argument("--quick", action="store_true",
                         help="local git only, no gh, no fetch, no log: one TIDY line "
-                             "per cleanup still owed, for a chat's own check")
+                             "per folder --apply would remove from local git alone; "
+                             "anything GitHub settles waits for --apply")
     parser.add_argument("--mine", metavar="SESSION_CWD",
                         help="only this session's named branch in this repo")
     parser.add_argument("--branch", help="branch owned by this chat; required with --mine")
