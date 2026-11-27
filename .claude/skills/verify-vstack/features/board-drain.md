@@ -14,6 +14,7 @@ A chat restarted after a crash turns its own drain loop back on without being to
 - `check.run`: a `Bash` call runs `./drain-check --board <id> --label <label> --state-name "<chat>"`, so the chat's own loop is part of the check.
 - `check.clean`: the run does not need a passing drain-check. A waiting, stalled or stale ticket on board 2060 is not this skill's failure.
 - `check.no-writes`: no `task move`, `task update`, `comment add` or `plan-pick --run` ran during the test.
+- `check.peers`: the same tick also prints one `peer:` note per dead board identity, orphaned ticket set or dead `board-sync@` timer, and a note never fails the check. `--no-peers` skips the audit.
 
 ## How to get to it (user POV)
 

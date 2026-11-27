@@ -55,6 +55,7 @@ Nobody pushes to main.
 | A house change to pstack is listed once, quoting pstack (pstack `skills/correct/SKILL.md`: "Replace hand-synced lists with one source of truth.") | `skills/pstack-diff/house.txt`, `tests/test_house_list.py` |
 | Results, proof, verdicts and done summaries go in people comments (`comment add --kind done\|qa`), never in `activity add` (pstack `skills/principle-encode-lessons-in-structure/SKILL.md`: "Encode the rule as a lint, metadata flag, runtime check, or script instead of more text.") | `hooks/agent-lane-guard.py`, `skills/hypertask/scripts/ticket-lint`, `scripts/worker-shims`, `install`, `tests/test_agent_lane_guard.py` |
 | Every real step on a ticket gets one short readable progress comment for Valentin (house `human-progress`) | `skills/hypertask-work/board-lint` rule `silent-ticket`, `skills/hypertask/references/tickets.md`, `skills/board-drain/drain-check`, `tests/test_board_lint.py` |
+| A chat verifies every other agent on its board is still live when it arrives, and archives one it proved dead (pstack `skills/principle-encode-lessons-in-structure/SKILL.md`: "Encode the rule as a lint, metadata flag, runtime check, or script instead of more text.") | `skills/board-drain/peers`, `skills/board-drain/drain-check` note `peer:`, `tests/test_board_drain_peers.py` |
 
 Poteto ticket commands live in `bin/poteto-ticket`.
 Use `new`, `claim`, `log`, `review`, `done`, `ask`.

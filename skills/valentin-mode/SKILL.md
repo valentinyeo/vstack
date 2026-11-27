@@ -86,6 +86,7 @@ Whoever owns a ticket owns its PR until it merges (pstack autopilot-full: one ow
 - **Own chat only:** run vstack tools only on your own chat; `tests/test_own_chat_only.py` enforces it, allowlist `config/cross-chat-allowlist.txt`.
 - **Clean up after your merge:** once your PR is merged on GitHub, run `repo-tidy --apply --mine "<main checkout>" --branch "<your merged branch>"`. Anything merged into the default branch lives on GitHub, so the copy in this repo does not. `repo-tidy` decides every removal from its four gates; `drain-check` names what is still left over.
 - **Sweep what you inherit:** the first time you work a project, run `repo-tidy --apply --project "<main checkout>"`. It clears the merged worktrees and old sibling branch folders earlier chats left behind for that project only, never another project's. Holds are retried on your own next tick.
+- **Verify your board peers on arrival:** the first thing you do on a board is `../board-drain/peers --board <id>`. It prints one line per agent identity on that board (`LIVE`, `PAUSED`, `GRACE`, `DEAD-IDENTITY`, `ORPHAN-TICKETS`, `DEAD-TIMER`) in a couple of seconds, so it never holds up your own work. A dead identity or an orphaned ticket is a one-line note on your next `drain-check`; run `../board-drain/peers --board <id> --apply` to archive identities it proved dead past the grace window, capped at three per run. It never touches you, a person, or a role identity.
 
 ## Designing
 

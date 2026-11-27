@@ -48,7 +48,7 @@ Told to go idle (for example a budget pause)? `./loop-state pause --name "<name>
 1. **Sync.** `./sync --board <id> --label <label> --name "<name>" --limit 5` previews, then applies up to five moves. Usage or non-zero exit prints `sync: FAIL` until it works.
 2. **New tickets.** A workable ownerless Todo ticket gets an owner. Start the highest-priority workable Todo first; urgent before anything else.
 3. **Waits.** Read the newest comments on each waiting ticket first. Valentin's yes makes it workable: clear the mark, assign an owner.
-4. **Check.** `./drain-check --board <id> --label <label> --state-name "<name>"`.
+4. **Check.** `./drain-check --board <id> --label <label> --state-name "<name>"`. It also notes dead board peers, orphaned tickets and dead `board-sync@` timers, one `peer:` line each, with the exact fix: `./peers --board <id> --apply`. Notes never fail the tick.
 5. **Re-arm.** `loop-state status` exit 3 means expiry within a day: arm, record a fresh loop, delete the old.
 6. **Daily.** `/hypertask checkup` once a day.
 
