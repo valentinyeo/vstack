@@ -71,8 +71,15 @@ def shims_for(directory, search, python, hook=HOOK, pr_cap_hook=PR_CAP_HOOK,
     """One shim per blocked name. A runner this host lacks still gets one, so a worker
     that types `gradle assembleDebug` reads the refusal and not a bare command-not-found."""
     directory = Path(directory).resolve()
-    path = os.pathsep.join(part for part in search.split(os.pathsep)
-                           if part and Path(part).resolve() != directory)
+
+    def foreign(part):
+        # Never point a shim at another shim folder: two shims then exec each other forever.
+        if not part:
+            return True
+        resolved = Path(part).resolve()
+        return resolved == directory or resolved.name == 'worker-shims'
+
+    path = os.pathsep.join(part for part in search.split(os.pathsep) if not foreign(part))
     found = {}
     for name in names():
         real = shutil.which(name, path=path)
