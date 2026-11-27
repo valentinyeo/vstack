@@ -26,9 +26,25 @@ A repo mid-rebase or mid-merge is skipped whole. Nothing is deleted under
 one TIDY line per cleanup still owed. drain-check runs it, so a merge that left
 its worktree behind is a finding, not a memory test.
 
+--prune-caches and --clean-tmp are the fast hygiene pass, for disk rather than for
+git. They read no PR, fetch nothing and take seconds:
+
+  --prune-caches   remove rebuildable build output (target/, node_modules/, .next/,
+                   dist/, .turbo/) from this project's own folders that nobody has
+                   touched for 48 hours. A folder with a live process, a tmux pane or
+                   a lease is left alone, and so is any output directory holding a
+                   git-tracked file. A worktree's files keep their commit; only what
+                   a build regenerates goes.
+  --clean-tmp      remove this project's own /tmp entries older than 48 hours, named
+                   <project>- or <project>., that no live process holds open.
+
+Both are dry runs without --apply, obey --max-remove, and stop at --time-budget
+seconds (default 20) so a call cannot hang a chat.
+
 Usage:
   repo-tidy [--apply] [--all | --project DIR | REPO_PATH...] [--json] [--quick]
             [--mine SESSION_CWD --branch BRANCH]
+            [--prune-caches] [--clean-tmp] [--tmp-root DIR] [--time-budget SECONDS]
             [--max-remove N] [--projects-root DIR] [--jobs N]
 """
 
@@ -71,6 +87,12 @@ OWNERS_THAT_ALLOW_THE_SETTING = {"valentinyeo", "hypertask-ai"}
 SHARE_REPOS = [".local/share/vstack", ".local/share/house-rules"]
 FORBIDDEN = ".local/state/vcc-evidence"
 SKIP_DIRS = {".git", "node_modules"}
+
+# Hygiene: disk, not git. Nothing here reads a PR, so it answers in seconds.
+IDLE_SECONDS = 48 * 60 * 60
+TMP_AGE_SECONDS = 48 * 60 * 60
+BUILD_OUTPUT_DIRS = ("target", "node_modules", ".next", "dist", ".turbo")
+DEFAULT_TIME_BUDGET = 20
 
 
 def utc_stamp():
@@ -1386,6 +1408,442 @@ def quick_sweep(repos, opts):
     return 0
 
 
+# -- hygiene: idle build caches and this project's own /tmp ---------------
+
+class TimeBudget:
+    """A wall-clock cap for one hygiene run, so a chat's call answers in seconds."""
+
+    def __init__(self, seconds):
+        self.deadline = time.monotonic() + max(0.5, float(seconds))
+
+    def left(self):
+        return self.deadline - time.monotonic()
+
+    def spent(self):
+        return self.left() <= 0
+
+
+def newest_shallow(path, depth=1, budget=None, cap=4000, skip=()):
+    """The newest mtime in the top `depth` levels of a folder, and its name.
+
+    Shallow on purpose: a chat working in a folder touches files at its top, and a
+    build adds entries at the top of its output. Walking a whole node_modules to
+    answer costs more than the disk it saves. Git admin is skipped, because a
+    fetch is not somebody using this folder.
+    """
+    newest, where, seen = None, None, 0
+    stack = [(str(path), 0)]
+    while stack:
+        if budget is not None and budget.spent():
+            break
+        current, level = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > cap:
+                return newest, where, True
+            if entry.name == ".git" or entry.name in skip:
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if newest is None or info.st_mtime > newest:
+                newest, where = info.st_mtime, entry.path
+            if entry.is_dir(follow_symlinks=False) and level + 1 < depth + 1:
+                stack.append((entry.path, level + 1))
+    return newest, where, seen > cap
+
+
+def tree_bytes(path, budget=None, cap=20000):
+    """Bytes under a folder, never following a link, bounded so it answers fast.
+
+    Returns (bytes, truncated). A truncated count is a floor, and the caller says so,
+    because an underreported size reads as a small win when it is a large one.
+    """
+    total, seen = 0, 0
+    stack = [str(path)]
+    while stack:
+        if budget is not None and budget.spent():
+            return total, True
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > cap:
+                return total, True
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+            elif entry.is_file(follow_symlinks=False):
+                total += info.st_size
+    return total, False
+
+
+def size_text(bytes_count, truncated):
+    """A size a person reads, marked as a floor when the walk was cut short."""
+    text = human_bytes(bytes_count)
+    return ("at least " + text) if truncated else text
+
+
+def tracked_inside(folder, name):
+    """True when git tracks any file under this build output folder.
+
+    A tracked file in a build output folder means the folder is not pure output, so
+    removing it would delete work. One git call, scoped to that path.
+    """
+    code, out, _ = git(["--no-optional-locks", "-C", str(folder), "ls-files", "--",
+                        name], timeout=GIT_TIMEOUT)
+    return code != 0 or bool(out.strip())
+
+
+def project_name(repo):
+    """The name a chat gives its copies and its /tmp entries: the checkout's folder."""
+    return Path(repo).resolve().name
+
+
+def tmp_prefixes(name):
+    return (name + "-", name + ".")
+
+
+class Hygiene:
+    """Reclaim disk in this project's own idle folders, in seconds, gated.
+
+    Two jobs, both scoped to the project named on the command line so a chat never
+    reaches another project's disk:
+
+    caches   rebuildable build output inside this project's idle folders. The
+             folder must be idle 48 hours, nobody's process or tmux pane may sit in
+             it, and no lease may name it. Inside, only known output directories go,
+             and only when they hold no git-tracked file.
+    tmp      this project's own /tmp entries, older than 48 hours and held open by
+             nobody.
+
+    Dry run unless --apply. Every removal spends one of --max-remove.
+    """
+
+    def __init__(self, repo, opts, live):
+        self.repo = Path(repo).resolve()
+        self.opts = opts
+        self.live = live
+        self.budget = TimeBudget(opts.time_budget)
+        self.cap = opts.max_remove
+        self.rows = []
+        self.cutoff = time.time() - IDLE_SECONDS
+
+    # -- rows --
+    def row(self, kind, path, action, reason, detail, size=None):
+        row = {"kind": kind, "path": str(path), "action": action,
+               "reason": reason, "detail": detail, "bytes": size,
+               "exact": True}
+        self.rows.append(row)
+        return row
+
+    # -- the project's own folders, never the main checkout --
+    def folders(self):
+        entries = parse_worktrees(self.repo)
+        main = Path(entries[0]["path"]).resolve() if entries else self.repo
+        found = []
+        for entry in entries[1:]:
+            path = Path(entry["path"])
+            if path.exists() and under(path, self.opts.projects_root):
+                found.append(path.resolve())
+        if entries:
+            for row in slice_candidates(self.repo, main, self.opts.projects_root,
+                                        repo_slug(self.repo)):
+                path = Path(row["path"])
+                if path.exists() and path.resolve() != main:
+                    found.append(path.resolve())
+        unique = []
+        for path in found:
+            if path not in unique and path != main:
+                unique.append(path)
+        return unique
+
+    # -- idleness --
+    def idle_detail(self, folder, budget):
+        """(reason, detail) when this folder is not idle, else (None, idle sentence)."""
+        use = self.live.in_use(folder)
+        if use:
+            return "in use", use
+        newest, where, capped = newest_shallow(folder, depth=1, budget=budget,
+                                               skip=BUILD_OUTPUT_DIRS)
+        if newest is not None and newest > self.cutoff:
+            hours = (time.time() - newest) / 3600.0
+            return "in use", "touched {:.1f} hours ago: {}".format(hours, where)
+        if capped and newest is not None:
+            return "in use", ("more entries than one read takes, so its idleness is "
+                              "not proven")
+        if newest is None:
+            return None, "no files to time"
+        days = (time.time() - newest) / 86400.0
+        return None, "idle {:.0f} days".format(days)
+
+    # -- job one: rebuildable build output --
+    def prune_caches(self):
+        for folder in self.folders():
+            if self.budget.spent():
+                self.row("cache", folder, "keep", "time budget",
+                         "stopped at --time-budget before this folder")
+                return
+            reason, detail = self.idle_detail(folder, self.budget)
+            if reason:
+                self.row("cache", folder, "hold", reason,
+                         "folder held, its build output stays: " + detail)
+                continue
+            for name in BUILD_OUTPUT_DIRS:
+                if self.budget.spent():
+                    self.row("cache", folder, "keep", "time budget",
+                             "stopped at --time-budget inside this folder")
+                    return
+                self.prune_one(folder, name, detail)
+
+    def prune_one(self, folder, name, idle):
+        target = folder / name
+        try:
+            info = os.lstat(str(target))
+        except OSError:
+            return
+        if not os.path.isdir(str(target)) or os.path.islink(str(target)):
+            return
+        # An output folder that is itself a repo or holds one is not pure output.
+        if (target / ".git").exists():
+            self.row("cache", target, "hold", "not-rebuildable",
+                     "it holds its own git repo")
+            return
+        # The output directory's own mtime moves whenever a build adds or removes an
+        # entry, which is the cheap signal that something is happening here. A build
+        # that only rewrites files inside is caught by the live-process gate instead.
+        newest = info.st_mtime
+        if newest > self.cutoff:
+            self.row("cache", target, "hold", "in use",
+                     "its own entry list changed {:.1f} hours ago".format(
+                         (time.time() - newest) / 3600.0))
+            return
+        if tracked_inside(folder, name):
+            self.row("cache", target, "hold", "tracked",
+                     "git tracks a file inside it, so it is not build output")
+            return
+        if self.cap <= 0:
+            self.row("cache", target, "keep", "over --max-remove",
+                     "deferred to the next run")
+            return
+        size, truncated = tree_bytes(target, self.budget)
+        size_detail = size_text(size, truncated)
+        if not self.opts.apply:
+            self.cap -= 1
+            row = self.row("cache", target, "remove", "rebuildable", "%s, %s" % (
+                idle, size_detail), size)
+            row["exact"] = not truncated
+            return
+        use = self.live.in_use(target)
+        if use:
+            self.row("cache", target, "hold", "in use", use)
+            return
+        try:
+            shutil.rmtree(str(target))
+        except OSError as exc:
+            self.row("cache", target, "hold", "remove-failed", str(exc))
+            return
+        self.cap -= 1
+        row = self.row("cache", target, "remove", "rebuildable", "%s, %s" % (
+            idle, size_detail), size)
+        row["exact"] = not truncated
+
+    # -- job two: this project's own /tmp entries --
+    def clean_tmp(self):
+        root = Path(self.opts.tmp_root).resolve()
+        name = project_name(self.repo)
+        prefixes = tmp_prefixes(name)
+        uid = os.getuid()
+        try:
+            names = sorted(os.listdir(str(root)))
+        except OSError as exc:
+            self.row("tmp", root, "keep", "unreadable", str(exc))
+            return
+        for entry in names:
+            if self.budget.spent():
+                self.row("tmp", root, "keep", "time budget",
+                         "stopped at --time-budget while reading %s" % root)
+                return
+            if not (entry == name or entry.startswith(prefixes)):
+                continue
+            path = root / entry
+            try:
+                info = os.lstat(str(path))
+            except OSError:
+                continue
+            if entry == name:
+                # The bare project name in /tmp is a lock or a socket far more
+                # often than a scratch folder, so it is named and left alone.
+                self.row("tmp", path, "hold", "bare-name",
+                         "named exactly %s, not %s-*: remove it by hand if it is yours"
+                         % (name, name))
+                continue
+            if os.path.islink(str(path)):
+                self.row("tmp", path, "hold", "symlink", "never followed")
+                continue
+            if info.st_uid != uid:
+                self.row("tmp", path, "hold", "own-uid",
+                         "owned by uid %d, not ours" % info.st_uid)
+                continue
+            if not (os.path.isfile(str(path)) or os.path.isdir(str(path))):
+                self.row("tmp", path, "hold", "special-file",
+                         "not a file or a directory")
+                continue
+            if entry.endswith((".lock", ".sock", ".pid")):
+                # A lock or socket costs no space and another run may recreate it;
+                # deleting one buys nothing and can break a service's coordination.
+                self.row("tmp", path, "hold", "coordination-file",
+                         "a lock, socket or pid file, which costs no disk")
+                continue
+            if info.st_mtime > time.time() - TMP_AGE_SECONDS:
+                continue
+            use = self.live.in_use(path)
+            if use:
+                self.row("tmp", path, "hold", "in use", use)
+                continue
+            if self.cap <= 0:
+                self.row("tmp", path, "keep", "over --max-remove",
+                         "deferred to the next run")
+                continue
+            age = (time.time() - info.st_mtime) / 86400.0
+            if os.path.isdir(str(path)):
+                size, truncated = tree_bytes(path, self.budget)
+            else:
+                size, truncated = info.st_size, False
+            detail = "idle {:.0f} days, {}".format(age, size_text(size, truncated))
+            if not self.opts.apply:
+                self.cap -= 1
+                row = self.row("tmp", path, "remove", "own-prefix", detail, size)
+                row["exact"] = not truncated
+                continue
+            try:
+                if os.path.isdir(str(path)):
+                    shutil.rmtree(str(path))
+                else:
+                    os.unlink(str(path))
+            except OSError as exc:
+                self.row("tmp", path, "hold", "remove-failed", str(exc))
+                continue
+            self.cap -= 1
+            row = self.row("tmp", path, "remove", "own-prefix", detail, size)
+            row["exact"] = not truncated
+
+    def run(self):
+        if self.opts.prune_caches:
+            self.prune_caches()
+        if self.opts.clean_tmp:
+            self.clean_tmp()
+        return {"repo": str(self.repo), "rows": self.rows}
+
+
+def human_bytes(count):
+    if count is None:
+        return "size unknown"
+    if count >= 1024 ** 3:
+        return "{:.1f} GB".format(count / 1024 ** 3)
+    if count >= 1024 ** 2:
+        return "{:.0f} MB".format(count / 1024 ** 2)
+    if count >= 1024:
+        return "{:.0f} KB".format(count / 1024)
+    return "{} B".format(int(count))
+
+
+HYGIENE_VERB = {"remove": ("PRUNE", "CLEAN"), "hold": ("HOLD", "HOLD"),
+                "keep": ("KEEP", "KEEP")}
+
+
+def hygiene_line(row, apply):
+    """One readable line per item, in the shape the git passes already print."""
+    pair = HYGIENE_VERB[row["action"]]
+    verb = pair[0] if row["kind"] == "cache" else pair[1]
+    if row["action"] == "remove" and not apply:
+        verb = "WOULD-" + verb
+    return "%s %s %s (%s: %s)" % (verb, row["kind"], row["path"], row["reason"],
+                                   row["detail"])
+
+
+def hygiene_summary(results, apply):
+    """One summary line per repo: what went, what stayed, and what it freed."""
+    lines = []
+    for result in results:
+        rows = result["rows"]
+        cache = [row for row in rows if row["kind"] == "cache"]
+        tmp = [row for row in rows if row["kind"] == "tmp"]
+        freed = sum(row["bytes"] or 0 for row in rows if row["action"] == "remove")
+        floor = any(not row.get("exact", True) for row in rows
+                    if row["action"] == "remove")
+        lines.append(
+            "%s: build caches %s %d held %d | tmp entries %s %d held %d "
+            "| freed %s%s" % (
+                Path(result["repo"]).name,
+                "pruned" if apply else "would-prune",
+                len([row for row in cache if row["action"] == "remove"]),
+                len([row for row in cache if row["action"] != "remove"]),
+                "cleaned" if apply else "would-clean",
+                len([row for row in tmp if row["action"] == "remove"]),
+                len([row for row in tmp if row["action"] != "remove"]),
+                "at least " if floor else "~",
+                human_bytes(freed)))
+    return lines
+
+
+def run_hygiene(repos, opts):
+    """The fast pass: build caches and /tmp, for the repos the selection named."""
+    tmp_root = Path(opts.tmp_root).resolve()
+    live = Live([opts.projects_root, tmp_root] + repos)
+    results = []
+    printed = 0
+    if not opts.json:
+        if not opts.apply:
+            print("DRY RUN: nothing is removed; pass --apply to do it", flush=True)
+    for repo in repos:
+        runner = Hygiene(repo, opts, live)
+        results.append(runner.run())
+        if not opts.json:
+            for row in runner.rows:
+                print(hygiene_line(row, opts.apply), flush=True)
+        printed += 1
+    if not opts.json:
+        for line in hygiene_summary(results, opts.apply):
+            print(line, flush=True)
+    payload = {
+        "run_id": utc_stamp(),
+        "apply": opts.apply,
+        "prune_caches": opts.prune_caches,
+        "clean_tmp": opts.clean_tmp,
+        "tmp_root": str(tmp_root),
+        "projects_root": str(opts.projects_root),
+        "max_remove": opts.max_remove,
+        "time_budget": opts.time_budget,
+        "repos": results,
+        "totals": {
+            "repos": len(results),
+            "caches_removed": sum(len([row for row in r["rows"] if row["kind"] == "cache"
+                                        and row["action"] == "remove"]) for r in results),
+            "tmp_removed": sum(len([row for row in r["rows"] if row["kind"] == "tmp"
+                                    and row["action"] == "remove"]) for r in results),
+            "held": sum(len([row for row in r["rows"] if row["action"] != "remove"])
+                        for r in results),
+            "freed_bytes": sum(row["bytes"] or 0 for r in results for row in r["rows"]
+                               if row["action"] == "remove"),
+        },
+    }
+    if opts.json:
+        print(json.dumps(payload, indent=2))
+    return 0
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="repo-tidy", add_help=True,
                                      description="Remove shipped worktrees and "
@@ -1401,6 +1859,18 @@ def main(argv):
     parser.add_argument("--quick", action="store_true",
                         help="local git only, no gh, no fetch, no log: one TIDY line "
                              "per cleanup still owed, for a chat's own check")
+    parser.add_argument("--prune-caches", action="store_true",
+                        help="fast hygiene: remove rebuildable build output from this "
+                             "project's folders idle over 48 hours")
+    parser.add_argument("--clean-tmp", action="store_true",
+                        help="fast hygiene: remove this project's own /tmp entries "
+                             "older than 48 hours")
+    parser.add_argument("--tmp-root", default="/tmp", metavar="DIR",
+                        help="where --clean-tmp looks (default /tmp)")
+    parser.add_argument("--time-budget", type=float, default=DEFAULT_TIME_BUDGET,
+                        metavar="SECONDS",
+                        help="wall-clock cap for a hygiene run (default %d)"
+                             % DEFAULT_TIME_BUDGET)
     parser.add_argument("--mine", metavar="SESSION_CWD",
                         help="only this session's named branch in this repo")
     parser.add_argument("--branch", help="branch owned by this chat; required with --mine")
@@ -1424,6 +1894,14 @@ def main(argv):
         parser.error("--project cannot be combined with --all or repo paths")
     if opts.quick and opts.apply:
         parser.error("--quick reads only; it never removes anything")
+    hygiene = opts.prune_caches or opts.clean_tmp
+    if hygiene and (opts.quick or opts.mine):
+        parser.error("--prune-caches and --clean-tmp cannot be combined with --quick or --mine")
+    if hygiene and opts.all:
+        parser.error("--prune-caches and --clean-tmp are project-scoped: name one project "
+                     "or one repo path, never --all")
+    if opts.time_budget < 1:
+        parser.error("--time-budget must be at least 1 second")
     if opts.max_remove < 0:
         parser.error("--max-remove must be 0 or more")
     if opts.repo_timeout < 1:
@@ -1459,6 +1937,8 @@ def main(argv):
 
     if opts.quick:
         return quick_sweep(repos, opts)
+    if hygiene:
+        return run_hygiene(repos, opts)
     live = Live([opts.projects_root] + repos)
     sweep_workers, probe = sweep_jobs(opts.jobs)
     if len(repos) == 1:

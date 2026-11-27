@@ -12,6 +12,7 @@
 - `status`: `~/.local/state/vps-load/status` starts with this run's worker verdict word (`add`, `steady` or `hold`), then `load5=<x>` with two decimals and `cores=<n>`.
 - `hook`: `hooks/vps-state-hook` exits 0 and prints `Server: <the brief line>` plus the hint `run ~/.local/bin/vps-state before starting chats or workers`, in under three seconds.
 - `brief`: `--brief` prints one line, and it is the same verdict line the human block leads with.
+- `disk-warning`: at 85% used or more on `/`, the worker and chat verdicts stop at CAREFUL (never HOLD), and the reason line names `repo-tidy --prune-caches --project .` and `vps-tidy --apply`. Below 85% the verdict is unchanged. Driven by `tests/test_vps_state.py` `DiskWarning`, which feeds a fixture statvfs so the check does not depend on this host's free space.
 - `speed`: the slowest of the JSON, brief and human runs stays under five seconds.
 
 ## How to get to it (user POV)
