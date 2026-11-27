@@ -3,6 +3,8 @@
 VSTA-165: the shims come from the same blocked list and the same matcher as the hook,
 print the same message and exit 2. They pass a light command through to the real binary.
 """
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -31,6 +33,16 @@ def generate(home, *, real=None):
                             text=True, capture_output=True, timeout=30,
                             env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
     return out, result
+
+
+def load_shims_module():
+    """scripts/worker-shims has no .py suffix, so load it from its path."""
+    spec = importlib.util.spec_from_loader('worker_shims',
+                                           importlib.machinery.SourceFileLoader('worker_shims',
+                                                                                str(SHIMS)))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run(shim, *args, home):
@@ -104,6 +116,26 @@ class WorkerShims(unittest.TestCase):
             real.write_text(payload)
             result = run(out / 'npm', 'run', 'build', home=home)
             self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_a_foreign_worker_shims_dir_never_becomes_the_real_binary(self):
+        # plan-pick prepends `<project>/bin/worker-shims` to PATH. If a shim pointed at that
+        # folder's `gh`, the two shims would exec each other forever.
+        with tempfile.TemporaryDirectory() as home:
+            bindir = Path(home) / 'bin'
+            bindir.mkdir()
+            real_gh = bindir / 'gh'
+            real_gh.write_text('#!/bin/sh\necho "real gh $*"\n')
+            real_gh.chmod(0o755)
+            foreign = Path(home) / 'token-ladder/bin/worker-shims'
+            foreign.mkdir(parents=True)
+            (foreign / 'gh').write_text('#!/bin/sh\nexec "%s" "$@"\n' % (foreign / 'gh'))
+            (foreign / 'gh').chmod(0o755)
+            out = Path(home) / 'shims'
+            search = os.pathsep.join([str(foreign), str(bindir)])
+            module = load_shims_module()
+            shims = module.shims_for(out, search, sys.executable)
+            self.assertNotIn(str(foreign / 'gh'), shims['gh'])
+            self.assertIn(str(real_gh.resolve()), shims['gh'])
 
     def test_install_generates_the_shims_the_workers_read(self):
         text = (ROOT / 'install').read_text()
