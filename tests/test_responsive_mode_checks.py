@@ -89,6 +89,37 @@ def slash(name, args=None):
     return human(text)
 
 
+def agy_user(text):
+    """Antigravity's USER_INPUT: his request, then harness metadata on the same entry."""
+    return {'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'status': 'DONE',
+            'content': '<USER_REQUEST>\n' + text + '\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n'
+                       'The current local time is: 2026-11-26T15:39:46+01:00.\n</ADDITIONAL_METADATA>'}
+
+
+def agy_reply(text, tool_calls=None):
+    entry = {'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'status': 'DONE', 'content': text}
+    if tool_calls:
+        entry['tool_calls'] = tool_calls
+    return entry
+
+
+def agy_command(command, encoded=True):
+    """A run_command call: transcript.jsonl holds args as JSON-encoded strings."""
+    return {'name': 'run_command',
+            'args': {'CommandLine': json.dumps(command) if encoded else command,
+                     'WaitMsBeforeAsync': '5000'}}
+
+
+def agy_system(content):
+    return {'type': 'SYSTEM_MESSAGE', 'source': 'SYSTEM', 'status': 'DONE', 'content': content}
+
+
+def agy_reminder():
+    return agy_system('The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided '
+                      'by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n'
+                      'Reminder: work efficiently.\n</SYSTEM_MESSAGE>')
+
+
 def tempdir(test):
     folder = tempfile.mkdtemp()
     test.addCleanup(shutil.rmtree, folder, ignore_errors=True)
@@ -274,6 +305,55 @@ class ReplyCheck(unittest.TestCase):
         self.assert_allowed(self.hook(entries, env=slow))
         # Seven sleeps would take 1.75s; a hit on the first read must finish well before that.
         self.assertLess(time.monotonic() - started, 1.0)
+
+
+class AntigravityReplyCheck(ReplyCheck):
+    """The same two checks on Antigravity, whose transcript.jsonl names its entries differently."""
+
+    def test_his_request_needs_a_reply(self):
+        self.assert_reminded(self.hook([agy_user('ship it'), agy_reply('', [agy_command('ls')])]))
+
+    def test_a_reply_before_the_tool_call_passes(self):
+        entries = [agy_user('ship it'), agy_reply('On it.', [agy_command('ls')])]
+        self.assert_allowed(self.hook(entries))
+
+    def test_a_reply_after_the_tool_call_passes(self):
+        entries = [agy_user('status?'), agy_reply('', [agy_command('ls')]),
+                   agy_system('Command exited with code 0.'), agy_reply('Two of four done.')]
+        self.assert_allowed(self.hook(entries))
+
+    def test_a_system_message_does_not_answer_him(self):
+        entries = [agy_user('ship it'), agy_reminder(), agy_reply('', [agy_command('ls')])]
+        self.assert_reminded(self.hook(entries))
+
+    def test_harness_metadata_alone_is_not_him(self):
+        metadata = {'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'status': 'DONE',
+                    'content': '<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-26.\n'
+                               '</ADDITIONAL_METADATA>'}
+        entries = [agy_reply('On it.'), metadata, agy_reply('', [agy_command('ls')])]
+        self.assert_allowed(self.hook(entries))
+
+    def test_a_system_sourced_input_is_not_him(self):
+        from_system = {'type': 'USER_INPUT', 'source': 'SYSTEM', 'status': 'DONE',
+                       'content': '<USER_REQUEST>\nnoise\n</USER_REQUEST>'}
+        entries = [agy_reply('On it.'), from_system, agy_reply('', [agy_command('ls')])]
+        self.assert_allowed(self.hook(entries))
+
+    def test_a_reply_that_hands_him_the_pr_gets_a_reminder(self):
+        entries = [agy_user('do the ticket'),
+                   agy_reply('Finished and green. Ready for your review: '
+                             'https://github.com/valentinyeo/multiprompt-android/pull/524')]
+        result = self.hook(entries, payload=json.dumps({'hook_event_name': 'Stop',
+                                                       'transcript_path': self.transcript(entries)}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('merge it yourself per pstack shipping',
+                      json.loads(result.stdout)['hookSpecificOutput']['additionalContext'])
+
+    def test_a_plain_antigravity_transcript_with_garbage_lines_allows(self):
+        transcript = tempdir(self) / 'transcript.jsonl'
+        transcript.write_text('{oops\n' + json.dumps(agy_reminder()) + '\n' +
+                              json.dumps(agy_reply('', [agy_command('ls')])) + '\n')
+        self.assert_allowed(self.hook(transcript=str(transcript)))
 
 
 class SkillWiring(unittest.TestCase):

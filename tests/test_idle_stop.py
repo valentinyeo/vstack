@@ -57,6 +57,49 @@ def task_stop(job):
         {'type': 'tool_use', 'id': 'toolu_3', 'name': 'TaskStop', 'input': {'task_id': job}}]}}
 
 
+def agy_human(text):
+    return {'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'status': 'DONE',
+            'content': '<USER_REQUEST>\n' + text + '\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n'
+                       'The current local time is: 2026-11-26T15:39:46+01:00.\n</ADDITIONAL_METADATA>'}
+
+
+def agy_reply(text, tool_calls=None):
+    entry = {'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'status': 'DONE', 'content': text}
+    if tool_calls:
+        entry['tool_calls'] = tool_calls
+    return entry
+
+
+def agy_task_started(job):
+    return {'type': 'GENERIC', 'source': 'MODEL', 'status': 'RUNNING',
+            'content': 'Created At: 2026-11-26T15:39:55+01:00\nTool is running as a background task with '
+                       'task id: ' + job + '\nTask Description: ./slow-report.sh\nTask logs are available '
+                       'at: file:///tmp/' + job.replace('/', '-') + '.log\n'}
+
+
+def agy_task_finished(job):
+    return {'type': 'SYSTEM_MESSAGE', 'source': 'SYSTEM', 'status': 'DONE',
+            'content': 'The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n\n'
+                       '<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T15:40:01Z sender=' + job +
+                       ' priority=MESSAGE_PRIORITY_HIGH content=Task id "' + job +
+                       '" finished with result:\nCommand exited with code 0.\n</SYSTEM_MESSAGE>'}
+
+
+def agy_reminder():
+    return {'type': 'SYSTEM_MESSAGE', 'source': 'SYSTEM', 'status': 'DONE',
+            'content': '<SYSTEM_MESSAGE>\nReminder: work efficiently.\n</SYSTEM_MESSAGE>'}
+
+
+def agy_kill(job):
+    return agy_reply('', [{'name': 'manage_task',
+                           'args': {'Action': 'kill', 'TaskId': job}}])
+
+
+def agy_subagent(conversation):
+    return {'type': 'GENERIC', 'source': 'MODEL', 'status': 'RUNNING',
+            'content': 'Subagent is running in the background.\nconversationId: ' + conversation + '\n'}
+
+
 def ticket(key, section='Doing', assignee='Idle Stop'):
     return {'ticketNumber': key, 'section': section,
             'assignees': [{'displayName': assignee, 'type': 'agent'}]}
@@ -209,6 +252,42 @@ class IdleStop(unittest.TestCase):
                                 capture_output=True, check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('idle-stop self-test ok', result.stdout)
+
+
+class AntigravityIdleStop(IdleStop):
+    """The same guard on Antigravity, whose transcript.jsonl tracks background tasks its own way."""
+
+    JOB = 'db4bd34a-dd15-4423-95de-28921cd102c5/task-4'
+
+    def test_a_running_antigravity_task_allows(self):
+        self.assert_allowed(self.hook([agy_human('ship it'), agy_task_started(self.JOB),
+                                       agy_reply('The report job is running.')]))
+
+    def test_a_finished_antigravity_task_blocks(self):
+        entries = [agy_human('ship it'), agy_task_started(self.JOB), agy_task_finished(self.JOB),
+                   agy_reply('The report is ready.')]
+        self.assert_blocked(self.hook(entries))
+
+    def test_a_killed_antigravity_task_blocks(self):
+        entries = [agy_human('ship it'), agy_task_started(self.JOB), agy_kill(self.JOB),
+                   agy_reply('Stopped it.')]
+        self.assert_blocked(self.hook(entries))
+
+    def test_antigravity_reminders_do_not_start_a_job(self):
+        entries = [agy_human('ship it'), agy_reminder(), agy_reply('Nothing is running.')]
+        self.assert_blocked(self.hook(entries))
+
+    def test_a_finished_task_entry_does_not_count_as_live(self):
+        done = dict(agy_task_started(self.JOB), status='DONE')
+        self.assert_blocked(self.hook([agy_human('ship it'), done, agy_reply('Done.')]))
+
+    def test_a_running_subagent_allows(self):
+        entries = [agy_human('build it'), agy_subagent('conv-7f3c'), agy_reply('The worker is running.')]
+        self.assert_allowed(self.hook(entries))
+
+    def test_an_antigravity_question_allows(self):
+        self.assert_allowed(self.hook([agy_human('ship it'),
+                                       agy_reply('One of three is open. Do you want it now?')]))
 
 
 class SkillWiring(unittest.TestCase):

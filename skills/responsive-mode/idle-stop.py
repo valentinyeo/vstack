@@ -9,7 +9,11 @@ The decision, in order:
 1. `stop_hook_active` is true: this guard already blocked this turn, so allow.
 2. A live background job in the transcript's last lines: allow. A job starts on a Bash background result
    ("Command running in background with ID: <id>") or an async agent result ("agentId: <id>"), and ends on
-   a `<task-notification>` naming it, or a TaskStop/KillShell call naming it.
+   a `<task-notification>` naming it, or a TaskStop/KillShell call naming it. Antigravity's transcript.jsonl
+   is read on the same terms: a RUNNING `GENERIC` entry carrying "Tool is running as a background task with
+   task id: <id>" (or a subagent's `conversationId`) starts a job, and a `SYSTEM_MESSAGE` saying
+   "Task id "<id>" finished" or a `manage_task` kill call ends it. Any shape this file does not know
+   counts as no job.
 3. The harness wakes this chat when a tracked job exits, not when it prints. The long-lived board-drain
    watcher instead sends its own Multibot tab a prompt, at most once per 60s, coalescing changes;
    unavailable or failed delivery falls back to printing and exiting 0. A live job is allowed here.
@@ -44,7 +48,12 @@ BOARD_LINE = re.compile(r'^Hypertask board:\s*(\d+)(?:,\s*label:\s*(.+?))?\s*$')
 OPEN_SECTIONS = frozenset({'Doing', 'In Progress', 'Checks', 'AI Review'})
 ENDING = frozenset({'completed', 'killed', 'stopped', 'failed'})
 STOP_TOOLS = frozenset({'TaskStop', 'KillShell'})
-HARNESS = ('<task-notification>', '<system-reminder>', '<command-message>', '<local-command-')
+HARNESS = ('<task-notification>', '<system-reminder>', '<command-message>', '<local-command-',
+           '<SYSTEM_MESSAGE', '<ADDITIONAL_METADATA')
+AGY_KINDS = frozenset({'GENERIC', 'SYSTEM_MESSAGE', 'PLANNER_RESPONSE', 'USER_INPUT'})
+AGY_START = re.compile(r'Tool is running as a background task with task id:\s*([^\s,]+)')
+AGY_CONVERSATION = re.compile(r'conversationId["\s:=]+([A-Za-z0-9][A-Za-z0-9_.:/-]{3,})')
+AGY_FINISH = re.compile(r'Task id\s+"([^"]+)"\s+finished')
 BACKGROUND = re.compile(r'Command running in background with ID:\s*([A-Za-z0-9_-]+)')
 ASYNC = re.compile(r'Async agent launched[\s\S]{0,600}?agentId:\s*([A-Za-z0-9_-]+)')
 NOTIFICATION = re.compile(r'<task-notification>([\s\S]*?)</task-notification>')
@@ -145,6 +154,61 @@ def ended(entry, content):
     return ids
 
 
+def agy_args(call):
+    """One Antigravity tool call's args, JSON-encoded string values decoded, or {}."""
+    args = call.get('args') if isinstance(call, dict) else None
+    if not isinstance(args, dict):
+        return {}
+    decoded = {}
+    for key, value in args.items():
+        if isinstance(value, str) and value[:1] in '{["':
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        decoded[key] = value
+    return decoded
+
+
+def agy_text(entry):
+    content = entry.get('content')
+    return content if isinstance(content, str) else ''
+
+
+def agy_started(entry):
+    """Antigravity background task ids this entry started."""
+    if entry.get('type') != 'GENERIC' or str(entry.get('status') or '').upper() != 'RUNNING':
+        return set()
+    text = agy_text(entry)
+    return set(AGY_START.findall(text)) | set(AGY_CONVERSATION.findall(text))
+
+
+def agy_ended(entry):
+    """Antigravity background task ids this entry ended: a finished task note, or a kill call."""
+    if entry.get('type') == 'SYSTEM_MESSAGE':
+        return set(AGY_FINISH.findall(agy_text(entry)))
+    if entry.get('type') != 'PLANNER_RESPONSE':
+        return set()
+    ids = set()
+    for call in entry.get('tool_calls') or []:
+        if not isinstance(call, dict) or call.get('name') != 'manage_task':
+            continue
+        args = agy_args(call)
+        action = str(args.get('Action') or args.get('action') or '').lower()
+        task = args.get('TaskId') or args.get('taskId') or args.get('task_id')
+        if action in ('kill', 'stop') and isinstance(task, str):
+            ids.add(task)
+    return ids
+
+
+def agy_him(entry):
+    """Did Valentin type this Antigravity entry? Only USER_EXPLICIT input is his."""
+    if entry.get('type') != 'USER_INPUT' or entry.get('source') not in (None, 'USER_EXPLICIT'):
+        return False
+    text = agy_text(entry).lstrip()
+    return bool(text.strip()) and not text.startswith(HARNESS)
+
+
 def scan(transcript):
     """(live job ids, this turn's assistant text), None when the transcript is unreadable."""
     lines = tail(transcript)
@@ -156,7 +220,17 @@ def scan(transcript):
             entry = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(entry, dict) or entry.get('type') not in ('user', 'assistant'):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get('type') in AGY_KINDS:
+            live |= agy_started(entry)
+            live -= agy_ended(entry)
+            if entry['type'] == 'PLANNER_RESPONSE':
+                text.extend(said(entry.get('content')))
+            if agy_him(entry):
+                text = []
+            continue
+        if entry.get('type') not in ('user', 'assistant'):
             continue
         message = entry.get('message')
         content = message.get('content') if isinstance(message, dict) else None
@@ -379,7 +453,41 @@ def self_test():
         os.environ.pop('HYPERTASK_AGENT_NAME', None)
         start = ('Command running in background with ID: bxo4265ry. Output is being written to: '
                  '/tmp/tasks/bxo4265ry.output.')
+        job = 'db4bd34a/task-4'
+
+        def agy_human(text):
+            return {'type': 'USER_INPUT', 'source': 'USER_EXPLICIT', 'status': 'DONE',
+                    'content': '<USER_REQUEST>\n' + text + '\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n'
+                               'The current local time is: 2026-11-26T15:39:46+01:00.\n'
+                               '</ADDITIONAL_METADATA>'}
+
+        def agy_started(entry_job=None):
+            return {'type': 'GENERIC', 'source': 'MODEL', 'status': 'RUNNING',
+                    'content': 'Tool is running as a background task with task id: '
+                               + (entry_job or job) + '\n'}
+
+        def agy_finished(entry_job=None):
+            return {'type': 'SYSTEM_MESSAGE', 'source': 'SYSTEM', 'status': 'DONE',
+                    'content': '[Message] sender=' + (entry_job or job) + ' content=Task id "'
+                               + (entry_job or job) + '" finished with result:\nCommand exited with code 0.'}
+
+        def agy_kill(entry_job=None):
+            return {'type': 'PLANNER_RESPONSE', 'source': 'MODEL', 'status': 'DONE', 'content': '',
+                    'tool_calls': [{'name': 'manage_task',
+                                    'args': {'Action': json.dumps('kill'), 'TaskId': entry_job or job}}]}
+
         cases = [
+            ('an antigravity running task allows', [agy_human('do it'), agy_started(),
+                                                    reply('The report job is running.')], str(project), ''),
+            ('an antigravity finished task blocks', [agy_human('do it'), agy_started(), agy_finished(),
+                                                     reply('The report is ready.')],
+             str(project), MESSAGE.format(key='VSTA-1')),
+            ('an antigravity kill ends the task', [agy_human('do it'), agy_started(), agy_kill(),
+                                                   reply('Stopped it.')],
+             str(project), MESSAGE.format(key='VSTA-1')),
+            ('an antigravity question allows', [agy_human('do it'),
+                                                reply('Two of four are done. Want the rest?')],
+             str(project), ''),
             ('a live job allows', [human('do it'), background(start, 'bxo4265ry'),
                                    reply('CI watcher bxo4265ry is running.')], str(project), ''),
             ('a finished job blocks', [human('do it'), background(start, 'bxo4265ry'),
