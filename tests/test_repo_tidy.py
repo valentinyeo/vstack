@@ -263,6 +263,80 @@ class TestQuick(SandboxCase):
         self.assertIn("--quick", result.stderr)
 
 
+class TestQuickAgreesWithApply(SandboxCase):
+    """quick names a folder only when apply would remove it from local git alone.
+
+    The reported fault: a chat pushed a branch to origin and never merged it, and
+    --quick called the folder owed while the gated --apply held it unshipped, so
+    drain-check kept showing a finding no apply could ever clear.
+    """
+
+    @classmethod
+    def build(cls):
+        world, expect = super().build()
+        # The reported shape: a clone of this project on a branch pushed to origin,
+        # with no merged PR. Its tip is local git knowledge, and not shipped.
+        copy = world.projects / "sandbox-pushed-copy"
+        world.git(["clone", "-q", sandbox.GITHUB_ORIGIN, str(copy)])
+        world.git(["config", "user.name", "Sandbox"], cwd=copy)
+        world.git(["config", "user.email", "sandbox@example.com"], cwd=copy)
+        world.git(["checkout", "-q", "-B", "pushed-copy"], cwd=copy)
+        (copy / "pushed.txt").write_text("pushed, never merged\n")
+        world.git(["add", "-A"], cwd=copy)
+        world.git(["commit", "-qm", "pushed only"], cwd=copy)
+        world.git(["push", "-q", "origin", "pushed-copy"], cwd=copy)
+        # The project's view of the remote, the way a chat's next fetch sees it.
+        world.git(["-C", str(world.repo), "fetch", "-q", "origin"])
+        # Older than the 2 hour use window, so only the shipped gate judges it.
+        old = time.time() - 3 * 60 * 60
+        for item in copy.iterdir():
+            if item.name != ".git":
+                os.utime(item, (old, old))
+        cls.quick = tidy(world, "--quick", "--project", str(world.repo))
+        cls.dry = tidy(world, "--all")
+        return world, expect
+
+    def quick_paths(self):
+        self.assertEqual(self.quick.returncode, 0, self.quick.stderr)
+        return {line[len("TIDY "):].strip() for line in self.quick.stdout.splitlines()
+                if line.startswith("TIDY ")}
+
+    def removable_paths(self):
+        self.assertEqual(self.dry.returncode, 0, self.dry.stderr)
+        return set(re.findall(r"^REMOVE (?:worktree|slice) (\S+)", self.dry.stdout, re.M))
+
+    def test_quick_names_nothing_apply_refuses(self):
+        extra = self.quick_paths() - self.removable_paths()
+        self.assertEqual(extra, set(),
+                         "quick reported folders apply would hold:\n" + self.quick.stdout)
+
+    def test_a_merged_tip_is_still_owed(self):
+        # Legitimate: the tip is an ancestor of the base branch, so apply removes it.
+        self.assertIn(str(self.world.wt_path("merged-clean")), self.quick_paths())
+
+    def test_a_tip_pushed_but_not_merged_is_not_owed(self):
+        # open-pr: branch is on origin with an open PR. closed-recent: its PR closed
+        # 3 days ago. squash-stale: commits after a squash merge. All held by apply.
+        paths = self.quick_paths()
+        for name in ("open-pr", "closed-recent", "squash-stale"):
+            self.assertNotIn(str(self.world.wt_path(name)), paths, self.quick.stdout)
+
+    def test_a_clone_pushed_but_not_merged_is_not_owed(self):
+        self.assertNotIn(str(self.world.projects / "sandbox-pushed-copy"),
+                         self.quick_paths())
+        self.assertRegex(self.dry.stdout, r"HOLD slice \S*sandbox-pushed-copy \(unshipped")
+
+    def test_a_folder_git_no_longer_registers_is_not_owed(self):
+        # apply holds it as unreadable, because git cannot check its files.
+        self.assertNotIn(str(self.world.projects / "sandbox-orphan-tree"),
+                         self.quick_paths())
+
+    def test_unclean_unpushed_and_in_use_folders_keep_their_protection(self):
+        paths = self.quick_paths()
+        for name in ("wip", "scratch", "unpushed", "lease", "recent", "detached"):
+            self.assertNotIn(str(self.world.wt_path(name)), paths, self.quick.stdout)
+
+
 class TestDryRunOnly(SandboxCase):
     def test_dry_run_leaves_every_worktree_and_branch(self):
         before = sandbox.snapshot(self.world.root)
