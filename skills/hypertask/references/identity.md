@@ -127,7 +127,7 @@ Every ticket you file or work carries you as assignee.
 
 ## Stop rules
 
-- Never revoke, archive, rename or delete another chat's agent.
+- Never revoke, rename or delete another chat's agent by hand. The one archive allowed is `../board-drain/peers --apply`, which archives an identity it proved dead: no live chat, no armed or paused loop, no activity inside the grace window, and no open ticket. It never touches a live, paused, role or owner identity.
 - Never copy a token from another machine or another agent.
 - Never print a token, a key, or command output that holds one.
 - A failed step blocks board work. Fix it and rerun the startup check.

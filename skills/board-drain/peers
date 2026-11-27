@@ -1,0 +1,638 @@
+#!/usr/bin/env python3
+"""peers: prove every other agent identity on this board still has a live chat (VSTA-349).
+
+A chat gets deleted, goes idle for good, or is stopped by Valentin, but its Hypertask
+agent identity, its board membership, its assigned tickets and its board-sync timer
+stay behind. Nothing notices, so a board slowly fills with owners nobody can reach.
+This is the audit that notices, in seconds, without touching real work.
+
+    peers --board <id> [--name "<chat>"] [--apply] [--max-archive N] [--grace 7d]
+    peers --board <id> --fixture FILE --roster FILE --now <ISO>    # a board under test
+    peers --self-test
+
+Dry-run by default: one `peer:` line per identity on the board, then a verdict. It is
+a read and a report, so it never blocks the calling chat's own work.
+
+    peer: LIVE <name>
+    peer: PAUSED <name>: <why>
+    peer: GRACE <name>: <why>                     # created or used inside the window
+    peer: DEAD-IDENTITY <name>: <id>
+    peer: ORPHAN-TICKETS <name>: <id>; 2 open (VSTA-1, VSTA-2)
+    peer: DEAD-TIMER board-sync@<chat>.timer: no live session
+
+`--apply` archives (never revokes, never deletes) only an identity this run proved
+dead: not in the live roster, no armed or paused loop record, no start-up or published
+activity inside the grace window, and no open ticket assigned to it. It never touches
+the calling chat, a person, or one of the role identities
+`../hypertask/references/identity.md` names. Actions are capped by `--max-archive`
+(3 by default), so one run cannot empty a board. A dead timer is reported only: its
+chat owns its units, and `loop-state` prunes the ones a week old.
+
+Only an owner login may archive an agent identity. `--apply` uses the caller's own
+login first, and adds `--management-key` when this shell exports
+`HYPERTASK_MANAGEMENT_KEY`. A refused archive is one line on stderr and the identity
+stays reported; it never becomes a crash.
+
+Every read has a timeout and fails open to a note. A read the audit cannot make at
+all answers one `peers: <why>` line and exits 2 with nothing archived.
+"""
+import argparse
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+HERE = Path(__file__).resolve().parent
+
+
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+owners = load('board_drain_owners', HERE / 'owners')
+loop_state = load('board_drain_loop_state', HERE / 'loop-state')
+session = load('fleet_session', HERE.parent / 'hypertask-work' / 'session_login.py')
+
+CALL_TIMEOUT = 15
+LIST_LIMIT = 500
+SHOWN = 5
+PAGES = 10
+# A card in one of these columns waits for its owner, so a dead identity holding one
+# is a promise, not garbage: it is reported and never archived.
+OPEN_SECTIONS = frozenset({'Todo', 'Doing', 'Building', 'Checks', 'AI Review',
+                           'Verification Backlog'})
+# The role identities `../hypertask/references/identity.md` names. Their chat may go
+# quiet, but the role outlives it, so no audit archives one.
+PROTECTED = frozenset(name.casefold() for name in (
+    'HT Support Lead', 'HT Design Lead', 'HT Growth Lead', 'HT Finance Lead',
+    'Infra Lead', 'CI Boss', 'Chief Of Staff'))
+SHIMS = 'worker-shims'
+TIMER = re.compile(r'^board-sync@(?P<slug>[^.\s]+)\.timer\s')
+ERRORS = (ValueError, KeyError, TypeError, OSError, RuntimeError, subprocess.SubprocessError,
+          AttributeError, ImportError)
+
+
+def norm(name):
+    """One chat name: trimmed, inner runs collapsed, casefolded."""
+    return ' '.join(str(name or '').split()).casefold()
+
+
+def iso(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def moment(value):
+    """One board or file timestamp as epoch seconds, None when it carries nothing usable."""
+    try:
+        return owners.reconcile.moment(value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def cli_path():
+    """The real `hypertask`, never a worker shim: a shim answers "no board login"."""
+    for part in (os.environ.get('PATH') or '').split(os.pathsep):
+        if not part or Path(part).name == SHIMS:
+            continue
+        candidate = Path(part) / 'hypertask'
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    local = Path.home() / '.local/bin/hypertask'
+    return str(local) if local.is_file() else ''
+
+
+def run_cli(args, timeout=CALL_TIMEOUT):
+    """One CLI call that raises rather than answering half an answer."""
+    binary = cli_path()
+    if not binary:
+        raise RuntimeError('no hypertask CLI on this host')
+    done = subprocess.run([binary, '--json', *args], capture_output=True, text=True,
+                          timeout=timeout, stdin=subprocess.DEVNULL)
+    if done.returncode:
+        raise RuntimeError(f'hypertask {args[0]} {args[1]} failed: '
+                           f'{(done.stderr or done.stdout).strip()[-200:]}')
+    value = json.loads(done.stdout or '{}')
+    if value.get('success') is False:
+        raise RuntimeError(str(value.get('error') or 'Hypertask request failed')[:200])
+    return value
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """The board as one run read it, so reporting and acting judge the same facts."""
+    now: float
+    board: int
+    name: str
+    own_id: str
+    rows: tuple
+    members: tuple
+    agents: dict
+    live: frozenset
+    states: tuple
+    timers: tuple
+    seen: dict
+    published: dict
+    notes: tuple = ()
+    broken: bool = False
+
+
+def read_fixture(path):
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, dict):
+        raise ValueError('fixture must be a JSON object')
+    return data
+
+
+def roster_names(args, data):
+    if isinstance(data.get('roster'), str):
+        return owners.names_from_text(data['roster'])
+    return owners.live_names(argparse.Namespace(roster=args.roster))
+
+
+def rows_of(args, data):
+    if args.fixture:
+        rows = data.get('rows') or []
+        if not isinstance(rows, list):
+            raise ValueError('fixture rows must be a list')
+        return tuple(rows)
+    found, cursor, seen = [], None, set()
+    for _ in range(PAGES):
+        call = ['task', 'list', '--project', str(args.board), '--status', 'Normal',
+                '--limit', '100']
+        if cursor:
+            call += ['--cursor', cursor]
+        page = run_cli(call)
+        found += [{'task': task} for task in page.get('tasks') or []]
+        cursor = page.get('nextCursor')
+        if not cursor or cursor in seen:
+            break
+        seen.add(cursor)
+    return tuple(found)
+
+
+def members_of(args, data, timeout=CALL_TIMEOUT):
+    if args.fixture and 'members' in data:
+        return tuple(data.get('members') or ())
+    return tuple(run_cli(['project', 'members', str(args.board)],
+                         timeout).get('members') or ())
+
+
+def agents_of(args, data, timeout=CALL_TIMEOUT):
+    """Managed agent identities, keyed by id. An owner-only read, so it may be refused.
+
+    A fixture that carries no `agents` key asks the CLI anyway, so the refused-read
+    path is provable without an owner-only token.
+    """
+    if args.fixture and 'agents' in data:
+        return {str(row['id']): row for row in data.get('agents') or ()
+                if isinstance(row, dict) and row.get('id')}
+    rows = run_cli(['agents', 'list', '--limit', str(LIST_LIMIT)], timeout).get('agents') or []
+    return {str(row['id']): row for row in rows if isinstance(row, dict) and row.get('id')}
+
+
+def timers_of(args, data, timeout=CALL_TIMEOUT):
+    """Enabled `board-sync@<chat>.timer` slugs."""
+    if args.fixture and 'timers' in data:
+        return tuple(data.get('timers') or ())
+    done = subprocess.run(['systemctl', '--user', 'list-unit-files', 'board-sync@*.timer',
+                           '--no-legend', '--state=enabled'], capture_output=True, text=True,
+                          timeout=timeout, stdin=subprocess.DEVNULL,
+                          env={**os.environ, **loop_state.bus_environment()})
+    if done.returncode:
+        raise RuntimeError(f'systemctl list-unit-files failed: {done.stderr.strip()[-200:]}')
+    return tuple(match.group('slug') for match in
+                 (TIMER.match(line) for line in (done.stdout or '').splitlines()) if match)
+
+
+def announced(args, data):
+    """{chat name: last start-up epoch} from each session's own start-up record."""
+    if args.fixture:
+        return {norm(name): moment(at) for name, at in (data.get('announce') or {}).items()
+                if moment(at) is not None}
+    root = Path(os.environ.get('ROSTER_ANNOUNCE_DIR')
+                or Path.home() / '.local/state/roster/announce')
+    seen = {}
+    for path in sorted(root.glob('*.json')) if root.is_dir() else []:
+        try:
+            entry = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        name, at = entry.get('name'), moment(entry.get('seen'))
+        if name and at is not None:
+            seen[norm(name)] = max(seen.get(norm(name), 0.0), at)
+    return seen
+
+
+def published(args, data):
+    """{chat name: last epoch the app published it} for every chat it ever named."""
+    if args.fixture:
+        return {norm(name): moment(at) for name, at in (data.get('published') or {}).items()
+                if moment(at) is not None}
+    found = {}
+    for entry in session.chat_names(Path.home()).values():
+        if not isinstance(entry, dict) or not entry.get('name'):
+            continue
+        name, at = norm(entry['name']), moment(entry.get('at')) or 0.0
+        found[name] = max(found.get(name, 0.0), at)
+    return found
+
+
+def snapshot(args, rows=None, timeout=CALL_TIMEOUT, managed=True, data=None):
+    """Read the board once. A broken read is reported and archived nothing.
+
+    `rows` are cards a caller already read (drain-check's own tick), so auditing a tick
+    adds no board listing to that tick. `managed=False` skips `agents list`, an
+    owner-only read a chat's own tick is refused, and judges board membership alone.
+    """
+    data = data if data is not None else (read_fixture(args.fixture) if args.fixture else {})
+    now = moment(args.now) if args.now else None
+    now = now if now is not None else datetime.now(timezone.utc).timestamp()
+    name = args.name or loop_state.env_name()
+    own_id = ''
+    if name:
+        try:
+            own_id = session.own_agent_id(name)
+        except ERRORS:
+            own_id = ''
+    try:
+        live = frozenset(norm(row) for row in roster_names(args, data))
+    except ERRORS as error:
+        return Snapshot(now, args.board, name, own_id, (), (), {}, frozenset(), (), (),
+                        {}, {}, (f'live chat list unreadable: {error}',), True)
+    try:
+        rows = tuple(rows) if rows is not None else rows_of(args, data)
+    except ERRORS as error:
+        return Snapshot(now, args.board, name, own_id, (), (), {}, live, (), (), {}, {},
+                        (f'board tickets unreadable: {error}',), True)
+    try:
+        members = members_of(args, data, timeout)
+    except ERRORS as error:
+        return Snapshot(now, args.board, name, own_id, rows, (), {}, live, (), (), {}, {},
+                        (f'board members unreadable: {error}',), True)
+    notes = []
+    try:
+        agents = agents_of(args, data, timeout) if managed else {}
+    except ERRORS as error:
+        agents = {}
+        notes.append(f'managed agent list unreadable ({error}); judging board membership only')
+    try:
+        timers = timers_of(args, data, timeout)
+    except ERRORS as error:
+        timers = ()
+        notes.append(f'sync timers unreadable ({error}); timers not audited')
+    try:
+        states = tuple(loop_state.records())
+    except ERRORS as error:
+        states = ()
+        notes.append(f'loop state unreadable ({error}); no loop is judged armed')
+    try:
+        seen = announced(args, data)
+    except ERRORS as error:
+        seen = {}
+        notes.append(f'start-up records unreadable ({error}); judged by creation time only')
+    try:
+        named = published(args, data)
+    except ERRORS as error:
+        named = {}
+    live = live | armed_names(states, args.board)
+    return Snapshot(now, args.board, name, own_id, rows, members, agents, live, states,
+                    timers, seen, named, tuple(notes))
+
+
+def armed_names(states, board):
+    """Chats whose loop still wakes them on this board, a paused loop included."""
+    found = set()
+    for state in states:
+        name = str(state.get('name') or '').strip()
+        if not name or str(state.get('board')) != str(board):
+            continue
+        try:
+            if loop_state.status(name)[0] in (0, 3, loop_state.PAUSED):
+                found.add(norm(name))
+        except ERRORS:
+            continue
+    return found
+
+
+@dataclass(frozen=True)
+class Peer:
+    """One agent identity on the board and what this run proved about it."""
+    name: str
+    agent_id: str
+    status: str
+    why: str = ''
+    keys: tuple = ()
+
+    @property
+    def archivable(self):
+        """Only an identity with no live chat, no loop and no open ticket may be archived."""
+        return self.status == 'DEAD-IDENTITY'
+
+
+def open_keys(rows):
+    """{chat name: {'id', 'keys'}} for every card an agent identity holds."""
+    found = {}
+    for row in rows:
+        task = row.get('task') or {}
+        if task.get('section') not in OPEN_SECTIONS:
+            continue
+        for assignee in task.get('assignees') or ():
+            if not isinstance(assignee, dict):
+                continue
+            if str(assignee.get('type') or '').casefold() != 'agent':
+                continue
+            slot = found.setdefault(norm(assignee.get('displayName')), {'id': '', 'keys': []})
+            slot['keys'].append(str(task.get('ticketNumber') or ''))
+            slot['id'] = slot['id'] or str(assignee.get('agentId') or '')
+    return found
+
+
+def board_agents(snap):
+    """Agent identities on this board: its agent members, plus any managed row on it.
+
+    A member with a numeric id is a person, never an agent, so it is never a peer.
+    """
+    found = {}
+    for member in snap.members:
+        if not isinstance(member, dict) or not member.get('id'):
+            continue
+        agent_id = str(member['id'])
+        if agent_id.isdigit():
+            continue
+        found[agent_id] = {'name': str(member.get('displayName') or '').strip(), 'row': {}}
+    for agent_id, row in snap.agents.items():
+        boards = [board.get('id') for board in row.get('boards') or ()
+                  if isinstance(board, dict)]
+        if str(snap.board) not in {str(value) for value in boards}:
+            continue
+        slot = found.setdefault(agent_id, {'name': '', 'row': {}})
+        slot['row'] = row
+        slot['name'] = slot['name'] or str(row.get('display_name') or '').strip()
+    return {agent_id: slot for agent_id, slot in found.items() if slot['name']}
+
+
+def classify(snap, grace):
+    """One status per identity. Anything this run cannot prove dead is left alone."""
+    keys = open_keys(snap.rows)
+    found = []
+    for agent_id, slot in sorted(board_agents(snap).items(),
+                                 key=lambda pair: norm(pair[1]['name'])):
+        name, row = slot['name'], slot['row']
+        mine = tuple(sorted(set((keys.get(norm(name)) or {}).get('keys') or ())))
+        if agent_id == snap.own_id or norm(name) == norm(snap.name):
+            found.append(Peer(name, agent_id, 'LIVE', 'this chat'))
+            continue
+        if norm(name) in PROTECTED or session.is_person(name):
+            found.append(Peer(name, agent_id, 'LIVE', 'role identity or the owner'))
+            continue
+        if norm(name) in snap.live:
+            pause = pause_of(snap.states, name)
+            found.append(Peer(name, agent_id, 'PAUSED' if pause else 'LIVE',
+                              pause or 'live chat or armed loop'))
+            continue
+        if row.get('revoked'):
+            found.append(Peer(name, agent_id, 'ORPHAN-TICKETS' if mine else 'DEAD-IDENTITY',
+                              'identity revoked', mine))
+            continue
+        fresh = freshness(snap, name, row, grace)
+        if fresh:
+            found.append(Peer(name, agent_id, 'GRACE', fresh, mine))
+            continue
+        found.append(Peer(name, agent_id, 'ORPHAN-TICKETS' if mine else 'DEAD-IDENTITY',
+                          '', mine))
+    return found
+
+
+def pause_of(states, name):
+    """The pause line for a chat whose own loop was told to go idle, else ''."""
+    for state in states:
+        if norm(state.get('name')) != norm(name):
+            continue
+        try:
+            pause = loop_state.pause_state(str(state['name']))
+        except ERRORS:
+            return ''
+        return loop_state.pause_line(pause) if pause else ''
+    return ''
+
+
+def freshness(snap, name, row, grace):
+    """Why this identity is too new or too recently used to judge, or ''."""
+    for value, label in ((row.get('created_at'), 'identity created'),
+                          (snap.seen.get(norm(name)), 'chat last started'),
+                          (snap.published.get(norm(name)), 'chat last published')):
+        at = moment(value)
+        if at is not None and snap.now - at < grace:
+            return f'{label} {iso(at)}'
+    return ''
+
+
+def dead_timers(snap, grace):
+    """Enabled sync timers whose chat this host has no trace of inside the window."""
+    names = set(snap.live) | {norm(state.get('name')) for state in snap.states}
+    names |= {name for name, at in snap.seen.items() if snap.now - at < grace}
+    names |= {name for name, at in snap.published.items() if snap.now - at < grace}
+    found = []
+    for slug in sorted(set(snap.timers)):
+        if any(re.sub(r'[^a-z0-9]+', '-', name).strip('-') == slug for name in names):
+            continue
+        found.append(slug)
+    return tuple(found)
+
+
+def fix_command(args):
+    return f'skills/board-drain/peers --board {args.board} --apply'
+
+
+def timer_line(slug):
+    return (f'peer: DEAD-TIMER board-sync@{slug}.timer: no live session; fix: '
+            f'systemctl --user disable --now board-sync@{slug}.timer')
+
+
+def peer_line(peer, args, archived):
+    """One report line for one identity, the same words in a tick and in a full run."""
+    if peer.status == 'LIVE':
+        return f'peer: LIVE {peer.name}'
+    if peer.status == 'PAUSED':
+        return f'peer: PAUSED {peer.name}: {peer.why}'
+    if peer.status == 'GRACE':
+        return f'peer: GRACE {peer.name}: {peer.why}'
+    why = f'{peer.why}; ' if peer.why else ''
+    if peer.status == 'ORPHAN-TICKETS':
+        shown = ', '.join(peer.keys[:SHOWN])
+        more = '' if len(peer.keys) <= SHOWN else f' (+{len(peer.keys) - SHOWN} more)'
+        return (f'peer: ORPHAN-TICKETS {peer.name}: {peer.agent_id}; {why}{len(peer.keys)} open '
+                f'({shown}){more}; reassign or close these before archiving')
+    if peer.agent_id in archived:
+        return f'peer: ARCHIVED {peer.name}: {peer.agent_id}'
+    return (f'peer: DEAD-IDENTITY {peer.name}: {peer.agent_id}; {why}no live chat, no armed '
+            f'loop, no recent activity; fix: {fix_command(args)}')
+
+
+def news(snap, peers, timers, args):
+    """Only the lines that ask for a fix, for a caller that prints its own tick.
+
+    drain-check already lists a board's work, so it takes the problems and not the
+    pass lines: a dead identity, orphaned tickets or a dead timer becomes one note in
+    that tick instead of a second report.
+    """
+    found = [peer_line(peer, args, {}) for peer in peers
+             if peer.status in ('DEAD-IDENTITY', 'ORPHAN-TICKETS')]
+    return found + [timer_line(slug) for slug in timers]
+
+
+def report(snap, peers, timers, args, archived):
+    """One line per identity, then a verdict that names the exact fix."""
+    for note in snap.notes:
+        print(f'peers: {note}')
+    for peer in peers:
+        print(peer_line(peer, args, archived))
+    for slug in timers:
+        print(timer_line(slug))
+    dead = len([peer for peer in peers if peer.status == 'DEAD-IDENTITY'])
+    left_dead = dead - len(archived)
+    orphaned = len([peer for peer in peers if peer.status == 'ORPHAN-TICKETS'])
+    if archived:
+        print(f'peers: archived {len(archived)} dead identity '
+              f'({", ".join(sorted(archived.values()))})')
+    if not (left_dead or orphaned or timers):
+        print(f'peers: PASS ({len(peers)} agent identities on board {args.board}, none dead)')
+        return 0
+    parts = []
+    if left_dead:
+        parts.append(f'{left_dead} dead identity')
+    if orphaned:
+        parts.append(f'{orphaned} holding open tickets')
+    if timers:
+        parts.append(f'{len(timers)} dead timer')
+    print(f'peers: FAIL ({", ".join(parts)}; {len(peers)} agent identities on board '
+          f'{args.board})')
+    if left_dead:
+        print(f'peers: fix: {fix_command(args)}')
+    return 1
+
+
+def management_key():
+    """The owner's management key, when this shell exports one (never read from a file)."""
+    return str(os.environ.get('HYPERTASK_MANAGEMENT_KEY') or '').strip()
+
+
+def archive(peers, args):
+    """Archive only identities this run proved dead, capped, and never failing the run.
+
+    Only an owner login may manage agent identities, so a chat's own token is refused.
+    The archive then fails with the board's own reason and the identity stays reported:
+    a chat reports what it cannot fix, it never fails the run over it.
+    """
+    done = {}
+    dead = [peer for peer in peers if peer.archivable]
+    key = management_key()
+    for peer in dead[:args.max_archive]:
+        command = ['agents', 'archive', '--id', peer.agent_id]
+        if key:
+            command += ['--management-key', key]
+        try:
+            run_cli(command)
+        except ERRORS as error:
+            print(f'peers: could not archive {peer.name}: {error}', file=sys.stderr)
+            continue
+        done[peer.agent_id] = peer.name
+    if len(dead) > args.max_archive:
+        print(f'peers: {len(dead) - args.max_archive} more dead identities wait for the next '
+              f'run (cap --max-archive {args.max_archive})')
+    return done
+
+
+def grace_seconds(text):
+    value = loop_state.interval_seconds(text)
+    if value is None or value <= 0:
+        raise ValueError('--grace needs a duration like 7d, 24h or 3600')
+    return value
+
+
+def audit(args):
+    """The whole audit for one board: (exit code, snapshot, peers, dead timers)."""
+    grace = grace_seconds(args.grace)
+    snap = snapshot(args)
+    if snap.broken:
+        return 2, snap, (), ()
+    peers = classify(snap, grace)
+    timers = dead_timers(snap, grace) if snap.timers else ()
+    archived = archive(peers, args) if args.apply else {}
+    return report(snap, peers, timers, args, archived), snap, peers, timers
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--board', type=int, required=False, help='The board to audit')
+    parser.add_argument('--name', help="The calling chat's name; default from its tab")
+    parser.add_argument('--apply', action='store_true', help='Archive verified dead identities')
+    parser.add_argument('--max-archive', type=int, default=3,
+                        help='Archive at most this many identities per run (default 3)')
+    parser.add_argument('--grace', default='7d',
+                        help='Leave anything created or used inside this window (default 7d)')
+    parser.add_argument('--fixture', help='Read a board under test from this JSON file')
+    parser.add_argument('--roster', help='Read live chat names from this file, not roster-live')
+    parser.add_argument('--now', help='Judge ages against this ISO time instead of the clock')
+    parser.add_argument('--self-test', action='store_true', help='Prove the safety rules hold')
+    args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
+    if not args.board or args.board < 1:
+        parser.error('--board must be a positive board id')
+    if args.max_archive < 1:
+        parser.error('--max-archive must be at least 1')
+    try:
+        code, snap, _peers, _timers = audit(args)
+        if code == 2:
+            for note in snap.notes:
+                print(f'peers: {note}', file=sys.stderr)
+        return code
+    except ERRORS as error:
+        print(f'peers: {error}', file=sys.stderr)
+        return 2
+    except Exception as error:  # noqa: BLE001 - a crash must read as 2, never as 1
+        print(f'peers: error: {error}', file=sys.stderr)
+        return 2
+
+
+def self_test():
+    """The rules that must never break, and the shape that broke each one."""
+    assert norm('  HT  Bugs ') == 'ht bugs', 'names compare trimmed and casefolded'
+    assert {'ci boss', 'chief of staff'} <= PROTECTED, 'role identities stay protected'
+    assert not PROTECTED & {'vstack maintainer'}, 'a chat identity is not a role'
+    dead = Peer('Ghost', 'id-1', 'DEAD-IDENTITY')
+    assert dead.archivable, 'a dead identity may be archived'
+    held = Peer('Ghost', 'id-1', 'ORPHAN-TICKETS', '', ('VSTA-1',))
+    assert not held.archivable, 'tickets hold it'
+    assert not Peer('Ghost', 'id-1', 'GRACE', 'identity created').archivable, 'grace holds it'
+    assert not Peer('Ghost', 'id-1', 'LIVE').archivable, 'a live chat holds it'
+    assert not Peer('Ghost', 'id-1', 'PAUSED', 'paused').archivable, 'a pause holds it'
+    keys = open_keys([{'task': {'ticketNumber': 'VSTA-1', 'section': 'Doing',
+                               'assignees': [{'type': 'agent', 'displayName': 'Ghost',
+                                              'agentId': 'id-1'}]}}])
+    assert keys == {'ghost': {'id': 'id-1', 'keys': ['VSTA-1']}}, keys
+    assert not open_keys([{'task': {'ticketNumber': 'VSTA-1', 'section': 'Done',
+                                    'assignees': [{'type': 'agent', 'displayName': 'Ghost'}]}}])
+    assert not open_keys([{'task': {'ticketNumber': 'VSTA-1', 'section': 'Todo',
+                                    'assignees': [{'type': 'human', 'displayName': 'Valentin'}]}}])
+    assert moment('2026-11-20T12:00:00Z') == 1795176000, 'ISO reads as epoch seconds'
+    assert moment(None) is None and moment('') is None
+    print('peers self-test ok')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

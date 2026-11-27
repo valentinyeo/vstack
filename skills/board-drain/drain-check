@@ -118,6 +118,9 @@ VPS_STATE = HERE.parent / 'vps-state' / 'vps-state'
 LOAD_FINDINGS = frozenset({'loop off', 'stale', 'orphan PR'})
 # A board over its review-debt cap holds new starts: these findings wait behind one line.
 REVIEW_DEBT_FINDINGS = frozenset({'loop off', 'stale'})
+# The board's other agent identities: a chat that was deleted leaves its Hypertask
+# identity, its tickets and its sync timer behind, and nothing else notices (VSTA-349).
+PEERS = HERE / 'peers'
 # This chat's own project folders, read from local git only. repo-tidy owns every
 # gate; this check only says which folders it already owes a cleanup for.
 REPO_TIDY = HERE.parent / 'repo-tidy' / 'repo-tidy'
@@ -396,6 +399,49 @@ def newest_comment(comments):
 
 def comment_text(comment):
     return (comment.get('text') or comment.get('commentText') or '').strip()
+
+
+def peers_module():
+    """`peers` in this process, so a tick reuses the cards it already read."""
+    name = 'board_drain_peers'
+    module = sys.modules.get(name)
+    if module is not None and getattr(module, '__file__', None) == str(PEERS):
+        return module
+    loader = importlib.machinery.SourceFileLoader(name, str(PEERS))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    loader.exec_module(module)
+    return module
+
+
+def peer_notes(tasks, args, now):
+    """Dead board peers, their orphaned tickets and dead sync timers, as notes.
+
+    News, not a failure: this check fails only for the label it was given, and the
+    audit is `peers`' own run. The cards this tick already read are the cards it
+    judges, so a tick adds no board listing. Any read that fails answers one warning
+    line, never a crash and never a fail.
+    """
+    if (getattr(args, 'fixture', None) or getattr(args, 'no_peers', False)
+            or not getattr(args, 'state_name', None)):
+        return []
+    try:
+        peers = peers_module()
+        audit_args = argparse.Namespace(board=args.board, name=args.state_name,
+                                        apply=False, max_archive=3, grace='7d',
+                                        fixture=None, roster=None, now=None)
+        snap = peers.snapshot(audit_args, rows=[{'task': task} for task in tasks],
+                              managed=False)
+        if snap.broken:
+            return [f'warning: peers: {note}' for note in snap.notes] or [
+                'warning: peers: read failed']
+        grace = peers.grace_seconds('7d')
+        timers = peers.dead_timers(snap, grace) if snap.timers else ()
+        return peers.news(snap, peers.classify(snap, grace), timers, audit_args)
+    except ERRORS + (AttributeError, ImportError) as error:
+        line = str(error).splitlines()[0] if str(error) else 'read failed'
+        return [f'warning: peers: {line}; skipped']
 
 
 def tidy_findings():
@@ -1060,6 +1106,7 @@ def read_view(args, now):
     findings += merge_findings(rows, pulls)
     if not args.fixture and not getattr(args, 'no_hygiene', False):
         findings += tidy_findings()
+    waiting_lines += peer_notes(board_tasks, args, now)
     # The repos this board ships from must refuse a merge until a verifier passed it.
     # Only this view's own repos are judged: another chat's repo is its gate, not this
     # one's. A view with no PRs names no repo, and asks GitHub nothing at all.
@@ -1211,6 +1258,8 @@ def main(argv=None):
                         help='Skip the vps-state load probe and the plan-pick lane probe')
     parser.add_argument('--no-hygiene', action='store_true',
                         help="Skip this project's own folder read (repo-tidy --quick)")
+    parser.add_argument('--no-peers', action='store_true',
+                        help="Skip the board peer and dead identity audit")
     args = parser.parse_args(argv)
     if args.board < 1:
         parser.error('--board must be a positive board id')

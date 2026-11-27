@@ -4,8 +4,8 @@ Health-check your own board and view, then fix your own gaps. Run it on a new pr
 
 ## Checks
 
-1. **Stale agents.** List assignees on your view's open tickets. An agent that is revoked, renamed or has no live chat is stale.
-2. **Clean them up.** Unassign a stale agent from your tickets and reassign the live owner. Never revoke, rename or delete an agent. A stale agent on another chat's tickets: tell that chat.
+1. **Stale agents.** Run `../board-drain/peers --board <board id>`: it prints one line per agent identity on the board in seconds. `LIVE`/`PAUSED`/`GRACE` need nothing. `DEAD-IDENTITY` is an identity whose chat is gone, `ORPHAN-TICKETS` is one still holding open cards, and `DEAD-TIMER` is a `board-sync@` timer with no chat left. It never touches you, a person or a role identity.
+2. **Clean them up.** Run `../board-drain/peers --board <board id> --apply` to archive identities the audit proved dead past the grace window (three per run, reversible, never a revoke or a delete). Reassign or close the cards `ORPHAN-TICKETS` names first; a timer it names is disabled by `systemctl --user disable --now board-sync@<chat>.timer`. Unassign a stale agent from your tickets and reassign the live owner. Never revoke, rename or delete an agent by hand. A stale agent on another chat's tickets: tell that chat.
 3. **You are on it.** Your login is a board member and assigned to every ticket you work. List open tickets in your label with no agent assignee and take yours: `hypertask agent take <ticket> --project <board>`. Never assign a person, and never replace an existing agent.
 4. **True columns.** Each card sits where the `board.md` rules put it. Run the reconcile preview, then apply. A ticket that waits on Valentin stays. Never move one into Valentin Review.
 5. **Sync routine.** Follow `sync.md`: worker start and end sync through the lease, and your own board-drain watcher syncs the view. Run drain-check with this chat's state name; fix a missing watcher, failed sync or stale sync. Tool failures in `~/.local/state/reconcile-auto/failures.jsonl` belong to Hypertask Reconciler; report them, do not move cards to hide them.
