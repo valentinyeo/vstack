@@ -17,6 +17,12 @@ Read from a real transcript (2.1.329), two shapes:
 An assistant text block and a tool_use are separate entries, text first, so a reply written just before a tool
 call counts. Tool results, isMeta entries, task notifications and skill body expansions are not him talking.
 
+Harness-agnostic: Antigravity writes transcript.jsonl instead, one decided step per line, and the same events
+come out of it. His message is a USER_INPUT whose source is USER_EXPLICIT, wrapped in <USER_REQUEST> with
+<ADDITIONAL_METADATA> after it; only the request body is his words, and a <SYSTEM_MESSAGE> entry is the
+harness. The model's reply is a PLANNER_RESPONSE with content, and its tool_calls ride on that same entry.
+Any other type is harness bookkeeping. Both shapes are read per entry, so a mixed or unknown file fails open.
+
 Fails open: a missing or unreadable transcript, or any shape this file does not know, allows the call.
 
 reply-check.py --self-test
@@ -56,12 +62,18 @@ MERGE_MESSAGE = ("This reply asks Valentin to merge, ship, approve or review a p
                  + merge_ask.FIX + ". Carry it through babysit until it is green and mergeable, merge it, "
                  "prove it live on the real case, then report that. Ask him only a product question.")
 SKIP = ("<task-notification", "<system-reminder", "<teammate-message", "<cross-session",
+        "<SYSTEM_MESSAGE", "<ADDITIONAL_METADATA",
         "[SYSTEM NOTIFICATION", "[Message from", "[Cross-session", "[from ",
         "Cross-session message", "Message from session", "Message from chat", "Base directory for this skill")
 SILENCE_REMINDER = re.compile(r"^The user (?:hasn['’]t|has not) heard from you\b", re.I)
 SLASH = re.compile(r"<command-name>/\S+</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 QUEUED = "queued_command"
+AGY_USER = "USER_INPUT"
+AGY_MODEL = "PLANNER_RESPONSE"
+AGY_SOURCES = (None, "USER_EXPLICIT")
+AGY_MODEL_SOURCES = (None, "MODEL")
+USER_REQUEST = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.S)
 
 
 def blocks(content):
@@ -87,6 +99,25 @@ def text_of(content):
     return "".join(block.get("text") or "" for block in blocks(content) if block.get("type") == "text")
 
 
+def agy_his_words(entry):
+    """Valentin's words from one Antigravity USER_INPUT, or "" when the entry is not him."""
+    if entry.get("source") not in AGY_SOURCES:
+        return ""
+    content = entry.get("content")
+    if not isinstance(content, str):
+        return ""
+    found = USER_REQUEST.search(content)
+    return (found.group(1) if found else content).strip()
+
+
+def agy_reply_text(entry):
+    """The model's words from one Antigravity PLANNER_RESPONSE, or ""."""
+    if entry.get("source") not in AGY_MODEL_SOURCES:
+        return ""
+    content = entry.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def events(transcript):
     """One event per entry, in file order: ("human", his text) or ("reply", assistant text).
 
@@ -104,7 +135,15 @@ def events(transcript):
         if not isinstance(entry, dict):
             continue
         kind = entry.get("type")
-        if kind == "attachment":
+        if kind == AGY_USER:
+            text = agy_his_words(entry)
+            if typed(text):
+                yield "human", text
+        elif kind == AGY_MODEL:
+            text = agy_reply_text(entry)
+            if text.strip():
+                yield "reply", text
+        elif kind == "attachment":
             attachment = entry.get("attachment")
             if not isinstance(attachment, dict) or attachment.get("type") != QUEUED:
                 continue
@@ -210,7 +249,31 @@ def self_test():
         return {"type": "user", "isMeta": True, "turnCompanion": True,
                 "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
 
+    def agy_human(text):
+        return {"type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE",
+                "content": "<USER_REQUEST>\n" + text + "\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n"
+                           "The current local time is: 2026-11-26T15:39:46+01:00.\n</ADDITIONAL_METADATA>"}
+
+    def agy_say(text, calls=None):
+        entry = {"type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE", "content": text}
+        if calls:
+            entry["tool_calls"] = calls
+        return entry
+
+    def agy_run():
+        return {"name": "run_command", "args": {"CommandLine": json.dumps("ls")}}
+
+    def agy_system():
+        return {"type": "SYSTEM_MESSAGE", "source": "SYSTEM", "status": "DONE",
+                "content": "<SYSTEM_MESSAGE>\nReminder: work efficiently.\n</SYSTEM_MESSAGE>"}
+
     cases = [
+        ([agy_human("ship it"), agy_say("", [agy_run()])], True,
+         "an antigravity request gets a reminder without a deny"),
+        ([agy_human("ship it"), agy_say("On it.", [agy_run()])], False,
+         "an antigravity reply before the tool call passes"),
+        ([agy_human("ship it"), agy_system(), agy_say("", [agy_run()])], True,
+         "an antigravity system message does not answer him"),
         ([human("ship it"), call()], True, "an unanswered message gets a reminder without a deny"),
         ([human("ship it"), say("On it."), call()], False, "a reply before the tool call passes"),
         ([human("ship it"), call(), result(), queued("is it reliable?"), call()], True,
